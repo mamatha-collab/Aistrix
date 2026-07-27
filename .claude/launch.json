@@ -1,0 +1,19 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "Aistrix Frontend (Vite)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "cwd": "aistrix-frontend",
+      "port": 5173
+    },
+    {
+      "name": "Aistrix Backend (FastAPI / uvicorn)",
+      "runtimeExecutable": "uvicorn",
+      "runtimeArgs": ["main:app", "--reload", "--port", "8000"],
+      "cwd": "aistrix-backend",
+      "port": 8000
+    }
+  ]
+}

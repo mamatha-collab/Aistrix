@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aistrix — Product Documentation</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #09101F; color: #e2e8f0; line-height: 1.6; }
+
+  @media print {
+    .sidebar { display: none; }
+    .main { margin-left: 0; }
+    section { page-break-inside: avoid; }
+    .divider { border-top: 1px solid #334155; margin: 32px 0; }
+  }
+
+  .layout { display: flex; min-height: 100vh; }
+
+  .sidebar { width: 220px; background: #0E1424; border-right: 1px solid rgba(255,255,255,0.08); position: fixed; top: 0; left: 0; height: 100vh; overflow-y: auto; padding: 16px 12px; flex-shrink: 0; }
+  .sidebar h2 { font-size: 11px; font-weight: 700; letter-spacing: .1em; color: #6C5CE7; text-transform: uppercase; padding: 8px 8px 4px; margin-bottom: 4px; }
+  .sidebar a { display: block; font-size: 12px; color: #94a3b8; padding: 5px 10px; border-radius: 6px; cursor: pointer; text-decoration: none; transition: all .15s; }
+  .sidebar a:hover, .sidebar a.active { background: #1A2038; color: #fff; }
+  .sidebar .logo { display: flex; align-items: center; gap: 8px; padding: 0 8px 16px; border-bottom: 1px solid rgba(255,255,255,0.08); margin-bottom: 12px; }
+  .sidebar .logo-icon { width: 28px; height: 28px; background: #6C5CE7; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-weight: 800; font-size: 14px; color: #fff; flex-shrink: 0; }
+  .sidebar .logo-name { font-weight: 700; font-size: 15px; color: #fff; }
+  .dl-btn { display: block; margin: 12px 8px 0; padding: 7px 10px; background: linear-gradient(135deg,#6C5CE7,#E84393); border-radius: 8px; color: #fff; font-size: 12px; font-weight: 600; text-align: center; cursor: pointer; border: none; width: calc(100% - 16px); }
+  .dl-btn:hover { opacity: .9; }
+
+  .main { margin-left: 220px; padding: 40px 48px; max-width: 980px; }
+
+  section { margin-bottom: 64px; scroll-margin-top: 20px; }
+  h1 { font-size: 28px; font-weight: 800; color: #fff; margin-bottom: 8px; }
+  h1 span { background: linear-gradient(135deg, #A29BFE, #E84393); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  h2.sec { font-size: 20px; font-weight: 700; color: #fff; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+  h3 { font-size: 15px; font-weight: 600; color: #c7d2e8; margin-bottom: 8px; margin-top: 20px; }
+  p { font-size: 13.5px; color: #94a3b8; margin-bottom: 10px; }
+  .lead { font-size: 15px; color: #cbd5e1; margin-bottom: 24px; }
+
+  .card { background: #121829; border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; padding: 20px; margin-bottom: 16px; }
+  .card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-bottom: 16px; }
+  .card-grid.three { grid-template-columns: 1fr 1fr 1fr; }
+  .card h4 { font-size: 13px; font-weight: 600; color: #fff; margin-bottom: 6px; }
+  .card p { font-size: 12.5px; color: #64748b; margin: 0; }
+
+  .badge { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 20px; margin-bottom: 8px; }
+  .badge.purple { background: rgba(108,92,231,.2); color: #A29BFE; border: 1px solid rgba(108,92,231,.3); }
+  .badge.green { background: rgba(0,184,148,.15); color: #00cba0; border: 1px solid rgba(0,184,148,.3); }
+  .badge.amber { background: rgba(245,158,11,.12); color: #fbbf24; border: 1px solid rgba(245,158,11,.25); }
+  .badge.red { background: rgba(239,68,68,.12); color: #f87171; border: 1px solid rgba(239,68,68,.25); }
+  .badge.blue { background: rgba(9,132,227,.15); color: #60a5fa; border: 1px solid rgba(9,132,227,.3); }
+
+  .icon-table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-bottom: 16px; }
+  .icon-table th { text-align: left; font-size: 11px; font-weight: 600; color: #6C5CE7; text-transform: uppercase; letter-spacing: .06em; padding: 8px 12px; background: rgba(108,92,231,.08); border-bottom: 1px solid rgba(255,255,255,0.06); }
+  .icon-table td { padding: 9px 12px; border-bottom: 1px solid rgba(255,255,255,0.04); vertical-align: top; color: #94a3b8; }
+  .icon-table td:first-child { font-size: 15px; width: 40px; text-align: center; }
+  .icon-table td:nth-child(2) { color: #e2e8f0; font-weight: 500; width: 140px; }
+  .icon-table tr:hover td { background: rgba(255,255,255,0.02); }
+
+  .flow { display: flex; align-items: center; gap: 0; margin: 20px 0; flex-wrap: wrap; }
+  .flow-step { background: #1A2038; border: 1px solid rgba(255,255,255,0.12); border-radius: 10px; padding: 10px 14px; font-size: 12px; color: #e2e8f0; text-align: center; min-width: 90px; }
+  .flow-step.purple { border-color: rgba(108,92,231,.5); background: rgba(108,92,231,.15); }
+  .flow-step.amber { border-color: rgba(245,158,11,.4); background: rgba(245,158,11,.1); color: #fbbf24; }
+  .flow-step.green { border-color: rgba(0,184,148,.4); background: rgba(0,184,148,.1); color: #00cba0; }
+  .flow-step.blue { border-color: rgba(9,132,227,.4); background: rgba(9,132,227,.1); color: #60a5fa; }
+  .flow-arrow { color: #475569; font-size: 16px; padding: 0 6px; }
+  .flow-step small { display: block; font-size: 10px; color: #64748b; margin-top: 2px; }
+
+  .info { background: rgba(108,92,231,.08); border: 1px solid rgba(108,92,231,.2); border-radius: 10px; padding: 14px 16px; font-size: 13px; color: #A29BFE; margin-bottom: 16px; }
+  .warn { background: rgba(245,158,11,.08); border: 1px solid rgba(245,158,11,.2); border-radius: 10px; padding: 14px 16px; font-size: 13px; color: #fbbf24; margin-bottom: 16px; }
+  .success-box { background: rgba(0,184,148,.08); border: 1px solid rgba(0,184,148,.2); border-radius: 10px; padding: 14px 16px; font-size: 13px; color: #00cba0; margin-bottom: 16px; }
+
+  .screen { background: #0E1424; border: 1px solid rgba(255,255,255,0.12); border-radius: 12px; overflow: hidden; margin: 16px 0; }
+  .screen-bar { background: #121829; border-bottom: 1px solid rgba(255,255,255,0.08); padding: 8px 14px; display: flex; align-items: center; gap: 6px; }
+  .screen-dot { width: 8px; height: 8px; border-radius: 50%; }
+  .screen-body { padding: 16px; }
+
+  .rec-item { display: flex; gap: 14px; padding: 14px 0; border-bottom: 1px solid rgba(255,255,255,0.05); }
+  .rec-num { width: 28px; height: 28px; border-radius: 50%; background: linear-gradient(135deg, #6C5CE7, #E84393); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700; color: #fff; flex-shrink: 0; margin-top: 2px; }
+  .rec-body h4 { font-size: 13.5px; color: #fff; font-weight: 600; margin-bottom: 4px; }
+  .rec-body p { font-size: 12.5px; color: #64748b; margin: 0; }
+
+  .status-row { display: flex; align-items: flex-start; gap: 12px; padding: 10px 14px; border-bottom: 1px solid rgba(255,255,255,0.04); }
+  .status-row:first-child { border-top: 1px solid rgba(255,255,255,0.04); }
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-top: 5px; }
+  .status-name { font-size: 13px; color: #e2e8f0; font-weight: 500; width: 200px; flex-shrink: 0; }
+  .status-note { font-size: 11.5px; color: #64748b; }
+
+  .divider { height: 1px; background: linear-gradient(to right, rgba(108,92,231,.4), transparent); margin: 48px 0; }
+
+  svg text { font-family: -apple-system, sans-serif; }
+
+  .code-block { background: #09101F; border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 14px 16px; font-family: 'Courier New', monospace; font-size: 12px; color: #A29BFE; margin-bottom: 16px; white-space: pre; overflow-x: auto; }
+</style>
+</head>
+<body>
+<div class="layout">
+
+<nav class="sidebar">
+  <div class="logo">
+    <div class="logo-icon">A</div>
+    <div class="logo-name">Aistrix</div>
+  </div>
+  <h2>Contents</h2>
+  <a href="#overview">Platform Overview</a>
+  <a href="#navigation">Navigation &amp; Sidebar</a>
+  <a href="#topbar">Top Bar — Icons</a>
+  <a href="#aiapps">AI Apps</a>
+  <a href="#appcard">App Card Icons</a>
+  <a href="#workflows">AI Workflows</a>
+  <a href="#workflowcard">Workflow Card Icons</a>
+  <a href="#runner">Workflow Runner</a>
+  <a href="#approval">Human Approval Steps</a>
+  <a href="#triggers">Workflow Triggers</a>
+  <a href="#vault">Knowledge Vault</a>
+  <a href="#business">Business Perspective</a>
+  <a href="#incomplete">Needs Development</a>
+  <a href="#recs">Recommendations (1k Users)</a>
+  <a href="#intelligence">Intelligence Roadmap</a>
+  <br>
+  <button class="dl-btn" onclick="downloadDoc()">⬇ Download HTML</button>
+  <button class="dl-btn" style="margin-top:6px;background:linear-gradient(135deg,#0984E3,#00B894);" onclick="window.print()">🖨 Print / Save PDF</button>
+</nav>
+
+<main class="main">
+
+<section id="overview">
+  <h1>Aistrix — <span>Product Documentation</span></h1>
+  <p class="lead">A comprehensive reference covering every feature, icon, and interaction across the platform — with business context, usability notes, and a growth roadmap.</p>
+  <div class="badge purple">Version · July 2026</div>
+
+  <div class="card" style="margin-top:20px;">
+    <h4>What is Aistrix?</h4>
+    <p>Aistrix is an AI workflow platform that lets businesses build, chain, and automate AI-powered tools without writing code. It sits between generic AI chat (ChatGPT) and expensive enterprise automation (Salesforce Einstein) — giving SMBs a focused, context-aware AI layer for their real daily work.</p>
+  </div>
+
+  <h3>How the platform fits together</h3>
+  <svg viewBox="0 0 820 120" width="100%" style="margin:16px 0;">
+    <defs>
+      <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L8,3 z" fill="#6C5CE7"/>
+      </marker>
+    </defs>
+    <rect x="10" y="30" width="130" height="60" rx="10" fill="#1A2038" stroke="rgba(108,92,231,0.4)" stroke-width="1.5"/>
+    <text x="75" y="56" fill="#A29BFE" font-size="12" font-weight="600" text-anchor="middle">Knowledge Vault</text>
+    <text x="75" y="72" fill="#64748b" font-size="10" text-anchor="middle">Company context</text>
+    <text x="75" y="84" fill="#64748b" font-size="10" text-anchor="middle">auto-injected</text>
+    <rect x="180" y="30" width="130" height="60" rx="10" fill="#1A2038" stroke="rgba(108,92,231,0.4)" stroke-width="1.5"/>
+    <text x="245" y="56" fill="#A29BFE" font-size="12" font-weight="600" text-anchor="middle">AI Apps</text>
+    <text x="245" y="72" fill="#64748b" font-size="10" text-anchor="middle">Single-purpose</text>
+    <text x="245" y="84" fill="#64748b" font-size="10" text-anchor="middle">prompt tools</text>
+    <rect x="350" y="30" width="130" height="60" rx="10" fill="#1A2038" stroke="rgba(108,92,231,0.4)" stroke-width="1.5"/>
+    <text x="415" y="56" fill="#A29BFE" font-size="12" font-weight="600" text-anchor="middle">AI Workflows</text>
+    <text x="415" y="72" fill="#64748b" font-size="10" text-anchor="middle">Chain apps into</text>
+    <text x="415" y="84" fill="#64748b" font-size="10" text-anchor="middle">multi-step flows</text>
+    <rect x="520" y="30" width="130" height="60" rx="10" fill="#1A2038" stroke="rgba(245,158,11,0.4)" stroke-width="1.5"/>
+    <text x="585" y="56" fill="#fbbf24" font-size="12" font-weight="600" text-anchor="middle">Human Approval</text>
+    <text x="585" y="72" fill="#64748b" font-size="10" text-anchor="middle">Review gates</text>
+    <text x="585" y="84" fill="#64748b" font-size="10" text-anchor="middle">inside workflows</text>
+    <rect x="690" y="30" width="120" height="60" rx="10" fill="#1A2038" stroke="rgba(9,132,227,0.4)" stroke-width="1.5"/>
+    <text x="750" y="56" fill="#60a5fa" font-size="12" font-weight="600" text-anchor="middle">Triggers</text>
+    <text x="750" y="72" fill="#64748b" font-size="10" text-anchor="middle">Schedule /</text>
+    <text x="750" y="84" fill="#64748b" font-size="10" text-anchor="middle">Webhook / API</text>
+    <line x1="140" y1="60" x2="178" y2="60" stroke="#6C5CE7" stroke-width="1.5" marker-end="url(#arr)"/>
+    <line x1="310" y1="60" x2="348" y2="60" stroke="#6C5CE7" stroke-width="1.5" marker-end="url(#arr)"/>
+    <line x1="480" y1="60" x2="518" y2="60" stroke="#6C5CE7" stroke-width="1.5" marker-end="url(#arr)"/>
+    <line x1="650" y1="60" x2="688" y2="60" stroke="#6C5CE7" stroke-width="1.5" marker-end="url(#arr)"/>
+  </svg>
+</section>
+
+<div class="divider"></div>
+
+<section id="navigation">
+  <h2 class="sec">Sidebar Navigation</h2>
+  <p>The left sidebar is always visible on desktop. It is the primary navigation structure, organised into 4 collapsible groups.</p>
+  <table class="icon-table">
+    <thead><tr><th>Icon</th><th>Label</th><th>What it does</th><th>Business use</th></tr></thead>
+    <tbody>
+      <tr><td>A</td><td>Aistrix logo</td><td>Clicking the logo navigates to AI Workflows — the platform's core product.</td><td>Home anchor — reduces disorientation.</td></tr>
+      <tr><td>⚡</td><td>AI Workflows</td><td>Opens the workflow canvas — browse, run, create, and manage multi-step AI automations.</td><td>Core automation engine. Primary daily driver.</td></tr>
+      <tr><td>⊞</td><td>AI Apps</td><td>Opens the AI App library — all single-purpose prompt tools owned or shared with you.</td><td>Building blocks for workflows; used standalone for quick tasks.</td></tr>
+      <tr><td>📚</td><td>Knowledge Vault</td><td>Manage shared company knowledge that auto-injects into every app and workflow run.</td><td>Context layer — eliminates having to re-explain your business to AI every time.</td></tr>
+      <tr><td>📦</td><td>Templates</td><td>Browse pre-built workflow templates sorted by industry pack.</td><td>Reduces time-to-value for new users significantly.</td></tr>
+      <tr><td>◉</td><td>Overview</td><td>Activity dashboard — runs today, recent output, quick stats.</td><td>Gives managers a snapshot without opening individual workflows.</td></tr>
+      <tr><td>🕘</td><td>History</td><td>Full run history — every AI App and Workflow run, searchable with inputs and outputs.</td><td>Audit trail; lets users find and reuse past outputs.</td></tr>
+      <tr><td>📈</td><td>Analytics</td><td>Usage trends, run counts, model usage breakdown.</td><td>Shows ROI; helps admins spot underused or overused apps.</td></tr>
+      <tr><td>🔔</td><td>Alerts</td><td>Notification rules — alert when a workflow fails or a run exceeds a threshold.</td><td>Operational safety net for automated workflows.</td></tr>
+      <tr><td>🗄️</td><td>Data Sources</td><td>Connect external databases or file sources as inputs to workflows.</td><td>Enables live-data workflows rather than manual copy-paste.</td></tr>
+      <tr><td>🔗</td><td>Integrations</td><td>Connect Slack, Notion, HubSpot, etc. to send workflow output to external tools.</td><td>Where Aistrix becomes part of the existing business stack.</td></tr>
+      <tr><td>👨‍💻</td><td>Developer / API</td><td>API keys, usage stats, webhook documentation for developers.</td><td>Unlocks programmatic usage — needed for B2B customers with tech teams.</td></tr>
+      <tr><td>👤</td><td>Profiles</td><td>Team profiles — display names, roles, custom avatars.</td><td>Multi-user identity management.</td></tr>
+      <tr><td>⚙️</td><td>Settings</td><td>Account settings, API key management, billing, preferences.</td><td>Self-service reduces support burden.</td></tr>
+      <tr><td>📊</td><td>Usage / Reports</td><td>Detailed reports on credit consumption and per-app run cost.</td><td>Cost accountability — key for team plan upsells.</td></tr>
+      <tr><td>0/50 runs</td><td>Daily run meter</td><td>Progress bar at sidebar bottom showing today's runs vs. daily limit. Turns orange at 80%.</td><td>Nudges users toward paid plans when nearing limits.</td></tr>
+      <tr><td>☀️ / 🌙</td><td>Theme toggle</td><td>Switches between dark and light mode. Persists in localStorage.</td><td>Accessibility and personal preference.</td></tr>
+      <tr><td>↩</td><td>Sign out</td><td>Signs the user out of Supabase auth session.</td><td>Essential for shared computers / enterprise environments.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<div class="divider"></div>
+
+<section id="topbar">
+  <h2 class="sec">Top Bar</h2>
+  <p>Persistent header across all views. Shows contextual title, search, and primary action for the active section.</p>
+
+  <div class="screen">
+    <div class="screen-bar">
+      <div class="screen-dot" style="background:#ef4444"></div>
+      <div class="screen-dot" style="background:#f59e0b"></div>
+      <div class="screen-dot" style="background:#22c55e"></div>
+      <span style="font-size:11px;color:#475569;margin-left:8px;">localhost:5173/flows</span>
+    </div>
+    <div style="background:#121829;border-bottom:1px solid rgba(255,255,255,0.08);display:flex;align-items:center;padding:0 16px;height:52px;gap:12px;">
+      <div style="flex:1;">
+        <div style="font-size:16px;font-weight:700;background:linear-gradient(to right,#A29BFE,#E84393);-webkit-background-clip:text;-webkit-text-fill-color:transparent;">AI Workflows</div>
+        <div style="font-size:10px;color:#64748b;">Ready-to-run workflows — install and run in seconds</div>
+      </div>
+      <div style="display:flex;align-items:center;background:#1A2038;border:1px solid rgba(255,255,255,0.1);border-radius:8px;padding:5px 10px;gap:6px;width:160px;">
+        <span style="font-size:12px;">🔍</span>
+        <span style="font-size:11px;color:#475569;">Search apps…</span>
+      </div>
+      <div style="font-size:11px;background:#1A2038;border:1px solid rgba(255,255,255,0.1);padding:5px 10px;border-radius:8px;color:#94a3b8;">🔔</div>
+      <div style="font-size:11px;background:#1A2038;border:1px solid rgba(255,255,255,0.1);padding:5px 10px;border-radius:8px;color:#94a3b8;">🕘 History</div>
+      <div style="font-size:11px;background:#1A2038;border:1px solid rgba(255,255,255,0.1);padding:5px 10px;border-radius:8px;color:#94a3b8;">⚙️ Keys</div>
+      <div style="font-size:11px;padding:5px 12px;border-radius:8px;background:linear-gradient(135deg,#6C5CE7,#8B7CF8);color:#fff;font-weight:600;">✦ Build AI Workflow</div>
+    </div>
+  </div>
+
+  <table class="icon-table" style="margin-top:16px;">
+    <thead><tr><th>Element</th><th>Label</th><th>Behaviour</th></tr></thead>
+    <tbody>
+      <tr><td>≡</td><td>Hamburger (mobile)</td><td>Opens the sidebar drawer on small screens. Hidden on desktop ≥768px.</td></tr>
+      <tr><td style="font-size:12px;">Title</td><td>View title</td><td>Changes dynamically per active view. Gradient text on the title, muted subtitle below.</td></tr>
+      <tr><td>🔍</td><td>Search</td><td>Global app search — filters AI App cards in real time. Clear button (✕) appears when text is entered.</td></tr>
+      <tr><td>🔔</td><td>Notifications</td><td>Opens notification panel. Badge shows unread count.</td></tr>
+      <tr><td>🕘</td><td>History</td><td>Opens the Run History panel — all past runs with inputs, outputs, timestamps, and model used.</td></tr>
+      <tr><td>⚙️ Keys</td><td>API Keys</td><td>Opens ApiKeySettings panel — add OpenAI / Anthropic personal keys to bypass credit limits.</td></tr>
+      <tr><td>✦ Build</td><td>Primary CTA</td><td>On Apps: opens App Type Selector. On Workflows: opens Workflow Builder. Elsewhere: dropdown with both options. Gradient button — highest visual priority.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<div class="divider"></div>
+
+<section id="aiapps">
+  <h2 class="sec">AI Apps</h2>
+  <p>AI Apps are single-purpose, reusable AI tools. Each one has a system prompt, an input field, and produces one output. They are the building blocks that get chained into Workflows.</p>
+  <div class="card-grid">
+    <div class="card"><h4>📂 My Apps tab</h4><p>Shows apps you've created. Count badge in the tab. Sorted by last modified. Supports grid and list view.</p></div>
+    <div class="card"><h4>🌐 Marketplace tab</h4><p>Community-published apps. One-click install copies the app into your library. Ratings and install counts shown.</p></div>
+    <div class="card"><h4>⚡ Quick Start packs</h4><p>Pre-built app bundles sorted by business domain. "Install all" adds the full pack at once.</p></div>
+    <div class="card"><h4>🔍 Filters &amp; search</h4><p>Domain filter chips (Sales, HR, Finance…) + free-text search. Compatible apps surface first when building workflows.</p></div>
+  </div>
+  <h3>App Type Selector — when you click "Build AI App"</h3>
+  <div class="flow">
+    <div class="flow-step purple">✦ Build AI App<small>CTA click</small></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step">Type Selector<small>Choose app type</small></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step purple">Prompt App<small>System prompt based</small></div>
+    <div class="flow-arrow">+</div>
+    <div class="flow-step blue">AI Builder<small>Describe → AI builds</small></div>
+    <div class="flow-arrow">+</div>
+    <div class="flow-step">Website Builder<small>Paste URL → extract</small></div>
+  </div>
+</section>
+
+<section id="appcard">
+  <h2 class="sec">App Card — Every Icon Explained</h2>
+  <p>Each AI App card is a dense information tile. Every element is intentional.</p>
+  <table class="icon-table">
+    <thead><tr><th>Icon</th><th>Label</th><th>What it shows</th></tr></thead>
+    <tbody>
+      <tr><td>🎨</td><td>App icon</td><td>Coloured emoji square. Chosen by creator; visually identifies the app at a glance.</td></tr>
+      <tr><td>⊞</td><td>My app badge</td><td>You created this app. You can edit and delete it.</td></tr>
+      <tr><td>🌐</td><td>Marketplace badge</td><td>Installed from Marketplace. You cannot edit the original; you can clone it.</td></tr>
+      <tr><td>🧠</td><td>Memory</td><td>App has persistent memory enabled. Previous run context carries forward automatically.</td></tr>
+      <tr><td>🔒</td><td>Private</td><td>App is only visible to you. Toggle to publish.</td></tr>
+      <tr><td>🌐</td><td>Published</td><td>App is visible on the Marketplace for others to install.</td></tr>
+      <tr><td>📤</td><td>Shared</td><td>App has been shared with specific teammates.</td></tr>
+      <tr><td>47 runs</td><td>Run count</td><td>Total times this app has been executed. Social proof / usage signal.</td></tr>
+      <tr><td>🟣</td><td>Claude model</td><td>App is powered by an Anthropic Claude model.</td></tr>
+      <tr><td>🟢</td><td>GPT model</td><td>App is powered by an OpenAI GPT model.</td></tr>
+      <tr><td>Domain tags</td><td>Taxonomy</td><td>Domain chips (Sales, HR…) for filtering. Assigned during creation or editing.</td></tr>
+      <tr><td>▶ Open app</td><td>Primary action</td><td>Opens the AppRunner panel where you type input and get AI output.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<div class="divider"></div>
+
+<section id="workflows">
+  <h2 class="sec">AI Workflows</h2>
+  <p>Workflows chain AI Apps into sequential pipelines. Output from step N automatically becomes input for step N+1. Each workflow has its own memory, optional Workflow AI persona, and can be triggered manually, on schedule, or via webhook.</p>
+  <div class="card-grid">
+    <div class="card"><h4>My Workflows tab</h4><p>All workflows you own. Toggle between card grid and list (tab) view. Filter by business pack.</p></div>
+    <div class="card"><h4>Shared tab</h4><p>Workflows shared with you by teammates. Role shown (viewer / editor / owner).</p></div>
+    <div class="card"><h4>Marketplace tab</h4><p>Community-published workflows. One-click install copies the flow.</p></div>
+    <div class="card"><h4>Quick Start templates</h4><p>Pre-built templates grouped by business pack. Show step count, description, and Install button.</p></div>
+  </div>
+
+  <h3>Workflow Builder — what you configure</h3>
+  <div class="card">
+    <table class="icon-table">
+      <thead><tr><th>Section</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr><td>Emoji + Name</td><td>Identifier shown on the card and in run history.</td></tr>
+        <tr><td>Description</td><td>Optional summary displayed under the name on the card.</td></tr>
+        <tr><td>Workflow AI 🧠</td><td>Named AI persona with standing instructions that apply to every step (e.g. "Always respond formally").</td></tr>
+        <tr><td>Integration 🔗</td><td>Webhook URL — when the workflow finishes, POST the full results to Slack, Notion, Google Sheets via Zapier, etc.</td></tr>
+        <tr><td>AI Provider</td><td>Force all steps to use Claude, ChatGPT, or let each step use its own setting (Auto).</td></tr>
+        <tr><td>Steps list</td><td>Ordered list of steps. Each shows its emoji, name, and type (AI App / API Call / Approval Gate).</td></tr>
+        <tr><td>App picker</td><td>All your apps shown as chips, sorted by compatibility. Click any chip to add it as a step.</td></tr>
+        <tr><td>+ Approval Gate</td><td>Insert a human review gate between steps. Three types: Needs Approval, Edit Before Sending, Assign to Teammate.</td></tr>
+        <tr><td>+ API Call</td><td>Add a raw HTTP request step — GET or POST to any external URL. Response feeds the next step.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="workflowcard">
+  <h2 class="sec">Workflow Card — Every Icon Explained</h2>
+  <table class="icon-table">
+    <thead><tr><th>Icon</th><th>Label</th><th>What it does</th></tr></thead>
+    <tbody>
+      <tr><td>🎨</td><td>Flow icon</td><td>Coloured emoji square. Gradient background. Shown in card header and run progress.</td></tr>
+      <tr><td>👥</td><td>Share</td><td>Opens the sharing modal — invite teammates by email with viewer or editor role.</td></tr>
+      <tr><td>⏰</td><td>Schedule</td><td>Opens the Schedule modal to set daily / weekly auto-runs. Turns amber when a schedule is active.</td></tr>
+      <tr><td>🔗</td><td>Webhook</td><td>Opens the Webhook modal to generate a unique trigger URL. Turns blue when a webhook token exists.</td></tr>
+      <tr><td>🌐</td><td>Publish</td><td>Publishes the workflow to the Marketplace. Turns green when published.</td></tr>
+      <tr><td>✏️</td><td>Edit</td><td>Opens the workflow in the builder. Available to owners and editors.</td></tr>
+      <tr><td>🗑</td><td>Delete</td><td>Permanently deletes the workflow (with confirmation). Owner only.</td></tr>
+      <tr><td>Step chips</td><td>Step flow preview</td><td>Horizontal scrollable row of step name chips. Connector dots animate between them.</td></tr>
+      <tr><td>● dot</td><td>Status indicator</td><td>Green = Active. Blue = Scheduled. Amber = Incomplete (no steps). Shown with a text label.</td></tr>
+      <tr><td>N steps</td><td>Step count</td><td>Number of configured steps in this workflow.</td></tr>
+      <tr><td>Last run</td><td>Last run time</td><td>Relative time of the most recent execution. "Never run" if untouched.</td></tr>
+      <tr><td>▶ Run workflow</td><td>Primary CTA</td><td>Opens the FlowRunner modal to execute all steps interactively.</td></tr>
+      <tr><td>○ progress</td><td>Today's progress</td><td>Small circular ring showing steps run today vs. total.</td></tr>
+      <tr><td>‹ ›</td><td>Step nav arrows</td><td>Scroll through step preview chips when there are more steps than fit in view.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<div class="divider"></div>
+
+<section id="runner">
+  <h2 class="sec">Workflow Runner</h2>
+  <p>The FlowRunner is a full-screen modal that executes all workflow steps one at a time. Output from each step is piped as input to the next.</p>
+  <table class="icon-table">
+    <thead><tr><th>Element</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td>Step circles</td><td>✓ = completed (green fill). Current = purple. Approval gate = amber ✋. Future = outlined.</td></tr>
+      <tr><td>🧠 pulse</td><td>Brain emoji pulses on the active step circle while the AI is generating output.</td></tr>
+      <tr><td>Connector lines</td><td>Green when step completed, dark when pending. Labels: "output → input" or "needs approval →".</td></tr>
+      <tr><td>🔑 Your API key</td><td>Green badge — your personal API key is being used (unlimited runs).</td></tr>
+      <tr><td>⚡ Credits</td><td>Purple badge — platform credits are being used (subject to daily limit).</td></tr>
+      <tr><td>Workflow memory</td><td>Shows all prior step outputs as collapsible context. The AI sees all previous outputs automatically.</td></tr>
+      <tr><td>🧠 Workflow mind</td><td>Purple panel showing extracted facts the system learned during previous runs. Click a fact to edit.</td></tr>
+      <tr><td>⟳ Streaming…</td><td>Animated indicator while the AI is generating. Output appears token-by-token in real time.</td></tr>
+      <tr><td>Model badge</td><td>Shows which model actually ran (🟣 claude-sonnet, 🟢 gpt-4o-mini, etc.).</td></tr>
+      <tr><td>⬇ Export</td><td>Download result as .txt or copy to clipboard. Available per step and as "Export all" on completion.</td></tr>
+      <tr><td>← Back</td><td>Go back to re-run a previous step. Results from forward steps are cleared.</td></tr>
+      <tr><td>Next →</td><td>Advance to the next step after the current one finishes.</td></tr>
+      <tr><td>✓ Finish</td><td>On the last step, closes the runner and shows the completion screen with export options.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<div class="divider"></div>
+
+<section id="approval">
+  <h2 class="sec">Human Approval Steps</h2>
+  <div class="badge amber">New Feature</div>
+  <p>Approval gates pause a workflow at a specific step and require a human to review or approve the AI output before the workflow continues. Critical for real business use cases where AI output must not go out unchecked.</p>
+
+  <div class="card-grid three">
+    <div class="card" style="border-color:rgba(245,158,11,.3);">
+      <h4>✋ Needs Approval</h4>
+      <p>Shows the previous step's output. Two buttons: Approve &amp; Continue (passes output as-is) or Reject &amp; Stop (ends the workflow with an optional reason).</p>
+      <p style="margin-top:6px;font-size:11px;color:#fbbf24;">Use case: Legal must approve a contract draft before it's sent.</p>
+    </div>
+    <div class="card" style="border-color:rgba(245,158,11,.3);">
+      <h4>✏️ Edit Before Sending</h4>
+      <p>Shows the previous output in an editable textarea. Human can make changes. Confirm &amp; Continue passes the edited text to the next step.</p>
+      <p style="margin-top:6px;font-size:11px;color:#fbbf24;">Use case: Sales rep edits AI-drafted email before it passes to the send step.</p>
+    </div>
+    <div class="card" style="border-color:rgba(245,158,11,.3);">
+      <h4>👤 Assign to Teammate</h4>
+      <p>Shows output, email address field, and optional note. Generates a pre-filled mailto link. Human then approves to continue or rejects to stop.</p>
+      <p style="margin-top:6px;font-size:11px;color:#fbbf24;">Use case: Route AI-generated invoice to finance team for sign-off.</p>
+    </div>
+  </div>
+
+  <h3>Approval gate flow diagram</h3>
+  <svg viewBox="0 0 700 90" width="100%" style="margin:16px 0;">
+    <defs>
+      <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#6C5CE7"/></marker>
+      <marker id="arr3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#00cba0"/></marker>
+      <marker id="arr4" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="#ef4444"/></marker>
+    </defs>
+    <rect x="10" y="25" width="100" height="40" rx="8" fill="#1A2038" stroke="rgba(108,92,231,.4)" stroke-width="1.5"/>
+    <text x="60" y="47" fill="#A29BFE" font-size="11" text-anchor="middle" font-weight="600">AI App Step</text>
+    <text x="60" y="60" fill="#64748b" font-size="9" text-anchor="middle">generates output</text>
+    <line x1="110" y1="45" x2="145" y2="45" stroke="#6C5CE7" stroke-width="1.5" marker-end="url(#arr2)"/>
+    <text x="127" y="40" fill="#64748b" font-size="9" text-anchor="middle">needs approval</text>
+    <rect x="148" y="15" width="120" height="60" rx="8" fill="rgba(245,158,11,.1)" stroke="rgba(245,158,11,.4)" stroke-width="1.5"/>
+    <text x="208" y="38" fill="#fbbf24" font-size="11" text-anchor="middle" font-weight="600">✋ Approval Gate</text>
+    <text x="208" y="52" fill="#64748b" font-size="9" text-anchor="middle">Human reviews output</text>
+    <text x="208" y="64" fill="#64748b" font-size="9" text-anchor="middle">Approve / Edit / Assign</text>
+    <line x1="268" y1="35" x2="310" y2="35" stroke="#00cba0" stroke-width="1.5" marker-end="url(#arr3)"/>
+    <text x="289" y="30" fill="#00cba0" font-size="9" text-anchor="middle">✓ Approved</text>
+    <rect x="313" y="20" width="110" height="30" rx="7" fill="#1A2038" stroke="rgba(0,184,148,.35)" stroke-width="1.5"/>
+    <text x="368" y="40" fill="#00cba0" font-size="11" text-anchor="middle">Next AI Step</text>
+    <line x1="268" y1="58" x2="310" y2="75" stroke="#ef4444" stroke-width="1.5" marker-end="url(#arr4)"/>
+    <text x="289" y="73" fill="#ef4444" font-size="9" text-anchor="middle">✕ Rejected</text>
+    <rect x="313" y="65" width="110" height="25" rx="7" fill="rgba(239,68,68,.1)" stroke="rgba(239,68,68,.35)" stroke-width="1.5"/>
+    <text x="368" y="82" fill="#f87171" font-size="10" text-anchor="middle">Workflow stopped</text>
+  </svg>
+</section>
+
+<div class="divider"></div>
+
+<section id="triggers">
+  <h2 class="sec">Workflow Triggers</h2>
+  <p>Beyond manual runs, workflows can be triggered automatically. Two trigger types are live.</p>
+  <div class="card-grid">
+    <div class="card" style="border-color:rgba(108,92,231,.3);">
+      <div class="badge purple">Live</div>
+      <h4>⏰ Schedule Trigger</h4>
+      <p>Access via: ⏰ icon on any workflow card. Set a frequency (daily / weekly), a UTC hour, and a seed input for the first step. The backend runs the full workflow headless — results go to Run History and fire the integration webhook if configured.</p>
+      <p style="margin-top:8px;font-size:11px;color:#64748b;">Requires a cron job calling POST /cron/run-schedules every minute with the X-Cron-Secret header.</p>
+    </div>
+    <div class="card" style="border-color:rgba(9,132,227,.3);">
+      <div class="badge blue">Live</div>
+      <h4>🔗 Webhook / API Trigger</h4>
+      <p>Access via: 🔗 icon on any workflow card. Generate a unique UUID-based URL. POST to it from Zapier, Make, your own code, or any HTTP client. The request body becomes the first step's input. Approval gate steps are skipped in headless runs.</p>
+      <p style="margin-top:8px;font-size:11px;color:#64748b;">Revoke and regenerate the URL at any time. Anyone with the URL can trigger the workflow — treat it like a password.</p>
+    </div>
+  </div>
+  <h3>Webhook request format</h3>
+  <div class="code-block">POST https://your-api.aistrix.app/webhooks/{token}
+Content-Type: application/json
+
+{"input": "Your trigger input here"}</div>
+</section>
+
+<div class="divider"></div>
+
+<section id="vault">
+  <h2 class="sec">Knowledge Vault</h2>
+  <div class="badge purple">New Feature</div>
+  <p>A shared, persistent knowledge library that auto-injects into every AI App run and every Workflow step. Eliminates the need to re-explain your business to the AI each time.</p>
+  <div class="card-grid three">
+    <div class="card"><h4>📄 Documents</h4><p>SOPs, onboarding guides, handbooks, internal wikis. Paste text or upload .txt / .md / .csv (max 2MB).</p></div>
+    <div class="card"><h4>❓ FAQs</h4><p>Support answers, common questions. The AI uses these to give consistent answers across all apps.</p></div>
+    <div class="card"><h4>📋 Policies</h4><p>HR policies, compliance rules, legal disclaimers. Ensures AI output stays compliant.</p></div>
+    <div class="card"><h4>📦 Product Info</h4><p>Features, pricing, roadmap. Lets sales and support apps reference accurate product information.</p></div>
+    <div class="card"><h4>🌐 URL / Page</h4><p>Paste a URL — the system fetches and stores the page content.</p></div>
+    <div class="card"><h4>Active / Inactive toggle</h4><p>Each item can be disabled without deleting it. Inactive items are excluded from injection immediately.</p></div>
+  </div>
+  <h3>How injection works</h3>
+  <div class="flow">
+    <div class="flow-step">User input typed</div>
+    <div class="flow-arrow">+</div>
+    <div class="flow-step purple">Vault items fetched<small>active items only</small></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step purple">Assembled into context<small>[Company Knowledge: Title]</small></div>
+    <div class="flow-arrow">→</div>
+    <div class="flow-step green">AI sees full context<small>before it responds</small></div>
+  </div>
+  <div class="info" style="margin-top:16px;">Security: Row Level Security (RLS) is enforced at the database layer. Users can only read their own vault items — no server-side filtering needed.</div>
+</section>
+
+<div class="divider"></div>
+
+<section id="business">
+  <h2 class="sec">Business Perspective</h2>
+  <div class="card-grid">
+    <div class="card"><h4>Target market</h4><p>SMBs with 5–200 employees in Sales, HR, Finance, Customer Support, and Marketing. Teams spending hours on repetitive document generation, email drafting, and research.</p></div>
+    <div class="card"><h4>Competitive position</h4><p>Below enterprise tools (Salesforce Einstein, Microsoft Copilot) in price and complexity. Above generic chat (ChatGPT) in business context and automation depth.</p></div>
+    <div class="card"><h4>Primary value proposition</h4><p>Context-aware AI that knows your business. The Knowledge Vault is the key differentiator — it makes Aistrix feel like a company AI, not a generic chatbot.</p></div>
+    <div class="card"><h4>Monetisation levers</h4><p>Daily credit limit nudges upgrades. Per-seat team plan for collaboration. API access tier for developers. Marketplace revenue share on premium templates.</p></div>
+  </div>
+  <h3>User Usability — how each persona uses the platform</h3>
+  <table class="icon-table">
+    <thead><tr><th>Icon</th><th>Persona</th><th>Primary features used</th><th>Key friction to reduce</th></tr></thead>
+    <tbody>
+      <tr><td>👤</td><td>Solo founder</td><td>AI Apps + Knowledge Vault + Marketplace templates</td><td>Time to first useful output. Target: &lt;5 min from signup.</td></tr>
+      <tr><td>👥</td><td>Sales team</td><td>Lead Qualifier → Email Writer → CRM Summary + Approval gate before send</td><td>Approval step must feel fast, not bureaucratic.</td></tr>
+      <tr><td>📋</td><td>HR manager</td><td>Resume Screener workflow. Schedule weekly. Knowledge Vault: company policies.</td><td>Scheduling setup must be under 30 seconds.</td></tr>
+      <tr><td>💻</td><td>Developer / ops</td><td>Webhook triggers, API Call steps, integrations, Developer dashboard.</td><td>Webhook docs and code examples must be copy-paste ready.</td></tr>
+      <tr><td>👔</td><td>Manager / admin</td><td>Overview dashboard, Analytics, Alerts, Usage reports.</td><td>Data must surface without drilling — summary first.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<div class="divider"></div>
+
+<section id="incomplete">
+  <h2 class="sec">Features Added — Needs Further Development</h2>
+  <div class="status-row"><div class="status-dot" style="background:#f59e0b;"></div><div class="status-name">Schedule Trigger</div><div class="status-note">UI and backend complete. Needs: (1) A cron job set up on the server calling /cron/run-schedules every minute. (2) Monthly schedule frequency option. (3) "Next run in X hours" live countdown in the UI.</div></div>
+  <div class="status-row"><div class="status-dot" style="background:#f59e0b;"></div><div class="status-name">Webhook Trigger</div><div class="status-note">Frontend + backend complete. Needs: (1) Add webhook_token column to flows table (SQL migration provided). (2) Webhook run logs separate from manual run history. (3) Secret header auth option (HMAC) for security-conscious customers.</div></div>
+  <div class="status-row"><div class="status-dot" style="background:#f59e0b;"></div><div class="status-name">Knowledge Vault</div><div class="status-note">UI complete. Needs: (1) Supabase SQL migration (table + RLS). (2) URL fetching backend endpoint. (3) Character count display. (4) Injection token-limit guard — if total vault content exceeds model context, truncate oldest items first.</div></div>
+  <div class="status-row"><div class="status-dot" style="background:#f59e0b;"></div><div class="status-name">Human Approval — Assign to Teammate</div><div class="status-note">Currently uses mailto: link. Needs: real transactional email (Resend or SendGrid) so the teammate gets a formatted email with an approve/reject link they can click without opening Aistrix.</div></div>
+  <div class="status-row"><div class="status-dot" style="background:#ef4444;"></div><div class="status-name">Integrations page</div><div class="status-note">Navigation item exists, page is a placeholder. Needs: OAuth connectors for Slack, Notion, Google Drive, HubSpot. Without this, the output webhook is the only external integration.</div></div>
+  <div class="status-row"><div class="status-dot" style="background:#ef4444;"></div><div class="status-name">Data Sources page</div><div class="status-note">Navigation item exists, page likely placeholder. Needs: CSV upload, Google Sheets pull, database connector.</div></div>
+  <div class="status-row"><div class="status-dot" style="background:#ef4444;"></div><div class="status-name">Mobile experience</div><div class="status-note">Bottom nav bar exists. Workflow runner is usable on mobile. However the workflow builder, app builder, and Knowledge Vault form are not optimised for small screens. Need responsive overhaul.</div></div>
+  <div class="status-row"><div class="status-dot" style="background:#ef4444;"></div><div class="status-name">Templates page</div><div class="status-note">Sidebar item exists but likely empty. Needs: a curated library of app + workflow templates beyond the Quick Start cards, browsable by industry.</div></div>
+</section>
+
+<div class="divider"></div>
+
+<section id="recs">
+  <h2 class="sec">Recommendations — Reaching 1,000 Users</h2>
+  <p class="lead">The platform is technically strong. The gap to 1k users is distribution, activation, and retention — not features.</p>
+  <div class="rec-item"><div class="rec-num">1</div><div class="rec-body"><h4>5-minute onboarding flow with a guaranteed win</h4><p>After signup, walk new users through: install one Quick Start template → run it → see output. First run = hook. Every extra click before it = churn risk.</p></div></div>
+  <div class="rec-item"><div class="rec-num">2</div><div class="rec-body"><h4>Industry-specific landing pages with pre-filled demos</h4><p>aistrix.app/for/sales — loads with a Lead Qualifier workflow already populated, showing AI output for a fictional prospect. High-converting for paid ads and organic search.</p></div></div>
+  <div class="rec-item"><div class="rec-num">3</div><div class="rec-body"><h4>Weekly workflow digest email</h4><p>Every Monday: "Here's what your AI did last week — 12 workflows ran, saved ~4.5 hours." This is the single most powerful retention mechanism. Users who don't return lose habit.</p></div></div>
+  <div class="rec-item"><div class="rec-num">4</div><div class="rec-body"><h4>Slack / Teams bot integration</h4><p>"/run [workflow name] [input]" in Slack. Eliminates the need to open a browser. The biggest competitor to Aistrix is the habit of opening ChatGPT directly — meet users where they are.</p></div></div>
+  <div class="rec-item"><div class="rec-num">5</div><div class="rec-body"><h4>Team referral / invite loop</h4><p>When a user shares a workflow with a teammate, the teammate gets a magic-link invite. First-run is pre-populated with the shared workflow. Every collaboration becomes a distribution event.</p></div></div>
+  <div class="rec-item"><div class="rec-num">6</div><div class="rec-body"><h4>Marketplace with creator revenue share</h4><p>Let power users publish premium app and workflow templates for $5–$20. Platform takes 30%. Creates incentive for creators to market Aistrix — a self-funding growth loop.</p></div></div>
+  <div class="rec-item"><div class="rec-num">7</div><div class="rec-body"><h4>"Saved hours" metric on the dashboard</h4><p>Show: "Your AI has saved you ~12.3 hours this month." Calculated from run count × average task time. Makes ROI visceral and shareable — drives organic social sharing.</p></div></div>
+  <div class="rec-item"><div class="rec-num">8</div><div class="rec-body"><h4>Public workflow gallery with search</h4><p>Community-built workflows indexed by search engines. "AI workflow for resume screening" → Aistrix gallery → one-click install. Organic SEO acquisition with no paid budget.</p></div></div>
+</section>
+
+<div class="divider"></div>
+
+<section id="intelligence">
+  <h2 class="sec">Intelligence Roadmap — Smarter Workflows</h2>
+  <div class="warn"><strong>Current problem:</strong> Running "What is 1+1?" through the same AI App 10 times gives 10 slightly different answers, costs 10 API calls, and fills run history with noise. Repeated scheduled runs feel redundant when inputs don't change.</div>
+  <div class="rec-item"><div class="rec-num" style="background:linear-gradient(135deg,#0984E3,#00B894);">A</div><div class="rec-body"><h4>Input hash deduplication</h4><p>Before running any step: hash the (system_prompt + input). Check the last N results for a matching hash. If found within 24 hours, return the cached result instantly without an API call. Shows "(cached)" badge. Saves credits and eliminates redundant outputs.</p></div></div>
+  <div class="rec-item"><div class="rec-num" style="background:linear-gradient(135deg,#0984E3,#00B894);">B</div><div class="rec-body"><h4>Workflow memory evolution</h4><p>The "Workflow mind" already extracts facts from each run. Next step: surface a "Memory health" panel showing what the workflow has learned over time. Let users mark facts as permanent ("always use these") vs. ephemeral. Permanent facts never need re-inferring.</p></div></div>
+  <div class="rec-item"><div class="rec-num" style="background:linear-gradient(135deg,#0984E3,#00B894);">C</div><div class="rec-body"><h4>Smart model routing</h4><p>The /select-model endpoint already picks a model per task. Extend it: simple factual questions → Haiku (cheap, fast). Complex reasoning → Sonnet. Add a "cost estimate" shown before the user clicks Run so they can choose.</p></div></div>
+  <div class="rec-item"><div class="rec-num" style="background:linear-gradient(135deg,#0984E3,#00B894);">D</div><div class="rec-body"><h4>Output diff on repeated scheduled runs</h4><p>When a scheduled workflow runs twice with similar inputs, show a diff: "What changed since last Monday?" Surfaces the delta rather than the full output. Analysts and ops teams care about changes, not repetition.</p></div></div>
+  <div class="rec-item"><div class="rec-num" style="background:linear-gradient(135deg,#0984E3,#00B894);">E</div><div class="rec-body"><h4>Confidence scoring + "ask me first" mode</h4><p>After each run, the AI rates its own confidence (1–5). Low-confidence outputs automatically insert a soft approval gate: "I'm not sure about this — do you want to review before continuing?" Only interrupts when needed.</p></div></div>
+  <div class="rec-item"><div class="rec-num" style="background:linear-gradient(135deg,#0984E3,#00B894);">F</div><div class="rec-body"><h4>Cross-workflow learning</h4><p>If users consistently edit AI output to add a formal sign-off — learn this as a vault fact. Surface it: "We noticed you keep making this edit — want to add it to your Knowledge Vault?" Closes the human-AI feedback loop.</p></div></div>
+  <div class="success-box" style="margin-top:24px;"><strong>Bottom line:</strong> Aistrix already has a strong technical foundation. The path to 1k users runs through (1) activation — guarantee a first win in 5 minutes, (2) retention — weekly email digest and Slack bot, and (3) distribution — team invites and a searchable public gallery. Intelligence improvements (caching, memory, diffs) reduce friction for power users and drive the "this thing actually knows my business" moment that makes users stay.</div>
+</section>
+
+</main>
+</div>
+
+<script>
+const links = document.querySelectorAll('.sidebar a');
+const sections = document.querySelectorAll('section[id]');
+const observer = new IntersectionObserver(entries => {
+  entries.forEach(e => {
+    if (e.isIntersecting) {
+      links.forEach(l => l.classList.remove('active'));
+      const active = document.querySelector(`.sidebar a[href="#${e.target.id}"]`);
+      if (active) active.classList.add('active');
+    }
+  });
+}, { threshold: 0.2 });
+sections.forEach(s => observer.observe(s));
+links.forEach(l => l.addEventListener('click', e => {
+  e.preventDefault();
+  const target = document.querySelector(l.getAttribute('href'));
+  if (target) target.scrollIntoView({ behavior: 'smooth' });
+}));
+
+function downloadDoc() {
+  const blob = new Blob([document.documentElement.outerHTML], {type: 'text/html'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'Aistrix_Product_Documentation.html';
+  a.click();
+}
+</script>
+</body>
+</html>

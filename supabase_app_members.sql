@@ -20,48 +20,71 @@ create index if not exists app_members_invited_email_idx on app_members(invited_
 
 alter table app_members enable row level security;
 
+-- SECURITY DEFINER helpers so the policies below never need to evaluate the
+-- OTHER table's RLS policies while evaluating this one's — apps policies
+-- check membership, and app_members policies check app ownership, so a plain
+-- subquery in either direction causes Postgres to detect infinite recursion
+-- (42P17). These functions run with the privileges of their owner, bypassing
+-- RLS internally, which breaks the cycle.
+create or replace function is_app_owner(target_app_id uuid)
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select exists (
+    select 1 from apps where id = target_app_id and created_by = auth.uid()
+  );
+$$;
+
+create or replace function is_app_member(target_app_id uuid, allowed_roles text[] default null)
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select exists (
+    select 1 from app_members
+    where app_id = target_app_id
+      and (user_id = auth.uid() or invited_email = auth.jwt() ->> 'email')
+      and (allowed_roles is null or role = any(allowed_roles))
+  );
+$$;
+
 -- Members can see the membership rows for apps they're a member of (needed so
 -- the "who has access" list in ShareModal-equivalent UI can render), plus the
 -- app's owner (created_by) can always see and manage them.
+drop policy if exists "app_members_select" on app_members;
 create policy "app_members_select" on app_members
   for select using (
     auth.uid() = user_id
     or invited_email = auth.jwt() ->> 'email'
-    or app_id in (select id from apps where created_by = auth.uid())
+    or is_app_owner(app_id)
   );
 
 -- Only the app's creator can invite/remove members — matches how apps are
 -- currently owned (created_by), not a separate "owner" role on app_members.
+drop policy if exists "app_members_insert" on app_members;
 create policy "app_members_insert" on app_members
-  for insert with check (
-    app_id in (select id from apps where created_by = auth.uid())
-  );
+  for insert with check (is_app_owner(app_id));
 
+drop policy if exists "app_members_delete" on app_members;
 create policy "app_members_delete" on app_members
-  for delete using (
-    app_id in (select id from apps where created_by = auth.uid())
-  );
+  for delete using (is_app_owner(app_id));
 
 -- Additive policies on `apps` — Postgres RLS OR's together every permissive
 -- policy for the same command, so these grant access on top of whatever
 -- policies already exist without needing to know or touch them.
 --
 -- 1) Members (any role) can see an app even if it isn't public.
+drop policy if exists "apps_select_via_membership" on apps;
 create policy "apps_select_via_membership" on apps
-  for select using (
-    id in (
-      select app_id from app_members
-      where user_id = auth.uid() or invited_email = auth.jwt() ->> 'email'
-    )
-  );
+  for select using (is_app_member(id));
 
 -- 2) Editors (and owners) can update the app's config — e.g. via the same
 --    edit flow the creator uses in CreateAppModal.
+drop policy if exists "apps_update_via_membership" on apps;
 create policy "apps_update_via_membership" on apps
-  for update using (
-    id in (
-      select app_id from app_members
-      where (user_id = auth.uid() or invited_email = auth.jwt() ->> 'email')
-        and role in ('editor', 'owner')
-    )
-  );
+  for update using (is_app_member(id, array['editor', 'owner']));

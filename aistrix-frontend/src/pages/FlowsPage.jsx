@@ -992,7 +992,8 @@ function FlowRunner({ flow, user, onClose, onShowHistory, onRunComplete }) {
         const resultText = typeof data.body === 'string' ? data.body : JSON.stringify(data.body, null, 2)
         setResults(p => ({ ...p, [stepIndex]: resultText }))
         if (!isLast) setInputs(p => ({ ...p, [stepIndex + 1]: resultText }))
-        await supabase.from('run_history').insert({ user_id: user.id, app_id: null, app_name: current.app_name, input: fill(current.api_url), result: resultText, flow_id: flow.id, flow_name: flow.name })
+        const { error: historyError } = await supabase.from('run_history').insert({ user_id: user.id, app_id: null, app_name: current.app_name, input: fill(current.api_url), result: resultText, flow_id: flow.id, flow_name: flow.name })
+        if (historyError) toast(`Step completed, but wasn't saved to history: ${historyError.message}`, 'error')
         if (!isLast) setConnecting(true)
       } catch (e) { setError(e.message); toast(e.message, 'error') }
       finally { setLoading(false); setConnecting(false) }
@@ -1085,11 +1086,12 @@ function FlowRunner({ flow, user, onClose, onShowHistory, onRunComplete }) {
 
       setStepModels(p => ({ ...p, [stepIndex]: { provider: runProvider, model: runModel, usage: runUsage } }))
 
-      await supabase.from('run_history').insert({
+      const { error: historyError } = await supabase.from('run_history').insert({
         user_id: user.id, app_id: current.app_id, app_name: current.app_name, input: stepInput, result: full,
         flow_id: flow.id, flow_name: flow.name,
         input_tokens: runUsage?.input_tokens ?? null, output_tokens: runUsage?.output_tokens ?? null,
       })
+      if (historyError) toast(`Step completed, but wasn't saved to history: ${historyError.message}`, 'error')
 
       // Validate output quality before storing in workflow context
       const outputValid = full?.trim().length > 30 && !full.startsWith('Backend error') && !full.startsWith('Error:')
@@ -3662,7 +3664,8 @@ export default function FlowsPage({ user, onShowHistory }) {
 
   async function deleteFlow(id) {
     if (!confirm('Delete this workflow?')) return
-    await supabase.from('flows').delete().eq('id', id)
+    const { error } = await supabase.from('flows').delete().eq('id', id)
+    if (error) { toast(`Couldn't delete workflow: ${error.message}`, 'error'); return }
     setFlows(p => p.filter(f => f.id !== id))
     setDeletedFlowId(id)
     toast('Workflow deleted', 'info', 2000)
@@ -3678,13 +3681,12 @@ export default function FlowsPage({ user, onShowHistory }) {
     const { error } = await supabase.from('flows').insert({
       user_id: user.id, name: flow.name, emoji: flow.emoji, description: flow.description, steps: flow.steps,
     })
-    if (!error) {
-      await supabase.from('flows').update({ install_count: (flow.install_count || 0) + 1 }).eq('id', flow.id)
-      toast(`"${flow.name}" installed`, 'success')
-      const { data } = await supabase.from('flows').select('*').eq('user_id', user.id).order('created_at', { ascending: false })
-      if (data) setFlows(data)
-      setTab('mine')
-    }
+    if (error) { toast(`Couldn't install "${flow.name}": ${error.message}`, 'error'); return }
+    await supabase.from('flows').update({ install_count: (flow.install_count || 0) + 1 }).eq('id', flow.id)
+    toast(`"${flow.name}" installed`, 'success')
+    const { data } = await supabase.from('flows').select('*').eq('user_id', user.id).order('created_at', { ascending: false })
+    if (data) setFlows(data)
+    setTab('mine')
   }
 
   async function publishWorkspace(flow) {

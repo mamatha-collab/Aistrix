@@ -352,8 +352,9 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated }) {
 
       if (err) throw err
 
+      let toolsError = null
       if (cfg.tools?.length > 0) {
-        await supabase.from('app_tools').insert(
+        const { error } = await supabase.from('app_tools').insert(
           cfg.tools.map(t => ({
             app_id: data.id,
             name: t.name || t.type,
@@ -363,9 +364,17 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated }) {
             input_schema: { type: 'object', properties: {}, required: [] },
           }))
         )
+        toolsError = error
       }
 
-      toast(publish ? `🌐 "${data.name}" published` : `⚫ "${data.name}" saved as draft`, 'success', 4000)
+      // The app itself saved fine even if the tools insert below failed — don't
+      // mask that with a plain success toast (the app would silently run with
+      // no tools and no indication why).
+      if (toolsError) {
+        toast(`"${data.name}" saved, but its tools weren't: ${toolsError.message}`, 'error', 6000)
+      } else {
+        toast(publish ? `🌐 "${data.name}" published` : `⚫ "${data.name}" saved as draft`, 'success', 4000)
+      }
       onCreated?.(data)
       onClose()
     } catch (e) {

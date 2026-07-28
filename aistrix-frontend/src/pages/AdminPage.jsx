@@ -43,7 +43,8 @@ function AppsTab({ toast }) {
 
   async function deleteApp(id, name) {
     if (!window.confirm(`Delete "${name}"? This cannot be undone.`)) return
-    await supabase.from('apps').delete().eq('id', id)
+    const { error } = await supabase.from('apps').delete().eq('id', id)
+    if (error) { toast(`Couldn't delete "${name}": ${error.message}`, 'error'); return }
     setApps(prev => prev.filter(a => a.id !== id))
     toast(`"${name}" deleted`, 'info')
   }

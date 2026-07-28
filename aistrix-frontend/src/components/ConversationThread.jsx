@@ -40,10 +40,11 @@ export default function ConversationThread({ app, user, threadId: initialThreadI
   }
 
   async function startNewThread() {
-    const { data } = await supabase.from('conversation_threads').insert({
+    const { data, error } = await supabase.from('conversation_threads').insert({
       app_id: app.id, user_id: user.id, title: 'New conversation',
     }).select().single()
     if (data) { setThreadId(data.id); setMessages([]); loadThreads() }
+    else if (error) toast(`Couldn't start a new conversation: ${error.message}`, 'error')
   }
 
   async function switchThread(tid) {
@@ -56,10 +57,17 @@ export default function ConversationThread({ app, user, threadId: initialThreadI
     const userMsg = input.trim(); setInput(''); setLoading(true); setStreaming('')
 
     // Add user message to DB
-    const { data: userMsgRow } = await supabase.from('thread_messages').insert({
+    const { data: userMsgRow, error: userMsgError } = await supabase.from('thread_messages').insert({
       thread_id: threadId, role: 'user', content: userMsg,
     }).select().single()
-    if (userMsgRow) setMessages(prev => [...prev, userMsgRow])
+    if (userMsgRow) {
+      setMessages(prev => [...prev, userMsgRow])
+    } else {
+      // Still show it locally so the conversation doesn't look like it ate the
+      // message — just flag that it won't be there on reload.
+      setMessages(prev => [...prev, { id: `local-${Date.now()}`, role: 'user', content: userMsg }])
+      if (userMsgError) toast(`Message sent, but wasn't saved: ${userMsgError.message}`, 'error')
+    }
 
     // Build conversation history for context
     const allMsgs = [...messages, { role: 'user', content: userMsg }]
@@ -100,12 +108,19 @@ export default function ConversationThread({ app, user, threadId: initialThreadI
       }
 
       // Save assistant message
-      const { data: asstMsgRow } = await supabase.from('thread_messages').insert({
+      const { data: asstMsgRow, error: asstMsgError } = await supabase.from('thread_messages').insert({
         thread_id: threadId, role: 'assistant', content: full,
       }).select().single()
       // Usage isn't persisted (thread_messages has no token columns) — attach it
       // locally so the bubble can show it for this session.
-      if (asstMsgRow) setMessages(prev => [...prev, { ...asstMsgRow, usage: finalUsage }])
+      if (asstMsgRow) {
+        setMessages(prev => [...prev, { ...asstMsgRow, usage: finalUsage }])
+      } else {
+        // Without this, the reply the user just watched stream in would vanish
+        // the moment `streaming` clears below — show it locally instead.
+        setMessages(prev => [...prev, { id: `local-${Date.now()}`, role: 'assistant', content: full, usage: finalUsage }])
+        if (asstMsgError) toast(`Reply wasn't saved: ${asstMsgError.message}`, 'error')
+      }
       setStreaming('')
 
       // Update thread title if first exchange

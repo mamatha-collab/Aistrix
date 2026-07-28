@@ -8,7 +8,7 @@ import os
 import re
 import socket
 import time
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from datetime import datetime, timedelta, timezone
 from typing import AsyncGenerator, Optional
 from urllib.parse import urlsplit
@@ -60,6 +60,17 @@ HOURLY_LIMIT              = int(os.getenv("RATE_LIMIT_PER_HOUR", "30"))
 DAILY_LIMIT               = int(os.getenv("RATE_LIMIT_PER_DAY", "200"))
 MAX_INPUT_LENGTH          = int(os.getenv("MAX_INPUT_LENGTH", "20000"))
 MAX_SYSTEM_LENGTH         = int(os.getenv("MAX_SYSTEM_LENGTH", "10000"))
+
+# Ops-facing failure-rate alerting — pings a generic webhook (Slack incoming
+# webhooks accept this exact {"text": ...} shape; any other receiver can just
+# read the field) when /run is failing at an elevated rate. Unset URL disables
+# it entirely — no default, matching CRON_SECRET/SCHEDULE_SECRET's fail-closed
+# pattern rather than silently alerting nowhere.
+OPS_ALERT_WEBHOOK_URL       = os.getenv("OPS_ALERT_WEBHOOK_URL")
+OPS_ALERT_FAILURE_THRESHOLD = float(os.getenv("OPS_ALERT_FAILURE_THRESHOLD", "0.3"))
+OPS_ALERT_MIN_SAMPLES       = int(os.getenv("OPS_ALERT_MIN_SAMPLES", "10"))
+OPS_ALERT_WINDOW_SECONDS    = int(os.getenv("OPS_ALERT_WINDOW_SECONDS", "900"))
+OPS_ALERT_COOLDOWN_SECONDS  = int(os.getenv("OPS_ALERT_COOLDOWN_SECONDS", "1800"))
 
 # Module-level anonymous client for public read operations (avoids recreating on every request)
 _sb_anon: Optional[Client] = None
@@ -748,6 +759,7 @@ async def run_app(req: RunRequest, request: Request):
                         collected.append(c)
                         yield f"data: {json.dumps({'token': c})}\n\n"
                 yield f"data: {json.dumps({'done': True, 'provider': 'custom', 'model': req.custom_model_name})}\n\n"
+                _record_run_outcome(True)
                 return
 
             # ── Tool-enabled agentic loop ──
@@ -784,27 +796,35 @@ async def run_app(req: RunRequest, request: Request):
 
             full_result = "".join(collected)
             yield f"data: {json.dumps({'done': True, 'provider': provider, 'model': model, 'usage': usage or None})}\n\n"
+            _record_run_outcome(True)
 
             # Fire webhook
             if webhook_url:
                 asyncio.create_task(_fire_webhook(webhook_url, req.app_id, req.input, full_result, provider, model))
 
         except (anthropic.AuthenticationError, openai.AuthenticationError):
+            _record_run_outcome(False, "auth")
             yield f"data: {json.dumps({'error': f'Invalid {provider} API key — check Settings → Keys and make sure the key is active.'})}\n\n"
         except (anthropic.PermissionDeniedError,):
+            _record_run_outcome(False, "permission")
             yield f"data: {json.dumps({'error': f'API key does not have permission for this model. Check your {provider} account.'})}\n\n"
         except (anthropic.RateLimitError, openai.RateLimitError):
+            _record_run_outcome(False, "rate_limit")
             yield f"data: {json.dumps({'error': 'Rate limit reached. Add your own API key in Settings → Keys for unlimited runs, or wait a moment and try again.'})}\n\n"
         except (anthropic.BadRequestError, openai.BadRequestError) as e:
+            _record_run_outcome(False, "bad_request")
             yield f"data: {json.dumps({'error': f'Prompt config error: {str(e)[:200]}'})}\n\n"
         except (anthropic.InternalServerError, openai.InternalServerError):
+            _record_run_outcome(False, "provider_error")
             yield f"data: {json.dumps({'error': f'{provider.capitalize()} service error — try again in a moment.'})}\n\n"
         except asyncio.TimeoutError:
+            _record_run_outcome(False, "timeout")
             yield f"data: {json.dumps({'error': 'Request timed out after 90 seconds. Try a shorter input or switch to a faster model (e.g. Haiku).'})}\n\n"
         except Exception as e:
             # Full detail goes to Sentry/logs only — the raw exception string
             # (which can include internal paths, DB/service details, etc.)
             # used to be sent straight to the client.
+            _record_run_outcome(False, "unexpected")
             sentry_sdk.capture_exception(e)
             print(f"Streaming error [{type(e).__name__}]: {e}")
             yield f"data: {json.dumps({'error': 'Unexpected backend error. This has been logged — please try again.'})}\n\n"
@@ -815,6 +835,7 @@ async def run_app(req: RunRequest, request: Request):
                 async for chunk in generate():
                     yield chunk
         except asyncio.TimeoutError:
+            _record_run_outcome(False, "timeout")
             yield f"data: {json.dumps({'error': f'Request timed out after {REQUEST_TIMEOUT}s. Try a shorter input or faster model.'})}\n\n"
 
     return StreamingResponse(
@@ -881,6 +902,57 @@ async def _fire_webhook(webhook_url: str, app_id: str, user_input: str, result: 
             await client.post(webhook_url, json=payload, headers={"Content-Type": "application/json", "User-Agent": "Aistrix-Webhook/1.0"})
     except Exception as e:
         print(f"Webhook failed: {e}")
+
+
+# ─── Ops failure-rate alerting ─────────────────────────────────────────────────
+# Rolling window of recent /run outcomes, in-memory only (resets on restart —
+# fine for "is something on fire right now", not meant as durable metrics).
+_run_outcomes: deque = deque()
+_last_ops_alert_at: float = 0.0
+
+
+def _record_run_outcome(success: bool, error_kind: Optional[str] = None):
+    """Call once per /run request with its final outcome. Fires an ops alert
+    (fire-and-forget, cooldown-limited) if the recent failure rate crosses
+    OPS_ALERT_FAILURE_THRESHOLD. No-ops entirely if OPS_ALERT_WEBHOOK_URL isn't set."""
+    now = time.time()
+    _run_outcomes.append((now, success, error_kind))
+    cutoff = now - OPS_ALERT_WINDOW_SECONDS
+    while _run_outcomes and _run_outcomes[0][0] < cutoff:
+        _run_outcomes.popleft()
+
+    if not OPS_ALERT_WEBHOOK_URL:
+        return
+    total = len(_run_outcomes)
+    if total < OPS_ALERT_MIN_SAMPLES:
+        return
+    failures = [kind for _, ok, kind in _run_outcomes if not ok]
+    rate = len(failures) / total
+    if rate < OPS_ALERT_FAILURE_THRESHOLD:
+        return
+
+    global _last_ops_alert_at
+    if now - _last_ops_alert_at < OPS_ALERT_COOLDOWN_SECONDS:
+        return
+    _last_ops_alert_at = now
+
+    top_kinds = ", ".join(f"{kind} ×{count}" for kind, count in Counter(failures).most_common(3)) or "unknown"
+    asyncio.create_task(_fire_ops_alert(len(failures), total, rate, top_kinds))
+
+
+async def _fire_ops_alert(failures: int, total: int, rate: float, top_kinds: str):
+    window_min = OPS_ALERT_WINDOW_SECONDS // 60
+    text = (
+        f":rotating_light: Aistrix: {rate:.0%} of /run requests failed in the last {window_min} min "
+        f"({failures}/{total}). Top error types: {top_kinds}"
+    )
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            # {"text": ...} is a Slack incoming-webhook payload; any other
+            # receiver can read the same field, so no receiver-specific branching.
+            await client.post(OPS_ALERT_WEBHOOK_URL, json={"text": text}, headers={"Content-Type": "application/json", "User-Agent": "Aistrix-OpsAlert/1.0"})
+    except Exception as e:
+        print(f"Ops alert webhook failed: {e}")
 
 
 # ─── Scheduled / recurring workspace runs ─────────────────────────────────────

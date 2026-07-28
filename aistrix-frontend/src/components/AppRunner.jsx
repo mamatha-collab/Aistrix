@@ -389,10 +389,11 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
           results.push({ input: lines[i], result: text, usage: u })
           setBulkResults([...results])
           setBulkProgress(i + 1)
-          await supabase.from('run_history').insert({
+          const { error: historyError } = await supabase.from('run_history').insert({
             user_id: user.id, app_id: app.id, app_name: app.name, input: lines[i], result: text,
             input_tokens: u?.input_tokens ?? null, output_tokens: u?.output_tokens ?? null,
           })
+          if (historyError) toast(`Run ${i + 1} completed but wasn't saved to history: ${historyError.message}`, 'error')
           await supabase.rpc('increment_app_runs', { p_app_id: app.id })
           setProvider(p); setModel(m); setUsage(u)
         }
@@ -404,13 +405,14 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
         if (!text) throw new Error('No response received')
         setProvider(p); setModel(m); setUsage(u)
 
-        const { data: historyRow } = await supabase.from('run_history')
+        const { data: historyRow, error: historyError } = await supabase.from('run_history')
           .insert({
             user_id: user.id, app_id: app.id, app_name: app.name, input, result: text,
             input_tokens: u?.input_tokens ?? null, output_tokens: u?.output_tokens ?? null,
           })
           .select('id').single()
         if (historyRow) setLastRunId(historyRow.id)
+        else if (historyError) toast(`Result ready, but couldn't save to history: ${historyError.message}`, 'error')
 
         clearTimeout(timeoutId)
         await supabase.rpc('increment_app_runs', { p_app_id: app.id })
@@ -419,12 +421,13 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
         if (app.output_type && app.output_type !== 'markdown') {
           const structured = extractStructuredData(resultRef.current)
           if (structured) {
-            await supabase.from('app_records').insert({
+            const { error: recordError } = await supabase.from('app_records').insert({
               app_id: app.id, user_id: user.id,
               run_id: historyRow?.id || null,
               data: structured,
               label: runInput.slice(0, 80),
             })
+            if (recordError) toast(`Couldn't save structured record: ${recordError.message}`, 'error')
           }
         }
 

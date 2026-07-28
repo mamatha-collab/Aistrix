@@ -70,16 +70,17 @@ export default function MultiPageRunner({ app, user, onClose, onRun, inline = fa
       }
       setPageUsage(prev => ({ ...prev, [pageIndex]: finalUsage }))
 
-      await supabase.from('run_history').insert({
+      const { error: historyError } = await supabase.from('run_history').insert({
         user_id: user.id, app_id: app.id, app_name: `${app.name} — ${current.title}`,
         input: rawInput, result: full,
         input_tokens: finalUsage?.input_tokens ?? null, output_tokens: finalUsage?.output_tokens ?? null,
       })
+      if (historyError) toast(`"${current.title}" completed, but wasn't saved to history: ${historyError.message}`, 'error')
 
       if (isLast) {
         await supabase.rpc('increment_app_runs', { p_app_id: app.id })
         onRun?.()
-        toast('All pages complete — results saved', 'success')
+        if (!historyError) toast('All pages complete — results saved', 'success')
       }
     } catch (e) {
       setError(e.message)

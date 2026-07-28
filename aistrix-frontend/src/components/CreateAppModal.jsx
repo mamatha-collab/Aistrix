@@ -1,6 +1,7 @@
 import { useState, useEffect, useTransition, useRef } from 'react'
 import { supabase } from '../supabase'
 import { useFocusTrap } from '../hooks/useFocusTrap'
+import { useToast } from '../hooks/useToast'
 import { parseSSELine } from '../lib/sse'
 
 const EMOJI_OPTIONS = ['🤖','🧠','✍️','📊','🔍','💡','📝','🎯','🚀','🛠️','💬','📈','🔧','🎨','📧','🌐','⚡','🏆','🎓','🔑']
@@ -339,6 +340,7 @@ function QualityScore({ form, appType, formSchema }) {
 export default function CreateAppModal({ user, onClose, onBack, onCreated, onUpdated, existingApp, initialType = 'prompt', websitePrefilled }) {
   const modalRef = useRef(null)
   useFocusTrap(modalRef, { onEscape: onClose })
+  const toast = useToast()
   const isEdit = !!existingApp
   const [appType] = useState(existingApp?.app_type || initialType)
   const [domains, setDomains] = useState([])
@@ -534,7 +536,10 @@ Return ONLY valid JSON with these fields:
       setSaving(false)
       if (err) { setError(err.message); return }
       if (pendingTools.length > 0) {
-        await supabase.from('app_tools').insert(pendingTools.map(t => ({ ...t, app_id: data.id })))
+        const { error: toolsErr } = await supabase.from('app_tools').insert(pendingTools.map(t => ({ ...t, app_id: data.id })))
+        // The app itself saved fine — surface this via toast (not setError,
+        // which the modal is about to unmount) so it isn't lost silently.
+        if (toolsErr) toast(`"${data.name}" saved, but its tools weren't: ${toolsErr.message}`, 'error', 6000)
       }
       onCreated?.(data)
     }

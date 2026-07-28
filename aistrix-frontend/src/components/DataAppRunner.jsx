@@ -92,7 +92,7 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
       setResult(resultRef.current)
       setUsage(finalUsage)
 
-      await supabase.from('run_history').insert({
+      const { error: historyError } = await supabase.from('run_history').insert({
         user_id: user.id, app_id: app.id, app_name: app.name,
         input: rawData.slice(0, 500) + (rawData.length > 500 ? '...' : ''),
         result: resultRef.current,
@@ -100,7 +100,8 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
       })
       await supabase.rpc('increment_app_runs', { p_app_id: app.id })
       onRun?.()
-      toast('Data processed', 'success')
+      if (historyError) toast(`Data processed, but wasn't saved to history: ${historyError.message}`, 'error')
+      else toast('Data processed', 'success')
     } catch (e) {
       setError(e.message)
     } finally {

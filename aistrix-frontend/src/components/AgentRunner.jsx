@@ -109,14 +109,15 @@ export default function AgentRunner({ app, user, onClose, onRun, inline = false 
       setUsage(finalUsage)
       const finalResult = resultRef.current
       if (finalResult) {
-        await supabase.from('run_history').insert({
+        const { error: historyError } = await supabase.from('run_history').insert({
           user_id: user.id, app_id: app.id, app_name: app.name,
           input: goal, result: finalResult,
           input_tokens: finalUsage?.input_tokens ?? null, output_tokens: finalUsage?.output_tokens ?? null,
         })
         await supabase.rpc('increment_app_runs', { p_app_id: app.id })
         onRun?.()
-        toast('Agent completed', 'success')
+        if (historyError) toast(`Agent completed, but wasn't saved to history: ${historyError.message}`, 'error')
+        else toast('Agent completed', 'success')
       }
     } catch (e) {
       setError(e.message)

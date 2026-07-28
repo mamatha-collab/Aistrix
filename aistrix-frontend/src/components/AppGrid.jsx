@@ -131,6 +131,7 @@ function SolutionPacksSection({ user, apps, onFavoritesChanged }) {
 function DomainTemplateCard({ domain, domainApps, selectedApp, user, onSelectApp, onNavChange }) {
   const [installing, setInstalling] = useState(false)
   const [installed, setInstalled] = useState(false)
+  const toast = useToast()
 
   async function useTemplate() {
     if (!user) return
@@ -141,14 +142,16 @@ function DomainTemplateCard({ domain, domainApps, selectedApp, user, onSelectApp
       setInstalled(true); setInstalling(false)
       onNavChange?.('flows'); return
     }
-    await supabase.from('flows').insert({
+    const { error } = await supabase.from('flows').insert({
       user_id: user.id,
       name: `${domain.name} Workflow`,
       emoji: domain.emoji,
       description: domain.description || `A complete ${domain.name.toLowerCase()} workflow`,
       steps: domainApps.map(a => ({ app_id: a.id, app_name: a.name, app_emoji: a.emoji })),
     })
-    setInstalled(true); setInstalling(false)
+    setInstalling(false)
+    if (error) { toast(`Couldn't install this workflow: ${error.message}`, 'error'); return }
+    setInstalled(true)
     onNavChange?.('flows')
   }
 

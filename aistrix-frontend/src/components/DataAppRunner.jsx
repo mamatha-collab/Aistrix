@@ -3,6 +3,7 @@ import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import OutputRenderer, { ThinkingIndicator } from './OutputRenderer'
 import { parseSSELine } from '../lib/sse'
+import RunRating from './RunRating'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -18,6 +19,7 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
   const [rawData, setRawData] = useState('')
   const [result, setResult] = useState('')
   const [usage, setUsage] = useState(null)
+  const [lastRunId, setLastRunId] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [fileName, setFileName] = useState('')
@@ -50,7 +52,7 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
 
   async function processData() {
     if (!rawData.trim()) return
-    setLoading(true); setResult(''); setError(''); setUsage(null)
+    setLoading(true); setResult(''); setError(''); setUsage(null); setLastRunId(null)
     resultRef.current = ''
     let finalUsage = null
 
@@ -92,12 +94,13 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
       setResult(resultRef.current)
       setUsage(finalUsage)
 
-      const { error: historyError } = await supabase.from('run_history').insert({
+      const { data: historyRow, error: historyError } = await supabase.from('run_history').insert({
         user_id: user.id, app_id: app.id, app_name: app.name,
         input: rawData.slice(0, 500) + (rawData.length > 500 ? '...' : ''),
         result: resultRef.current,
         input_tokens: finalUsage?.input_tokens ?? null, output_tokens: finalUsage?.output_tokens ?? null,
-      })
+      }).select('id').single()
+      if (historyRow) setLastRunId(historyRow.id)
       await supabase.rpc('increment_app_runs', { p_app_id: app.id })
       onRun?.()
       if (historyError) toast(`Data processed, but wasn't saved to history: ${historyError.message}`, 'error')
@@ -177,11 +180,14 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
             <p className="text-xs text-slate-400 uppercase">
               Result {loading && <span className="text-[#E17055] animate-pulse ml-1">●</span>}
             </p>
-            {usage && (
-              <span className="text-[10px] text-slate-500" title="Tokens used for this run">
-                ↑{usage.input_tokens?.toLocaleString()} ↓{usage.output_tokens?.toLocaleString()} tok
-              </span>
-            )}
+            <div className="flex items-center gap-2">
+              {usage && (
+                <span className="text-[10px] text-slate-500" title="Tokens used for this run">
+                  ↑{usage.input_tokens?.toLocaleString()} ↓{usage.output_tokens?.toLocaleString()} tok
+                </span>
+              )}
+              {!loading && lastRunId && <RunRating key={lastRunId} runId={lastRunId} />}
+            </div>
           </div>
           <OutputRenderer result={result}
             outputType={app.output_type || (dataType === 'csv' ? 'table' : 'markdown')}

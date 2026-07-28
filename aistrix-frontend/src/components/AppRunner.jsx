@@ -9,6 +9,7 @@ import OutputRenderer, { ThinkingIndicator } from './OutputRenderer'
 import { createNotification } from '../utils/notifications'
 import { parseSSELine } from '../lib/sse'
 import { duplicateApp, emailResult } from '../utils/appActions'
+import RunRating from './RunRating'
 
 // Lazy-loaded — keeps the Stripe SDK out of the main bundle until a paid app is actually run
 const PaymentModal = lazy(() => import('./PaymentModal'))
@@ -221,7 +222,6 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
   const [provider, setProvider] = useState('')
   const [model, setModel] = useState('')
   const [usage, setUsage] = useState(null) // { input_tokens, output_tokens } | null
-  const [rating, setRating] = useState(null)
   const [nextApp, setNextApp] = useState(null)
   const [bulkMode, setBulkMode] = useState(false)
   const [showPayment, setShowPayment] = useState(false)
@@ -367,7 +367,7 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
   async function handleRun(overrideInput) {
     const runInput = overrideInput ?? input
     if (!runInput.trim()) return
-    setLoading(true); setResult(''); setError(''); setRating(null)
+    setLoading(true); setResult(''); setError('')
     setProvider(''); setModel(''); setUsage(null); setBulkResults([]); setToolCalls([])
 
     // Check if this app has tools
@@ -389,11 +389,12 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
           results.push({ input: lines[i], result: text, usage: u })
           setBulkResults([...results])
           setBulkProgress(i + 1)
-          const { error: historyError } = await supabase.from('run_history').insert({
+          const { data: historyRow, error: historyError } = await supabase.from('run_history').insert({
             user_id: user.id, app_id: app.id, app_name: app.name, input: lines[i], result: text,
             input_tokens: u?.input_tokens ?? null, output_tokens: u?.output_tokens ?? null,
-          })
+          }).select('id').single()
           if (historyError) toast(`Run ${i + 1} completed but wasn't saved to history: ${historyError.message}`, 'error')
+          else { results[i] = { ...results[i], runId: historyRow.id }; setBulkResults([...results]) }
           await supabase.rpc('increment_app_runs', { p_app_id: app.id })
           setProvider(p); setModel(m); setUsage(u)
         }
@@ -455,13 +456,6 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
     } finally {
       setLoading(false)
     }
-  }
-
-  async function submitRating(value) {
-    if (!lastRunId) return
-    setRating(value)
-    await supabase.from('run_history').update({ rating: value }).eq('id', lastRunId)
-    toast(value === 1 ? 'Thanks for the feedback! 👍' : 'Got it — we\'ll improve this 👎', 'info', 2500)
   }
 
   const enableNotifications = useCallback(async () => {
@@ -762,6 +756,7 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
                       ↑{r.usage.input_tokens?.toLocaleString()} ↓{r.usage.output_tokens?.toLocaleString()} tok
                     </span>
                   )}
+                  {r.runId && <RunRating key={r.runId} runId={r.runId} />}
                   <button onClick={() => navigator.clipboard.writeText(r.result)} className="text-[10px] text-slate-500 hover:text-slate-300">📋</button>
                 </div>
               </div>
@@ -797,12 +792,7 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
                 </span>
               )}
             </div>
-            {!loading && lastRunId && (
-              <div className="flex items-center gap-1">
-                <button onClick={() => submitRating(1)} className={`text-base transition-all ${rating === 1 ? 'opacity-100 scale-125' : 'opacity-40 hover:opacity-80'}`}>👍</button>
-                <button onClick={() => submitRating(-1)} className={`text-base transition-all ${rating === -1 ? 'opacity-100 scale-125' : 'opacity-40 hover:opacity-80'}`}>👎</button>
-              </div>
-            )}
+            {!loading && lastRunId && <RunRating key={lastRunId} runId={lastRunId} />}
           </div>
 
           {/* Output renderer — handles table/cards/json/chart/markdown + view switcher */}
@@ -833,7 +823,6 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
               setNextApp(null)
               setResult('')
               setLastRunId(null)
-              setRating(null)
             }}
             className="bg-[#6C5CE7] hover:bg-[#7D6FF0] text-white text-xs px-3 py-2 rounded-lg transition-colors shrink-0 font-medium"
           >

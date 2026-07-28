@@ -3,6 +3,7 @@ import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import OutputRenderer, { ThinkingIndicator } from './OutputRenderer'
 import { parseSSELine } from '../lib/sse'
+import RunRating from './RunRating'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -11,6 +12,7 @@ export default function MultiPageRunner({ app, user, onClose, onRun, inline = fa
   const [pageInputs, setPageInputs] = useState({})
   const [pageResults, setPageResults] = useState({})
   const [pageUsage, setPageUsage] = useState({})
+  const [pageRunIds, setPageRunIds] = useState({})
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [formValues, setFormValues] = useState({})
@@ -70,11 +72,12 @@ export default function MultiPageRunner({ app, user, onClose, onRun, inline = fa
       }
       setPageUsage(prev => ({ ...prev, [pageIndex]: finalUsage }))
 
-      const { error: historyError } = await supabase.from('run_history').insert({
+      const { data: historyRow, error: historyError } = await supabase.from('run_history').insert({
         user_id: user.id, app_id: app.id, app_name: `${app.name} — ${current.title}`,
         input: rawInput, result: full,
         input_tokens: finalUsage?.input_tokens ?? null, output_tokens: finalUsage?.output_tokens ?? null,
-      })
+      }).select('id').single()
+      if (historyRow) setPageRunIds(prev => ({ ...prev, [pageIndex]: historyRow.id }))
       if (historyError) toast(`"${current.title}" completed, but wasn't saved to history: ${historyError.message}`, 'error')
 
       if (isLast) {
@@ -162,10 +165,15 @@ export default function MultiPageRunner({ app, user, onClose, onRun, inline = fa
 
           {pageResults[pageIndex] && (
             <div className="space-y-3">
-              {pageUsage[pageIndex] && (
-                <p className="text-[10px] text-slate-500 text-right" title="Tokens used for this page">
-                  ↑{pageUsage[pageIndex].input_tokens?.toLocaleString()} ↓{pageUsage[pageIndex].output_tokens?.toLocaleString()} tok
-                </p>
+              {(pageUsage[pageIndex] || pageRunIds[pageIndex]) && (
+                <div className="flex items-center justify-end gap-2">
+                  {pageUsage[pageIndex] && (
+                    <p className="text-[10px] text-slate-500" title="Tokens used for this page">
+                      ↑{pageUsage[pageIndex].input_tokens?.toLocaleString()} ↓{pageUsage[pageIndex].output_tokens?.toLocaleString()} tok
+                    </p>
+                  )}
+                  {!loading && pageRunIds[pageIndex] && <RunRating key={pageRunIds[pageIndex]} runId={pageRunIds[pageIndex]} />}
+                </div>
               )}
               <OutputRenderer result={pageResults[pageIndex]} outputType={current.output_type || 'markdown'} title={`${app.name} — ${current.title || `Page ${pageIndex + 1}`}`} />
               <div className="flex gap-2">

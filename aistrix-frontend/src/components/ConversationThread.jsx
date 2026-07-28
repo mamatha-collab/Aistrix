@@ -3,6 +3,7 @@ import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import OutputRenderer from './OutputRenderer'
 import { parseSSELine } from '../lib/sse'
+import RunRating from './RunRating'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -180,10 +181,15 @@ export default function ConversationThread({ app, user, threadId: initialThreadI
                   <div className="prose-result text-sm">
                     <OutputRenderer result={msg.content} outputType="markdown" />
                   </div>
-                  {msg.usage && (
-                    <p className="text-[10px] text-slate-500 mt-1" title="Tokens used for this reply">
-                      ↑{msg.usage.input_tokens?.toLocaleString()} ↓{msg.usage.output_tokens?.toLocaleString()} tok
-                    </p>
+                  {(msg.usage || !String(msg.id).startsWith('local-')) && (
+                    <div className="flex items-center gap-2 mt-1">
+                      {msg.usage && (
+                        <p className="text-[10px] text-slate-500" title="Tokens used for this reply">
+                          ↑{msg.usage.input_tokens?.toLocaleString()} ↓{msg.usage.output_tokens?.toLocaleString()} tok
+                        </p>
+                      )}
+                      {!String(msg.id).startsWith('local-') && <RunRating table="thread_messages" runId={msg.id} />}
+                    </div>
                   )}
                 </>
               )}

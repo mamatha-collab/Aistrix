@@ -7,6 +7,7 @@ import remarkGfm from 'remark-gfm'
 import { ExportActions } from '../components/OutputRenderer'
 import { parseSSELine } from '../lib/sse'
 import { duplicateApp } from '../utils/appActions'
+import RunRating from '../components/RunRating'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 const EMOJIS = ['⚡','🔗','🔄','📋','🧩','🚀','💡','🎯','📈','🛠️','💼','🎓','🔬','✍️','📊']
@@ -776,6 +777,7 @@ function FlowRunner({ flow, user, onClose, onShowHistory, onRunComplete }) {
   const [error, setError] = useState('')
   const [sendStatus, setSendStatus] = useState('idle')
   const [stepModels, setStepModels] = useState({})
+  const [stepRunIds, setStepRunIds] = useState({})
   const [savingTemplate, setSavingTemplate] = useState(false)
   const [tokenSource, setTokenSource] = useState(null)
   const [credits, setCredits] = useState(null)
@@ -992,7 +994,8 @@ function FlowRunner({ flow, user, onClose, onShowHistory, onRunComplete }) {
         const resultText = typeof data.body === 'string' ? data.body : JSON.stringify(data.body, null, 2)
         setResults(p => ({ ...p, [stepIndex]: resultText }))
         if (!isLast) setInputs(p => ({ ...p, [stepIndex + 1]: resultText }))
-        const { error: historyError } = await supabase.from('run_history').insert({ user_id: user.id, app_id: null, app_name: current.app_name, input: fill(current.api_url), result: resultText, flow_id: flow.id, flow_name: flow.name })
+        const { data: historyRow, error: historyError } = await supabase.from('run_history').insert({ user_id: user.id, app_id: null, app_name: current.app_name, input: fill(current.api_url), result: resultText, flow_id: flow.id, flow_name: flow.name }).select('id').single()
+        if (historyRow) setStepRunIds(p => ({ ...p, [stepIndex]: historyRow.id }))
         if (historyError) toast(`Step completed, but wasn't saved to history: ${historyError.message}`, 'error')
         if (!isLast) setConnecting(true)
       } catch (e) { setError(e.message); toast(e.message, 'error') }
@@ -1086,11 +1089,12 @@ function FlowRunner({ flow, user, onClose, onShowHistory, onRunComplete }) {
 
       setStepModels(p => ({ ...p, [stepIndex]: { provider: runProvider, model: runModel, usage: runUsage } }))
 
-      const { error: historyError } = await supabase.from('run_history').insert({
+      const { data: historyRow, error: historyError } = await supabase.from('run_history').insert({
         user_id: user.id, app_id: current.app_id, app_name: current.app_name, input: stepInput, result: full,
         flow_id: flow.id, flow_name: flow.name,
         input_tokens: runUsage?.input_tokens ?? null, output_tokens: runUsage?.output_tokens ?? null,
-      })
+      }).select('id').single()
+      if (historyRow) setStepRunIds(p => ({ ...p, [stepIndex]: historyRow.id }))
       if (historyError) toast(`Step completed, but wasn't saved to history: ${historyError.message}`, 'error')
 
       // Validate output quality before storing in workflow context
@@ -1541,6 +1545,7 @@ function FlowRunner({ flow, user, onClose, onShowHistory, onRunComplete }) {
                       ↑{stepModels[stepIndex].usage.input_tokens?.toLocaleString()} ↓{stepModels[stepIndex].usage.output_tokens?.toLocaleString()} tok
                     </span>
                   )}
+                  {!loading && stepRunIds[stepIndex] && <RunRating key={stepRunIds[stepIndex]} runId={stepRunIds[stepIndex]} />}
                   <ExportActions result={results[stepIndex]} title={`${flow.name} — ${current.app_name}`} />
                   {current.app_id && stepAppData[stepIndex] && (
                     <button onClick={saveStepAsApp} disabled={savingTemplate}

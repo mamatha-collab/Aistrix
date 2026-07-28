@@ -3,6 +3,7 @@ import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import OutputRenderer from './OutputRenderer'
 import { parseSSELine } from '../lib/sse'
+import RunRating from './RunRating'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -58,6 +59,7 @@ export default function AgentRunner({ app, user, onClose, onRun, inline = false 
   const [steps, setSteps] = useState([])
   const [result, setResult] = useState('')
   const [usage, setUsage] = useState(null)
+  const [lastRunId, setLastRunId] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const resultRef = useRef('')
@@ -65,7 +67,7 @@ export default function AgentRunner({ app, user, onClose, onRun, inline = false 
 
   async function runAgent() {
     if (!goal.trim()) return
-    setLoading(true); setSteps([]); setResult(''); setError(''); setUsage(null)
+    setLoading(true); setSteps([]); setResult(''); setError(''); setUsage(null); setLastRunId(null)
     resultRef.current = ''
     let finalUsage = null
 
@@ -109,11 +111,12 @@ export default function AgentRunner({ app, user, onClose, onRun, inline = false 
       setUsage(finalUsage)
       const finalResult = resultRef.current
       if (finalResult) {
-        const { error: historyError } = await supabase.from('run_history').insert({
+        const { data: historyRow, error: historyError } = await supabase.from('run_history').insert({
           user_id: user.id, app_id: app.id, app_name: app.name,
           input: goal, result: finalResult,
           input_tokens: finalUsage?.input_tokens ?? null, output_tokens: finalUsage?.output_tokens ?? null,
-        })
+        }).select('id').single()
+        if (historyRow) setLastRunId(historyRow.id)
         await supabase.rpc('increment_app_runs', { p_app_id: app.id })
         onRun?.()
         if (historyError) toast(`Agent completed, but wasn't saved to history: ${historyError.message}`, 'error')
@@ -165,11 +168,14 @@ export default function AgentRunner({ app, user, onClose, onRun, inline = false 
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <p className="text-[10px] text-slate-500 uppercase">Final result {loading && <span className="text-[#6C5CE7] animate-pulse">●</span>}</p>
-            {usage && (
-              <span className="text-[10px] text-slate-500" title="Tokens used for this run">
-                ↑{usage.input_tokens?.toLocaleString()} ↓{usage.output_tokens?.toLocaleString()} tok
-              </span>
-            )}
+            <div className="flex items-center gap-2">
+              {usage && (
+                <span className="text-[10px] text-slate-500" title="Tokens used for this run">
+                  ↑{usage.input_tokens?.toLocaleString()} ↓{usage.output_tokens?.toLocaleString()} tok
+                </span>
+              )}
+              {!loading && lastRunId && <RunRating key={lastRunId} runId={lastRunId} />}
+            </div>
           </div>
           <OutputRenderer result={result} outputType={app.output_type || 'markdown'} loading={loading} title={app.name} />
         </div>

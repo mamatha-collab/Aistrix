@@ -3,6 +3,7 @@ import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import OutputRenderer, { ThinkingIndicator } from './OutputRenderer'
 import { parseSSELine } from '../lib/sse'
+import RunRating from './RunRating'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -23,6 +24,7 @@ export default function ApiAppRunner({ app, user, onClose, onRun, inline = false
   const [fieldValues, setFieldValues] = useState({})
   const [result, setResult] = useState('')
   const [usage, setUsage] = useState(null)
+  const [lastRunId, setLastRunId] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [showCurl, setShowCurl] = useState(false)
@@ -42,7 +44,7 @@ export default function ApiAppRunner({ app, user, onClose, onRun, inline = false
 
   async function execute() {
     if (!allFilled) return
-    setLoading(true); setResult(''); setError(''); setUsage(null)
+    setLoading(true); setResult(''); setError(''); setUsage(null); setLastRunId(null)
     resultRef.current = ''
     let finalUsage = null
 
@@ -85,11 +87,12 @@ export default function ApiAppRunner({ app, user, onClose, onRun, inline = false
       setResult(resultRef.current)
       setUsage(finalUsage)
 
-      const { error: historyError } = await supabase.from('run_history').insert({
+      const { data: historyRow, error: historyError } = await supabase.from('run_history').insert({
         user_id: user.id, app_id: app.id, app_name: app.name,
         input: paramString, result: resultRef.current,
         input_tokens: finalUsage?.input_tokens ?? null, output_tokens: finalUsage?.output_tokens ?? null,
-      })
+      }).select('id').single()
+      if (historyRow) setLastRunId(historyRow.id)
       await supabase.rpc('increment_app_runs', { p_app_id: app.id })
       onRun?.()
       if (historyError) toast(`Call completed, but wasn't saved to history: ${historyError.message}`, 'error')
@@ -185,6 +188,7 @@ export default function ApiAppRunner({ app, user, onClose, onRun, inline = false
                 </span>
               )}
               <span className="text-[10px] text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full">200 OK</span>
+              {!loading && lastRunId && <RunRating key={lastRunId} runId={lastRunId} />}
             </div>
           </div>
           <OutputRenderer result={result} outputType="json" loading={loading} title={app.name} />

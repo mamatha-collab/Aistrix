@@ -994,9 +994,13 @@ function FlowRunner({ flow, user, onClose, onShowHistory, onRunComplete }) {
         const resultText = typeof data.body === 'string' ? data.body : JSON.stringify(data.body, null, 2)
         setResults(p => ({ ...p, [stepIndex]: resultText }))
         if (!isLast) setInputs(p => ({ ...p, [stepIndex + 1]: resultText }))
-        const { data: historyRow, error: historyError } = await supabase.from('run_history').insert({ user_id: user.id, app_id: null, app_name: current.app_name, input: fill(current.api_url), result: resultText, flow_id: flow.id, flow_name: flow.name }).select('id').single()
-        if (historyRow) setStepRunIds(p => ({ ...p, [stepIndex]: historyRow.id }))
-        if (historyError) toast(`Step completed, but wasn't saved to history: ${historyError.message}`, 'error')
+        const thisStepIndex = stepIndex
+        async function saveHistory() {
+          const { data: row, error } = await supabase.from('run_history').insert({ user_id: user.id, app_id: null, app_name: current.app_name, input: fill(current.api_url), result: resultText, flow_id: flow.id, flow_name: flow.name }).select('id').single()
+          if (row) { setStepRunIds(p => ({ ...p, [thisStepIndex]: row.id })); return }
+          if (error) toast(`Step completed, but wasn't saved to history: ${error.message}`, 'error', 8000, { label: 'Retry', onClick: saveHistory })
+        }
+        await saveHistory()
         if (!isLast) setConnecting(true)
       } catch (e) { setError(e.message); toast(e.message, 'error') }
       finally { setLoading(false); setConnecting(false) }
@@ -1089,13 +1093,17 @@ function FlowRunner({ flow, user, onClose, onShowHistory, onRunComplete }) {
 
       setStepModels(p => ({ ...p, [stepIndex]: { provider: runProvider, model: runModel, usage: runUsage } }))
 
-      const { data: historyRow, error: historyError } = await supabase.from('run_history').insert({
-        user_id: user.id, app_id: current.app_id, app_name: current.app_name, input: stepInput, result: full,
-        flow_id: flow.id, flow_name: flow.name,
-        input_tokens: runUsage?.input_tokens ?? null, output_tokens: runUsage?.output_tokens ?? null,
-      }).select('id').single()
-      if (historyRow) setStepRunIds(p => ({ ...p, [stepIndex]: historyRow.id }))
-      if (historyError) toast(`Step completed, but wasn't saved to history: ${historyError.message}`, 'error')
+      const thisStepIndex = stepIndex
+      async function saveHistory() {
+        const { data: row, error } = await supabase.from('run_history').insert({
+          user_id: user.id, app_id: current.app_id, app_name: current.app_name, input: stepInput, result: full,
+          flow_id: flow.id, flow_name: flow.name,
+          input_tokens: runUsage?.input_tokens ?? null, output_tokens: runUsage?.output_tokens ?? null,
+        }).select('id').single()
+        if (row) { setStepRunIds(p => ({ ...p, [thisStepIndex]: row.id })); return }
+        if (error) toast(`Step completed, but wasn't saved to history: ${error.message}`, 'error', 8000, { label: 'Retry', onClick: saveHistory })
+      }
+      await saveHistory()
 
       // Validate output quality before storing in workflow context
       const outputValid = full?.trim().length > 30 && !full.startsWith('Backend error') && !full.startsWith('Error:')

@@ -30,6 +30,18 @@ export async function duplicateApp(app, userId) {
   return supabase.from('apps').insert(payload).select('*, domains(name, emoji, color, slug)').single()
 }
 
+// Turns a raw thrown error (often a browser-native string like "Failed to
+// fetch" that means nothing to a user) into something actionable. Shared
+// across every runner so a backend-down/timeout/rate-limit error reads the
+// same way no matter which app type the user happened to be running.
+export function friendlyErrorMessage(err) {
+  if (err?.name === 'AbortError') return 'Request timed out. Try a shorter input.'
+  const msg = err?.message || ''
+  if (/fetch|network|failed to fetch/i.test(msg)) return 'Could not connect to the backend. Check your connection and make sure the server is running.'
+  if (msg === '429' || /rate limit/i.test(msg)) return msg === '429' ? 'Rate limit reached. Try again in a moment.' : msg
+  return msg || 'Something went wrong. Please try again.'
+}
+
 // Opens the user's email client with the result pre-filled as the body —
 // the "Export to email" next-best-action. mailto: bodies are practically
 // capped well under the URL length limits of most browsers/clients, so the

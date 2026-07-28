@@ -140,11 +140,22 @@ export default function DetailPanel({ app, user, onClose, onRun, onDeleted }) {
   const [showKB, setShowKB] = useState(false)
   const [currentApp, setCurrentApp] = useState(app)
   const [keyStatus, setKeyStatus] = useState(null) // null | 'ready' | 'demo'
+  const [myRole, setMyRole] = useState(null) // null | 'viewer' | 'editor' (from app_members, when not the owner)
   const navigate = useNavigate()
   const toast = useToast()
 
   const isOwner = app.created_by === user?.id
+  const isEditor = isOwner || myRole === 'editor'
   const displayTotalRuns = localTotalRuns ?? app.total_runs ?? 0
+
+  useEffect(() => {
+    if (isOwner || !user || !app?.id) { setMyRole(null); return }
+    supabase.from('app_members').select('role')
+      .eq('app_id', app.id).or(`user_id.eq.${user.id},invited_email.eq.${user.email}`)
+      .maybeSingle()
+      .then(({ data }) => setMyRole(data?.role || null))
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when the app or user changes
+  }, [app?.id, user?.id, isOwner])
 
   useEffect(() => {
     setCurrentApp(app)
@@ -259,6 +270,7 @@ export default function DetailPanel({ app, user, onClose, onRun, onDeleted }) {
             <span className="text-[10px] text-green-400 flex items-center gap-1">
               <span className="w-1.5 h-1.5 rounded-full bg-green-500 inline-block"></span> Active
               {isOwner && <span className="ml-1 text-[#6C5CE7]">· Yours</span>}
+              {!isOwner && myRole && <span className="ml-1 text-[#6C5CE7]">· Shared ({myRole})</span>}
               {currentApp.app_type === 'agent' && <span className="ml-1 text-purple-400">◈ Agent</span>}
               {currentApp.has_memory && <span className="ml-1 text-blue-400">💬 Memory</span>}
             </span>
@@ -296,7 +308,7 @@ export default function DetailPanel({ app, user, onClose, onRun, onDeleted }) {
         >
           Open App ↗
         </button>
-        {isOwner && (
+        {isEditor && (
           <button
             onClick={() => setEditing(true)}
             className="w-full bg-[#1F2444] hover:bg-[#272C52] text-slate-300 text-sm py-2 rounded-lg transition-colors"

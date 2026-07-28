@@ -4,6 +4,7 @@ import { useToast } from '../hooks/useToast'
 import OutputRenderer, { ThinkingIndicator } from './OutputRenderer'
 import { parseSSELine } from '../lib/sse'
 import RunRating from './RunRating'
+import { friendlyErrorMessage } from '../utils/appActions'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -94,19 +95,23 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
       setResult(resultRef.current)
       setUsage(finalUsage)
 
-      const { data: historyRow, error: historyError } = await supabase.from('run_history').insert({
-        user_id: user.id, app_id: app.id, app_name: app.name,
-        input: rawData.slice(0, 500) + (rawData.length > 500 ? '...' : ''),
-        result: resultRef.current,
-        input_tokens: finalUsage?.input_tokens ?? null, output_tokens: finalUsage?.output_tokens ?? null,
-      }).select('id').single()
-      if (historyRow) setLastRunId(historyRow.id)
+      async function saveHistory() {
+        const { data: row, error } = await supabase.from('run_history').insert({
+          user_id: user.id, app_id: app.id, app_name: app.name,
+          input: rawData.slice(0, 500) + (rawData.length > 500 ? '...' : ''),
+          result: resultRef.current,
+          input_tokens: finalUsage?.input_tokens ?? null, output_tokens: finalUsage?.output_tokens ?? null,
+        }).select('id').single()
+        if (row) { setLastRunId(row.id); return true }
+        if (error) toast(`Data processed, but wasn't saved to history: ${error.message}`, 'error', 8000, { label: 'Retry', onClick: saveHistory })
+        return false
+      }
+      const saved = await saveHistory()
       await supabase.rpc('increment_app_runs', { p_app_id: app.id })
       onRun?.()
-      if (historyError) toast(`Data processed, but wasn't saved to history: ${historyError.message}`, 'error')
-      else toast('Data processed', 'success')
+      if (saved) toast('Data processed', 'success')
     } catch (e) {
-      setError(e.message)
+      setError(friendlyErrorMessage(e))
     } finally {
       setLoading(false)
     }

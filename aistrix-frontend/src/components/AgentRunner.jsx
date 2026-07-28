@@ -4,6 +4,7 @@ import { useToast } from '../hooks/useToast'
 import OutputRenderer from './OutputRenderer'
 import { parseSSELine } from '../lib/sse'
 import RunRating from './RunRating'
+import { friendlyErrorMessage } from '../utils/appActions'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -111,20 +112,25 @@ export default function AgentRunner({ app, user, onClose, onRun, inline = false 
       setUsage(finalUsage)
       const finalResult = resultRef.current
       if (finalResult) {
-        const { data: historyRow, error: historyError } = await supabase.from('run_history').insert({
-          user_id: user.id, app_id: app.id, app_name: app.name,
-          input: goal, result: finalResult,
-          input_tokens: finalUsage?.input_tokens ?? null, output_tokens: finalUsage?.output_tokens ?? null,
-        }).select('id').single()
-        if (historyRow) setLastRunId(historyRow.id)
+        async function saveHistory() {
+          const { data: row, error } = await supabase.from('run_history').insert({
+            user_id: user.id, app_id: app.id, app_name: app.name,
+            input: goal, result: finalResult,
+            input_tokens: finalUsage?.input_tokens ?? null, output_tokens: finalUsage?.output_tokens ?? null,
+          }).select('id').single()
+          if (row) { setLastRunId(row.id); return true }
+          if (error) toast(`Agent completed, but wasn't saved to history: ${error.message}`, 'error', 8000, { label: 'Retry', onClick: saveHistory })
+          return false
+        }
+        const saved = await saveHistory()
         await supabase.rpc('increment_app_runs', { p_app_id: app.id })
         onRun?.()
-        if (historyError) toast(`Agent completed, but wasn't saved to history: ${historyError.message}`, 'error')
-        else toast('Agent completed', 'success')
+        if (saved) toast('Agent completed', 'success')
       }
     } catch (e) {
-      setError(e.message)
-      setSteps(prev => [...prev, { type: 'error', text: e.message }])
+      const msg = friendlyErrorMessage(e)
+      setError(msg)
+      setSteps(prev => [...prev, { type: 'error', text: msg }])
     } finally {
       setLoading(false)
     }

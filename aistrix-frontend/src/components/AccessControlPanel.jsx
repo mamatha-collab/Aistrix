@@ -10,20 +10,21 @@ const VISIBILITY_OPTIONS = [
 
 export default function AccessControlPanel({ app, onVisibilityChange }) {
   const [visibility, setVisibility] = useState(app.visibility || 'public')
-  const [invitedUsers, setInvitedUsers] = useState([])
+  const [members, setMembers] = useState([])
   const [emailInput, setEmailInput] = useState('')
+  const [role, setRole] = useState('viewer')
   const [saving, setSaving] = useState(false)
   const [inviting, setInviting] = useState(false)
   const toast = useToast()
 
   useEffect(() => {
-    if (visibility === 'invite') loadInvited()
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadInvited is stable per app.id; re-declaring it as a dep would re-run this on every render
+    if (visibility === 'invite') loadMembers()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadMembers is stable per app.id; re-declaring it as a dep would re-run this on every render
   }, [visibility, app.id])
 
-  async function loadInvited() {
-    const { data } = await supabase.from('app_access').select('id, user_id, created_at').eq('app_id', app.id)
-    setInvitedUsers(data || [])
+  async function loadMembers() {
+    const { data } = await supabase.from('app_members').select('id, invited_email, role, created_at').eq('app_id', app.id).order('created_at')
+    setMembers(data || [])
   }
 
   async function saveVisibility(v) {
@@ -34,29 +35,25 @@ export default function AccessControlPanel({ app, onVisibilityChange }) {
     setVisibility(v)
     onVisibilityChange?.(v)
     toast(`Access set to ${v}`, 'success', 2000)
-    if (v === 'invite') loadInvited()
+    if (v === 'invite') loadMembers()
   }
 
   async function inviteUser() {
     if (!emailInput.trim()) return
     setInviting(true)
-    // Look up user by email via a Supabase function or admin API
-    // For now, store the email as a pending invite
-    const { error } = await supabase.from('app_access').upsert({
-      app_id: app.id,
-      user_id: emailInput.trim(), // placeholder — real impl needs email→user_id lookup
-    }, { onConflict: 'app_id,user_id', ignoreDuplicates: true })
+    const { data, error } = await supabase.from('app_members')
+      .insert({ app_id: app.id, invited_email: emailInput.trim().toLowerCase(), role }).select().single()
     setInviting(false)
-    if (error) { toast('Could not invite user', 'error'); return }
+    if (error) { toast(error.message, 'error'); return }
+    setMembers(prev => [...prev, data])
     setEmailInput('')
-    toast('Invitation sent', 'success')
-    loadInvited()
+    toast(`Invited ${data.invited_email}`, 'success')
   }
 
   async function revokeAccess(id) {
-    const { error } = await supabase.from('app_access').delete().eq('id', id)
+    const { error } = await supabase.from('app_members').delete().eq('id', id)
     if (error) { toast(error.message, 'error'); return }
-    setInvitedUsers(prev => prev.filter(u => u.id !== id))
+    setMembers(prev => prev.filter(m => m.id !== id))
     toast('Access revoked', 'info', 2000)
   }
 
@@ -78,21 +75,28 @@ export default function AccessControlPanel({ app, onVisibilityChange }) {
 
       {visibility === 'invite' && (
         <div className="space-y-2 pt-1">
-          <p className="text-[10px] text-slate-500 uppercase">Invited users ({invitedUsers.length})</p>
+          <p className="text-[10px] text-slate-500 uppercase">Invited users ({members.length})</p>
           <div className="flex gap-2">
             <input className="flex-1 bg-[#0F1225] border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-[#6C5CE7] transition-colors"
               placeholder="user@email.com"
               value={emailInput} onChange={e => setEmailInput(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && inviteUser()} />
+            <select value={role} onChange={e => setRole(e.target.value)}
+              className="bg-[#0F1225] border border-white/10 rounded-xl px-2 text-xs text-white focus:outline-none focus:border-[#6C5CE7] shrink-0">
+              <option value="viewer">Viewer</option>
+              <option value="editor">Editor</option>
+            </select>
             <button onClick={inviteUser} disabled={inviting || !emailInput.trim()}
               className="bg-[#6C5CE7] hover:bg-[#7D6FF0] disabled:opacity-40 text-white text-sm px-3 py-2 rounded-xl transition-colors shrink-0">
               {inviting ? '...' : 'Invite'}
             </button>
           </div>
-          {invitedUsers.map(u => (
-            <div key={u.id} className="flex items-center justify-between bg-[#0F1225] border border-white/5 rounded-xl px-3 py-2">
-              <p className="text-xs text-slate-300 font-mono truncate">{u.user_id}</p>
-              <button onClick={() => revokeAccess(u.id)} className="text-[10px] text-red-400 hover:text-red-300 ml-2 shrink-0">Revoke</button>
+          {members.length === 0 ? (
+            <p className="text-slate-500 text-xs">No teammates added yet. Viewers can run this app; editors can also edit its config.</p>
+          ) : members.map(m => (
+            <div key={m.id} className="flex items-center justify-between bg-[#0F1225] border border-white/5 rounded-xl px-3 py-2">
+              <p className="text-xs text-slate-300 truncate">{m.invited_email} <span className="text-slate-500">· {m.role}</span></p>
+              <button onClick={() => revokeAccess(m.id)} className="text-[10px] text-red-400 hover:text-red-300 ml-2 shrink-0">Revoke</button>
             </div>
           ))}
         </div>

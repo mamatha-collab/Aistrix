@@ -4,6 +4,7 @@ import { useToast } from '../hooks/useToast'
 import OutputRenderer from './OutputRenderer'
 import { parseSSELine } from '../lib/sse'
 import RunRating from './RunRating'
+import { friendlyErrorMessage } from '../utils/appActions'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -58,17 +59,18 @@ export default function ConversationThread({ app, user, threadId: initialThreadI
     const userMsg = input.trim(); setInput(''); setLoading(true); setStreaming('')
 
     // Add user message to DB
-    const { data: userMsgRow, error: userMsgError } = await supabase.from('thread_messages').insert({
-      thread_id: threadId, role: 'user', content: userMsg,
-    }).select().single()
-    if (userMsgRow) {
-      setMessages(prev => [...prev, userMsgRow])
-    } else {
-      // Still show it locally so the conversation doesn't look like it ate the
-      // message — just flag that it won't be there on reload.
-      setMessages(prev => [...prev, { id: `local-${Date.now()}`, role: 'user', content: userMsg }])
-      if (userMsgError) toast(`Message sent, but wasn't saved: ${userMsgError.message}`, 'error')
+    const localId = `local-${Date.now()}`
+    async function saveUserMessage() {
+      const { data: row, error } = await supabase.from('thread_messages').insert({
+        thread_id: threadId, role: 'user', content: userMsg,
+      }).select().single()
+      if (row) { setMessages(prev => prev.map(m => m.id === localId ? row : m)); return }
+      if (error) toast(`Message sent, but wasn't saved: ${error.message}`, 'error', 8000, { label: 'Retry', onClick: saveUserMessage })
     }
+    // Show it locally right away so the conversation doesn't look like it ate
+    // the message while the save is in flight (or if it fails).
+    setMessages(prev => [...prev, { id: localId, role: 'user', content: userMsg }])
+    await saveUserMessage()
 
     // Build conversation history for context
     const allMsgs = [...messages, { role: 'user', content: userMsg }]
@@ -109,19 +111,20 @@ export default function ConversationThread({ app, user, threadId: initialThreadI
       }
 
       // Save assistant message
-      const { data: asstMsgRow, error: asstMsgError } = await supabase.from('thread_messages').insert({
-        thread_id: threadId, role: 'assistant', content: full,
-      }).select().single()
-      // Usage isn't persisted (thread_messages has no token columns) — attach it
-      // locally so the bubble can show it for this session.
-      if (asstMsgRow) {
-        setMessages(prev => [...prev, { ...asstMsgRow, usage: finalUsage }])
-      } else {
-        // Without this, the reply the user just watched stream in would vanish
-        // the moment `streaming` clears below — show it locally instead.
-        setMessages(prev => [...prev, { id: `local-${Date.now()}`, role: 'assistant', content: full, usage: finalUsage }])
-        if (asstMsgError) toast(`Reply wasn't saved: ${asstMsgError.message}`, 'error')
+      const asstLocalId = `local-${Date.now()}`
+      async function saveAssistantMessage() {
+        const { data: row, error } = await supabase.from('thread_messages').insert({
+          thread_id: threadId, role: 'assistant', content: full,
+        }).select().single()
+        // Usage isn't persisted (thread_messages has no token columns) — attach
+        // it locally so the bubble can show it for this session either way.
+        if (row) { setMessages(prev => prev.map(m => m.id === asstLocalId ? { ...row, usage: finalUsage } : m)); return }
+        if (error) toast(`Reply wasn't saved: ${error.message}`, 'error', 8000, { label: 'Retry', onClick: saveAssistantMessage })
       }
+      // Without this, the reply the user just watched stream in would vanish
+      // the moment `streaming` clears below — show it locally right away.
+      setMessages(prev => [...prev, { id: asstLocalId, role: 'assistant', content: full, usage: finalUsage }])
+      await saveAssistantMessage()
       setStreaming('')
 
       // Update thread title if first exchange
@@ -130,7 +133,7 @@ export default function ConversationThread({ app, user, threadId: initialThreadI
         loadThreads()
       }
     } catch (e) {
-      toast(e.message, 'error')
+      toast(friendlyErrorMessage(e), 'error')
     } finally {
       setLoading(false)
     }

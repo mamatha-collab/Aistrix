@@ -37,8 +37,9 @@ const STATUS_BADGE = {
   draft:    { label: '◌ Draft',    cls: 'text-slate-400' },
 }
 
-function appSourceLabel(app, isOwn) {
+function appSourceLabel(app, isOwn, sharedRole) {
   if (isOwn) return 'Yours'
+  if (sharedRole) return `Shared · ${sharedRole}`
   if (app.domains?.name) return app.domains.name
   if (app.visibility === 'private') return 'Private'
   return 'Marketplace'
@@ -112,12 +113,12 @@ export function AppTab({ app, selected, starred, isOwn, onClick, onToggleFavorit
   )
 }
 
-export default function AppCard({ app, selected, starred, isOwn, onClick, onToggleFavorite, showPublishToggle, onPublishToggle }) {
+export default function AppCard({ app, selected, starred, isOwn, sharedRole, onClick, onToggleFavorite, showPublishToggle, onPublishToggle }) {
   const staticBadges = STATIC_BADGES.filter(b => app[b.key])
   const derivedBadges = getDerivedBadges(app)
   const allBadges = [...staticBadges, ...derivedBadges]
   const typeInfo = TYPE_LABELS[app.app_type]
-  const sourceLabel = appSourceLabel(app, isOwn)
+  const sourceLabel = appSourceLabel(app, isOwn, sharedRole)
   const statusInfo = STATUS_BADGE[app.status]
   const readinessBadges = [
     app.status === 'active' && { label: 'Ready', color: '#00B894' },
@@ -170,7 +171,7 @@ export default function AppCard({ app, selected, starred, isOwn, onClick, onTogg
             <div className="min-w-0">
               <p className="text-white font-semibold text-sm leading-snug truncate">{app.name}</p>
               <span className={`text-[11px] px-1.5 py-0.5 rounded-md font-medium ${isOwn ? 'text-[#A29BFE] bg-[#6C5CE7]/15' : 'text-slate-400 bg-white/5'}`}>
-                {isOwn ? '👤 Yours' : app.domains?.name ? `${app.domains.emoji} ${app.domains.name}` : sourceLabel}
+                {isOwn ? '👤 Yours' : sharedRole ? `👥 ${sourceLabel}` : app.domains?.name ? `${app.domains.emoji} ${app.domains.name}` : sourceLabel}
               </span>
             </div>
             <button

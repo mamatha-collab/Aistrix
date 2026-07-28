@@ -207,7 +207,10 @@ export default function AppGrid({ onSelectApp, selectedApp, user, search, runCou
   const [domains, setDomains] = useState([])
   const [apps, setApps] = useState([])
   const [myApps, setMyApps] = useState([])
-  const [mainTab, setMainTab] = useState('discover') // 'discover' | 'mine'
+  const [sharedApps, setSharedApps] = useState([])
+  const [sharedRoles, setSharedRoles] = useState({})
+  const [loadingShared, setLoadingShared] = useState(false)
+  const [mainTab, setMainTab] = useState('discover') // 'discover' | 'mine' | 'shared'
   const [favorites, setFavorites] = useState(new Set())
   const [activeDomain, setActiveDomain] = useState('all')
   const [selectedGoal, setSelectedGoal] = useState(null)
@@ -234,6 +237,7 @@ export default function AppGrid({ onSelectApp, selectedApp, user, search, runCou
 
   useEffect(() => {
     if (mainTab === 'mine' && user) fetchMyApps()
+    if (mainTab === 'shared' && user) fetchSharedApps()
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when mainTab or user changes
   }, [mainTab, user])
 
@@ -296,6 +300,21 @@ export default function AppGrid({ onSelectApp, selectedApp, user, search, runCou
       .eq('created_by', user.id)
       .order('created_at', { ascending: false })
     if (data) setMyApps(data)
+  }
+
+  async function fetchSharedApps() {
+    if (!user) return
+    setLoadingShared(true)
+    const { data: memberships } = await supabase.from('app_members').select('app_id, role')
+      .or(`user_id.eq.${user.id},invited_email.eq.${user.email}`)
+    const ids = [...new Set((memberships || []).map(m => m.app_id))]
+    const roles = {}
+    for (const m of memberships || []) roles[m.app_id] = m.role
+    setSharedRoles(roles)
+    if (!ids.length) { setSharedApps([]); setLoadingShared(false); return }
+    const { data } = await supabase.from('apps').select('*, domains(name, emoji, color, slug)').in('id', ids)
+    setSharedApps(data || [])
+    setLoadingShared(false)
   }
 
   async function togglePublish(app) {
@@ -391,6 +410,11 @@ export default function AppGrid({ onSelectApp, selectedApp, user, search, runCou
               <span className="section-tab-label">My Apps</span>
               {myApps.length > 0 && <span className="section-tab-count">{myApps.length}</span>}
               🗂 My Apps {myApps.length > 0 && <span className="ml-1.5 opacity-70">{myApps.length}</span>}
+            </button>
+            <button onClick={() => setMainTab('shared')}
+              className={`section-tab ${mainTab === 'shared' ? 'section-tab-active' : ''}`}>
+              <span className="section-tab-label">Shared</span>
+              👥 Shared {sharedApps.length > 0 && <span className="ml-1.5 opacity-70">{sharedApps.length}</span>}
             </button>
           </div>
         </div>
@@ -521,6 +545,35 @@ export default function AppGrid({ onSelectApp, selectedApp, user, search, runCou
                     onToggleFavorite={() => toggleFavorite(app.id)}
                     showPublishToggle={true}
                     onPublishToggle={() => togglePublish(app)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Shared with me ── */}
+        {mainTab === 'shared' && (
+          <div className="mb-10">
+            {loadingShared ? (
+              <p className="text-slate-500 text-sm text-center py-20">Loading...</p>
+            ) : sharedApps.length === 0 ? (
+              <div className="text-center py-20">
+                <div className="text-5xl mb-4">👥</div>
+                <p className="text-white font-medium mb-2">Nothing shared with you yet</p>
+                <p className="text-slate-400 text-sm">Apps a teammate invites you to will show up here</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                {sharedApps.map(app => (
+                  <AppCard
+                    key={app.id}
+                    app={{ ...app, total_runs: (app.total_runs || 0) + (runCounts[String(app.id)] || 0) }}
+                    selected={selectedApp?.id === app.id}
+                    starred={favorites.has(String(app.id))}
+                    sharedRole={sharedRoles[app.id]}
+                    onClick={() => onSelectApp(app)}
+                    onToggleFavorite={() => toggleFavorite(app.id)}
                   />
                 ))}
               </div>

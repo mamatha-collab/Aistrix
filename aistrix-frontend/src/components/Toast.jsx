@@ -12,9 +12,11 @@ const COLORS = {
 export function ToastProvider({ children }) {
   const [toasts, setToasts] = useState([])
 
-  const toast = useCallback((message, type = 'info', duration = 3500) => {
+  // `action` is optional: { label, onClick } — renders a button in the toast
+  // itself (e.g. "Retry") instead of making the user redo the whole flow.
+  const toast = useCallback((message, type = 'info', duration = 3500, action = null) => {
     const id = Date.now() + Math.random()
-    setToasts(prev => [...prev, { id, message, type }])
+    setToasts(prev => [...prev, { id, message, type, action }])
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), duration)
   }, [])
 
@@ -33,6 +35,12 @@ export function ToastProvider({ children }) {
           >
             <span className="shrink-0 font-bold">{ICONS[t.type]}</span>
             <span>{t.message}</span>
+            {t.action && (
+              <button onClick={() => { t.action.onClick(); dismiss(t.id) }}
+                className="ml-1 underline underline-offset-2 text-xs font-semibold shrink-0 hover:opacity-80">
+                {t.action.label}
+              </button>
+            )}
             <button aria-label="Close" onClick={() => dismiss(t.id)} className="ml-1 opacity-60 hover:opacity-100 text-xs">✕</button>
           </div>
         ))}

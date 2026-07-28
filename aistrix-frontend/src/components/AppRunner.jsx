@@ -8,7 +8,7 @@ import { buildCareerContext, buildBusinessContext } from '../utils/profileContex
 import OutputRenderer, { ThinkingIndicator } from './OutputRenderer'
 import { createNotification } from '../utils/notifications'
 import { parseSSELine } from '../lib/sse'
-import { duplicateApp, emailResult } from '../utils/appActions'
+import { duplicateApp, emailResult, friendlyErrorMessage } from '../utils/appActions'
 import RunRating from './RunRating'
 
 // Lazy-loaded — keeps the Stripe SDK out of the main bundle until a paid app is actually run
@@ -389,12 +389,16 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
           results.push({ input: lines[i], result: text, usage: u })
           setBulkResults([...results])
           setBulkProgress(i + 1)
-          const { data: historyRow, error: historyError } = await supabase.from('run_history').insert({
-            user_id: user.id, app_id: app.id, app_name: app.name, input: lines[i], result: text,
-            input_tokens: u?.input_tokens ?? null, output_tokens: u?.output_tokens ?? null,
-          }).select('id').single()
-          if (historyError) toast(`Run ${i + 1} completed but wasn't saved to history: ${historyError.message}`, 'error')
-          else { results[i] = { ...results[i], runId: historyRow.id }; setBulkResults([...results]) }
+          const runIndex = i
+          async function saveBulkHistory() {
+            const { data: row, error } = await supabase.from('run_history').insert({
+              user_id: user.id, app_id: app.id, app_name: app.name, input: lines[runIndex], result: text,
+              input_tokens: u?.input_tokens ?? null, output_tokens: u?.output_tokens ?? null,
+            }).select('id').single()
+            if (error) { toast(`Run ${runIndex + 1} completed but wasn't saved to history: ${error.message}`, 'error', 8000, { label: 'Retry', onClick: saveBulkHistory }); return }
+            results[runIndex] = { ...results[runIndex], runId: row.id }; setBulkResults([...results])
+          }
+          await saveBulkHistory()
           await supabase.rpc('increment_app_runs', { p_app_id: app.id })
           setProvider(p); setModel(m); setUsage(u)
         }
@@ -406,14 +410,18 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
         if (!text) throw new Error('No response received')
         setProvider(p); setModel(m); setUsage(u)
 
-        const { data: historyRow, error: historyError } = await supabase.from('run_history')
-          .insert({
-            user_id: user.id, app_id: app.id, app_name: app.name, input, result: text,
-            input_tokens: u?.input_tokens ?? null, output_tokens: u?.output_tokens ?? null,
-          })
-          .select('id').single()
-        if (historyRow) setLastRunId(historyRow.id)
-        else if (historyError) toast(`Result ready, but couldn't save to history: ${historyError.message}`, 'error')
+        async function saveHistory() {
+          const { data: row, error } = await supabase.from('run_history')
+            .insert({
+              user_id: user.id, app_id: app.id, app_name: app.name, input, result: text,
+              input_tokens: u?.input_tokens ?? null, output_tokens: u?.output_tokens ?? null,
+            })
+            .select('id').single()
+          if (row) { setLastRunId(row.id); return row }
+          if (error) toast(`Result ready, but couldn't save to history: ${error.message}`, 'error', 8000, { label: 'Retry', onClick: saveHistory })
+          return null
+        }
+        const historyRow = await saveHistory()
 
         clearTimeout(timeoutId)
         await supabase.rpc('increment_app_runs', { p_app_id: app.id })
@@ -448,10 +456,7 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
     } catch (err) {
       if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
       clearTimeout(timeoutId)
-      const msg = err.name === 'AbortError' ? 'Request timed out after 95 seconds. Try a shorter input.'
-        : err.message?.includes('fetch') ? 'Could not connect to backend. Make sure the server is running.'
-        : err.message === '429' || err.message?.includes('Rate limit') ? err.message
-        : err.message || 'Something went wrong'
+      const msg = friendlyErrorMessage(err)
       setError(msg); toast(msg, 'error')
     } finally {
       setLoading(false)

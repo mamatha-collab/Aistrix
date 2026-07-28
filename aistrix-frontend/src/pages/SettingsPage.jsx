@@ -105,7 +105,8 @@ export default function SettingsPage({ user }) {
   }
 
   async function removeKey(provider) {
-    await supabase.from('user_api_keys').delete().eq('user_id', user.id).eq('provider', provider)
+    const { error } = await supabase.from('user_api_keys').delete().eq('user_id', user.id).eq('provider', provider)
+    if (error) { toast(error.message, 'error'); return }
     setKeys(prev => { const n = { ...prev }; delete n[provider]; return n })
     toast('Key removed', 'info')
   }
@@ -132,12 +133,14 @@ export default function SettingsPage({ user }) {
 
   async function saveMemoryItem(key, value) {
     if (!value.trim()) { await deleteMemoryItem(key); return }
-    await supabase.from('user_memory').upsert({ user_id: user.id, key, value: value.trim(), updated_at: new Date().toISOString() }, { onConflict: 'user_id,key' })
+    const { error } = await supabase.from('user_memory').upsert({ user_id: user.id, key, value: value.trim(), updated_at: new Date().toISOString() }, { onConflict: 'user_id,key' })
+    if (error) { toast(error.message, 'error'); return }
     setMemory(prev => { const exists = prev.find(m => m.key === key); return exists ? prev.map(m => m.key === key ? { key, value } : m) : [...prev, { key, value }] })
   }
 
   async function deleteMemoryItem(key) {
-    await supabase.from('user_memory').delete().eq('user_id', user.id).eq('key', key)
+    const { error } = await supabase.from('user_memory').delete().eq('user_id', user.id).eq('key', key)
+    if (error) { toast(error.message, 'error'); return }
     setMemory(prev => prev.filter(m => m.key !== key))
   }
 

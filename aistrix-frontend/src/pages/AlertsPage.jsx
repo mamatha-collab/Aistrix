@@ -149,13 +149,15 @@ export default function AlertsPage({ user }) {
 
   async function toggleAlert(alert) {
     const next = !alert.is_active
-    await supabase.from('user_alerts').update({ is_active: next }).eq('id', alert.id)
+    const { error } = await supabase.from('user_alerts').update({ is_active: next }).eq('id', alert.id)
+    if (error) { toast(error.message, 'error'); return }
     setAlerts(prev => prev.map(a => a.id === alert.id ? { ...a, is_active: next } : a))
     toast(next ? 'Alert enabled' : 'Alert paused', 'info', 2000)
   }
 
   async function deleteAlert(id) {
-    await supabase.from('user_alerts').delete().eq('id', id)
+    const { error } = await supabase.from('user_alerts').delete().eq('id', id)
+    if (error) { toast(error.message, 'error'); return }
     setAlerts(prev => prev.filter(a => a.id !== id))
     toast('Alert deleted', 'info', 2000)
   }

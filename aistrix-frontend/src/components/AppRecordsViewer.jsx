@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../supabase'
 import { timeAgo } from '../utils'
+import { useToast } from '../hooks/useToast'
 import OutputRenderer from './OutputRenderer'
 
 export default function AppRecordsViewer({ app, user }) {
@@ -8,6 +9,7 @@ export default function AppRecordsViewer({ app, user }) {
   const [loading, setLoading] = useState(true)
   const [expanded, setExpanded] = useState(null)
   const [search, setSearch] = useState('')
+  const toast = useToast()
 
   useEffect(() => {
     supabase.from('app_records')
@@ -17,7 +19,8 @@ export default function AppRecordsViewer({ app, user }) {
   }, [app.id, user.id])
 
   async function deleteRecord(id) {
-    await supabase.from('app_records').delete().eq('id', id)
+    const { error } = await supabase.from('app_records').delete().eq('id', id)
+    if (error) { toast(error.message, 'error'); return }
     setRecords(prev => prev.filter(r => r.id !== id))
   }
 

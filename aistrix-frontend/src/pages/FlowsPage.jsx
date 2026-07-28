@@ -1122,6 +1122,7 @@ function FlowRunner({ flow, user, onClose, onShowHistory, onRunComplete }) {
             const now = new Date().toISOString()
             for (const key of Object.keys(facts)) mergedProv[key] = { step_name: current.app_name, step_index: stepIndex, updated_at: now }
             supabase.from('flows').update({ memory: merged, memory_provenance: mergedProv }).eq('id', flow.id)
+              .then(({ error }) => { if (error) toast(`Learned facts weren't saved: ${error.message}`, 'error') })
             return mergedProv
           })
           return merged
@@ -1157,6 +1158,7 @@ function FlowRunner({ flow, user, onClose, onShowHistory, onRunComplete }) {
         if (!(key in merged)) delete mergedProv[key]
         else mergedProv[key] = { step_name: 'manually corrected', step_index: null, updated_at: new Date().toISOString() }
         supabase.from('flows').update({ memory: merged, memory_provenance: mergedProv }).eq('id', flow.id)
+          .then(({ error }) => { if (error) toast(`Edit wasn't saved: ${error.message}`, 'error') })
         return mergedProv
       })
       return merged
@@ -1172,6 +1174,7 @@ function FlowRunner({ flow, user, onClose, onShowHistory, onRunComplete }) {
         const mergedProv = { ...prevProv }
         delete mergedProv[key]
         supabase.from('flows').update({ memory: merged, memory_provenance: mergedProv }).eq('id', flow.id)
+          .then(({ error }) => { if (error) toast(`Delete wasn't saved: ${error.message}`, 'error') })
         return mergedProv
       })
       return merged
@@ -2568,7 +2571,8 @@ function ShareModal({ flow, onClose }) {
   }
 
   async function removeMember(id) {
-    await supabase.from('flow_members').delete().eq('id', id)
+    const { error } = await supabase.from('flow_members').delete().eq('id', id)
+    if (error) { toast(error.message, 'error'); return }
     setMembers(p => p.filter(m => m.id !== id))
   }
 
@@ -2758,7 +2762,8 @@ function ScheduleModal({ flow, userId, onClose, onSaved }) {
 
   async function remove() {
     if (!schedule) { onClose(); return }
-    await supabase.from('flow_schedules').delete().eq('id', schedule.id)
+    const { error } = await supabase.from('flow_schedules').delete().eq('id', schedule.id)
+    if (error) { toast(error.message, 'error'); return }
     onSaved(null)
     onClose()
   }
@@ -3690,7 +3695,8 @@ export default function FlowsPage({ user, onShowHistory }) {
   }
 
   async function publishWorkspace(flow) {
-    await supabase.from('flows').update({ is_published: !flow.is_published }).eq('id', flow.id)
+    const { error } = await supabase.from('flows').update({ is_published: !flow.is_published }).eq('id', flow.id)
+    if (error) { toast(error.message, 'error'); return }
     setFlows(p => p.map(f => f.id === flow.id ? { ...f, is_published: !f.is_published } : f))
     toast(flow.is_published ? 'Unpublished' : 'Published to marketplace', 'success')
   }

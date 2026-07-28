@@ -513,7 +513,7 @@ Return ONLY valid JSON with these fields:
     }
 
     if (isEdit) {
-      await supabase.from('app_versions').insert({
+      const { error: versionErr } = await supabase.from('app_versions').insert({
         app_id: existingApp.id, user_id: user.id,
         version_data: {
           name: existingApp.name, emoji: existingApp.emoji,
@@ -524,6 +524,8 @@ Return ONLY valid JSON with these fields:
           sample_input: existingApp.sample_input,
         },
       })
+      // Non-fatal — the edit itself still proceeds, but flag the gap in version history.
+      if (versionErr) toast(`Couldn't snapshot the previous version: ${versionErr.message}`, 'error')
       const { data, error: err } = await supabase.from('apps').update(payload)
         .eq('id', existingApp.id).select('*, domains(name, emoji, color, slug)').single()
       setSaving(false)

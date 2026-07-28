@@ -36,7 +36,8 @@ function AppsTab({ toast }) {
   }
 
   async function update(id, changes) {
-    await supabase.from('apps').update(changes).eq('id', id)
+    const { error } = await supabase.from('apps').update(changes).eq('id', id)
+    if (error) { toast(error.message, 'error'); return }
     setApps(prev => prev.map(a => a.id === id ? { ...a, ...changes } : a))
     toast('App updated', 'success', 2000)
   }
@@ -178,13 +179,15 @@ function DomainsTab({ toast }) {
   async function saveDomain() {
     if (!form.name?.trim()) return
     if (editing) {
-      await supabase.from('domains').update(form).eq('id', editing)
+      const { error } = await supabase.from('domains').update(form).eq('id', editing)
+      if (error) { toast(error.message, 'error'); return }
       setDomains(prev => prev.map(d => d.id === editing ? { ...d, ...form } : d))
       toast('Domain updated', 'success', 2000)
     } else {
-      const { data } = await supabase.from('domains').insert({
+      const { data, error } = await supabase.from('domains').insert({
         ...form, order_index: Math.max(...domains.map(d => d.order_index), 0) + 1,
       }).select().single()
+      if (error) { toast(error.message, 'error'); return }
       if (data) setDomains(prev => [...prev, data])
       toast('Domain created', 'success')
     }
@@ -193,7 +196,8 @@ function DomainsTab({ toast }) {
 
   async function deleteDomain(id, name) {
     if (!window.confirm(`Delete "${name}"? Apps in this domain will be uncategorized.`)) return
-    await supabase.from('domains').delete().eq('id', id)
+    const { error } = await supabase.from('domains').delete().eq('id', id)
+    if (error) { toast(error.message, 'error'); return }
     setDomains(prev => prev.filter(d => d.id !== id))
     toast(`"${name}" deleted`, 'info')
   }
@@ -298,7 +302,8 @@ function RolesTab({ toast }) {
   }
 
   async function revokeRole(uid) {
-    await supabase.from('user_roles').delete().eq('user_id', uid)
+    const { error } = await supabase.from('user_roles').delete().eq('user_id', uid)
+    if (error) { toast(error.message, 'error'); return }
     setRoles(prev => prev.filter(r => r.user_id !== uid))
     toast('Role revoked', 'info', 2000)
   }

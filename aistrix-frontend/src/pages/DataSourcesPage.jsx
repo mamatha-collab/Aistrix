@@ -108,7 +108,8 @@ export default function DataSourcesPage({ user }) {
   }
 
   async function deleteSource(id) {
-    await supabase.from('user_data_sources').delete().eq('id', id)
+    const { error } = await supabase.from('user_data_sources').delete().eq('id', id)
+    if (error) { toast(error.message, 'error'); return }
     setSources(prev => prev.filter(s => s.id !== id))
     toast('Removed', 'info', 2000)
   }

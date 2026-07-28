@@ -39,13 +39,15 @@ function ApiKeySection({ user }) {
   }
 
   async function revokeKey(id) {
-    await supabase.from('developer_api_keys').update({ is_active: false }).eq('id', id)
+    const { error } = await supabase.from('developer_api_keys').update({ is_active: false }).eq('id', id)
+    if (error) { toast(error.message, 'error'); return }
     setKeys(prev => prev.map(k => k.id === id ? { ...k, is_active: false } : k))
     toast('Key revoked', 'info')
   }
 
   async function deleteKey(id) {
-    await supabase.from('developer_api_keys').delete().eq('id', id)
+    const { error } = await supabase.from('developer_api_keys').delete().eq('id', id)
+    if (error) { toast(error.message, 'error'); return }
     setKeys(prev => prev.filter(k => k.id !== id))
     toast('Key deleted', 'info')
   }

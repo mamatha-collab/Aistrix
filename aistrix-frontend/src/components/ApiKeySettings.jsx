@@ -88,11 +88,12 @@ export default function ApiKeySettings({ user, onClose }) {
 
   async function removeKey(provider) {
     const p = PROVIDERS.find(p => p.id === provider)
-    await supabase
+    const { error } = await supabase
       .from('user_api_keys')
       .delete()
       .eq('user_id', user.id)
       .eq('provider', provider)
+    if (error) { toast(error.message, 'error'); return }
     setKeys(prev => { const next = { ...prev }; delete next[provider]; return next })
     toast(`${p.name} key removed`, 'info')
   }

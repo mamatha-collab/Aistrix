@@ -30,40 +30,44 @@ export default function OnboardingWizard({ user, onDismiss, onNavChange }) {
       const { data: flow } = await supabase.from('flows')
         .select('*').eq('name', goal.packName).eq('is_published', true).maybeSingle()
       if (flow) {
-        await supabase.from('flows').insert({
+        const { error } = await supabase.from('flows').insert({
           user_id: user.id, name: flow.name, emoji: flow.emoji,
           description: flow.description, steps: flow.steps,
         })
-        toast(`${goal.packName} installed to your AI Workflows!`, 'success')
+        if (error) toast(`Couldn't install ${goal.packName}: ${error.message}`, 'error')
+        else toast(`${goal.packName} installed to your AI Workflows!`, 'success')
       }
-    } catch {}
+    } catch (e) { toast(e.message, 'error') }
     setInstalling(false)
     setStep(3)
   }
 
   async function saveProfile() {
     if (profileForm.display_name.trim()) {
-      await supabase.auth.updateUser({ data: { display_name: profileForm.display_name.trim() } })
+      const { error } = await supabase.auth.updateUser({ data: { display_name: profileForm.display_name.trim() } })
+      if (error) toast(`Couldn't save display name: ${error.message}`, 'error')
     }
     if (profileForm.job_title.trim() || profileForm.company.trim()) {
-      await supabase.from('career_profiles').upsert({
+      const { error } = await supabase.from('career_profiles').upsert({
         user_id: user.id,
         job_title: profileForm.job_title.trim() || null,
         company: profileForm.company.trim() || null,
       }, { onConflict: 'user_id' })
+      if (error) toast(`Couldn't save profile: ${error.message}`, 'error')
     }
     setProfileSaved(true)
     setTimeout(() => setStep(4), 600)
   }
 
   async function createGoal() {
-    await supabase.from('user_goals').insert({
+    const { error } = await supabase.from('user_goals').insert({
       user_id: user.id,
       name: `Weekly ${goal?.label || 'AI'} sessions`,
       target_runs: 10,
       period: 'week',
       is_active: true,
     })
+    if (error) toast(`Couldn't create goal: ${error.message}`, 'error')
     setGoalCreated(true)
     setTimeout(() => setStep(5), 800)
   }

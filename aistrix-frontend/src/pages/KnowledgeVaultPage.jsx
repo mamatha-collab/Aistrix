@@ -115,13 +115,15 @@ export default function KnowledgeVaultPage({ user }) {
   }
 
   async function toggleActive(item) {
-    await supabase.from('knowledge_vault').update({ is_active: !item.is_active }).eq('id', item.id)
+    const { error } = await supabase.from('knowledge_vault').update({ is_active: !item.is_active }).eq('id', item.id)
+    if (error) { toast(error.message, 'error'); return }
     setItems(prev => prev.map(i => i.id === item.id ? { ...i, is_active: !i.is_active } : i))
   }
 
   async function deleteItem(id) {
     if (!confirm('Remove this knowledge item?')) return
-    await supabase.from('knowledge_vault').delete().eq('id', id)
+    const { error } = await supabase.from('knowledge_vault').delete().eq('id', id)
+    if (error) { toast(error.message, 'error'); return }
     setItems(prev => prev.filter(i => i.id !== id))
     toast('Removed', 'info', 2000)
   }

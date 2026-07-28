@@ -5,6 +5,7 @@ import { timeAgo } from '../utils'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import CompareModal from './CompareModal'
+import { useToast } from '../hooks/useToast'
 
 export default function RunHistory({ user, onClose, inline = false }) {
   const [history, setHistory] = useState([])
@@ -15,6 +16,7 @@ export default function RunHistory({ user, onClose, inline = false }) {
   const [exportFormat, setExportFormat] = useState(null)
   const [compareIds, setCompareIds] = useState([])
   const [showCompare, setShowCompare] = useState(false)
+  const toast = useToast()
 
   function doExport(fmt) {
     const data = filtered.map(e => ({
@@ -54,7 +56,8 @@ export default function RunHistory({ user, onClose, inline = false }) {
   }
 
   async function deleteEntry(id) {
-    await supabase.from('run_history').delete().eq('id', id)
+    const { error } = await supabase.from('run_history').delete().eq('id', id)
+    if (error) { toast(error.message, 'error'); return }
     setHistory(prev => prev.filter(h => h.id !== id))
     setCompareIds(prev => prev.filter(i => i !== id))
   }

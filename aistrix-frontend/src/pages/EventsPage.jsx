@@ -210,19 +210,22 @@ export default function EventsPage({ user, onRunEvent }) {
 
   async function toggleEvent(event) {
     const next = !event.is_active
-    await supabase.from('scheduled_events').update({ is_active: next }).eq('id', event.id)
+    const { error } = await supabase.from('scheduled_events').update({ is_active: next }).eq('id', event.id)
+    if (error) { toast(error.message, 'error'); return }
     setEvents(prev => prev.map(e => e.id === event.id ? { ...e, is_active: next } : e))
   }
 
   async function deleteEvent(id) {
-    await supabase.from('scheduled_events').delete().eq('id', id)
+    const { error } = await supabase.from('scheduled_events').delete().eq('id', id)
+    if (error) { toast(error.message, 'error'); return }
     setEvents(prev => prev.filter(e => e.id !== id))
     toast('Event deleted', 'info', 2000)
   }
 
   async function runNow(event) {
     const nextRun = computeNextRun(event.schedule_type, event.schedule_time, event.schedule_day)
-    await supabase.from('scheduled_events').update({ last_run_at: new Date().toISOString(), next_run_at: nextRun.toISOString() }).eq('id', event.id)
+    const { error } = await supabase.from('scheduled_events').update({ last_run_at: new Date().toISOString(), next_run_at: nextRun.toISOString() }).eq('id', event.id)
+    if (error) { toast(error.message, 'error'); return }
     setEvents(prev => prev.map(e => e.id === event.id ? { ...e, last_run_at: new Date().toISOString(), next_run_at: nextRun.toISOString() } : e))
     onRunEvent?.(event)
     toast(`Running "${event.name}"...`, 'info')

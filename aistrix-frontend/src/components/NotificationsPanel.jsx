@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { Bell } from 'lucide-react'
 import { supabase } from '../supabase'
 import { timeAgo } from '../utils'
+import { useToast } from '../hooks/useToast'
 
 const TYPE_CONFIG = {
   alert:      { icon: '🔔', color: 'text-orange-400', bg: 'bg-orange-400/10' },
@@ -17,6 +18,7 @@ export default function NotificationsPanel({ user, onNavChange }) {
   const [notifications, setNotifications] = useState([])
   const [loading, setLoading] = useState(false)
   const panelRef = useRef(null)
+  const toast = useToast()
 
   const unread = notifications.filter(n => !n.is_read).length
 
@@ -64,7 +66,8 @@ export default function NotificationsPanel({ user, onNavChange }) {
   }
 
   async function deleteAll() {
-    await supabase.from('notifications').delete().eq('user_id', user.id)
+    const { error } = await supabase.from('notifications').delete().eq('user_id', user.id)
+    if (error) { toast(error.message, 'error'); return }
     setNotifications([])
   }
 

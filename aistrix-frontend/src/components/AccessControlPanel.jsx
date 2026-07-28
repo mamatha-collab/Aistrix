@@ -28,8 +28,9 @@ export default function AccessControlPanel({ app, onVisibilityChange }) {
 
   async function saveVisibility(v) {
     setSaving(true)
-    await supabase.from('apps').update({ visibility: v }).eq('id', app.id)
+    const { error } = await supabase.from('apps').update({ visibility: v }).eq('id', app.id)
     setSaving(false)
+    if (error) { toast(error.message, 'error'); return }
     setVisibility(v)
     onVisibilityChange?.(v)
     toast(`Access set to ${v}`, 'success', 2000)
@@ -53,7 +54,8 @@ export default function AccessControlPanel({ app, onVisibilityChange }) {
   }
 
   async function revokeAccess(id) {
-    await supabase.from('app_access').delete().eq('id', id)
+    const { error } = await supabase.from('app_access').delete().eq('id', id)
+    if (error) { toast(error.message, 'error'); return }
     setInvitedUsers(prev => prev.filter(u => u.id !== id))
     toast('Access revoked', 'info', 2000)
   }

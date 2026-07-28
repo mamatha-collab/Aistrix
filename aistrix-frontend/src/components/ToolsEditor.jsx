@@ -199,7 +199,8 @@ export default function ToolsEditor({ appId, readOnly = false, autoOpen = false 
   }
 
   async function deleteTool(id) {
-    await supabase.from('app_tools').delete().eq('id', id)
+    const { error } = await supabase.from('app_tools').delete().eq('id', id)
+    if (error) { toast(error.message, 'error'); return }
     setTools(prev => prev.filter(t => t.id !== id))
     toast('Tool removed', 'info', 2000)
   }

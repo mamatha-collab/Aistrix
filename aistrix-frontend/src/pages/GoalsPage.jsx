@@ -172,14 +172,16 @@ export default function GoalsPage({ user }) {
   }
 
   async function deleteGoal(id) {
-    await supabase.from('user_goals').delete().eq('id', id)
+    const { error } = await supabase.from('user_goals').delete().eq('id', id)
+    if (error) { toast(error.message, 'error'); return }
     setGoals(prev => prev.filter(g => g.id !== id))
     toast('Goal deleted', 'info', 2000)
   }
 
   async function toggleGoal(goal) {
     const next = !goal.is_active
-    await supabase.from('user_goals').update({ is_active: next }).eq('id', goal.id)
+    const { error } = await supabase.from('user_goals').update({ is_active: next }).eq('id', goal.id)
+    if (error) { toast(error.message, 'error'); return }
     setGoals(prev => prev.map(g => g.id === goal.id ? { ...g, is_active: next } : g))
   }
 

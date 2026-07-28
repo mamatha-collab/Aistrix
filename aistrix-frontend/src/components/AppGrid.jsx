@@ -215,6 +215,7 @@ export default function AppGrid({ onSelectApp, selectedApp, user, search, runCou
   // sample / Run app actions; compact tabs are opt-in via the toggle above.
   const [viewMode, setViewMode] = useState(() => localStorage.getItem('aistrix:appViewMode') || 'grid')
   const [loading, setLoading] = useState(true)
+  const toast = useToast()
 
   useEffect(() => {
     localStorage.setItem('aistrix:appViewMode', viewMode)
@@ -322,10 +323,12 @@ export default function AppGrid({ onSelectApp, selectedApp, user, search, runCou
     const isFav = favorites.has(id)
 
     if (isFav) {
-      await supabase.from('favorites').delete().eq('app_id', id).eq('user_id', user.id)
+      const { error } = await supabase.from('favorites').delete().eq('app_id', id).eq('user_id', user.id)
+      if (error) { toast(error.message, 'error'); return }
       setFavorites(prev => { const next = new Set(prev); next.delete(id); return next })
     } else {
-      await supabase.from('favorites').insert({ app_id: id, user_id: user.id })
+      const { error } = await supabase.from('favorites').insert({ app_id: id, user_id: user.id })
+      if (error) { toast(error.message, 'error'); return }
       setFavorites(prev => new Set([...prev, id]))
     }
   }

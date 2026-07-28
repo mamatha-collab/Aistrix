@@ -80,7 +80,8 @@ export default function KnowledgeBaseEditor({ appId }) {
   }
 
   async function deleteItem(id) {
-    await supabase.from('app_knowledge').delete().eq('id', id)
+    const { error } = await supabase.from('app_knowledge').delete().eq('id', id)
+    if (error) { toast(error.message, 'error'); return }
     setItems(prev => prev.filter(i => i.id !== id))
     toast('Removed', 'info', 2000)
   }

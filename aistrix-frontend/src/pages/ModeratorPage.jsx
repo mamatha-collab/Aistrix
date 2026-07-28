@@ -28,7 +28,8 @@ function ReviewQueue({ toast }) {
 
   async function setStatus(id, status) {
     const note = notes[id] || ''
-    await supabase.from('apps').update({ status, review_notes: note, is_published: status === 'approved' }).eq('id', id)
+    const { error } = await supabase.from('apps').update({ status, review_notes: note, is_published: status === 'approved' }).eq('id', id)
+    if (error) { toast(error.message, 'error'); return }
     setApps(prev => prev.filter(a => a.id !== id))
     toast(`App ${status}`, status === 'approved' ? 'success' : 'info')
   }
@@ -116,7 +117,8 @@ function BadgeManager({ toast }) {
   }, [])
 
   async function toggleBadge(id, key, current) {
-    await supabase.from('apps').update({ [key]: !current }).eq('id', id)
+    const { error } = await supabase.from('apps').update({ [key]: !current }).eq('id', id)
+    if (error) { toast(error.message, 'error'); return }
     setApps(prev => prev.map(a => a.id === id ? { ...a, [key]: !current } : a))
     toast('Badge updated', 'success', 1500)
   }

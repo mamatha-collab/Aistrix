@@ -129,11 +129,20 @@ function HourChart({ data }) {
 // ─── Main page ───────────────────────────────────────────────────────────────
 
 const PERIODS = [
-  { id: 7,  label: '7 days' },
-  { id: 30, label: '30 days' },
-  { id: 90, label: '90 days' },
+  { id: 7,   label: '7 days' },
+  { id: 30,  label: '30 days' },
+  { id: 90,  label: '90 days' },
   { id: 365, label: '1 year' },
+  { id: 3650, label: 'All time' },
 ]
+
+const PERIOD_LABEL = {
+  7:    'the last 7 days',
+  30:   'the last 30 days',
+  90:   'the last 90 days',
+  365:  'the last year',
+  3650: 'all time',
+}
 
 export default function AnalyticsPage({ user }) {
   const [period, setPeriod] = useState(30)
@@ -253,8 +262,16 @@ export default function AnalyticsPage({ user }) {
       ) : !stats || stats.total === 0 ? (
         <div className={`${card} p-12 text-center`}>
           <p className="text-4xl mb-3">📈</p>
-          <p className="text-white font-medium mb-1">No data for this period</p>
-          <p className="text-slate-400 text-sm">Run some apps and come back to see your analytics.</p>
+          <p className="text-white font-medium mb-1">No data in {PERIOD_LABEL[period] ?? `the last ${period} days`}</p>
+          <p className="text-slate-400 text-sm mb-4">Run some apps and come back to see your analytics.</p>
+          {period !== 3650 && (
+            <button
+              onClick={() => setPeriod(3650)}
+              className="text-xs font-semibold px-4 py-2 rounded-lg bg-white/8 hover:bg-white/12 border border-white/15 text-slate-300 hover:text-white transition-colors"
+            >
+              View all-time →
+            </button>
+          )}
         </div>
       ) : (
         <>

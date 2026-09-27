@@ -68,6 +68,8 @@ const PATH_VIEW_MAP = {
   '/home': 'overview', '/pricing': 'overview', '/overview': 'overview',
   '/workspaces': 'flows', '/workflows': 'flows',
   '/run-history': 'history',
+  '/api': 'developer', '/usage': 'analytics',
+  '/knowledge': 'knowledge_vault', '/knowledge-base': 'knowledge_vault',
 }
 
 export default function App() {
@@ -179,10 +181,14 @@ export default function App() {
   }, [session])
 
   // Keep activeView in sync when the URL changes from outside changeView —
-  // e.g. the browser back/forward buttons.
+  // e.g. the browser back/forward buttons, or a direct/bookmarked alias URL.
   useEffect(() => {
     const mapped = PATH_VIEW_MAP[location.pathname]
-    if (mapped && mapped !== activeView) setActiveView(mapped)
+    if (!mapped) return
+    if (mapped !== activeView) setActiveView(mapped)
+    // Redirect alias paths to their canonical URL so bookmarks self-correct
+    const canonical = VIEW_PATH_MAP[mapped]
+    if (canonical && canonical !== location.pathname) navigate(canonical, { replace: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps -- activeView is read, not a trigger; only re-run on path changes
   }, [location.pathname])
 

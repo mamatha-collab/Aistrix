@@ -113,7 +113,7 @@ export function AppTab({ app, selected, starred, isOwn, onClick, onToggleFavorit
   )
 }
 
-export default function AppCard({ app, selected, starred, isOwn, sharedRole, onClick, onToggleFavorite, showPublishToggle, onPublishToggle }) {
+export default function AppCard({ app, selected, starred, isOwn, sharedRole, onClick, onRun, onToggleFavorite, showPublishToggle, onPublishToggle }) {
   const staticBadges = STATIC_BADGES.filter(b => app[b.key])
   const derivedBadges = getDerivedBadges(app)
   const allBadges = [...staticBadges, ...derivedBadges]
@@ -265,7 +265,7 @@ export default function AppCard({ app, selected, starred, isOwn, sharedRole, onC
           View details
         </button>
         <button
-          onClick={e => { e.stopPropagation(); onClick() }}
+          onClick={e => { e.stopPropagation(); (onRun ?? onClick)() }}
           className="w-full text-xs font-semibold py-1.5 rounded-lg transition-all text-[#A29BFE] bg-[#6C5CE7]/15 hover:bg-[#6C5CE7]/25 border border-[#6C5CE7]/25"
         >
           {primaryActionLabel}

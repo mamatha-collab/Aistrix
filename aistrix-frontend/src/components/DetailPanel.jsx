@@ -124,7 +124,7 @@ function AnalyticsView({ app, user, onClose }) {
 }
 
 export default function DetailPanel({ app, user, onClose, onRun, onDeleted }) {
-  const [running, setRunning] = useState(false)
+  const [running, setRunning] = useState(!!app._runNow)
   const [copied, setCopied] = useState(false)
   const [stats, setStats] = useState(null)
   const [showAnalytics, setShowAnalytics] = useState(false)

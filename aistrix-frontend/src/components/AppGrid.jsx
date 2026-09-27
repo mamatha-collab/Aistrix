@@ -542,6 +542,7 @@ export default function AppGrid({ onSelectApp, selectedApp, user, search, runCou
                     starred={favorites.has(String(app.id))}
                     isOwn={true}
                     onClick={() => onSelectApp(app)}
+                    onRun={() => onSelectApp({ ...app, _runNow: true })}
                     onToggleFavorite={() => toggleFavorite(app.id)}
                     showPublishToggle={true}
                     onPublishToggle={() => togglePublish(app)}
@@ -573,6 +574,7 @@ export default function AppGrid({ onSelectApp, selectedApp, user, search, runCou
                     starred={favorites.has(String(app.id))}
                     sharedRole={sharedRoles[app.id]}
                     onClick={() => onSelectApp(app)}
+                    onRun={() => onSelectApp({ ...app, _runNow: true })}
                     onToggleFavorite={() => toggleFavorite(app.id)}
                   />
                 ))}
@@ -648,6 +650,7 @@ export default function AppGrid({ onSelectApp, selectedApp, user, search, runCou
                   starred={favorites.has(String(app.id))}
                   isOwn={app.created_by === user?.id}
                   onClick={() => onSelectApp(app)}
+                  onRun={() => onSelectApp({ ...app, _runNow: true })}
                   onToggleFavorite={() => toggleFavorite(app.id)}
                 />
               ))}
@@ -662,6 +665,7 @@ export default function AppGrid({ onSelectApp, selectedApp, user, search, runCou
                   starred={favorites.has(String(app.id))}
                   isOwn={app.created_by === user?.id}
                   onClick={() => onSelectApp(app)}
+                  onRun={() => onSelectApp({ ...app, _runNow: true })}
                   onToggleFavorite={() => toggleFavorite(app.id)}
                 />
               ))}

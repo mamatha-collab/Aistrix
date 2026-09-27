@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../supabase'
+import { timeAgo } from '../utils'
 
 // ─── Chart primitives ───────────────────────────────────────────────────────
 
@@ -149,12 +150,34 @@ export default function AnalyticsPage({ user }) {
   const [runs, setRuns] = useState([])
   const [prevRuns, setPrevRuns] = useState([])
   const [appMap, setAppMap] = useState({})
+  const [allTimeLastRuns, setAllTimeLastRuns] = useState({})
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     load()
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when period or user.id changes
   }, [period, user.id])
+
+  useEffect(() => {
+    loadAllTimeLastRuns()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user.id])
+
+  async function loadAllTimeLastRuns() {
+    const { data } = await supabase
+      .from('run_history')
+      .select('app_id, app_name, created_at')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+      .limit(500)
+    if (!data) return
+    const map = {}
+    data.forEach(r => {
+      const key = r.app_id || r.app_name
+      if (!map[key]) map[key] = r.created_at
+    })
+    setAllTimeLastRuns(map)
+  }
 
   async function load() {
     setLoading(true)
@@ -235,6 +258,33 @@ export default function AnalyticsPage({ user }) {
 
     return { total, trend, avgPerDay, ratingPct, thumbsUp, thumbsDown, timelineData, appData, hourData, peakDow }
   }, [runs, prevRuns, appMap, period])
+
+  const appHealth = useMemo(() => {
+    if (!runs.length) return []
+    const byKey = {}
+    runs.forEach(r => {
+      const key = r.app_id || r.app_name
+      if (!byKey[key]) byKey[key] = { id: r.app_id, name: r.app_name, emoji: appMap[r.app_id]?.emoji || '🤖', runs: [] }
+      byKey[key].runs.push(r)
+    })
+    return Object.values(byKey).map(app => {
+      const total = app.runs.length
+      const rated = app.runs.filter(r => r.rating != null)
+      const thumbsUp = rated.filter(r => r.rating === 1).length
+      const thumbsDown = rated.filter(r => r.rating === -1).length
+      const usefulPct = rated.length > 0 ? Math.round((thumbsUp / rated.length) * 100) : null
+      const notUsefulPct = rated.length > 0 ? Math.round((thumbsDown / rated.length) * 100) : null
+      const lastRunInPeriod = app.runs[app.runs.length - 1]?.created_at
+      const allTimeKey = app.id || app.name
+      const lastRunAllTime = allTimeLastRuns[allTimeKey] ?? lastRunInPeriod
+      const daysSince = lastRunAllTime ? (Date.now() - new Date(lastRunAllTime).getTime()) / 86400000 : null
+      const needsReview = (usefulPct !== null && usefulPct < 50) || (daysSince !== null && daysSince > 14)
+      return { ...app, total, rated: rated.length, thumbsUp, thumbsDown, usefulPct, notUsefulPct, lastRunAllTime, daysSince, needsReview }
+    }).sort((a, b) => {
+      if (a.needsReview !== b.needsReview) return a.needsReview ? -1 : 1
+      return b.total - a.total
+    })
+  }, [runs, appMap, allTimeLastRuns])
 
   const card = 'bg-[#171B33] border border-white/5 rounded-2xl p-5'
 
@@ -320,6 +370,79 @@ export default function AnalyticsPage({ user }) {
             </div>
             <HourChart data={stats.hourData} />
           </div>
+
+          {/* App / workflow health */}
+          {appHealth.length > 0 && (
+            <div className={card}>
+              <div className="flex items-center justify-between mb-4">
+                <p className="text-sm font-medium text-white">App &amp; workflow health</p>
+                <p className="text-xs text-slate-500">Needs review = &lt;50% useful or stale &gt;14 days</p>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="text-left text-[11px] text-slate-500 border-b border-white/5">
+                      <th className="pb-2 font-medium pr-4">App / Workflow</th>
+                      <th className="pb-2 font-medium pr-4 text-right">Runs</th>
+                      <th className="pb-2 font-medium pr-4 text-right">Useful rate</th>
+                      <th className="pb-2 font-medium pr-4 text-right">Not useful</th>
+                      <th className="pb-2 font-medium pr-4 text-right">Last run</th>
+                      <th className="pb-2 font-medium text-right">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/5">
+                    {appHealth.map(app => (
+                      <tr key={app.id || app.name} className="group">
+                        <td className="py-2.5 pr-4">
+                          <div className="flex items-center gap-2">
+                            <span className="text-base leading-none">{app.emoji}</span>
+                            <span className="text-white font-medium truncate max-w-[180px]">{app.name}</span>
+                          </div>
+                        </td>
+                        <td className="py-2.5 pr-4 text-right text-slate-300">{app.total}</td>
+                        <td className="py-2.5 pr-4 text-right">
+                          {app.usefulPct !== null ? (
+                            <div className="flex items-center justify-end gap-1.5">
+                              <div className="w-16 h-1.5 bg-[#1F2444] rounded-full overflow-hidden">
+                                <div className="h-full rounded-full bg-[#00B894]" style={{ width: `${app.usefulPct}%` }} />
+                              </div>
+                              <span className={app.usefulPct >= 70 ? 'text-green-400' : app.usefulPct >= 50 ? 'text-yellow-400' : 'text-red-400'}>
+                                {app.usefulPct}%
+                              </span>
+                            </div>
+                          ) : <span className="text-slate-600">—</span>}
+                        </td>
+                        <td className="py-2.5 pr-4 text-right">
+                          {app.notUsefulPct !== null && app.notUsefulPct > 0
+                            ? <span className="text-red-400">{app.notUsefulPct}%</span>
+                            : <span className="text-slate-600">—</span>}
+                        </td>
+                        <td className="py-2.5 pr-4 text-right text-slate-400">
+                          {app.lastRunAllTime ? timeAgo(app.lastRunAllTime) : '—'}
+                        </td>
+                        <td className="py-2.5 text-right">
+                          {app.needsReview ? (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md bg-amber-500/15 text-amber-400 border border-amber-500/25">
+                              ⚠ Review
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-md bg-green-500/10 text-green-400 border border-green-500/20">
+                              ✓ OK
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {appHealth.some(a => a.rated === 0) && (
+                <p className="text-[10px] text-slate-600 mt-3">
+                  💡 Apps with no ratings yet don't show a useful rate. Rate results with 👍 👎 in the runner.
+                </p>
+              )}
+            </div>
+          )}
         </>
       )}
     </div>

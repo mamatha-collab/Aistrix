@@ -128,7 +128,7 @@ export default function AppCard({ app, selected, starred, isOwn, sharedRole, onC
     app.app_type === 'native' && { label: 'Guided form', color: '#6C5CE7' },
     app.app_type === 'data' && { label: 'Data input', color: '#E17055' },
   ].filter(Boolean)
-  const primaryActionLabel = (app.total_runs || 0) > 0 ? 'Run app' : 'Try sample'
+  const primaryActionLabel = (app.total_runs || 0) > 0 ? 'Run app' : 'Open app'
 
   function handleShare(e) {
     e.stopPropagation()
@@ -262,7 +262,7 @@ export default function AppCard({ app, selected, starred, isOwn, sharedRole, onC
           onClick={e => { e.stopPropagation(); onClick() }}
           className="w-full text-xs font-semibold py-1.5 rounded-lg transition-all text-slate-300 bg-white/5 hover:bg-white/10 border border-white/12"
         >
-          Preview
+          View details
         </button>
         <button
           onClick={e => { e.stopPropagation(); onClick() }}

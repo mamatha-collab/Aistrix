@@ -5,7 +5,7 @@ import NotificationsPanel from './NotificationsPanel'
 const VIEW_META = {
   apps:        { title: 'AI Apps',        subtitle: 'Build and run AI-powered apps', icon: LayoutGrid, label: 'AI APPS', buildView: true },
   flows:       { title: 'AI Workflows',   subtitle: 'Ready-to-run workflows - install and run in seconds', icon: Workflow, label: 'AI WORKFLOWS', buildView: true },
-  overview:    { title: 'Overview',        subtitle: 'Your activity at a glance' },
+  overview:    { title: 'Overview',        subtitle: 'Aistrix designs, runs, and improves AI workflows from your business goal.' },
   analytics:   { title: 'Analytics',       subtitle: 'Usage trends and performance' },
   reports:     { title: 'Reports',         subtitle: 'Scheduled and on-demand reports' },
   events:      { title: 'Events',          subtitle: 'Scheduled and triggered runs' },

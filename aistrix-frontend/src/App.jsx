@@ -163,7 +163,7 @@ export default function App() {
       setSession(session)
       if (session) identify(session.user.id, { email: session.user.email })
       else if (event === 'SIGNED_OUT') resetIdentity()
-      if (session && !localStorage.getItem('aistrix_welcomed')) setShowOnboarding(true)
+      if (session && !localStorage.getItem('aistrix_welcomed') && (localStorage.getItem('aistrix_mode') || 'business') !== 'developer') setShowOnboarding(true)
       if (session && !localStorage.getItem('aistrix:app_onboarding_done')) {
         supabase.from('apps').select('id', { count: 'exact', head: true })
           .eq('created_by', session.user.id)

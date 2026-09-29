@@ -88,10 +88,17 @@ export default function OnboardingWizard({ user, onDismiss, onNavChange }) {
     <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
       <div className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-lg overflow-hidden">
 
-        {/* Progress bar */}
-        <div className="h-1 bg-[#1F2444]">
-          <div className="h-full bg-gradient-to-r from-[#6C5CE7] to-[#E84393] transition-all duration-500"
-            style={{ width: `${(step / STEPS) * 100}%` }} />
+        {/* Progress bar + close */}
+        <div className="relative">
+          <div className="h-1 bg-[#1F2444]">
+            <div className="h-full bg-gradient-to-r from-[#6C5CE7] to-[#E84393] transition-all duration-500"
+              style={{ width: `${(step / STEPS) * 100}%` }} />
+          </div>
+          <button onClick={() => { localStorage.setItem('aistrix_welcomed', '1'); onDismiss() }}
+            aria-label="Close"
+            className="absolute top-3 right-3 text-slate-500 hover:text-white transition-colors z-10">
+            ✕
+          </button>
         </div>
 
         <div className="p-6">

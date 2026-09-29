@@ -101,7 +101,7 @@ export default function TypeBuilderGuide({ type, onContinue, onClose }) {
   if (!guide) { onContinue(); return null }
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-60 p-4" onClick={onClose}>
       <div ref={panelRef} role="dialog" aria-modal="true"
         className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-lg flex flex-col overflow-hidden"
         style={{ maxHeight: '90vh' }}

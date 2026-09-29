@@ -1666,7 +1666,7 @@ function EvaluateTab({ apps, appStats, runs, user }) {
 
 const API_URL = import.meta.env.VITE_API_URL || ''
 
-function ImproveTab({ apps, user }) {
+function ImproveTab({ apps, user, runs }) {
   const [selectedApp, setSelectedApp] = useState(null)
   const [vA, setVA] = useState(null)   // version left
   const [vB, setVB] = useState(null)   // version right
@@ -1675,10 +1675,118 @@ function ImproveTab({ apps, user }) {
   const [outputB, setOutputB] = useState('')
   const [runningA, setRunningA] = useState(false)
   const [runningB, setRunningB] = useState(false)
+  // AI suggestions state
+  const [suggestion, setSuggestion]   = useState('')
+  const [suggesting, setSuggesting]   = useState(false)
+  // GitHub feedback tracker state
+  const [ghToken, setGhToken]         = useState('')
+  const [ghRepo, setGhRepo]           = useState('')
+  const [ghSaving, setGhSaving]       = useState(false)
+  const [ghConnected, setGhConnected] = useState(false)
+  const [creatingIssue, setCreatingIssue] = useState(null)   // run id
+  // Integrations (for deep-links)
+  const [integrations, setIntegrations] = useState(null)
   const toast = useToast()
+
+  useEffect(() => { loadSettings() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function loadSettings() {
+    const { data } = await supabase.from('developer_settings').select('settings').eq('user_id', user.id).single()
+    const s = data?.settings || {}
+    setIntegrations(s)
+    if (s.github?.token) { setGhToken(s.github.token); setGhRepo(s.github.repo || ''); setGhConnected(true) }
+  }
+
+  async function saveGitHub() {
+    if (!ghToken.trim()) { toast('Enter a GitHub token', 'error', 2000); return }
+    setGhSaving(true)
+    const merged = { ...(integrations || {}), github: { token: ghToken.trim(), repo: ghRepo.trim() } }
+    const { error } = await supabase.from('developer_settings')
+      .upsert({ user_id: user.id, settings: merged }, { onConflict: 'user_id' })
+    setGhSaving(false)
+    if (error) { toast(error.message, 'error'); return }
+    setIntegrations(merged)
+    setGhConnected(true)
+    toast('GitHub connected', 'success', 2000)
+  }
 
   const appObj = apps.find(a => a.id === selectedApp) || null
   const { versions, loading: vLoading, needsSetup } = useVersions(selectedApp, user?.id)
+
+  // Worst-rated runs for selected app (for AI suggestions + GitHub tracker)
+  const worstRuns = useMemo(() =>
+    runs
+      .filter(r => r.app_id === selectedApp && r.rating != null && r.rating <= 2)
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+      .slice(0, 10)
+  , [runs, selectedApp])
+
+  async function runAISuggestion() {
+    if (!appObj) return
+    setSuggesting(true)
+    setSuggestion('')
+    const examples = worstRuns.slice(0, 5)
+      .map((r, i) => `Example ${i + 1}:\nApp: ${r.app_name}\nRating: ${r.rating}★`)
+      .join('\n\n')
+    const systemPrompt = `You are an expert prompt engineer. Analyse the following low-rated AI app runs and suggest specific, actionable improvements to the system prompt to address the issues. Be concrete — rewrite problem sections rather than giving vague advice. Focus on tone, specificity, constraints, and output format.`
+    const userMsg = `App: ${appObj.name}\nCurrent system prompt:\n${appObj.system_prompt || '(none)'}\n\nLow-rated runs:\n${examples || 'No rated runs yet — provide general improvement suggestions based on the prompt.'}`
+    try {
+      const res = await fetch(`${API_URL}/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          input: userMsg,
+          system_prompt: systemPrompt,
+          ai_provider: appObj.ai_provider || 'anthropic',
+          ai_model: appObj.ai_model || 'claude-haiku-4-5',
+        }),
+      })
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const parts = buf.split('\n\n')
+        buf = parts.pop()
+        for (const part of parts) {
+          if (!part.startsWith('data:')) continue
+          try {
+            const j = JSON.parse(part.slice(5))
+            if (j.token) setSuggestion(p => p + j.token)
+            if (j.error) toast(j.error, 'error')
+          } catch { /* partial JSON */ }
+        }
+      }
+    } catch (e) { toast(e.message, 'error') }
+    finally { setSuggesting(false) }
+  }
+
+  async function createGitHubIssue(run) {
+    if (!ghToken || !ghRepo) { toast('Connect GitHub first', 'error', 2000); return }
+    setCreatingIssue(run.id)
+    const [owner, repo] = ghRepo.split('/')
+    const body = [
+      `**App:** ${run.app_name}`,
+      `**Rating:** ${run.rating}★`,
+      `**Date:** ${new Date(run.created_at).toLocaleString()}`,
+      run.input  ? `\n**Input:**\n\`\`\`\n${run.input}\n\`\`\`` : '',
+      run.output ? `\n**Output:**\n\`\`\`\n${run.output}\n\`\`\`` : '',
+      '\n---\n*Created from Aistrix Improve tab*',
+    ].filter(Boolean).join('\n')
+    try {
+      const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/issues`, {
+        method: 'POST',
+        headers: { Authorization: `token ${ghToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: `[${run.app_name}] Low-rated run (${run.rating}★)`, body, labels: ['ai-quality'] }),
+      })
+      if (!res.ok) { const e = await res.json(); toast(e.message || 'GitHub API error', 'error'); return }
+      const issue = await res.json()
+      toast(`Issue #${issue.number} created`, 'success', 3000)
+    } catch (e) { toast(e.message, 'error') }
+    finally { setCreatingIssue(null) }
+  }
 
   async function runVersion(v, app, setOutput, setRunning) {
     if (!testInput.trim()) { toast('Enter a test input first', 'error', 2000); return }
@@ -1824,6 +1932,136 @@ function ImproveTab({ apps, user }) {
           )}
         </>
       )}
+
+      {/* ── Tool deep-links (when integrations connected) ── */}
+      {(integrations?.langfuse?.langfuse_public_key || integrations?.promptfoo?.api_key) && (
+        <div>
+          <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide mb-2">Open in connected tools</p>
+          <div className="flex flex-wrap gap-2">
+            {integrations?.langfuse?.langfuse_public_key && (
+              <a href="https://cloud.langfuse.com" target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium border border-white/5 bg-[#0E1424] text-slate-300 hover:text-white hover:border-white/10 transition-all">
+                🔭 Langfuse prompt playground ↗
+              </a>
+            )}
+            {integrations?.promptfoo?.api_key && (
+              <a href="https://app.promptfoo.dev" target="_blank" rel="noopener noreferrer"
+                className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium border border-white/5 bg-[#0E1424] text-slate-300 hover:text-white hover:border-white/10 transition-all">
+                🧪 Promptfoo comparison reports ↗
+              </a>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── AI improvement suggestions ── */}
+      {selectedApp && appObj && (
+        <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5 space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-white text-sm font-semibold">🤖 AI improvement suggestions</p>
+              <p className="text-slate-500 text-xs mt-0.5">
+                Analyses {worstRuns.length} low-rated run{worstRuns.length !== 1 ? 's' : ''} and suggests prompt rewrites.
+              </p>
+            </div>
+            <button onClick={runAISuggestion} disabled={suggesting}
+              className="text-xs font-semibold px-4 py-2 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors disabled:opacity-40 shrink-0">
+              {suggesting ? '▌ Thinking…' : '✨ Suggest improvements'}
+            </button>
+          </div>
+          {(suggestion || suggesting) && (
+            <div className="bg-[#0E1424] border border-white/5 rounded-xl p-4">
+              <p className="text-[9px] text-slate-600 uppercase font-semibold mb-2">Suggestions</p>
+              <div className="text-sm text-slate-300 leading-relaxed whitespace-pre-wrap max-h-80 overflow-y-auto">
+                {suggestion || <span className="text-slate-600 animate-pulse">Generating…</span>}
+              </div>
+            </div>
+          )}
+          {!suggestion && !suggesting && (
+            <p className="text-slate-600 text-xs">Click "Suggest improvements" to generate AI-powered rewrite suggestions based on your low-rated runs.</p>
+          )}
+        </div>
+      )}
+
+      {/* ── GitHub feedback tracker ── */}
+      <div className="bg-[#171B33] border border-white/5 rounded-2xl overflow-hidden">
+        <div className="flex items-center gap-3 px-4 py-3">
+          <span className="text-2xl">🐙</span>
+          <div className="flex-1 min-w-0">
+            <p className="text-white text-sm font-medium">GitHub feedback tracker</p>
+            <p className="text-[11px] text-slate-500">Create GitHub issues from low-rated runs for developer follow-up.</p>
+          </div>
+          <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full shrink-0 ${ghConnected ? 'bg-emerald-500/10 text-emerald-400' : 'bg-white/5 text-slate-500'}`}>
+            {ghConnected ? 'Connected' : 'Not connected'}
+          </span>
+        </div>
+
+        {/* Connection form */}
+        {!ghConnected && (
+          <div className="border-t border-white/5 px-4 py-4 space-y-3">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+              <div>
+                <label className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide block mb-1">Personal access token</label>
+                <input type="password" value={ghToken} onChange={e => setGhToken(e.target.value)}
+                  placeholder="ghp_…"
+                  className="w-full bg-[#0E1424] border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/40 font-mono" />
+                <p className="text-[10px] text-slate-600 mt-1">github.com → Settings → Developer settings → Personal access tokens → repo scope</p>
+              </div>
+              <div>
+                <label className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide block mb-1">Repository <span className="text-slate-600 font-normal normal-case">(owner/repo)</span></label>
+                <input type="text" value={ghRepo} onChange={e => setGhRepo(e.target.value)}
+                  placeholder="acme/my-ai-apps"
+                  className="w-full bg-[#0E1424] border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/40" />
+              </div>
+            </div>
+            <div className="flex justify-end">
+              <button onClick={saveGitHub} disabled={ghSaving}
+                className="text-xs font-semibold px-4 py-2 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors disabled:opacity-40">
+                {ghSaving ? '…' : 'Connect GitHub'}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Low-rated runs list for issue creation */}
+        {ghConnected && selectedApp && (
+          <div className="border-t border-white/5 px-4 py-4">
+            {worstRuns.length === 0 ? (
+              <p className="text-slate-600 text-xs text-center py-4">No low-rated runs for this app — nothing to report.</p>
+            ) : (
+              <div className="space-y-2">
+                <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide mb-2">
+                  {worstRuns.length} low-rated run{worstRuns.length !== 1 ? 's' : ''} · click to create GitHub issue
+                </p>
+                {worstRuns.map(r => (
+                  <div key={r.id} className="flex items-center gap-3 bg-[#0E1424] border border-white/5 rounded-xl px-4 py-2.5">
+                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ${r.rating === 1 ? 'bg-red-500/15 text-red-400' : 'bg-amber-500/10 text-amber-400'}`}>
+                      {r.rating}★
+                    </span>
+                    <p className="text-slate-300 text-xs truncate flex-1">{r.app_name} · {timeAgo(r.created_at)}</p>
+                    <button
+                      onClick={() => createGitHubIssue(r)}
+                      disabled={creatingIssue === r.id}
+                      className="text-[10px] font-semibold px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 transition-colors disabled:opacity-40 shrink-0">
+                      {creatingIssue === r.id ? '…' : '+ Issue'}
+                    </button>
+                  </div>
+                ))}
+                <button onClick={() => { setGhConnected(false) }}
+                  className="text-[10px] text-slate-600 hover:text-slate-400 transition-colors mt-1">
+                  Edit connection
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {ghConnected && !selectedApp && (
+          <div className="border-t border-white/5 px-4 py-4">
+            <p className="text-slate-600 text-xs text-center">Select an app above to see low-rated runs.</p>
+          </div>
+        )}
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <ComingSoonCard
@@ -2270,7 +2508,7 @@ export default function DevStudioPage({ user, onOpenCreate }) {
       {tab === 'sell'     && <SellTab     apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
       {tab === 'monitor'  && <MonitorTab  apps={apps} appStats={appStats} loading={loading} totalStats={totalStats} runs={runs} user={user} />}
       {tab === 'evaluate' && <EvaluateTab apps={apps} appStats={appStats} runs={runs} user={user} />}
-      {tab === 'improve'  && <ImproveTab  apps={apps} user={user} />}
+      {tab === 'improve'  && <ImproveTab  apps={apps} user={user} runs={runs} />}
       {tab === 'version'  && <VersionTab  apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
       {tab === 'monetize' && <MonetizeTab apps={apps} runs={runs} loading={loading} />}
     </div>

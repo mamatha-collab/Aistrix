@@ -8,6 +8,7 @@ import VersionManager, { useVersions, VersionSetupCard } from '../components/Ver
 
 const PromptStudio = lazy(() => import('../components/PromptStudio'))
 const DiffEditor   = lazy(() => import('@monaco-editor/react').then(m => ({ default: m.DiffEditor })))
+const DeveloperProfileEditor = lazy(() => import('./DeveloperProfilePage').then(m => ({ default: m.DeveloperProfileEditor })))
 
 // ─── Model cost table (USD per 1M tokens) ────────────────────────────────────
 const MODEL_COSTS = {
@@ -925,6 +926,11 @@ function SellTab({ apps, user, onAppUpdated }) {
           })}
         </div>
       </div>
+
+      {/* Developer profile */}
+      <Suspense fallback={null}>
+        <DeveloperProfileEditor user={user} />
+      </Suspense>
 
       {/* Marketplace listing editor */}
       <MarketplaceListings apps={apps} user={user} />

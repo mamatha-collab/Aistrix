@@ -34,8 +34,9 @@ const DevStudioPage    = lazy(() => import('./pages/DevStudioPage'))
 const KnowledgeVaultPage = lazy(() => import('./pages/KnowledgeVaultPage'))
 const PrivacyPage       = lazy(() => import('./pages/LegalPages').then(m => ({ default: m.PrivacyPage })))
 const TermsPage         = lazy(() => import('./pages/LegalPages').then(m => ({ default: m.TermsPage })))
-const MarketplacePage   = lazy(() => import('./pages/MarketplacePage').then(m => ({ default: m.MarketplacePage })))
+const MarketplacePage    = lazy(() => import('./pages/MarketplacePage').then(m => ({ default: m.MarketplacePage })))
 const MarketplaceAppPage = lazy(() => import('./pages/MarketplacePage').then(m => ({ default: m.MarketplaceAppPage })))
+const DeveloperProfilePage = lazy(() => import('./pages/DeveloperProfilePage'))
 
 // Lazy-load modal/panel components — all of these are gated behind a `show*`
 // toggle and never needed for the initial shell render, so there's no reason
@@ -244,6 +245,7 @@ export default function App() {
       <Route path="/gallery" element={<Suspense fallback={null}><Gallery /></Suspense>} />
       <Route path="/marketplace" element={<Suspense fallback={null}><MarketplacePage /></Suspense>} />
       <Route path="/marketplace/:id" element={<Suspense fallback={null}><MarketplaceAppPage /></Suspense>} />
+      <Route path="/dev/:userId" element={<Suspense fallback={null}><DeveloperProfilePage /></Suspense>} />
       <Route path="/*" element={
         <div className="app-shell flex h-screen overflow-hidden bg-[#09101F]">
 

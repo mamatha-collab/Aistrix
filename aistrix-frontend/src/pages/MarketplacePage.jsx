@@ -27,7 +27,7 @@ export function MarketplacePage() {
   async function load() {
     const { data } = await supabase
       .from('marketplace_listings')
-      .select('*, apps(name, description, ai_model, ai_provider, price_per_run, is_paid)')
+      .select('*, apps(name, description, ai_model, ai_provider, price_per_run, is_paid), developer_profiles(display_name)')
       .eq('status', 'live')
       .order('updated_at', { ascending: false })
     setListings(data || [])
@@ -137,9 +137,15 @@ function ListingCard({ listing: l, onClick }) {
         </div>
       )}
 
-      {l.category && (
-        <p className="text-[10px] text-slate-600">{l.category}</p>
-      )}
+      <div className="flex items-center justify-between">
+        {l.category && <p className="text-[10px] text-slate-600">{l.category}</p>}
+        {l.developer_profiles?.display_name && (
+          <Link to={`/dev/${l.user_id}`} onClick={e => e.stopPropagation()}
+            className="text-[10px] text-slate-600 hover:text-[#A29BFE] transition-colors">
+            by {l.developer_profiles.display_name}
+          </Link>
+        )}
+      </div>
     </button>
   )
 }
@@ -163,7 +169,7 @@ export function MarketplaceAppPage() {
   async function load() {
     const { data } = await supabase
       .from('marketplace_listings')
-      .select('*, apps(*)')
+      .select('*, apps(*), developer_profiles(display_name, bio, avatar_url)')
       .eq('app_id', id)
       .eq('status', 'live')
       .single()
@@ -271,6 +277,11 @@ export function MarketplaceAppPage() {
                 <span key={t} className="text-xs bg-white/5 text-slate-500 px-2 py-0.5 rounded-full">{t}</span>
               ))}
             </div>
+            {listing.developer_profiles?.display_name && (
+              <Link to={`/dev/${listing.user_id}`} className="text-xs text-slate-500 hover:text-[#A29BFE] transition-colors mt-1 inline-block">
+                by {listing.developer_profiles.display_name}
+              </Link>
+            )}
           </div>
         </div>
 

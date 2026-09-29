@@ -2214,9 +2214,265 @@ function VersionTab({ apps, user, onAppUpdated }) {
   )
 }
 
+// ─── Monetize helpers ─────────────────────────────────────────────────────────
+
+const ENTITLEMENTS_SETUP_SQL = `create table app_entitlements (
+  id            uuid primary key default gen_random_uuid(),
+  app_id        uuid references apps(id) on delete cascade,
+  user_id       uuid references auth.users(id),
+  plan          text not null default 'pay_per_run',
+  status        text not null default 'active',
+  stripe_customer_id  text,
+  stripe_sub_id       text,
+  current_period_start timestamptz,
+  current_period_end   timestamptz,
+  runs_this_period     int not null default 0,
+  run_quota            int,
+  created_at    timestamptz default now()
+);
+alter table app_entitlements enable row level security;
+create policy "owner" on app_entitlements
+  using (
+    app_id in (select id from apps where created_by = auth.uid())
+    or user_id = auth.uid()
+  );`
+
+const ENTITLEMENT_STATUS = {
+  active:   'bg-emerald-500/10 text-emerald-400',
+  trialing: 'bg-blue-500/10 text-blue-400',
+  past_due: 'bg-amber-500/10 text-amber-400',
+  canceled: 'bg-white/5 text-slate-500',
+}
+
+function StripeCard({ user }) {
+  const [integrations, setIntegrations] = useState(null)
+  const toast = useToast()
+
+  useEffect(() => {
+    supabase.from('developer_settings').select('settings').eq('user_id', user.id).single()
+      .then(({ data }) => setIntegrations(data?.settings || {}))
+  }, [user.id])
+
+  async function save(vals) {
+    const merged = { ...(integrations || {}), stripe: vals }
+    const { error } = await supabase.from('developer_settings')
+      .upsert({ user_id: user.id, settings: merged }, { onConflict: 'user_id' })
+    if (error) { toast(error.message, 'error'); return }
+    setIntegrations(merged)
+    toast('Stripe keys saved', 'success', 2000)
+  }
+
+  const stripe = integrations?.stripe || {}
+  const connected = !!(stripe.publishable_key && stripe.restricted_key)
+
+  return (
+    <div className="bg-[#171B33] border border-white/5 rounded-2xl overflow-hidden">
+      <div className="flex items-start gap-4 p-5">
+        <span className="text-3xl shrink-0">💳</span>
+        <div className="flex-1 min-w-0 space-y-3">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div>
+              <p className="text-white text-sm font-semibold">Stripe Checkout + Connect</p>
+              <p className="text-slate-400 text-xs mt-0.5 leading-relaxed">
+                Aistrix uses Stripe Checkout for user payments and Stripe Connect for developer payouts.
+                Store your keys here — the Aistrix backend uses them to create checkout sessions and process webhooks.
+              </p>
+            </div>
+            <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full shrink-0 ${connected ? 'bg-emerald-500/10 text-emerald-400' : 'bg-white/5 text-slate-500'}`}>
+              {connected ? 'Keys saved' : 'Not configured'}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            <div>
+              <label className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide block mb-1">Publishable key</label>
+              <input
+                type="text"
+                defaultValue={stripe.publishable_key || ''}
+                id="stripe-pk"
+                placeholder="pk_live_… or pk_test_…"
+                className="w-full bg-[#0E1424] border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/40 font-mono"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide block mb-1">Restricted key <span className="text-slate-600 font-normal normal-case">(charges + webhooks scope)</span></label>
+              <input
+                type="password"
+                defaultValue={stripe.restricted_key || ''}
+                id="stripe-rk"
+                placeholder="rk_live_… or rk_test_…"
+                className="w-full bg-[#0E1424] border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/40 font-mono"
+              />
+              <p className="text-[10px] text-slate-600 mt-1">Stripe dashboard → Developers → API keys → Restricted keys. Grant: write on charges, read on customers.</p>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div className="flex gap-2">
+              <a href="https://dashboard.stripe.com/apikeys" target="_blank" rel="noopener noreferrer"
+                className="text-[11px] text-[#A29BFE] hover:text-white transition-colors">Stripe API keys ↗</a>
+              <span className="text-slate-700">·</span>
+              <a href="https://dashboard.stripe.com/connect/accounts/overview" target="_blank" rel="noopener noreferrer"
+                className="text-[11px] text-[#A29BFE] hover:text-white transition-colors">Stripe Connect ↗</a>
+              <span className="text-slate-700">·</span>
+              <a href="https://dashboard.stripe.com/webhooks" target="_blank" rel="noopener noreferrer"
+                className="text-[11px] text-[#A29BFE] hover:text-white transition-colors">Webhooks ↗</a>
+            </div>
+            <button
+              onClick={() => {
+                const pk = document.getElementById('stripe-pk')?.value || ''
+                const rk = document.getElementById('stripe-rk')?.value || ''
+                save({ publishable_key: pk.trim(), restricted_key: rk.trim() })
+              }}
+              className="text-xs font-semibold px-4 py-2 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors">
+              Save keys
+            </button>
+          </div>
+
+          <div className="border-t border-white/5 pt-3 grid grid-cols-1 lg:grid-cols-3 gap-2">
+            {[
+              { icon: '1️⃣', label: 'Save keys above', done: connected },
+              { icon: '2️⃣', label: 'Aistrix team enables Checkout + Connect', done: false },
+              { icon: '3️⃣', label: 'Business users pay — entitlements created automatically', done: false },
+            ].map(({ icon, label, done }) => (
+              <div key={label} className={`flex items-center gap-2 text-xs ${done ? 'text-emerald-400' : 'text-slate-500'}`}>
+                <span>{done ? '✓' : icon}</span>
+                <span>{label}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function EntitlementsSection({ apps, user }) {
+  const [entitlements, setEntitlements] = useState(null)
+  const [needsSetup, setNeedsSetup]     = useState(false)
+  const [copied, setCopied]             = useState(false)
+  const toast = useToast()
+
+  useEffect(() => { load() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function load() {
+    const appIds = apps.map(a => a.id)
+    if (!appIds.length) { setEntitlements([]); return }
+    const { data, error } = await supabase
+      .from('app_entitlements')
+      .select('*')
+      .in('app_id', appIds)
+      .order('created_at', { ascending: false })
+    if (error) {
+      if (error.code === '42P01' || error.message?.includes('does not exist')) { setNeedsSetup(true); return }
+      toast(error.message, 'error'); return
+    }
+    setEntitlements(data || [])
+  }
+
+  function copy() {
+    navigator.clipboard.writeText(ENTITLEMENTS_SETUP_SQL)
+    setCopied(true); setTimeout(() => setCopied(false), 2000)
+  }
+
+  if (needsSetup) return (
+    <div className="bg-[#171B33] border border-amber-500/20 rounded-2xl p-6 space-y-4">
+      <div>
+        <p className="text-amber-400 font-semibold text-sm">⚙️ Setup required — entitlements table</p>
+        <p className="text-slate-400 text-sm mt-1">Tracks which users have paid access to which apps.</p>
+      </div>
+      <div className="relative">
+        <pre className="text-[11px] text-slate-300 bg-[#0E1424] rounded-xl p-4 overflow-x-auto leading-relaxed">{ENTITLEMENTS_SETUP_SQL}</pre>
+        <button onClick={copy} className="absolute top-2 right-2 text-[10px] text-slate-400 hover:text-white bg-white/5 px-2 py-1 rounded-md transition-colors">
+          {copied ? '✓ Copied' : '📋 Copy'}
+        </button>
+      </div>
+      <button onClick={load} className="text-xs font-semibold px-4 py-2 rounded-lg bg-[#6C5CE7]/15 hover:bg-[#6C5CE7]/25 text-[#A29BFE] border border-[#6C5CE7]/25 transition-colors">
+        ↺ I ran it — retry
+      </button>
+    </div>
+  )
+
+  if (entitlements === null) return <p className="text-slate-500 text-sm py-4 text-center">Loading…</p>
+
+  const appMap = Object.fromEntries(apps.map(a => [a.id, a]))
+
+  return (
+    <div className="bg-[#171B33] border border-white/5 rounded-2xl overflow-hidden">
+      <div className="px-5 py-4 border-b border-white/5 flex items-center justify-between">
+        <div>
+          <p className="text-sm font-medium text-white">User entitlements</p>
+          <p className="text-[11px] text-slate-500 mt-0.5">
+            {entitlements.length} entitlement{entitlements.length !== 1 ? 's' : ''} · populated by Stripe webhooks once billing is live
+          </p>
+        </div>
+        <button onClick={load} className="text-[10px] text-slate-500 hover:text-white bg-white/5 px-2 py-1 rounded-md transition-colors">↺ Refresh</button>
+      </div>
+
+      {entitlements.length === 0 ? (
+        <div className="px-5 py-8 text-center">
+          <p className="text-slate-500 text-sm">No entitlements yet.</p>
+          <p className="text-slate-600 text-xs mt-1">Rows are created automatically when a user pays via Stripe Checkout.</p>
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-left text-[11px] text-slate-500 border-b border-white/5">
+                <th className="px-4 py-3 font-medium">App</th>
+                <th className="px-4 py-3 font-medium">User</th>
+                <th className="px-4 py-3 font-medium">Plan</th>
+                <th className="px-4 py-3 font-medium text-right">Runs / quota</th>
+                <th className="px-4 py-3 font-medium">Period end</th>
+                <th className="px-4 py-3 font-medium">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/5">
+              {entitlements.map(e => {
+                const app = appMap[e.app_id]
+                const pct = e.run_quota ? Math.round((e.runs_this_period / e.run_quota) * 100) : null
+                return (
+                  <tr key={e.id} className="hover:bg-white/[0.02]">
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-1.5">
+                        <span>{app?.emoji}</span>
+                        <span className="text-white font-medium truncate max-w-[120px]">{app?.name || e.app_id.slice(0, 8)}</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-slate-400 font-mono text-[10px]">{e.user_id.slice(0, 8)}…</td>
+                    <td className="px-4 py-3 text-slate-300 capitalize">{e.plan.replace(/_/g, ' ')}</td>
+                    <td className="px-4 py-3 text-right">
+                      <span className="text-white">{e.runs_this_period}</span>
+                      {e.run_quota && <span className="text-slate-500"> / {e.run_quota}</span>}
+                      {pct !== null && (
+                        <div className="mt-1 bg-white/5 rounded-full h-1 w-16 ml-auto">
+                          <div className={`h-1 rounded-full ${pct >= 90 ? 'bg-red-400' : pct >= 70 ? 'bg-amber-400' : 'bg-emerald-400'}`}
+                            style={{ width: `${Math.min(pct, 100)}%` }} />
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-slate-400">
+                      {e.current_period_end ? new Date(e.current_period_end).toLocaleDateString() : '—'}
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${ENTITLEMENT_STATUS[e.status] || 'bg-white/5 text-slate-500'}`}>
+                        {e.status}
+                      </span>
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Tab: Monetize (Cost & Profit Meter) ─────────────────────────────────────
 
-function MonetizeTab({ apps, runs, loading }) {
+function MonetizeTab({ apps, runs, loading, user }) {
   const profitData = useMemo(() => {
     if (!apps.length) return []
     return apps.map(app => {
@@ -2343,20 +2599,35 @@ function MonetizeTab({ apps, runs, loading }) {
       </div>
 
       <p className="text-[11px] text-slate-600">
-        Token costs are estimates based on published model pricing. Actual costs may vary. Revenue figures assume every run was charged (no refunds or free tiers).
-        {profitData.some(d => d.withTokens === 0 && d.appRuns > 0) && ' Some apps have no token data recorded — token tracking is active for new runs.'}
+        Token costs are estimates based on published model pricing. Actual costs may vary. Revenue figures assume every run was charged.
+        {profitData.some(d => d.withTokens === 0 && d.appRuns > 0) && ' Some apps have no token data — token tracking is active for new runs.'}
       </p>
 
+      {/* ── Stripe connection ── */}
+      <div>
+        <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide mb-3">Stripe billing</p>
+        <div className="space-y-3">
+          <StripeCard user={user} />
+        </div>
+      </div>
+
+      {/* ── Entitlements viewer ── */}
+      <div>
+        <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide mb-3">User entitlements</p>
+        <EntitlementsSection apps={apps} user={user} />
+      </div>
+
+      {/* ── Coming soon ── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <ComingSoonCard
           icon="💰"
           title="Revenue Dashboard"
-          desc="Real revenue from paid runs, subscription billing, and payout history — once the billing layer is live."
+          desc="Real revenue from paid runs, subscription billing, and payout history — once Stripe Checkout is live."
           bullets={[
             'Actual charged revenue vs estimated',
-            'Failed payment rate',
+            'Failed payment rate and retry logic',
             'Monthly recurring revenue (MRR)',
-            'Payout request and history',
+            'Stripe Connect payout requests',
           ]}
         />
         <ComingSoonCard
@@ -2573,7 +2844,7 @@ export default function DevStudioPage({ user, onOpenCreate }) {
       {tab === 'evaluate' && <EvaluateTab apps={apps} appStats={appStats} runs={runs} user={user} />}
       {tab === 'improve'  && <ImproveTab  apps={apps} user={user} runs={runs} />}
       {tab === 'version'  && <VersionTab  apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
-      {tab === 'monetize' && <MonetizeTab apps={apps} runs={runs} loading={loading} />}
+      {tab === 'monetize' && <MonetizeTab apps={apps} runs={runs} loading={loading} user={user} />}
     </div>
   )
 }

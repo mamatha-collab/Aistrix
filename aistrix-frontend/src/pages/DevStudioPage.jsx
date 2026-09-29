@@ -14,12 +14,18 @@ const DeveloperProfileEditor = lazy(() => import('./DeveloperProfilePage').then(
 // ─── Onboarding: what you can build ──────────────────────────────────────────
 
 const APP_TYPES = [
-  { icon: '📝', label: 'Text apps',      desc: 'Summarise, rewrite, translate, classify — any text-in / text-out task.' },
-  { icon: '📊', label: 'Data apps',      desc: 'Drop in a CSV or Google Sheet and let the AI analyse, clean, or chart it.' },
-  { icon: '💬', label: 'Chat apps',      desc: 'Conversational assistants with persistent memory across turns.' },
-  { icon: '🤖', label: 'Agent apps',     desc: 'Apps that call tools, search the web, run code, or read files autonomously.' },
-  { icon: '📄', label: 'Multi-page',     desc: 'Guided multi-step forms where each page feeds the next.' },
-  { icon: '🔌', label: 'API / Webhook',  desc: 'Headless apps triggered by external services — Zapier, Slack, your own code.' },
+  { icon: '📝', label: 'Text apps',          desc: 'Summarise, rewrite, translate, classify — any text-in / text-out task.' },
+  { icon: '📊', label: 'Data apps',          desc: 'Drop in a CSV or Google Sheet and let the AI analyse, clean, or chart it.' },
+  { icon: '💬', label: 'Chat / Persona',     desc: 'Conversational assistants with persistent memory and a custom personality.' },
+  { icon: '🤖', label: 'Agent apps',         desc: 'Apps that call tools, search the web, run code, or read files autonomously.' },
+  { icon: '📄', label: 'Document / PDF',     desc: 'Upload PDFs, ask questions, extract tables, or summarise long reports.' },
+  { icon: '🔌', label: 'API / Webhook',      desc: 'Headless apps triggered by external services — Zapier, Slack, your own code.' },
+  { icon: '👁', label: 'Vision / Image',     desc: 'Send images in — AI describes, OCRs, inspects quality, or reads receipts.' },
+  { icon: '{ }', label: 'Structured Output', desc: 'Always returns valid JSON matching a schema — zero parsing errors.' },
+  { icon: '⊞', label: 'Batch Processor',    desc: 'Run any prompt over hundreds of CSV rows in parallel — get results back.' },
+  { icon: '🎙', label: 'Voice / Audio',      desc: 'Transcribe audio with Whisper, then summarise or extract action items.' },
+  { icon: '</>', label: 'Code Gen / Review', desc: 'Generate functions, review PRs, explain code, or auto-write tests.' },
+  { icon: '🌍', label: 'Translation',        desc: 'Translate text or docs across 100+ languages with glossary control.' },
 ]
 
 const LIFECYCLE_STEPS = [

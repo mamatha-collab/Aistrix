@@ -469,6 +469,16 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
           const newCount = (entitlement.runs_this_period ?? 0) + 1
           await supabase.from('app_entitlements').update({ runs_this_period: newCount }).eq('id', entitlement.id)
           setEntitlement(prev => prev ? { ...prev, runs_this_period: newCount } : prev)
+          // Fire quota-warning email at 80% usage (fire-and-forget, once per threshold cross)
+          const quota = entitlement.run_quota
+          if (quota != null && newCount === Math.floor(quota * 0.8) && newCount < quota) {
+            const { data: { session } } = await supabase.auth.getSession()
+            fetch(`${API_URL}/notify/quota-warning`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
+              body: JSON.stringify({ app_id: app.id, app_name: app.name, runs_used: newCount, run_quota: quota }),
+            }).catch(() => {})
+          }
         } else if (app.is_paid && app.price_per_run > 0) {
           await createNotification(user.id, { type: 'payment', title: 'Run completed', message: `${app.name} — $${app.price_per_run} charged`, link_view: 'apps' })
         }

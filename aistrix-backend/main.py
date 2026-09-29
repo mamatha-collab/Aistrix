@@ -54,6 +54,8 @@ app.add_middleware(
 SUPABASE_URL              = os.getenv("SUPABASE_URL")
 SUPABASE_ANON_KEY         = os.getenv("SUPABASE_ANON_KEY")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+RESEND_API_KEY            = os.getenv("RESEND_API_KEY")
+EMAIL_FROM                = os.getenv("EMAIL_FROM", "Aistrix <noreply@aistrix.app>")
 CRON_SECRET               = os.getenv("CRON_SECRET")
 REQUEST_TIMEOUT           = int(os.getenv("REQUEST_TIMEOUT", "90"))
 HOURLY_LIMIT              = int(os.getenv("RATE_LIMIT_PER_HOUR", "30"))
@@ -1268,6 +1270,54 @@ async def create_checkout_session(req: CheckoutSessionRequest, request: Request)
         raise HTTPException(status_code=400, detail=str(e.user_message))
 
 
+async def send_email(to: str, subject: str, html: str) -> bool:
+    """Send a transactional email via Resend. Returns True on success."""
+    if not RESEND_API_KEY:
+        print(f"EMAIL (no key): to={to} subject={subject}")
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.post(
+                "https://api.resend.com/emails",
+                headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
+                json={"from": EMAIL_FROM, "to": [to], "subject": subject, "html": html},
+            )
+            if r.status_code not in (200, 201):
+                print(f"Resend error {r.status_code}: {r.text}")
+                return False
+        return True
+    except Exception as e:
+        print(f"send_email exception: {e}")
+        return False
+
+
+def _email_base(title: str, body: str, cta_url: str = "", cta_label: str = "") -> str:
+    cta = f'<a href="{cta_url}" style="display:inline-block;margin-top:20px;padding:12px 24px;background:#6C5CE7;color:#fff;text-decoration:none;border-radius:8px;font-weight:600;font-size:14px">{cta_label}</a>' if cta_url else ""
+    return f"""<!DOCTYPE html><html><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:#09101F;color:#E2E8F0;margin:0;padding:40px 20px">
+<div style="max-width:520px;margin:0 auto;background:#0E1424;border:1px solid rgba(255,255,255,0.05);border-radius:16px;padding:36px">
+  <p style="margin:0 0 4px;font-size:18px;font-weight:700;color:#fff">{title}</p>
+  <div style="height:2px;width:32px;background:#6C5CE7;border-radius:2px;margin:12px 0 20px"></div>
+  <div style="font-size:14px;line-height:1.7;color:#94A3B8">{body}</div>
+  {cta}
+  <p style="margin:32px 0 0;font-size:11px;color:#334155">Aistrix · You're receiving this because you have an account on aistrix.app</p>
+</div></body></html>"""
+
+
+async def _lookup_email(user_id: str) -> Optional[str]:
+    """Look up a user's email from Supabase auth.users via the service-role client."""
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        return None
+    try:
+        sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+        result = await asyncio.to_thread(
+            lambda: sb.auth.admin.get_user_by_id(user_id)
+        )
+        return result.user.email if result and result.user else None
+    except Exception as e:
+        print(f"_lookup_email error: {e}")
+        return None
+
+
 async def _upsert_entitlement(
     app_id: str, user_id: str, plan: str,
     stripe_customer_id: Optional[str] = None,
@@ -1295,12 +1345,56 @@ async def _upsert_entitlement(
     if period_start:       row["current_period_start"] = period_start
     if period_end:         row["current_period_end"]   = period_end
 
-    await asyncio.to_thread(
+    result = await asyncio.to_thread(
         lambda: sb.table("app_entitlements")
             .upsert(row, on_conflict="app_id,user_id")
             .execute()
     )
     print(f"Entitlement upserted: app={app_id} user={user_id} plan={plan} status={status}")
+
+    if status != "active":
+        return
+
+    # Look up app name + developer user_id
+    try:
+        app_row = await asyncio.to_thread(
+            lambda: sb.table("apps").select("name, created_by").eq("id", app_id).single().execute()
+        )
+        app_name    = app_row.data["name"] if app_row.data else "your app"
+        dev_user_id = app_row.data.get("created_by") if app_row.data else None
+    except Exception:
+        app_name, dev_user_id = "your app", None
+
+    plan_label = "subscription" if plan == "subscription" else "purchase"
+
+    # Email buyer — welcome
+    buyer_email = await _lookup_email(user_id)
+    if buyer_email:
+        await send_email(
+            to=buyer_email,
+            subject=f"You now have access to {app_name}",
+            html=_email_base(
+                title=f"Welcome to {app_name} 🎉",
+                body=f"Your {plan_label} is confirmed. You can run <strong style='color:#fff'>{app_name}</strong> from your Aistrix dashboard any time.",
+                cta_url="https://aistrix.app",
+                cta_label="Open Aistrix →",
+            ),
+        )
+
+    # Email developer — new sale
+    if dev_user_id and dev_user_id != user_id:
+        dev_email = await _lookup_email(dev_user_id)
+        if dev_email:
+            await send_email(
+                to=dev_email,
+                subject=f"New {plan_label} for {app_name}",
+                html=_email_base(
+                    title=f"You have a new {plan_label}! 💰",
+                    body=f"Someone just made a <strong style='color:#fff'>{plan_label}</strong> for <strong style='color:#fff'>{app_name}</strong>. Check your Monitor tab for subscriber stats.",
+                    cta_url="https://aistrix.app",
+                    cta_label="View in Dev Studio →",
+                ),
+            )
 
 
 @app.post("/stripe/webhook")
@@ -1394,6 +1488,12 @@ async def stripe_webhook(request: Request):
         sub_id = obj.get("id")
         if sub_id and SUPABASE_SERVICE_ROLE_KEY:
             sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+            rows = await asyncio.to_thread(
+                lambda: sb.table("app_entitlements")
+                    .select("app_id, user_id")
+                    .eq("stripe_sub_id", sub_id)
+                    .limit(1).execute()
+            )
             await asyncio.to_thread(
                 lambda: sb.table("app_entitlements")
                     .update({"status": "cancelled"})
@@ -1401,8 +1501,62 @@ async def stripe_webhook(request: Request):
                     .execute()
             )
             print(f"Subscription cancelled: sub={sub_id}")
+            # Notify buyer their subscription ended
+            if rows.data:
+                buyer_id = rows.data[0]["user_id"]
+                cancelled_app_id = rows.data[0]["app_id"]
+                buyer_email = await _lookup_email(buyer_id)
+                try:
+                    app_row = await asyncio.to_thread(
+                        lambda: sb.table("apps").select("name").eq("id", cancelled_app_id).single().execute()
+                    )
+                    app_name = app_row.data["name"] if app_row.data else "your app"
+                except Exception:
+                    app_name = "your app"
+                if buyer_email:
+                    await send_email(
+                        to=buyer_email,
+                        subject=f"Your subscription to {app_name} has ended",
+                        html=_email_base(
+                            title=f"Subscription cancelled",
+                            body=f"Your subscription to <strong style='color:#fff'>{app_name}</strong> has been cancelled. You can re-subscribe any time from the app page.",
+                            cta_url="https://aistrix.app",
+                            cta_label="Open Aistrix →",
+                        ),
+                    )
 
     return {"received": True}
+
+
+class QuotaWarningRequest(BaseModel):
+    app_id: str
+    app_name: str
+    runs_used: int
+    run_quota: int
+
+
+@app.post("/notify/quota-warning")
+async def notify_quota_warning(body: QuotaWarningRequest, request: Request):
+    """Send a quota-warning email to the authenticated user (buyer)."""
+    user = await require_verified_user(request)
+    user_id = user["sub"]
+    user_email = await _lookup_email(user_id)
+    if user_email:
+        pct = round((body.runs_used / body.run_quota) * 100)
+        remaining = body.run_quota - body.runs_used
+        await send_email(
+            to=user_email,
+            subject=f"You've used {pct}% of your runs for {body.app_name}",
+            html=_email_base(
+                title=f"Running low on {body.app_name}",
+                body=f"You've used <strong style='color:#fff'>{body.runs_used} of {body.run_quota} runs</strong> ({pct}%). "
+                     f"You have <strong style='color:#fff'>{remaining} run{'s' if remaining != 1 else ''}</strong> left in your current period. "
+                     f"Top up any time from the app page.",
+                cta_url="https://aistrix.app",
+                cta_label="Top up →",
+            ),
+        )
+    return {"sent": bool(user_email)}
 
 
 @app.get("/sentry-test")

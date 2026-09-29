@@ -387,11 +387,460 @@ function ComingSoonCard({ icon, title, desc, bullets }) {
   )
 }
 
-// ─── Tab: Design ─────────────────────────────────────────────────────────────
+// ─── Tab: Design — Aistrix Blueprint Studio ──────────────────────────────────
+
+const INPUT_TYPES = ['short_text','long_text','number','select','multi_select','file','url','date','boolean','json','csv']
+
+const OUTPUT_FORMATS = [
+  { id: 'markdown',  label: 'Markdown report' },
+  { id: 'json',      label: 'JSON object' },
+  { id: 'table',     label: 'Table' },
+  { id: 'email',     label: 'Email draft' },
+  { id: 'checklist', label: 'Checklist' },
+  { id: 'scorecard', label: 'Scorecard' },
+  { id: 'decision',  label: 'Decision memo' },
+  { id: 'document',  label: 'Multi-section document' },
+]
+
+const AI_PRESETS = [
+  { id: 'business_analyst',    label: 'Business analyst',    hint: 'Analytical, structured, data-driven. Uses tables and numbered findings.' },
+  { id: 'recruiting_assistant',label: 'Recruiting assistant',hint: 'Objective, concise. Scores candidates and provides clear recommendations.' },
+  { id: 'sales_operator',      label: 'Sales operator',      hint: 'Persuasive but accurate. Surfaces opportunities and objections clearly.' },
+  { id: 'support_triage',      label: 'Support triage',      hint: 'Empathetic, efficient. Categorises issues and suggests resolutions.' },
+  { id: 'research_analyst',    label: 'Research analyst',    hint: 'Thorough, cited, impartial. Synthesises sources into clear summaries.' },
+  { id: 'legal_admin',         label: 'Legal admin',         hint: 'Precise, cautious. Flags risks and avoids giving legal advice.' },
+  { id: 'developer_assistant', label: 'Developer assistant', hint: 'Technical, direct. Writes correct code and explains reasoning.' },
+]
+
+function calcReadiness(app, bp) {
+  let score = 0
+  if (bp.business_problem?.trim())              score += 15
+  if (bp.audience?.trim())                      score += 10
+  if (bp.inputs?.length)                        score += 15
+  if (bp.output_contract?.required_fields?.length) score += 20
+  if (app?.system_prompt?.length > 200)         score += 15
+  if (bp.permissions)                           score += 10
+  if (bp.output_contract?.format)               score += 15
+  return Math.min(score, 100)
+}
+
+function ReadinessBar({ score }) {
+  const color = score >= 70 ? '#00B894' : score >= 40 ? '#FDCB6E' : '#E84393'
+  const label = score >= 70 ? 'Ready to test' : score >= 40 ? 'Needs work' : 'Incomplete'
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between">
+        <span className="text-xs font-semibold text-white">Design Readiness</span>
+        <span className="text-xs font-bold" style={{ color }}>{score}/100 — {label}</span>
+      </div>
+      <div className="h-2 bg-[#0E1424] rounded-full overflow-hidden">
+        <div className="h-full rounded-full transition-all duration-500" style={{ width: `${score}%`, background: color }} />
+      </div>
+      <div className="grid grid-cols-4 gap-1 pt-1">
+        {[
+          { label: 'Business', ok: score >= 15 },
+          { label: 'Inputs',   ok: score >= 30 },
+          { label: 'Output',   ok: score >= 50 },
+          { label: 'Prompt',   ok: score >= 65 },
+        ].map(({ label, ok }) => (
+          <div key={label} className="flex items-center gap-1">
+            <span className={`text-[10px] ${ok ? 'text-emerald-400' : 'text-slate-600'}`}>{ok ? '✓' : '○'}</span>
+            <span className="text-[10px] text-slate-500">{label}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio }) {
+  const toast   = useToast()
+  const [bp, setBp]       = useState(null)   // null = loading
+  const [saving, setSaving] = useState(false)
+  const [copilot, setCopilot] = useState('')
+  const [generating, setGenerating] = useState(false)
+  const [copilotOutput, setCopilotOutput] = useState('')
+  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+
+  useEffect(() => { loadBlueprint() }, [app.id])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function loadBlueprint() {
+    const { data } = await supabase.from('app_blueprints')
+      .select('blueprint').eq('app_id', app.id).maybeSingle()
+    setBp(data?.blueprint || {
+      business_problem: '',
+      audience: '',
+      inputs: [],
+      output_contract: { format: 'markdown', required_fields: [] },
+      ai_behavior: { tone_preset: '', refusal_rules: '' },
+      permissions: { stores_user_data: false, requires_external_api: false, handles_sensitive_data: false },
+    })
+  }
+
+  async function save(next) {
+    setSaving(true)
+    const score = calcReadiness(app, next)
+    const { error } = await supabase.from('app_blueprints').upsert(
+      { app_id: app.id, user_id: user.id, blueprint: next, readiness_score: score, updated_at: new Date().toISOString() },
+      { onConflict: 'app_id' }
+    )
+    setSaving(false)
+    if (error) { toast(error.message, 'error'); return }
+    toast('Blueprint saved', 'success', 2000)
+  }
+
+  function update(patch) {
+    setBp(p => ({ ...p, ...patch }))
+  }
+
+  // ── Input schema helpers ──
+  function addInput() {
+    const next = { ...bp, inputs: [...(bp.inputs || []), { key: '', label: '', type: 'short_text', required: true, pii: false, placeholder: '' }] }
+    setBp(next)
+  }
+  function updateInput(i, patch) {
+    const inputs = bp.inputs.map((f, idx) => idx === i ? { ...f, ...patch } : f)
+    setBp({ ...bp, inputs })
+  }
+  function removeInput(i) {
+    setBp({ ...bp, inputs: bp.inputs.filter((_, idx) => idx !== i) })
+  }
+
+  // ── Output contract helpers ──
+  function addField() {
+    const fields = [...(bp.output_contract?.required_fields || []), { field: '', type: 'string', description: '' }]
+    setBp({ ...bp, output_contract: { ...bp.output_contract, required_fields: fields } })
+  }
+  function updateField(i, patch) {
+    const fields = bp.output_contract.required_fields.map((f, idx) => idx === i ? { ...f, ...patch } : f)
+    setBp({ ...bp, output_contract: { ...bp.output_contract, required_fields: fields } })
+  }
+  function removeField(i) {
+    const fields = bp.output_contract.required_fields.filter((_, idx) => idx !== i)
+    setBp({ ...bp, output_contract: { ...bp.output_contract, required_fields: fields } })
+  }
+
+  // ── Copilot ──
+  async function generateBlueprint() {
+    if (!copilot.trim()) return
+    setGenerating(true)
+    setCopilotOutput('')
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const systemPrompt = `You are an AI app design assistant for the Aistrix platform. Given a developer's app idea, return a JSON blueprint with these exact keys: business_problem, audience, inputs (array of {key, label, type, required, pii}), output_contract ({format, required_fields: [{field, type, description}]}), system_prompt_hint, marketplace_tagline. Be concise and practical. Return ONLY valid JSON, no markdown fences.`
+      const res = await fetch(`${API_URL}/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(session ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+        body: JSON.stringify({ app_id: null, input: copilot, system_prompt: systemPrompt, ai_provider: 'claude', ai_model: null }),
+      })
+      if (!res.ok) throw new Error('Copilot request failed')
+      const reader = res.body.getReader(); const decoder = new TextDecoder()
+      let buf = ''; let raw = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const lines = buf.split('\n'); buf = lines.pop()
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          try { const d = JSON.parse(line.slice(6)); if (d.token) { raw += d.token; setCopilotOutput(raw) } } catch (_) {}
+        }
+      }
+      // Try to parse and apply
+      try {
+        const parsed = JSON.parse(raw.trim())
+        const next = {
+          ...bp,
+          business_problem: parsed.business_problem || bp.business_problem,
+          audience: parsed.audience || bp.audience,
+          inputs: parsed.inputs?.length ? parsed.inputs : bp.inputs,
+          output_contract: parsed.output_contract || bp.output_contract,
+        }
+        setBp(next)
+        toast('Blueprint generated — review and save', 'success', 4000)
+      } catch (_) {
+        toast('Generated — copy from preview below', 'info', 3000)
+      }
+    } catch (e) {
+      toast(e.message, 'error')
+    } finally {
+      setGenerating(false)
+    }
+  }
+
+  if (!bp) return <p className="text-slate-500 text-sm py-6 text-center">Loading blueprint…</p>
+
+  const score = calcReadiness(app, bp)
+
+  return (
+    <div className="space-y-5">
+
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl shrink-0"
+            style={{ background: (app.color || '#6C5CE7') + '33' }}>{app.emoji}</div>
+          <div>
+            <p className="text-white font-semibold text-sm">{app.name}</p>
+            <p className="text-[10px] text-slate-500">App Blueprint</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <button onClick={() => onOpenPromptStudio(app)}
+            className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-[#6C5CE7]/15 hover:bg-[#6C5CE7]/25 text-[#A29BFE] border border-[#6C5CE7]/25 transition-colors">
+            ✏️ Prompt Studio
+          </button>
+          <button onClick={() => save(bp)} disabled={saving}
+            className="text-xs font-semibold px-4 py-1.5 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors disabled:opacity-40">
+            {saving ? 'Saving…' : 'Save blueprint'}
+          </button>
+        </div>
+      </div>
+
+      {/* Readiness */}
+      <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5">
+        <ReadinessBar score={score} />
+      </div>
+
+      {/* Copilot */}
+      <div className="bg-[#171B33] border border-[#6C5CE7]/20 rounded-2xl p-5 space-y-3">
+        <p className="text-xs font-semibold text-[#A29BFE] uppercase tracking-wider">✦ Aistrix Copilot</p>
+        <p className="text-[11px] text-slate-500">Describe your app idea and Copilot will fill the blueprint for you.</p>
+        <div className="flex gap-2">
+          <input value={copilot} onChange={e => setCopilot(e.target.value)}
+            placeholder="e.g. An AI app that screens resumes for recruiters…"
+            className="flex-1 bg-[#0E1424] border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/40"
+            onKeyDown={e => e.key === 'Enter' && generateBlueprint()}
+          />
+          <button onClick={generateBlueprint} disabled={!copilot.trim() || generating}
+            className="text-xs font-semibold px-4 py-2 rounded-xl bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors disabled:opacity-40 shrink-0">
+            {generating ? '…' : 'Generate →'}
+          </button>
+        </div>
+        {copilotOutput && !generating && (
+          <details className="text-[10px] text-slate-600">
+            <summary className="cursor-pointer hover:text-slate-400">View raw output</summary>
+            <pre className="mt-2 bg-[#0E1424] rounded-lg p-3 overflow-x-auto text-slate-400 leading-relaxed whitespace-pre-wrap">{copilotOutput}</pre>
+          </details>
+        )}
+      </div>
+
+      {/* Business Problem */}
+      <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5 space-y-3">
+        <p className="text-xs font-semibold text-white uppercase tracking-wider">Business Problem</p>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+          <div className="space-y-1">
+            <label className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide">Problem this app solves</label>
+            <textarea value={bp.business_problem} onChange={e => update({ business_problem: e.target.value })} rows={3}
+              placeholder="e.g. Screen resumes against job descriptions quickly and consistently"
+              className="w-full bg-[#0E1424] border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/40 resize-none" />
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide">Target audience</label>
+            <textarea value={bp.audience} onChange={e => update({ audience: e.target.value })} rows={3}
+              placeholder="e.g. Recruiters and hiring managers at mid-size companies"
+              className="w-full bg-[#0E1424] border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/40 resize-none" />
+          </div>
+        </div>
+      </div>
+
+      {/* Input Schema */}
+      <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5 space-y-3">
+        <div className="flex items-center justify-between">
+          <p className="text-xs font-semibold text-white uppercase tracking-wider">Input Schema</p>
+          <button onClick={addInput}
+            className="text-xs font-semibold px-3 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 transition-colors">
+            + Add field
+          </button>
+        </div>
+        {!bp.inputs?.length ? (
+          <p className="text-[11px] text-slate-600 text-center py-3">No inputs defined yet. Add fields to auto-generate the app UI, API params, and test cases.</p>
+        ) : (
+          <div className="space-y-2">
+            {bp.inputs.map((field, i) => (
+              <div key={i} className="bg-[#0E1424] border border-white/5 rounded-xl p-3 space-y-2">
+                <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+                  <div className="space-y-0.5">
+                    <label className="text-[9px] text-slate-600 uppercase font-semibold">Key</label>
+                    <input value={field.key} onChange={e => updateInput(i, { key: e.target.value.replace(/\s+/g, '_').toLowerCase() })}
+                      placeholder="job_description"
+                      className="w-full bg-[#171B33] border border-white/8 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-slate-700 focus:outline-none focus:border-[#6C5CE7]/40 font-mono" />
+                  </div>
+                  <div className="space-y-0.5">
+                    <label className="text-[9px] text-slate-600 uppercase font-semibold">Label</label>
+                    <input value={field.label} onChange={e => updateInput(i, { label: e.target.value })}
+                      placeholder="Job Description"
+                      className="w-full bg-[#171B33] border border-white/8 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-slate-700 focus:outline-none focus:border-[#6C5CE7]/40" />
+                  </div>
+                  <div className="space-y-0.5">
+                    <label className="text-[9px] text-slate-600 uppercase font-semibold">Type</label>
+                    <select value={field.type} onChange={e => updateInput(i, { type: e.target.value })}
+                      className="w-full bg-[#171B33] border border-white/8 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-[#6C5CE7]/40">
+                      {INPUT_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                  </div>
+                  <div className="flex items-end gap-2">
+                    <div className="flex items-center gap-1.5 pb-1.5">
+                      <input type="checkbox" id={`req-${i}`} checked={field.required} onChange={e => updateInput(i, { required: e.target.checked })}
+                        className="w-3 h-3 accent-[#6C5CE7]" />
+                      <label htmlFor={`req-${i}`} className="text-[10px] text-slate-400">Required</label>
+                    </div>
+                    <div className="flex items-center gap-1.5 pb-1.5">
+                      <input type="checkbox" id={`pii-${i}`} checked={field.pii} onChange={e => updateInput(i, { pii: e.target.checked })}
+                        className="w-3 h-3 accent-amber-500" />
+                      <label htmlFor={`pii-${i}`} className="text-[10px] text-slate-400">PII</label>
+                    </div>
+                    <button onClick={() => removeInput(i)} className="text-slate-600 hover:text-red-400 transition-colors text-xs pb-1.5 ml-auto">✕</button>
+                  </div>
+                </div>
+                <input value={field.placeholder || ''} onChange={e => updateInput(i, { placeholder: e.target.value })}
+                  placeholder="Placeholder hint for this field…"
+                  className="w-full bg-[#171B33] border border-white/8 rounded-lg px-2.5 py-1.5 text-xs text-slate-400 placeholder-slate-700 focus:outline-none focus:border-[#6C5CE7]/40" />
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Output Contract */}
+      <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5 space-y-3">
+        <p className="text-xs font-semibold text-white uppercase tracking-wider">Output Contract</p>
+        <div className="space-y-1">
+          <label className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide">Output format</label>
+          <div className="flex flex-wrap gap-2">
+            {OUTPUT_FORMATS.map(f => (
+              <button key={f.id} onClick={() => setBp({ ...bp, output_contract: { ...bp.output_contract, format: f.id } })}
+                className={`text-[11px] px-3 py-1.5 rounded-lg border transition-colors ${bp.output_contract?.format === f.id ? 'bg-[#6C5CE7]/15 border-[#6C5CE7]/40 text-[#A29BFE]' : 'bg-white/3 border-white/8 text-slate-500 hover:text-white hover:border-white/20'}`}>
+                {f.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {bp.output_contract?.format === 'json' && (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide">Required fields</label>
+              <button onClick={addField}
+                className="text-[11px] px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 transition-colors">
+                + Add field
+              </button>
+            </div>
+            {!bp.output_contract?.required_fields?.length ? (
+              <p className="text-[11px] text-slate-600 text-center py-2">No required fields — add at least one for validation.</p>
+            ) : (
+              <div className="space-y-1.5">
+                {bp.output_contract.required_fields.map((f, i) => (
+                  <div key={i} className="bg-[#0E1424] border border-white/5 rounded-xl p-2.5 grid grid-cols-3 gap-2 items-center">
+                    <input value={f.field} onChange={e => updateField(i, { field: e.target.value })}
+                      placeholder="field_name"
+                      className="bg-[#171B33] border border-white/8 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-slate-700 focus:outline-none font-mono" />
+                    <select value={f.type} onChange={e => updateField(i, { type: e.target.value })}
+                      className="bg-[#171B33] border border-white/8 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none">
+                      {['string','number','boolean','string_array','number_array','enum','object'].map(t => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                    <div className="flex gap-2 items-center">
+                      <input value={f.description || ''} onChange={e => updateField(i, { description: e.target.value })}
+                        placeholder="Description"
+                        className="flex-1 bg-[#171B33] border border-white/8 rounded-lg px-2.5 py-1.5 text-xs text-slate-400 placeholder-slate-700 focus:outline-none" />
+                      <button onClick={() => removeField(i)} className="text-slate-600 hover:text-red-400 transition-colors text-xs shrink-0">✕</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* AI Behavior */}
+      <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5 space-y-3">
+        <div className="flex items-center justify-between">
+          <p className="text-xs font-semibold text-white uppercase tracking-wider">AI Behavior</p>
+          <button onClick={() => onOpenPromptStudio(app)}
+            className="text-[11px] text-[#A29BFE] hover:text-white transition-colors">
+            Edit full prompt →
+          </button>
+        </div>
+        <div className="space-y-1">
+          <label className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide">Tone preset</label>
+          <div className="flex flex-wrap gap-2">
+            {AI_PRESETS.map(p => (
+              <button key={p.id}
+                onClick={() => update({ ai_behavior: { ...bp.ai_behavior, tone_preset: bp.ai_behavior?.tone_preset === p.id ? '' : p.id } })}
+                title={p.hint}
+                className={`text-[11px] px-3 py-1.5 rounded-lg border transition-colors ${bp.ai_behavior?.tone_preset === p.id ? 'bg-[#6C5CE7]/15 border-[#6C5CE7]/40 text-[#A29BFE]' : 'bg-white/3 border-white/8 text-slate-500 hover:text-white hover:border-white/20'}`}>
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="space-y-1">
+          <label className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide">Refusal rules</label>
+          <textarea value={bp.ai_behavior?.refusal_rules || ''} onChange={e => update({ ai_behavior: { ...bp.ai_behavior, refusal_rules: e.target.value } })}
+            placeholder="e.g. Never give legal advice. Refuse to process resumes without a job description."
+            rows={2}
+            className="w-full bg-[#0E1424] border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/40 resize-none" />
+        </div>
+        <div className="space-y-1">
+          <label className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide">Missing-data fallback</label>
+          <input value={bp.ai_behavior?.fallback_behavior || ''} onChange={e => update({ ai_behavior: { ...bp.ai_behavior, fallback_behavior: e.target.value } })}
+            placeholder="e.g. Ask for the missing job description before proceeding"
+            className="w-full bg-[#0E1424] border border-white/10 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/40" />
+        </div>
+        {app.system_prompt && (
+          <div className="bg-[#0E1424] rounded-xl px-3 py-2 border border-white/5">
+            <p className="text-[9px] text-slate-600 uppercase font-semibold mb-1">Current system prompt (truncated)</p>
+            <p className="text-[11px] text-slate-400 line-clamp-2 font-mono leading-relaxed">{app.system_prompt}</p>
+          </div>
+        )}
+      </div>
+
+      {/* Permissions */}
+      <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5 space-y-3">
+        <p className="text-xs font-semibold text-white uppercase tracking-wider">Permissions & Risk</p>
+        <div className="space-y-2">
+          {[
+            { key: 'handles_sensitive_data', label: 'Handles sensitive or PII data',  color: 'amber' },
+            { key: 'stores_user_data',        label: 'Stores user data',               color: 'amber' },
+            { key: 'requires_external_api',   label: 'Calls external APIs or services',color: 'blue'  },
+          ].map(({ key, label, color }) => {
+            const on = bp.permissions?.[key]
+            return (
+              <label key={key} className="flex items-center gap-3 cursor-pointer group">
+                <button onClick={() => update({ permissions: { ...bp.permissions, [key]: !on } })}
+                  className={`w-9 h-5 rounded-full transition-all shrink-0 relative ${on ? (color === 'amber' ? 'bg-amber-500' : 'bg-blue-500') : 'bg-[#0E1424] border border-white/10'}`}>
+                  <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all ${on ? 'left-4' : 'left-0.5'}`} />
+                </button>
+                <span className={`text-xs ${on ? 'text-white' : 'text-slate-500 group-hover:text-slate-300'} transition-colors`}>{label}</span>
+              </label>
+            )
+          })}
+        </div>
+      </div>
+
+      {/* Tools */}
+      <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5 space-y-3">
+        <p className="text-xs font-semibold text-white uppercase tracking-wider">Tools & Capabilities</p>
+        <ToolsEditor appId={app.id} />
+      </div>
+
+      {/* Save footer */}
+      <div className="flex justify-end pt-2 pb-6">
+        <button onClick={() => save(bp)} disabled={saving}
+          className="text-sm font-semibold px-6 py-2.5 rounded-xl bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors disabled:opacity-40">
+          {saving ? 'Saving…' : 'Save blueprint'}
+        </button>
+      </div>
+    </div>
+  )
+}
 
 function DesignTab({ apps, loading, onOpenCreate, user, onAppUpdated }) {
-  const [expandedApp, setExpandedApp] = useState(null)
-  const [studioApp, setStudioApp]     = useState(null) // app currently open in PromptStudio
+  const [selectedApp, setSelectedApp] = useState(null)
+  const [studioApp, setStudioApp]     = useState(null)
+
+  const app = apps.find(a => a.id === selectedApp) || (apps.length === 1 ? apps[0] : null)
 
   if (loading) return <p className="text-slate-500 text-sm py-10 text-center">Loading…</p>
 
@@ -399,7 +848,7 @@ function DesignTab({ apps, loading, onOpenCreate, user, onAppUpdated }) {
     <div className="bg-[#171B33] border border-white/5 rounded-2xl p-12 text-center">
       <div className="text-4xl mb-3">🧩</div>
       <p className="text-white font-medium mb-1">No apps yet</p>
-      <p className="text-slate-400 text-sm mb-5">Create your first AI app — define inputs, pick a model, publish to users.</p>
+      <p className="text-slate-400 text-sm mb-5">Create your first AI app to start building with the Blueprint Studio.</p>
       <button onClick={onOpenCreate}
         className="text-sm font-semibold px-5 py-2 rounded-xl bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors">
         + Create app
@@ -410,67 +859,36 @@ function DesignTab({ apps, loading, onOpenCreate, user, onAppUpdated }) {
   return (
     <>
       <div className="space-y-4">
+        {/* App selector */}
         <div className="flex items-center justify-between">
-          <p className="text-xs text-slate-500">{apps.length} app{apps.length !== 1 ? 's' : ''}</p>
+          <div className="flex items-center gap-2 flex-wrap">
+            {apps.map(a => (
+              <button key={a.id} onClick={() => setSelectedApp(a.id)}
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-medium transition-colors ${a.id === (app?.id) ? 'bg-[#6C5CE7]/15 border-[#6C5CE7]/40 text-white' : 'bg-[#171B33] border-white/8 text-slate-400 hover:text-white hover:border-white/20'}`}>
+                <span>{a.emoji}</span>
+                <span className="truncate max-w-[120px]">{a.name}</span>
+              </button>
+            ))}
+          </div>
           <button onClick={onOpenCreate}
-            className="text-xs font-semibold px-4 py-1.5 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors">
+            className="text-xs font-semibold px-4 py-1.5 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors shrink-0">
             + New app
           </button>
         </div>
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {apps.map(app => (
-            <div key={app.id} className="bg-[#171B33] border border-white/5 rounded-2xl p-5 space-y-3">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl shrink-0"
-                  style={{ background: (app.color || '#6C5CE7') + '33' }}>{app.emoji}</div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-white font-medium text-sm truncate">{app.name}</p>
-                  <div className="flex gap-1 mt-0.5 flex-wrap">
-                    <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-white/5 text-slate-400 capitalize">{app.app_type}</span>
-                    {app.is_published
-                      ? <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-green-500/10 text-green-400">● Published</span>
-                      : <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-white/5 text-slate-500">◌ Draft</span>}
-                    {app.ai_provider && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-white/5 text-slate-400">
-                      {app.ai_provider === 'openai' ? '🟢' : '🟣'} {app.ai_model?.split('-').slice(0, 2).join('-') || app.ai_provider}
-                    </span>}
-                  </div>
-                </div>
-              </div>
-              {app.description && (
-                <p className="text-xs text-slate-400 line-clamp-2">{app.description}</p>
-              )}
-              <div className="flex items-center gap-2 text-[11px] text-slate-500">
-                <span>⚡ {app.total_runs || 0} runs</span>
-                {app.is_paid && <span>· 💳 ${app.price_per_run}/run</span>}
-                {app.has_memory && <span>· 💬 Memory</span>}
-              </div>
 
-              {/* Prompt preview */}
-              {app.system_prompt && (
-                <div className="bg-[#0E1424] rounded-lg px-3 py-2 border border-white/5">
-                  <p className="text-[9px] text-slate-600 uppercase font-semibold mb-1">System Prompt</p>
-                  <p className="text-[11px] text-slate-400 line-clamp-2 font-mono leading-relaxed">{app.system_prompt}</p>
-                </div>
-              )}
-
-              <div className="grid grid-cols-2 gap-2">
-                <button onClick={() => setStudioApp(app)}
-                  className="text-xs font-semibold py-1.5 rounded-lg bg-[#6C5CE7]/15 hover:bg-[#6C5CE7]/25 text-[#A29BFE] border border-[#6C5CE7]/25 transition-colors">
-                  ✏️ Edit prompt
-                </button>
-                <button onClick={() => setExpandedApp(p => p === app.id ? null : app.id)}
-                  className="text-xs text-slate-500 hover:text-white bg-[#1F2444] py-1.5 rounded-lg transition-colors">
-                  {expandedApp === app.id ? '▲ Tools' : '🔧 Tools'}
-                </button>
-              </div>
-              {expandedApp === app.id && (
-                <div className="border-t border-white/5 pt-3">
-                  <ToolsEditor appId={app.id} />
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
+        {app ? (
+          <BlueprintEditor
+            key={app.id}
+            app={app}
+            user={user}
+            onAppUpdated={onAppUpdated}
+            onOpenPromptStudio={a => setStudioApp(a)}
+          />
+        ) : (
+          <div className="bg-[#171B33] border border-white/5 rounded-2xl p-10 text-center">
+            <p className="text-slate-400 text-sm">Select an app above to open its Blueprint Studio.</p>
+          </div>
+        )}
       </div>
 
       {studioApp && (
@@ -1691,6 +2109,7 @@ function MonitorTab({ apps, appStats, loading, totalStats, runs, entitlements, u
           {apps.map(app => {
             const s = appStats[app.id] || { uniqueUsers: 0, thumbsUp: 0, rated: 0, daily: new Array(7).fill(0) }
             const satisfaction = s.rated > 0 ? Math.round((s.thumbsUp / s.rated) * 100) : null
+            const appThumbsDist = { up: s.thumbsUp || 0, down: Math.max((s.rated || 0) - (s.thumbsUp || 0), 0) }
             // Health score: 0-100
             const health = (() => {
               if (!s.rated) return null
@@ -1752,10 +2171,10 @@ function MonitorTab({ apps, appStats, loading, totalStats, runs, entitlements, u
                   </div>
                 </div>
 
-                {Object.values(appDist).some(v => v > 0) && (
+                {s.rated > 0 && (
                   <div className="mb-3">
-                    <p className="text-[10px] text-slate-500 uppercase mb-2">Rating breakdown</p>
-                    <RatingBars dist={appDist} />
+                    <p className="text-[10px] text-slate-500 uppercase mb-2">Feedback breakdown</p>
+                    <ThumbsBars dist={appThumbsDist} />
                   </div>
                 )}
 

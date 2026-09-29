@@ -1538,6 +1538,53 @@ async def proxy_request(body: ProxyRequest, request: Request):
 class ScrapeRequest(BaseModel):
     url: str
 
+
+class SheetsRequest(BaseModel):
+    sheet_url: str
+
+
+@app.post("/connectors/sheets/fetch")
+async def fetch_google_sheet(body: SheetsRequest, request: Request):
+    """Fetch a public Google Sheet as CSV and return the raw content."""
+    await require_verified_user(request)
+    url = body.sheet_url.strip()
+
+    m = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", url)
+    if not m:
+        raise HTTPException(status_code=400, detail="Invalid Google Sheets URL — paste the full share link.")
+
+    sheet_id = m.group(1)
+    gid_match = re.search(r"gid=(\d+)", url)
+    gid = gid_match.group(1) if gid_match else "0"
+
+    export_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
+    try:
+        resp = await fetch_safely("GET", export_url, timeout=15)
+        resp.raise_for_status()
+        csv_text = resp.text
+        lines = [l for l in csv_text.splitlines() if l.strip()]
+        row_count = len(lines)
+        col_count = len(lines[0].split(",")) if lines else 0
+        return {
+            "csv": csv_text[:200_000],
+            "row_count": row_count,
+            "col_count": col_count,
+            "sheet_id": sheet_id,
+        }
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 403:
+            raise HTTPException(
+                status_code=403,
+                detail="Sheet is not publicly accessible. In Google Sheets, share it with 'Anyone with the link can view'.",
+            )
+        raise HTTPException(status_code=502, detail=f"Google returned {e.response.status_code}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+        raise HTTPException(status_code=502, detail="Could not fetch the sheet.")
+
+
 @app.post("/scrape")
 async def scrape_website(body: ScrapeRequest, request: Request):
     """Fetch a URL server-side and return its visible text content."""

@@ -11,7 +11,7 @@ function SourceCard({ source, onDelete, expanded, onToggle }) {
     <div className="bg-[#171B33] border border-white/5 rounded-2xl overflow-hidden">
       <div className="flex items-center gap-3 px-5 py-4 cursor-pointer hover:bg-white/[0.02] transition-colors" onClick={onToggle}>
         <div className="w-9 h-9 rounded-xl bg-[#1F2444] flex items-center justify-center text-lg shrink-0">
-          {source.type === 'url' ? '🌐' : source.type === 'csv' ? '📊' : '📝'}
+          {source.type === 'url' ? '🌐' : source.type === 'csv' ? '📊' : source.type === 'sheets' ? '🟢' : '📝'}
         </div>
         <div className="flex-1 min-w-0">
           <p className="text-white font-medium text-sm">{source.name}</p>
@@ -48,6 +48,7 @@ export default function DataSourcesPage({ user }) {
   const [name, setName] = useState('')
   const [content, setContent] = useState('')
   const [url, setUrl] = useState('')
+  const [sheetMeta, setSheetMeta] = useState(null)
   const [fetching, setFetching] = useState(false)
   const [saving, setSaving] = useState(false)
   const toast = useToast()
@@ -60,6 +61,32 @@ export default function DataSourcesPage({ user }) {
       .select('*').eq('user_id', user.id).order('created_at', { ascending: false })
     setSources(data || [])
     setLoading(false)
+  }
+
+  async function fetchSheet() {
+    if (!url.trim()) return
+    setFetching(true)
+    setSheetMeta(null)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const res = await fetch(`${API_URL}/connectors/sheets/fetch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
+        body: JSON.stringify({ sheet_url: url }),
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'Could not fetch sheet' }))
+        throw new Error(err.detail || 'Could not fetch sheet')
+      }
+      const { csv, row_count, col_count, sheet_id } = await res.json()
+      setContent(csv)
+      setSheetMeta({ row_count, col_count, sheet_id })
+      if (!name) setName(`Google Sheet (${row_count} rows)`)
+    } catch (e) {
+      toast(e.message, 'error', 6000)
+    } finally {
+      setFetching(false)
+    }
   }
 
   async function fetchFromUrl() {
@@ -98,12 +125,12 @@ export default function DataSourcesPage({ user }) {
     setSaving(true)
     const { error } = await supabase.from('user_data_sources').insert({
       user_id: user.id, name: name.trim(), content: content.trim(),
-      type, source_url: type === 'url' ? url.trim() : null,
+      type, source_url: (type === 'url' || type === 'sheets') ? url.trim() : null,
     })
     setSaving(false)
     if (error) { toast(error.message, 'error'); return }
     toast('Data source added', 'success')
-    setName(''); setContent(''); setUrl(''); setShowForm(false)
+    setName(''); setContent(''); setUrl(''); setSheetMeta(null); setShowForm(false)
     load()
   }
 
@@ -153,13 +180,14 @@ export default function DataSourcesPage({ user }) {
         <div className="bg-[#171B33] border border-[#6C5CE7]/30 rounded-2xl p-5 space-y-4">
           <p className="text-white font-medium text-sm">New data source</p>
 
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             {[
               { id: 'text', icon: '📝', label: 'Text / Paste' },
               { id: 'url', icon: '🌐', label: 'URL' },
               { id: 'csv', icon: '📊', label: 'CSV Data' },
+              { id: 'sheets', icon: '🟢', label: 'Google Sheets' },
             ].map(t => (
-              <button key={t.id} onClick={() => setType(t.id)}
+              <button key={t.id} onClick={() => { setType(t.id); setSheetMeta(null) }}
                 className={`flex items-center gap-1.5 text-xs px-3 py-2 rounded-xl border transition-all ${type === t.id ? 'border-[#6C5CE7] bg-[#6C5CE7]/10 text-white' : 'border-white/10 bg-[#1F2444] text-slate-400 hover:text-white'}`}>
                 {t.icon} {t.label}
               </button>
@@ -174,6 +202,27 @@ export default function DataSourcesPage({ user }) {
                 className="bg-[#6C5CE7] hover:bg-[#7D6FF0] disabled:opacity-40 text-white text-sm px-4 py-2.5 rounded-xl transition-colors shrink-0">
                 {fetching ? <span className="animate-spin inline-block">⟳</span> : 'Fetch'}
               </button>
+            </div>
+          )}
+
+          {type === 'sheets' && (
+            <div className="space-y-2">
+              <div className="flex gap-2">
+                <input className={`${inCls} flex-1 font-mono text-xs`}
+                  placeholder="https://docs.google.com/spreadsheets/d/…/edit"
+                  value={url} onChange={e => { setUrl(e.target.value); setSheetMeta(null) }} />
+                <button onClick={fetchSheet} disabled={fetching || !url.trim()}
+                  className="bg-[#6C5CE7] hover:bg-[#7D6FF0] disabled:opacity-40 text-white text-sm px-4 py-2.5 rounded-xl transition-colors shrink-0">
+                  {fetching ? <span className="animate-spin inline-block">⟳</span> : 'Fetch'}
+                </button>
+              </div>
+              {sheetMeta && (
+                <div className="flex items-center gap-3 text-xs bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-3 py-2">
+                  <span className="text-emerald-400 font-semibold">✓ Fetched</span>
+                  <span className="text-slate-400">{sheetMeta.row_count} rows · {sheetMeta.col_count} columns</span>
+                </div>
+              )}
+              <p className="text-[10px] text-slate-500">Sheet must be shared with "Anyone with the link can view". Data is snapshotted — re-fetch to update.</p>
             </div>
           )}
 
@@ -202,7 +251,7 @@ export default function DataSourcesPage({ user }) {
               className="bg-[#6C5CE7] hover:bg-[#7D6FF0] disabled:opacity-40 text-white text-sm px-5 py-2.5 rounded-xl font-medium transition-colors">
               {saving ? 'Saving...' : 'Add source'}
             </button>
-            <button onClick={() => { setShowForm(false); setName(''); setContent(''); setUrl('') }}
+            <button onClick={() => { setShowForm(false); setName(''); setContent(''); setUrl(''); setSheetMeta(null) }}
               className="bg-[#1F2444] hover:bg-[#272C52] text-slate-300 text-sm px-4 py-2.5 rounded-xl transition-colors">
               Cancel
             </button>
@@ -219,7 +268,7 @@ export default function DataSourcesPage({ user }) {
           <div className="text-5xl mb-4">🗄️</div>
           <p className="text-white font-semibold text-lg mb-2">No data sources yet</p>
           <p className="text-slate-400 text-sm mb-2 max-w-md mx-auto leading-relaxed">
-            Add documents, URLs, CSVs, or any text content here. Then toggle them on when running any app — the AI will use them as context.
+            Add documents, URLs, CSVs, Google Sheets, or any text content here. Then toggle them on when running any app — the AI will use them as context.
           </p>
           <p className="text-slate-500 text-xs mb-6">Great for: company docs, research papers, product specs, customer lists, market data</p>
           <button onClick={() => setShowForm(true)}

@@ -948,22 +948,18 @@ const STATUS_COLORS = {
 }
 
 function ListingSetupCard({ onRetry }) {
-  const [copied, setCopied] = useState(false)
-  function copy() { navigator.clipboard.writeText(LISTING_SETUP_SQL); setCopied(true); setTimeout(() => setCopied(false), 2000) }
   return (
-    <div className="bg-[#171B33] border border-amber-500/20 rounded-2xl p-6 space-y-4">
+    <div className="bg-[#171B33] border border-[#6C5CE7]/20 rounded-2xl p-6 space-y-4 text-center">
+      <div className="text-3xl">🛒</div>
       <div>
-        <p className="text-amber-400 font-semibold text-sm">⚙️ One-time setup required</p>
-        <p className="text-slate-400 text-sm mt-1">Run this SQL in Supabase to enable marketplace listings.</p>
-      </div>
-      <div className="relative">
-        <pre className="text-[11px] text-slate-300 bg-[#0E1424] rounded-xl p-4 overflow-x-auto leading-relaxed">{LISTING_SETUP_SQL}</pre>
-        <button onClick={copy} className="absolute top-2 right-2 text-[10px] text-slate-400 hover:text-white bg-white/5 px-2 py-1 rounded-md transition-colors">
-          {copied ? '✓ Copied' : '📋 Copy'}
-        </button>
+        <p className="text-white font-semibold text-sm">Marketplace setup in progress</p>
+        <p className="text-slate-400 text-sm mt-1">
+          Marketplace listings are managed automatically by Aistrix.<br />
+          This feature will be available shortly — no action needed on your end.
+        </p>
       </div>
       <button onClick={onRetry} className="text-xs font-semibold px-4 py-2 rounded-lg bg-[#6C5CE7]/15 hover:bg-[#6C5CE7]/25 text-[#A29BFE] border border-[#6C5CE7]/25 transition-colors">
-        ↺ I ran it — retry
+        ↺ Check again
       </button>
     </div>
   )
@@ -1187,6 +1183,17 @@ function SellTab({ apps, user, onAppUpdated }) {
 
   return (
     <div className="space-y-4">
+      {/* Setup mode banner */}
+      <div className="flex items-start gap-3 bg-amber-500/8 border border-amber-500/20 rounded-xl px-4 py-3">
+        <span className="text-amber-400 text-lg shrink-0 mt-0.5">⚠️</span>
+        <div>
+          <p className="text-amber-300 text-sm font-semibold">Payments are in setup mode</p>
+          <p className="text-amber-200/60 text-xs mt-0.5 leading-relaxed">
+            Checkout and payouts require backend activation. You can configure pricing now,
+            but live transactions will not be processed until Stripe Connect is enabled by Aistrix.
+          </p>
+        </div>
+      </div>
       <div>
         <p className="text-xs text-slate-500 uppercase font-semibold tracking-wide mb-3">Pricing editor</p>
         <div className="space-y-3">
@@ -2391,28 +2398,31 @@ function ImproveTab({ apps, user, runs }) {
           </span>
         </div>
 
-        {/* Connection form */}
+        {/* OAuth connection prompt */}
         {!ghConnected && (
           <div className="border-t border-white/5 px-4 py-4 space-y-3">
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-              <div>
-                <label className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide block mb-1">Personal access token</label>
-                <input type="password" value={ghToken} onChange={e => setGhToken(e.target.value)}
-                  placeholder="ghp_…"
-                  className="w-full bg-[#0E1424] border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/40 font-mono" />
-                <p className="text-[10px] text-slate-600 mt-1">github.com → Settings → Developer settings → Personal access tokens → repo scope</p>
+            <div className="flex items-start gap-3 bg-[#0E1424] rounded-xl p-4">
+              <span className="text-xl shrink-0 mt-0.5">🔐</span>
+              <div className="flex-1 min-w-0">
+                <p className="text-white text-sm font-medium">OAuth connection required</p>
+                <p className="text-slate-400 text-xs mt-1 leading-relaxed">
+                  GitHub integration uses a secure OAuth App flow — no personal access tokens needed.
+                  Click below to authorise Aistrix and select a repository.
+                </p>
               </div>
+            </div>
+            <div className="flex items-center gap-3">
               <div>
                 <label className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide block mb-1">Repository <span className="text-slate-600 font-normal normal-case">(owner/repo)</span></label>
                 <input type="text" value={ghRepo} onChange={e => setGhRepo(e.target.value)}
                   placeholder="acme/my-ai-apps"
-                  className="w-full bg-[#0E1424] border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/40" />
+                  className="bg-[#0E1424] border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/40 w-56" />
               </div>
-            </div>
-            <div className="flex justify-end">
-              <button onClick={saveGitHub} disabled={ghSaving}
-                className="text-xs font-semibold px-4 py-2 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors disabled:opacity-40">
-                {ghSaving ? '…' : 'Connect GitHub'}
+              <button
+                disabled
+                title="GitHub OAuth coming soon"
+                className="mt-5 flex items-center gap-2 text-xs font-semibold px-4 py-2 rounded-lg bg-white/5 text-slate-400 border border-white/10 cursor-not-allowed opacity-60">
+                <span>🐙</span> Connect GitHub <span className="text-[9px] text-slate-500 font-normal">(soon)</span>
               </button>
             </div>
           </div>
@@ -2771,19 +2781,17 @@ function EntitlementsSection({ apps, user }) {
   }
 
   if (needsSetup) return (
-    <div className="bg-[#171B33] border border-amber-500/20 rounded-2xl p-6 space-y-4">
+    <div className="bg-[#171B33] border border-[#6C5CE7]/20 rounded-2xl p-6 space-y-3 text-center">
+      <div className="text-3xl">💳</div>
       <div>
-        <p className="text-amber-400 font-semibold text-sm">⚙️ Setup required — entitlements table</p>
-        <p className="text-slate-400 text-sm mt-1">Tracks which users have paid access to which apps.</p>
-      </div>
-      <div className="relative">
-        <pre className="text-[11px] text-slate-300 bg-[#0E1424] rounded-xl p-4 overflow-x-auto leading-relaxed">{ENTITLEMENTS_SETUP_SQL}</pre>
-        <button onClick={copy} className="absolute top-2 right-2 text-[10px] text-slate-400 hover:text-white bg-white/5 px-2 py-1 rounded-md transition-colors">
-          {copied ? '✓ Copied' : '📋 Copy'}
-        </button>
+        <p className="text-white font-semibold text-sm">Entitlements managed automatically</p>
+        <p className="text-slate-400 text-sm mt-1">
+          Versioning and entitlements are handled by Aistrix during deployment.<br />
+          No manual setup required.
+        </p>
       </div>
       <button onClick={load} className="text-xs font-semibold px-4 py-2 rounded-lg bg-[#6C5CE7]/15 hover:bg-[#6C5CE7]/25 text-[#A29BFE] border border-[#6C5CE7]/25 transition-colors">
-        ↺ I ran it — retry
+        ↺ Check again
       </button>
     </div>
   )
@@ -3091,6 +3099,14 @@ function ApiKeySection({ user }) {
     <div>
       <p className="text-xs text-slate-500 uppercase font-semibold tracking-wide mb-3">API keys</p>
       <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5 space-y-4">
+        {/* Security notice */}
+        <div className="flex items-start gap-2 bg-[#0E1424] border border-white/8 rounded-lg px-3 py-2.5">
+          <span className="text-slate-400 shrink-0 mt-0.5">🔒</span>
+          <p className="text-[11px] text-slate-400 leading-relaxed">
+            Keys are stored server-side only. The frontend never has direct read access —
+            all key operations are validated through the Aistrix backend with your session token.
+          </p>
+        </div>
         <div className="flex gap-2">
           <input value={newKeyName} onChange={e => setNewKeyName(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && createKey()}

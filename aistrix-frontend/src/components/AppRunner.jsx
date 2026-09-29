@@ -164,9 +164,9 @@ async function checkAlerts(userId, input, result, toast) {
     }
     if (alert.type === 'rating_streak') {
       const streak = Number(alert.condition.streak)
-      const { data: recent } = await supabase.from('run_history').select('rating')
+      const { data: recent } = await supabase.from('run_history').select('rating, rating_value')
         .eq('user_id', userId).not('rating', 'is', null).order('created_at', { ascending: false }).limit(streak)
-      if (recent?.length >= streak && recent.every(r => r.rating === -1)) {
+      if (recent?.length >= streak && recent.every(r => (r.rating_value ?? r.rating) === -1)) {
         triggered = true; message = `${alert.name}: ${streak} consecutive thumbs down`
       }
     }

@@ -205,55 +205,332 @@ function TestTab({ apps, user }) {
 
 // ─── Tab: Deploy ─────────────────────────────────────────────────────────────
 
-function DeployTab({ apps, user }) {
+const CONTEXT_OPTS = [
+  { id: 'career_profile',   label: '💼 Career Profile',   desc: 'Resume, skills, experience' },
+  { id: 'business_profile', label: '🏢 Business Profile', desc: 'Company, brand voice, audience' },
+  { id: 'memory',           label: '🧠 Memory',           desc: 'User preferences & custom facts' },
+]
+
+function AppDeployCard({ app: initialApp, onUpdate }) {
+  const [app, setApp]               = useState(initialApp)
+  const [publishing, setPublishing] = useState(false)
+  const [webhookUrl, setWebhookUrl] = useState(app.webhook_url || '')
+  const [savingWebhook, setSavingWebhook] = useState(false)
+  const [maxRuns, setMaxRuns]       = useState(app.max_runs_per_day || '')
+  const [savingQuota, setSavingQuota] = useState(false)
+  const [embedTab, setEmbedTab]     = useState('iframe')
+  const [expandSection, setExpandSection] = useState(null)
   const toast = useToast()
 
   function copy(text, label) {
     navigator.clipboard.writeText(text).then(() => toast(`${label} copied`, 'success', 2000))
   }
 
+  // ── Publish checklist ──────────────────────────────────────────────────────
+  const checklist = [
+    { id: 'prompt',  label: 'System prompt written',   ok: !!app.system_prompt?.trim(),   fix: 'Open Prompt Studio in Design tab' },
+    { id: 'desc',    label: 'Description filled',      ok: !!app.description?.trim(),      fix: 'Add a description in app settings' },
+    { id: 'model',   label: 'AI model selected',       ok: !!app.ai_model,                 fix: 'Choose a model in app settings' },
+    { id: 'price',   label: 'Pricing configured',      ok: !app.is_paid || !!app.price_per_run, fix: 'Set price_per_run in app settings', skip: !app.is_paid },
+  ].filter(c => !c.skip)
+
+  const checklistPassed = checklist.every(c => c.ok)
+  const canPublish = checklistPassed
+
+  async function togglePublish() {
+    setPublishing(true)
+    const next = !app.is_published
+    const { error } = await supabase.from('apps').update({ is_published: next }).eq('id', app.id)
+    setPublishing(false)
+    if (error) { toast(error.message, 'error'); return }
+    const updated = { ...app, is_published: next }
+    setApp(updated)
+    onUpdate?.(updated)
+    toast(next ? '🚀 App is now live' : 'App set to draft', next ? 'success' : 'info', 3000)
+  }
+
+  // ── Context requirements ───────────────────────────────────────────────────
+  async function toggleContext(id) {
+    const ctx = app.required_context || []
+    const next = ctx.includes(id) ? ctx.filter(c => c !== id) : [...ctx, id]
+    const { error } = await supabase.from('apps').update({ required_context: next }).eq('id', app.id)
+    if (error) { toast(error.message, 'error'); return }
+    const updated = { ...app, required_context: next }
+    setApp(updated)
+    onUpdate?.(updated)
+  }
+
+  // ── Webhook ────────────────────────────────────────────────────────────────
+  async function saveWebhook() {
+    setSavingWebhook(true)
+    const { error } = await supabase.from('apps')
+      .update({ webhook_url: webhookUrl.trim() || null }).eq('id', app.id)
+    setSavingWebhook(false)
+    if (error) { toast(error.message, 'error'); return }
+    const updated = { ...app, webhook_url: webhookUrl.trim() || null }
+    setApp(updated)
+    onUpdate?.(updated)
+    toast('Webhook saved', 'success', 2000)
+  }
+
+  // ── Run quota ──────────────────────────────────────────────────────────────
+  async function saveQuota() {
+    const val = maxRuns === '' ? null : parseInt(maxRuns, 10)
+    if (maxRuns !== '' && (isNaN(val) || val < 1)) { toast('Enter a valid number', 'error'); return }
+    setSavingQuota(true)
+    const { error } = await supabase.from('apps')
+      .update({ max_runs_per_day: val }).eq('id', app.id)
+    setSavingQuota(false)
+    if (error?.message?.includes('column') || error?.code === '42703') {
+      toast('max_runs_per_day column not found — add it via Supabase SQL editor', 'error', 5000)
+      return
+    }
+    if (error) { toast(error.message, 'error'); return }
+    const updated = { ...app, max_runs_per_day: val }
+    setApp(updated)
+    onUpdate?.(updated)
+    toast('Quota saved', 'success', 2000)
+  }
+
+  // ── Embed code ─────────────────────────────────────────────────────────────
+  const appUrl = `${window.location.origin}/app/${app.id}`
+  const embedCodes = {
+    iframe: `<iframe
+  src="${appUrl}"
+  width="100%"
+  height="640"
+  frameborder="0"
+  allow="clipboard-write"
+  style="border-radius:12px;border:1px solid rgba(255,255,255,0.08)"
+></iframe>`,
+    js: `<div id="aistrix-app-${app.id.slice(0, 8)}"></div>
+<script src="https://cdn.aistrix.com/embed.js"></script>
+<script>
+  Aistrix.embed({
+    appId: '${app.id}',
+    container: '#aistrix-app-${app.id.slice(0, 8)}',
+    theme: 'dark',        // 'light' | 'dark' | 'auto'
+    height: 640,
+  });
+</script>`,
+    api: `curl -X POST https://api.aistrix.com/v1/apps/${app.id}/run \\
+  -H "Authorization: Bearer ak_live_YOUR_KEY" \\
+  -H "Content-Type: application/json" \\
+  -d '{"input": "Your prompt here"}'`,
+  }
+
+  function Section({ id, label, children }) {
+    const open = expandSection === id
+    return (
+      <div className="border-t border-white/5 first:border-t-0">
+        <button onClick={() => setExpandSection(open ? null : id)}
+          className="w-full flex items-center justify-between px-5 py-3 hover:bg-white/2 transition-colors text-left">
+          <span className="text-xs font-medium text-slate-300">{label}</span>
+          <span className="text-slate-600 text-[10px]">{open ? '▲' : '▼'}</span>
+        </button>
+        {open && <div className="px-5 pb-4">{children}</div>}
+      </div>
+    )
+  }
+
   return (
-    <div className="space-y-5">
-      {/* Per-app deployment status */}
-      {apps.length > 0 && (
-        <div>
-          <p className="text-xs text-slate-500 uppercase font-semibold tracking-wide mb-3">App endpoints</p>
-          <div className="space-y-3">
-            {apps.map(app => (
-              <div key={app.id} className="bg-[#171B33] border border-white/5 rounded-xl p-4">
-                <div className="flex items-center gap-2 mb-3">
-                  <span className="text-lg">{app.emoji}</span>
-                  <p className="text-white text-sm font-medium">{app.name}</p>
-                  {app.is_published
-                    ? <span className="ml-auto text-[10px] text-green-400 bg-green-500/10 px-2 py-0.5 rounded-full">● Live</span>
-                    : <span className="ml-auto text-[10px] text-slate-500 bg-white/5 px-2 py-0.5 rounded-full">◌ Draft</span>}
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                  {[
-                    { label: 'API endpoint', value: `https://api.aistrix.com/v1/apps/${app.id}/run` },
-                    { label: 'App page', value: `${window.location.origin}/app/${app.id}` },
-                    { label: 'Team install', value: `${window.location.origin}/install/${app.id}` },
-                  ].map(({ label, value }) => (
-                    <div key={label} className="bg-[#1F2444] rounded-lg px-3 py-2 flex items-center justify-between gap-2 min-w-0">
-                      <div className="min-w-0">
-                        <p className="text-[9px] text-slate-500 uppercase font-medium">{label}</p>
-                        <code className="text-[10px] text-slate-400 truncate block">{value}</code>
-                      </div>
-                      <button onClick={() => copy(value, label)}
-                        className="text-slate-500 hover:text-white transition-colors shrink-0 text-xs">📋</button>
-                    </div>
-                  ))}
-                </div>
+    <div className="bg-[#171B33] border border-white/5 rounded-2xl overflow-hidden">
+
+      {/* Header */}
+      <div className="flex items-center gap-3 px-5 py-4 border-b border-white/5">
+        <div className="w-9 h-9 rounded-xl flex items-center justify-center text-xl shrink-0"
+          style={{ background: (app.color || '#6C5CE7') + '33' }}>{app.emoji}</div>
+        <div className="flex-1 min-w-0">
+          <p className="text-white font-medium text-sm truncate">{app.name}</p>
+          <p className="text-[10px] text-slate-500">{app.app_type} · {app.ai_provider === 'openai' ? '🟢' : '🟣'} {app.ai_model?.split('-').slice(0, 3).join('-') || 'default'}</p>
+        </div>
+        <div className="flex items-center gap-2">
+          {app.is_published
+            ? <span className="text-[10px] text-green-400 bg-green-500/10 px-2 py-0.5 rounded-full border border-green-500/20">● Live</span>
+            : <span className="text-[10px] text-slate-500 bg-white/5 px-2 py-0.5 rounded-full border border-white/10">◌ Draft</span>}
+        </div>
+      </div>
+
+      {/* Publish checklist + toggle */}
+      <div className="px-5 py-4 border-b border-white/5 space-y-3">
+        <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide">Pre-publish checklist</p>
+        <div className="space-y-1.5">
+          {checklist.map(c => (
+            <div key={c.id} className="flex items-center gap-2 text-xs">
+              <span className={c.ok ? 'text-green-400' : 'text-red-400'}>{c.ok ? '✓' : '✗'}</span>
+              <span className={c.ok ? 'text-slate-300' : 'text-slate-400'}>{c.label}</span>
+              {!c.ok && <span className="text-[10px] text-slate-600 ml-auto">{c.fix}</span>}
+            </div>
+          ))}
+        </div>
+        <button
+          onClick={togglePublish}
+          disabled={publishing || (!canPublish && !app.is_published)}
+          title={!canPublish && !app.is_published ? 'Complete checklist before publishing' : ''}
+          className={`w-full text-sm font-semibold py-2.5 rounded-xl transition-all disabled:opacity-40 border ${
+            app.is_published
+              ? 'bg-white/5 hover:bg-white/8 text-slate-300 border-white/10'
+              : canPublish
+              ? 'bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white border-transparent shadow-lg shadow-[#6C5CE7]/20'
+              : 'bg-white/3 text-slate-500 border-white/5 cursor-not-allowed'
+          }`}
+        >
+          {publishing ? '…' : app.is_published ? '⏸ Unpublish (set to draft)' : '🚀 Publish app'}
+        </button>
+        {!canPublish && !app.is_published && (
+          <p className="text-[10px] text-amber-400 text-center">Complete all checklist items to publish</p>
+        )}
+      </div>
+
+      {/* Share links */}
+      <Section id="links" label="🔗 Share links & endpoints">
+        <div className="space-y-2">
+          {[
+            { label: 'App page',      value: `${window.location.origin}/app/${app.id}` },
+            { label: 'API endpoint',  value: `https://api.aistrix.com/v1/apps/${app.id}/run` },
+            { label: 'Team install',  value: `${window.location.origin}/install/${app.id}` },
+          ].map(({ label, value }) => (
+            <div key={label} className="flex items-center gap-2 bg-[#0E1424] rounded-lg px-3 py-2 min-w-0">
+              <div className="flex-1 min-w-0">
+                <p className="text-[9px] text-slate-500 uppercase">{label}</p>
+                <code className="text-[10px] text-slate-400 truncate block">{value}</code>
               </div>
+              <button onClick={() => copy(value, label)} className="text-slate-500 hover:text-white transition-colors text-xs shrink-0">📋</button>
+            </div>
+          ))}
+        </div>
+      </Section>
+
+      {/* Embed code */}
+      <Section id="embed" label="⬡ Embed code">
+        <div className="space-y-3">
+          <div className="flex gap-1 bg-[#0E1424] p-0.5 rounded-lg w-fit">
+            {['iframe', 'js', 'api'].map(t => (
+              <button key={t} onClick={() => setEmbedTab(t)}
+                className={`text-[10px] font-semibold px-3 py-1 rounded-md transition-all ${embedTab === t ? 'bg-[#6C5CE7] text-white' : 'text-slate-500 hover:text-white'}`}>
+                {t === 'iframe' ? 'iFrame' : t === 'js' ? 'JavaScript' : 'cURL / API'}
+              </button>
             ))}
           </div>
+          <div className="relative">
+            <pre className="text-[11px] text-slate-300 bg-[#0E1424] rounded-xl p-4 overflow-x-auto leading-relaxed whitespace-pre-wrap">{embedCodes[embedTab]}</pre>
+            <button onClick={() => copy(embedCodes[embedTab], 'Embed code')}
+              className="absolute top-2 right-2 text-[10px] text-slate-500 hover:text-white bg-white/5 px-2 py-1 rounded-md transition-colors">
+              📋 Copy
+            </button>
+          </div>
         </div>
-      )}
+      </Section>
+
+      {/* Context requirements */}
+      <Section id="context" label="🔐 Required context (user profiles)">
+        <div className="space-y-2">
+          <p className="text-[11px] text-slate-500 leading-relaxed">
+            When enabled, Aistrix prompts the business user to fill their profile before running this app.
+            The profile data is automatically injected into the AI context.
+          </p>
+          {CONTEXT_OPTS.map(opt => {
+            const active = (app.required_context || []).includes(opt.id)
+            return (
+              <label key={opt.id} className="flex items-start gap-3 cursor-pointer group">
+                <div
+                  onClick={() => toggleContext(opt.id)}
+                  className={`mt-0.5 w-4 h-4 rounded border-2 flex items-center justify-center shrink-0 transition-colors cursor-pointer ${active ? 'bg-[#6C5CE7] border-[#6C5CE7]' : 'border-white/20 group-hover:border-white/40'}`}>
+                  {active && <span className="text-white text-[9px] font-bold">✓</span>}
+                </div>
+                <div onClick={() => toggleContext(opt.id)}>
+                  <p className="text-xs text-slate-300 font-medium">{opt.label}</p>
+                  <p className="text-[10px] text-slate-500">{opt.desc}</p>
+                </div>
+              </label>
+            )
+          })}
+        </div>
+      </Section>
+
+      {/* Webhook */}
+      <Section id="webhook" label="🔔 Webhook (post-run callback)">
+        <div className="space-y-2">
+          <p className="text-[11px] text-slate-500">
+            Aistrix will POST the run result to this URL after every successful run.
+            Useful for Zapier, Make, or your own backend.
+          </p>
+          <div className="flex gap-2">
+            <input
+              value={webhookUrl}
+              onChange={e => setWebhookUrl(e.target.value)}
+              placeholder="https://your-server.com/webhook"
+              className="flex-1 bg-[#0E1424] border border-white/8 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7] transition-colors"
+            />
+            <button onClick={saveWebhook} disabled={savingWebhook}
+              className="text-xs font-semibold px-3 py-2 rounded-lg bg-[#6C5CE7]/15 hover:bg-[#6C5CE7]/25 text-[#A29BFE] border border-[#6C5CE7]/25 transition-colors disabled:opacity-40 shrink-0">
+              {savingWebhook ? '…' : 'Save'}
+            </button>
+          </div>
+          {app.webhook_url && (
+            <div className="bg-[#0E1424] rounded-lg px-3 py-2">
+              <p className="text-[9px] text-slate-500 uppercase font-semibold mb-1">Payload sent on each run</p>
+              <pre className="text-[10px] text-slate-400 leading-relaxed">{`{
+  "app_id": "${app.id}",
+  "app_name": "${app.name}",
+  "input": "<user input>",
+  "output": "<AI output>",
+  "run_id": "<uuid>",
+  "user_id": "<end user id>",
+  "timestamp": "<ISO 8601>"
+}`}</pre>
+            </div>
+          )}
+        </div>
+      </Section>
+
+      {/* Run quota */}
+      <Section id="quota" label="⚡ Run quota (daily limit)">
+        <div className="space-y-2">
+          <p className="text-[11px] text-slate-500">
+            Limit how many times this app can be run per day across all users.
+            Leave blank for unlimited.
+          </p>
+          <div className="flex gap-2 items-center">
+            <input
+              type="number"
+              value={maxRuns}
+              onChange={e => setMaxRuns(e.target.value)}
+              placeholder="e.g. 500 (unlimited if blank)"
+              min="1"
+              className="flex-1 bg-[#0E1424] border border-white/8 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7] transition-colors"
+            />
+            <button onClick={saveQuota} disabled={savingQuota}
+              className="text-xs font-semibold px-3 py-2 rounded-lg bg-[#6C5CE7]/15 hover:bg-[#6C5CE7]/25 text-[#A29BFE] border border-[#6C5CE7]/25 transition-colors disabled:opacity-40 shrink-0">
+              {savingQuota ? '…' : 'Save'}
+            </button>
+          </div>
+        </div>
+      </Section>
+    </div>
+  )
+}
+
+function DeployTab({ apps, user, onAppUpdated }) {
+  if (!apps.length) return (
+    <div className="bg-[#171B33] border border-white/5 rounded-2xl p-10 text-center">
+      <p className="text-slate-400 text-sm">Create an app in the Design tab to start deploying.</p>
+    </div>
+  )
+
+  return (
+    <div className="space-y-5">
+      {/* Per-app deploy cards */}
+      <div className="space-y-4">
+        {apps.map(app => (
+          <AppDeployCard key={app.id} app={app} onUpdate={onAppUpdated} />
+        ))}
+      </div>
 
       {/* API Keys */}
       <ApiKeySection user={user} />
 
-      {/* Docs */}
+      {/* API docs */}
       <div>
         <p className="text-xs text-slate-500 uppercase font-semibold tracking-wide mb-3">API reference</p>
         <div className="space-y-3">
@@ -270,19 +547,26 @@ Content-Type: application/json
 }`,
             },
             {
-              title: 'Context injection',
-              code: `// Set required_context on your app to auto-inject user profiles:
-["career_profile"]   // resume, skills, experience
-["business_profile"] // company name, brand voice, audience
-["memory"]           // preferred tone, custom facts
-["career_profile", "memory"]  // combine multiple`,
+              title: 'Webhook payload (POST to your server)',
+              code: `{
+  "app_id": "uuid",
+  "app_name": "Resume Builder",
+  "input": "Software engineer, 5 years...",
+  "output": "## Professional Summary\\n...",
+  "run_id": "uuid",
+  "user_id": "uuid",
+  "timestamp": "2025-09-28T10:00:00Z"
+}`,
             },
             {
-              title: 'App composition',
-              code: `// Link apps into a pipeline:
-next_app_id: "uuid-of-next-logical-app"
-compose_hint: "Use this output as the next app's input"
-// Aistrix shows "Next: Your App →" after a related run`,
+              title: 'Context injection',
+              code: `// Declare required_context on your app:
+["career_profile"]    // resume, skills, experience
+["business_profile"]  // company name, brand voice, audience
+["memory"]            // user preferences & custom facts
+
+// Aistrix prompts the user to fill their profile
+// before running — then auto-injects it into context.`,
             },
           ].map(s => (
             <div key={s.title} className="bg-[#171B33] border border-white/5 rounded-xl p-4">
@@ -1004,7 +1288,7 @@ export default function DevStudioPage({ user, onOpenCreate }) {
       {/* Tab content */}
       {tab === 'design'   && <DesignTab   apps={apps} loading={loading} onOpenCreate={onOpenCreate} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
       {tab === 'test'     && <TestTab apps={apps} user={user} />}
-      {tab === 'deploy'   && <DeployTab   apps={apps} user={user} />}
+      {tab === 'deploy'   && <DeployTab   apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
       {tab === 'sell'     && <SellTab     apps={apps} />}
       {tab === 'monitor'  && <MonitorTab  apps={apps} appStats={appStats} loading={loading} totalStats={totalStats} />}
       {tab === 'evaluate' && <EvaluateTab apps={apps} appStats={appStats} />}

@@ -15,10 +15,11 @@ create policy "run_history_select_app_owner" on run_history
     app_id in (select id from apps where created_by = auth.uid())
   );
 
--- Block direct inserts/updates/deletes — backend (service-role) only
-create policy "run_history_no_insert" on run_history
-  for insert with check (false);
+-- Users can append their own run rows (6 frontend components insert directly)
+create policy "run_history_insert_own" on run_history
+  for insert with check (auth.uid() = user_id);
 
+-- Block update/delete — history is append-only from the client
 create policy "run_history_no_update" on run_history
   for update using (false);
 

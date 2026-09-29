@@ -1374,20 +1374,19 @@ function Sparkline({ data, color = '#6C5CE7', height = 36 }) {
   )
 }
 
-// Rating bar (1–5 stars distribution)
-function RatingBars({ dist }) {
-  const total = Object.values(dist).reduce((s, v) => s + v, 0)
-  if (!total) return <p className="text-slate-600 text-xs">No ratings yet</p>
+// Thumbs up/down distribution bar
+function ThumbsBars({ dist }) {
+  const total = dist.up + dist.down
+  if (!total) return <p className="text-slate-600 text-xs">No feedback yet</p>
   return (
-    <div className="space-y-1">
-      {[5, 4, 3, 2, 1].map(star => {
-        const count = dist[star] || 0
-        const pct   = total ? Math.round((count / total) * 100) : 0
+    <div className="space-y-2">
+      {[{ label: '👍 Useful', count: dist.up, color: '#00B894' }, { label: '👎 Not useful', count: dist.down, color: '#E84393' }].map(({ label, count, color }) => {
+        const pct = total ? Math.round((count / total) * 100) : 0
         return (
-          <div key={star} className="flex items-center gap-2">
-            <span className="text-[10px] text-slate-500 w-3 shrink-0">{star}</span>
+          <div key={label} className="flex items-center gap-2">
+            <span className="text-[10px] text-slate-500 w-20 shrink-0">{label}</span>
             <div className="flex-1 bg-[#0E1424] rounded-full h-1.5">
-              <div className="h-1.5 rounded-full bg-amber-400 transition-all" style={{ width: `${pct}%` }} />
+              <div className="h-1.5 rounded-full transition-all" style={{ width: `${pct}%`, background: color }} />
             </div>
             <span className="text-[10px] text-slate-500 w-6 text-right">{count}</span>
           </div>
@@ -1519,10 +1518,13 @@ function MonitorTab({ apps, appStats, loading, totalStats, runs, entitlements, u
     return buckets
   }, [runs])
 
-  // Rating distribution across all runs that have a rating
-  const ratingDist = useMemo(() => {
-    const dist = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 }
-    runs.forEach(r => { if (r.rating >= 1 && r.rating <= 5) dist[r.rating]++ })
+  // Thumbs distribution (rating=1 → 👍, rating=0 → 👎)
+  const thumbsDist = useMemo(() => {
+    const dist = { up: 0, down: 0 }
+    runs.forEach(r => {
+      if (r.rating === 1)      dist.up++
+      else if (r.rating === 0) dist.down++
+    })
     return dist
   }, [runs])
 
@@ -1565,10 +1567,8 @@ function MonitorTab({ apps, appStats, loading, totalStats, runs, entitlements, u
     </div>
   )
 
-  const totalRated = Object.values(ratingDist).reduce((s, v) => s + v, 0)
-  const avgRating  = totalRated
-    ? (Object.entries(ratingDist).reduce((s, [k, v]) => s + Number(k) * v, 0) / totalRated).toFixed(1)
-    : null
+  const thumbsTotal  = thumbsDist.up + thumbsDist.down
+  const satisfaction = thumbsTotal ? Math.round((thumbsDist.up / thumbsTotal) * 100) : null
 
   return (
     <div className="space-y-6">
@@ -1576,8 +1576,8 @@ function MonitorTab({ apps, appStats, loading, totalStats, runs, entitlements, u
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatTile label="Total runs" value={totalStats.runs} color="#6C5CE7" />
         <StatTile label="Unique users" value={totalStats.users} color="#00B894" />
-        <StatTile label="Avg rating" value={avgRating ? `${avgRating} ★` : '—'} color="#FDCB6E"
-          sub={totalRated ? `${totalRated} rated` : undefined} />
+        <StatTile label="Satisfaction" value={satisfaction !== null ? `${satisfaction}%` : '—'} color="#FDCB6E"
+          sub={thumbsTotal ? `${thumbsTotal} rated` : undefined} />
         <StatTile label="Active apps" value={apps.filter(a => a.is_published).length} color="#E84393" />
       </div>
 
@@ -1647,10 +1647,12 @@ function MonitorTab({ apps, appStats, loading, totalStats, runs, entitlements, u
       {/* ── Rating dist + token usage ── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5">
-          <p className="text-xs text-slate-400 font-semibold uppercase tracking-wide mb-4">Rating distribution</p>
-          <RatingBars dist={ratingDist} />
-          {avgRating && (
-            <p className="text-xs text-slate-500 mt-3">Average: <span className="text-amber-400 font-semibold">{avgRating} ★</span> across {totalRated} rated runs</p>
+          <p className="text-xs text-slate-400 font-semibold uppercase tracking-wide mb-4">Feedback distribution</p>
+          <ThumbsBars dist={thumbsDist} />
+          {satisfaction !== null && (
+            <p className="text-xs text-slate-500 mt-3">
+              <span className="text-emerald-400 font-semibold">{satisfaction}% 👍</span> across {thumbsTotal} rated runs
+            </p>
           )}
         </div>
 
@@ -1842,7 +1844,7 @@ function QualityScore({ score }) {
 
 function EvaluateTab({ apps, appStats, runs, user }) {
   const [selectedApp, setSelectedApp] = useState(apps[0]?.id || null)
-  const [lowFilter, setLowFilter]     = useState(2)      // show runs rated ≤ this
+
   const [expandRun, setExpandRun]     = useState(null)
   const [integrations, setIntegrations] = useState(null)
   const toast = useToast()
@@ -1872,34 +1874,31 @@ function EvaluateTab({ apps, appStats, runs, user }) {
     return Math.min(100, Math.round(satisfaction * 100))
   }
 
-  // Rating trend: avg rating per day for selected app, last 21 days
+  // Satisfaction % trend per day for selected app, last 21 days
   const ratingTrend = useMemo(() => {
     const days = 21
-    const buckets = Array.from({ length: days }, (_, i) => {
-      const d = new Date(); d.setDate(d.getDate() - (days - 1 - i)); d.setHours(0,0,0,0)
-      return { date: d, sum: 0, count: 0 }
-    })
+    const buckets = Array.from({ length: days }, () => ({ up: 0, total: 0 }))
     runs
-      .filter(r => r.app_id === selectedApp && r.rating >= 1 && r.rating <= 5)
+      .filter(r => r.app_id === selectedApp && (r.rating === 1 || r.rating === 0))
       .forEach(r => {
         const today = new Date(); today.setHours(0,0,0,0)
         const d = new Date(r.created_at); d.setHours(0,0,0,0)
         const diff = Math.round((today - d) / 86400000)
         if (diff >= 0 && diff < days) {
-          buckets[days - 1 - diff].sum   += r.rating
-          buckets[days - 1 - diff].count += 1
+          buckets[days - 1 - diff].total += 1
+          if (r.rating === 1) buckets[days - 1 - diff].up += 1
         }
       })
-    return buckets.map(b => b.count ? parseFloat((b.sum / b.count).toFixed(2)) : null)
+    return buckets.map(b => b.total ? Math.round((b.up / b.total) * 100) : null)
   }, [runs, selectedApp])
 
-  // Low-quality runs for selected app
+  // 👎 runs for selected app
   const lowRuns = useMemo(() =>
     runs
-      .filter(r => r.app_id === selectedApp && r.rating != null && r.rating <= lowFilter)
+      .filter(r => r.app_id === selectedApp && r.rating === 0)
       .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
       .slice(0, 50)
-  , [runs, selectedApp, lowFilter])
+  , [runs, selectedApp])
 
   const appObj = apps.find(a => a.id === selectedApp)
 
@@ -1974,8 +1973,8 @@ function EvaluateTab({ apps, appStats, runs, user }) {
           {/* Rating trend sparkline */}
           <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5">
             <div className="flex items-center justify-between mb-3">
-              <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide">Rating trend — last 21 days</p>
-              <p className="text-[10px] text-slate-600">avg ★ per day</p>
+              <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide">Satisfaction trend — last 21 days</p>
+              <p className="text-[10px] text-slate-600">👍 % per day</p>
             </div>
             {ratingTrend.every(v => v === null) ? (
               <p className="text-slate-600 text-xs text-center py-4">No rated runs in this period.</p>
@@ -1984,13 +1983,13 @@ function EvaluateTab({ apps, appStats, runs, user }) {
                 <div className="flex items-end gap-0.5 h-16">
                   {ratingTrend.map((v, i) => {
                     if (v === null) return <div key={i} className="flex-1" />
-                    const h = Math.max(((v - 1) / 4) * 56, 4)
-                    const color = v >= 4 ? '#00B894' : v >= 3 ? '#FDCB6E' : '#E84393'
+                    const h = Math.max((v / 100) * 56, 4)
+                    const color = v >= 70 ? '#00B894' : v >= 50 ? '#FDCB6E' : '#E84393'
                     return (
                       <div key={i} className="flex-1 rounded-t transition-all group relative"
                         style={{ height: h, background: color, opacity: 0.8 }}>
                         <div className="absolute -top-6 left-1/2 -translate-x-1/2 bg-[#0E1424] text-white text-[10px] px-1 py-0.5 rounded opacity-0 group-hover:opacity-100 whitespace-nowrap pointer-events-none z-10">
-                          {v}★
+                          👍 {v}%
                         </div>
                       </div>
                     )
@@ -2006,15 +2005,8 @@ function EvaluateTab({ apps, appStats, runs, user }) {
           {/* Low-quality run browser */}
           <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5">
             <div className="flex items-center justify-between mb-4">
-              <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide">Low-quality run browser</p>
-              <div className="flex items-center gap-2">
-                <span className="text-[10px] text-slate-500">Show runs rated ≤</span>
-                <select value={lowFilter} onChange={e => setLowFilter(Number(e.target.value))}
-                  className="bg-[#0E1424] border border-white/10 rounded-lg px-2 py-1 text-xs text-white focus:outline-none">
-                  {[1,2,3].map(n => <option key={n} value={n}>{n} ★</option>)}
-                </select>
-                <span className="text-[10px] text-slate-500">({lowRuns.length} runs)</span>
-              </div>
+              <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide">👎 Run browser</p>
+              <span className="text-[10px] text-slate-500">{lowRuns.length} runs</span>
             </div>
 
             {lowRuns.length === 0 ? (
@@ -2026,9 +2018,7 @@ function EvaluateTab({ apps, appStats, runs, user }) {
                     onClick={() => setExpandRun(p => p === r.id ? null : r.id)}
                     className="bg-[#0E1424] border border-white/5 rounded-xl px-4 py-3 cursor-pointer hover:border-white/10 transition-colors">
                     <div className="flex items-center gap-3">
-                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ${r.rating === 1 ? 'bg-red-500/15 text-red-400' : 'bg-amber-500/10 text-amber-400'}`}>
-                        {r.rating}★
-                      </span>
+                      <span className="text-base shrink-0">👎</span>
                       <p className="text-slate-300 text-xs truncate flex-1">{r.input || r.app_name}</p>
                       <span className="text-[10px] text-slate-600 shrink-0">{timeAgo(r.created_at)}</span>
                       <span className="text-[10px] text-slate-600">{expandRun === r.id ? '▲' : '▼'}</span>
@@ -2171,7 +2161,7 @@ function ImproveTab({ apps, user, runs }) {
     setSuggesting(true)
     setSuggestion('')
     const examples = worstRuns.slice(0, 5)
-      .map((r, i) => `Example ${i + 1}:\nApp: ${r.app_name}\nRating: ${r.rating}★`)
+      .map((r, i) => `Example ${i + 1}:\nApp: ${r.app_name}\nFeedback: 👎`)
       .join('\n\n')
     const systemPrompt = `You are an expert prompt engineer. Analyse the following low-rated AI app runs and suggest specific, actionable improvements to the system prompt to address the issues. Be concrete — rewrite problem sections rather than giving vague advice. Focus on tone, specificity, constraints, and output format.`
     const userMsg = `App: ${appObj.name}\nCurrent system prompt:\n${appObj.system_prompt || '(none)'}\n\nLow-rated runs:\n${examples || 'No rated runs yet — provide general improvement suggestions based on the prompt.'}`
@@ -2214,7 +2204,7 @@ function ImproveTab({ apps, user, runs }) {
     const [owner, repo] = ghRepo.split('/')
     const body = [
       `**App:** ${run.app_name}`,
-      `**Rating:** ${run.rating}★`,
+      `**Feedback:** 👎`,
       `**Date:** ${new Date(run.created_at).toLocaleString()}`,
       run.input  ? `\n**Input:**\n\`\`\`\n${run.input}\n\`\`\`` : '',
       run.output ? `\n**Output:**\n\`\`\`\n${run.output}\n\`\`\`` : '',
@@ -2224,7 +2214,7 @@ function ImproveTab({ apps, user, runs }) {
       const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/issues`, {
         method: 'POST',
         headers: { Authorization: `token ${ghToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: `[${run.app_name}] Low-rated run (${run.rating}★)`, body, labels: ['ai-quality'] }),
+        body: JSON.stringify({ title: `[${run.app_name}] 👎 run flagged`, body, labels: ['ai-quality'] }),
       })
       if (!res.ok) { const e = await res.json(); toast(e.message || 'GitHub API error', 'error'); return }
       const issue = await res.json()
@@ -2486,9 +2476,7 @@ function ImproveTab({ apps, user, runs }) {
                 </p>
                 {worstRuns.map(r => (
                   <div key={r.id} className="flex items-center gap-3 bg-[#0E1424] border border-white/5 rounded-xl px-4 py-2.5">
-                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ${r.rating === 1 ? 'bg-red-500/15 text-red-400' : 'bg-amber-500/10 text-amber-400'}`}>
-                      {r.rating}★
-                    </span>
+                    <span className="text-base shrink-0">👎</span>
                     <p className="text-slate-300 text-xs truncate flex-1">{r.app_name} · {timeAgo(r.created_at)}</p>
                     <button
                       onClick={() => createGitHubIssue(r)}

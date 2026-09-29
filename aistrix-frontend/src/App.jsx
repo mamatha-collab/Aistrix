@@ -73,8 +73,9 @@ const PATH_VIEW_MAP = {
   '/home': 'overview', '/pricing': 'overview', '/overview': 'overview',
   '/workspaces': 'flows', '/workflows': 'flows',
   '/run-history': 'history',
-  '/api': 'developer', '/usage': 'analytics',
+  '/api': 'developer', '/usage': 'analytics', '/dev-studio': 'developer',
   '/knowledge': 'knowledge_vault', '/knowledge-base': 'knowledge_vault',
+  '/marketplace': 'marketplace',
 }
 
 export default function App() {
@@ -89,7 +90,12 @@ export default function App() {
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [showProfile, setShowProfile] = useState(false)
   const [runCounts, setRunCounts] = useState({})
-  const [activeView, setActiveView] = useState(() => PATH_VIEW_MAP[window.location.pathname] || 'flows')
+  const [activeView, setActiveView] = useState(() =>
+    PATH_VIEW_MAP[window.location.pathname]
+    ?? (window.location.pathname.startsWith('/marketplace') ? 'marketplace' : null)
+    ?? (window.location.pathname === '/dev-studio' ? 'developer' : null)
+    ?? 'flows'
+  )
   const [userRole, setUserRole] = useState(null)
   const [deletedAppId, setDeletedAppId] = useState(null)
   const [showTypeSelector, setShowTypeSelector] = useState(false)
@@ -192,11 +198,16 @@ export default function App() {
   // e.g. the browser back/forward buttons, or a direct/bookmarked alias URL.
   useEffect(() => {
     const mapped = PATH_VIEW_MAP[location.pathname]
+      ?? (location.pathname.startsWith('/marketplace') ? 'marketplace' : null)
+      ?? (location.pathname === '/dev-studio' ? 'developer' : null)
     if (!mapped) return
     if (mapped !== activeView) setActiveView(mapped)
     // Redirect alias paths to their canonical URL so bookmarks self-correct
+    // (don't redirect /marketplace/:id — the dynamic segment must stay)
     const canonical = VIEW_PATH_MAP[mapped]
-    if (canonical && canonical !== location.pathname) navigate(canonical, { replace: true })
+    if (canonical && canonical !== location.pathname && !location.pathname.startsWith('/marketplace/')) {
+      navigate(canonical, { replace: true })
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- activeView is read, not a trigger; only re-run on path changes
   }, [location.pathname])
 
@@ -236,6 +247,9 @@ export default function App() {
     admin:          isAdmin(userRole)     ? <AdminPage          user={session.user} /> : null,
     moderator:      isModerator(userRole) ? <ModeratorPage      user={session.user} userRole={userRole} /> : null,
     knowledge_vault: <KnowledgeVaultPage user={session.user} />,
+    marketplace:     location.pathname.startsWith('/marketplace/')
+                       ? <MarketplaceAppPage appId={location.pathname.split('/marketplace/')[1]?.split('/')[0]} />
+                       : <MarketplacePage />,
   }
 
   const activePage = viewMap[activeView]
@@ -246,8 +260,6 @@ export default function App() {
       <Route path="/app/:id/docs" element={<Suspense fallback={null}><AppDocsPage /></Suspense>} />
       <Route path="/embed/:id" element={<Suspense fallback={null}><AppEmbedPage /></Suspense>} />
       <Route path="/gallery" element={<Suspense fallback={null}><Gallery /></Suspense>} />
-      <Route path="/marketplace" element={<Suspense fallback={null}><MarketplacePage /></Suspense>} />
-      <Route path="/marketplace/:id" element={<Suspense fallback={null}><MarketplaceAppPage /></Suspense>} />
       <Route path="/dev/:userId" element={<Suspense fallback={null}><DeveloperProfilePage /></Suspense>} />
       <Route path="/*" element={
         <div className="app-shell flex h-screen overflow-hidden bg-[#09101F]">

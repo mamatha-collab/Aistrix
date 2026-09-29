@@ -30,14 +30,20 @@ export function MarketplacePage() {
 
   async function load() {
     // Primary: formal marketplace listings
+    // developer_profiles has no FK from marketplace_listings, so we join separately
     const { data: listingRows } = await supabase
       .from('marketplace_listings')
-      .select('*, apps(name, description, ai_model, ai_provider, price_per_run, is_paid), developer_profiles(display_name)')
+      .select('*, apps(name, description, ai_model, ai_provider, price_per_run, is_paid)')
       .eq('status', 'live')
       .order('updated_at', { ascending: false })
 
     if (listingRows && listingRows.length > 0) {
-      setListings(listingRows)
+      const userIds = [...new Set(listingRows.map(r => r.user_id).filter(Boolean))]
+      const { data: profiles } = userIds.length
+        ? await supabase.from('developer_profiles').select('user_id, display_name').in('user_id', userIds)
+        : { data: [] }
+      const profileMap = Object.fromEntries((profiles || []).map(p => [p.user_id, p]))
+      setListings(listingRows.map(r => ({ ...r, developer_profiles: profileMap[r.user_id] ?? null })))
       return
     }
 
@@ -182,8 +188,9 @@ function ListingCard({ listing: l, onClick }) {
 }
 
 // ─── Single app detail + launch ───────────────────────────────────────────────
-export function MarketplaceAppPage() {
-  const { id } = useParams()
+export function MarketplaceAppPage({ appId }) {
+  const params = useParams()
+  const id = appId || params.id
   const navigate = useNavigate()
   const [listing, setListing]       = useState(null)
   const [app, setApp]               = useState(null)
@@ -203,7 +210,7 @@ export function MarketplaceAppPage() {
   async function load() {
     const { data } = await supabase
       .from('marketplace_listings')
-      .select('*, apps(*), developer_profiles(display_name, bio, avatar_url)')
+      .select('*, apps(*)')
       .eq('app_id', id)
       .eq('status', 'live')
       .single()
@@ -214,7 +221,11 @@ export function MarketplaceAppPage() {
       setListing({ title: appData.name, tagline: appData.description, description: appData.description, tags: [], category: null, user_id: appData.created_by, developer_profiles: null })
       setApp(appData)
     } else {
-      setListing(data)
+      // Fetch developer profile separately (no FK between marketplace_listings and developer_profiles)
+      const { data: profile } = data.user_id
+        ? await supabase.from('developer_profiles').select('display_name, bio, avatar_url').eq('user_id', data.user_id).maybeSingle()
+        : { data: null }
+      setListing({ ...data, developer_profiles: profile ?? null })
       setApp(data.apps)
     }
     track(EVENTS.MARKETPLACE_APP_VIEWED, { app_id: id })

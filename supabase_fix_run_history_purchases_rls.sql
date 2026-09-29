@@ -31,7 +31,7 @@ alter table purchases enable row level security;
 -- Buyers see their own purchases; app owners see purchases for their apps
 create policy "purchases_select" on purchases
   for select using (
-    user_id = auth.uid()
+    buyer_id = auth.uid()
     or app_id in (select id from apps where created_by = auth.uid())
   );
 

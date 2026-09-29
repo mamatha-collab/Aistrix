@@ -352,13 +352,13 @@ export default function App() {
               <AppTypeSelector
                 onClose={() => setShowTypeSelector(false)}
                 onSelect={type => {
-                  setShowTypeSelector(false)
-                  if (type === 'ai_builder') { setShowAIBuilder(true) }
-                  else if (type === 'workspace') { navigateToView('flows') }
-                  else if (type === 'website') { setShowWebsiteBuilder(true) }
+                  if (type === 'ai_builder') { setShowTypeSelector(false); setShowAIBuilder(true) }
+                  else if (type === 'workspace') { setShowTypeSelector(false); navigateToView('flows') }
+                  else if (type === 'website') { setShowTypeSelector(false); setShowWebsiteBuilder(true) }
                   else {
                     setSelectedAppType(type)
                     setShowTypeGuide(true)
+                    // keep showTypeSelector true — selector stays behind the guide
                   }
                 }}
               />
@@ -371,6 +371,7 @@ export default function App() {
                 onClose={() => setShowTypeGuide(false)}
                 onContinue={() => {
                   setShowTypeGuide(false)
+                  setShowTypeSelector(false)
                   navigateToView('apps')
                   setShowCreate(true)
                 }}

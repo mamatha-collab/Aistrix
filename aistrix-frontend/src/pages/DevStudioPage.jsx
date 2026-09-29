@@ -1,11 +1,13 @@
-import { useState, useEffect, useMemo, lazy, Suspense } from 'react'
+import { useState, useEffect, useMemo, useRef, lazy, Suspense } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { timeAgo } from '../utils'
 import ToolsEditor from '../components/ToolsEditor'
 import TestSuite from '../components/TestSuite'
+import VersionManager, { useVersions, VersionSetupCard } from '../components/VersionManager'
 
 const PromptStudio = lazy(() => import('../components/PromptStudio'))
+const DiffEditor   = lazy(() => import('@monaco-editor/react').then(m => ({ default: m.DiffEditor })))
 
 // ─── Model cost table (USD per 1M tokens) ────────────────────────────────────
 const MODEL_COSTS = {
@@ -582,48 +584,119 @@ Content-Type: application/json
 
 // ─── Tab: Sell ────────────────────────────────────────────────────────────────
 
-function SellTab({ apps }) {
+function SellTab({ apps, onAppUpdated }) {
+  const [saving, setSaving] = useState({})   // appId → bool
+  const [drafts, setDrafts] = useState({})   // appId → { is_paid, price_per_run }
+  const toast = useToast()
+
+  function draft(app) {
+    return drafts[app.id] ?? { is_paid: app.is_paid ?? false, price_per_run: app.price_per_run ?? '' }
+  }
+
+  function setDraft(appId, patch) {
+    setDrafts(prev => ({ ...prev, [appId]: { ...draft({ id: appId, ...apps.find(a => a.id === appId) }), ...patch } }))
+  }
+
+  async function save(app) {
+    const d = draft(app)
+    const price = d.is_paid ? parseFloat(d.price_per_run) : null
+    if (d.is_paid && (isNaN(price) || price <= 0)) {
+      toast('Enter a valid price per run (e.g. 0.05)', 'error', 3000)
+      return
+    }
+    setSaving(prev => ({ ...prev, [app.id]: true }))
+    const { data, error } = await supabase.from('apps')
+      .update({ is_paid: d.is_paid, price_per_run: price })
+      .eq('id', app.id)
+      .select().single()
+    setSaving(prev => ({ ...prev, [app.id]: false }))
+    if (error) { toast(error.message, 'error'); return }
+    onAppUpdated?.(data)
+    toast('Pricing saved', 'success', 2000)
+    setDrafts(prev => { const n = { ...prev }; delete n[app.id]; return n })
+  }
+
+  if (!apps.length) {
+    return (
+      <div className="bg-[#171B33] border border-white/5 rounded-2xl p-10 text-center">
+        <p className="text-slate-400 text-sm">No apps yet — create one in the Design tab first.</p>
+      </div>
+    )
+  }
+
   return (
     <div className="space-y-4">
-      {apps.length > 0 && (
-        <div>
-          <p className="text-xs text-slate-500 uppercase font-semibold tracking-wide mb-3">Current pricing</p>
-          <div className="bg-[#171B33] border border-white/5 rounded-2xl overflow-hidden">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="text-left text-[11px] text-slate-500 border-b border-white/5">
-                  <th className="px-4 py-3 font-medium">App</th>
-                  <th className="px-4 py-3 font-medium text-right">Pricing model</th>
-                  <th className="px-4 py-3 font-medium text-right">Price / run</th>
-                  <th className="px-4 py-3 font-medium text-right">Total runs</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-white/5">
-                {apps.map(app => (
-                  <tr key={app.id}>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        <span>{app.emoji}</span>
-                        <span className="text-white font-medium truncate max-w-[160px]">{app.name}</span>
-                      </div>
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      {app.is_paid
-                        ? <span className="text-amber-400 bg-amber-400/10 px-2 py-0.5 rounded-full text-[10px]">Paid</span>
-                        : <span className="text-slate-500 bg-white/5 px-2 py-0.5 rounded-full text-[10px]">Free</span>}
-                    </td>
-                    <td className="px-4 py-3 text-right text-slate-300">
-                      {app.is_paid && app.price_per_run ? `$${Number(app.price_per_run).toFixed(2)}` : '—'}
-                    </td>
-                    <td className="px-4 py-3 text-right text-slate-300">{app.total_runs || 0}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <p className="text-[11px] text-slate-600 mt-2">Edit pricing in app settings (⚙ icon in the app detail panel).</p>
+      <div>
+        <p className="text-xs text-slate-500 uppercase font-semibold tracking-wide mb-3">Pricing editor</p>
+        <div className="space-y-3">
+          {apps.map(app => {
+            const d     = draft(app)
+            const dirty = JSON.stringify(d) !== JSON.stringify({ is_paid: app.is_paid ?? false, price_per_run: app.price_per_run ?? '' })
+            const rev   = d.is_paid && parseFloat(d.price_per_run) > 0
+              ? `~$${(parseFloat(d.price_per_run) * (app.total_runs || 0)).toFixed(2)} projected revenue`
+              : null
+            return (
+              <div key={app.id} className="bg-[#171B33] border border-white/5 rounded-2xl p-4">
+                <div className="flex items-center gap-3 flex-wrap">
+                  <span className="text-lg shrink-0">{app.emoji}</span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-white text-sm font-medium truncate">{app.name}</p>
+                    <p className="text-[10px] text-slate-500">{app.total_runs || 0} total runs</p>
+                  </div>
+
+                  {/* Free / Paid toggle */}
+                  <div className="flex items-center gap-1 bg-[#0E1424] rounded-lg p-0.5">
+                    <button
+                      onClick={() => setDraft(app.id, { is_paid: false })}
+                      className={`text-[11px] font-semibold px-3 py-1.5 rounded-md transition-all ${!d.is_paid ? 'bg-[#1A2038] text-white shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}>
+                      Free
+                    </button>
+                    <button
+                      onClick={() => setDraft(app.id, { is_paid: true })}
+                      className={`text-[11px] font-semibold px-3 py-1.5 rounded-md transition-all ${d.is_paid ? 'bg-amber-500/20 text-amber-300' : 'text-slate-500 hover:text-slate-300'}`}>
+                      Paid
+                    </button>
+                  </div>
+
+                  {/* Price input (only when paid) */}
+                  {d.is_paid && (
+                    <div className="flex items-center gap-1.5 bg-[#0E1424] border border-white/10 rounded-lg px-3 py-1.5">
+                      <span className="text-slate-400 text-xs">$</span>
+                      <input
+                        type="number"
+                        min="0.01"
+                        step="0.01"
+                        value={d.price_per_run}
+                        onChange={e => setDraft(app.id, { price_per_run: e.target.value })}
+                        placeholder="0.05"
+                        className="bg-transparent text-white text-xs w-16 focus:outline-none"
+                      />
+                      <span className="text-slate-600 text-[10px]">/ run</span>
+                    </div>
+                  )}
+
+                  {/* Save button */}
+                  {dirty && (
+                    <button
+                      onClick={() => save(app)}
+                      disabled={saving[app.id]}
+                      className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors disabled:opacity-40">
+                      {saving[app.id] ? '…' : 'Save'}
+                    </button>
+                  )}
+                </div>
+
+                {/* Revenue projection */}
+                {rev && (
+                  <p className="text-[10px] text-emerald-400 mt-2 ml-8">
+                    {rev} · based on historical run count
+                  </p>
+                )}
+              </div>
+            )
+          })}
         </div>
-      )}
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <ComingSoonCard
@@ -833,80 +906,227 @@ function EvaluateTab({ apps, appStats }) {
 
 // ─── Tab: Improve ─────────────────────────────────────────────────────────────
 
-function ImproveTab() {
+const API_URL = import.meta.env.VITE_API_URL || ''
+
+function ImproveTab({ apps, user }) {
+  const [selectedApp, setSelectedApp] = useState(null)
+  const [vA, setVA] = useState(null)   // version left
+  const [vB, setVB] = useState(null)   // version right
+  const [testInput, setTestInput] = useState('')
+  const [outputA, setOutputA] = useState('')
+  const [outputB, setOutputB] = useState('')
+  const [runningA, setRunningA] = useState(false)
+  const [runningB, setRunningB] = useState(false)
+  const toast = useToast()
+
+  const appObj = apps.find(a => a.id === selectedApp) || null
+  const { versions, loading: vLoading, needsSetup } = useVersions(selectedApp, user?.id)
+
+  async function runVersion(v, app, setOutput, setRunning) {
+    if (!testInput.trim()) { toast('Enter a test input first', 'error', 2000); return }
+    setRunning(true)
+    setOutput('')
+    try {
+      const res = await fetch(`${API_URL}/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          input: testInput,
+          system_prompt: v.system_prompt,
+          ai_provider: v.ai_provider || app.ai_provider,
+          ai_model: v.ai_model || app.ai_model,
+        }),
+      })
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        const parts = buf.split('\n\n')
+        buf = parts.pop()
+        for (const part of parts) {
+          if (!part.startsWith('data:')) continue
+          try {
+            const j = JSON.parse(part.slice(5))
+            if (j.token) setOutput(p => p + j.token)
+            if (j.error) toast(j.error, 'error')
+          } catch { /* partial JSON */ }
+        }
+      }
+    } catch (e) { toast(e.message, 'error') }
+    finally { setRunning(false) }
+  }
+
   return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-      <ComingSoonCard
-        icon="🔬"
-        title="Prompt Diff & Comparison"
-        desc="See exactly what changed between two prompt versions and compare their outputs on the same input."
-        bullets={[
-          'Side-by-side output comparison',
-          'Token and cost delta',
-          'Quality score delta (if test suite exists)',
-          'One-click promote winner to published',
-        ]}
-      />
-      <ComingSoonCard
-        icon="🤖"
-        title="AI Improvement Suggestions"
-        desc="Aistrix analyses your low-rated runs and suggests prompt rewrites automatically."
-        bullets={[
-          'Pattern detection across negative-rated outputs',
-          'Auto-generated prompt improvement candidates',
-          'A/B test the suggestion vs current version',
-          'Accept, reject, or tweak with inline editor',
-        ]}
-      />
-      <ComingSoonCard
-        icon="🔄"
-        title="A/B Testing"
-        desc="Split live traffic between two prompt or model variants and let real usage decide the winner."
-        bullets={[
-          'Configure traffic split (50/50, 80/20, etc.)',
-          'Auto-promote when statistical significance reached',
-          'Per-variant cost and quality metrics',
-          'Works across model providers',
-        ]}
-      />
-      <ComingSoonCard
-        icon="💡"
-        title="Model Swap Advisor"
-        desc="Running on GPT-4o for every run? Aistrix detects tasks where a cheaper model would match quality."
-        bullets={[
-          'Benchmark cheaper model against your test suite',
-          'Projected cost saving shown before you swap',
-          'One-click model switch with rollback',
-          'Supports cross-provider comparison',
-        ]}
-      />
+    <div className="space-y-5">
+      {/* App selector */}
+      <div>
+        <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide mb-2">App</p>
+        <div className="flex flex-wrap gap-2">
+          {apps.map(app => (
+            <button key={app.id} onClick={() => { setSelectedApp(app.id); setVA(null); setVB(null); setOutputA(''); setOutputB('') }}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-medium border transition-all ${selectedApp === app.id ? 'border-[#6C5CE7]/60 bg-[#6C5CE7]/15 text-white' : 'border-white/5 bg-[#0E1424] text-slate-400 hover:text-white hover:border-white/10'}`}>
+              <span>{app.emoji}</span><span>{app.name}</span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {selectedApp && (
+        <>
+          {needsSetup && <VersionSetupCard onRetry={() => {}} />}
+
+          {!needsSetup && (
+            <>
+              {/* Version pickers */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                {[['A (baseline)', vA, setVA], ['B (candidate)', vB, setVB]].map(([label, sel, setSel]) => (
+                  <div key={label}>
+                    <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide mb-2">Version {label}</p>
+                    <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                      {vLoading && <p className="text-slate-500 text-xs py-2 text-center">Loading…</p>}
+                      {!vLoading && versions.length === 0 && (
+                        <p className="text-slate-500 text-xs py-2 text-center">No snapshots — save one in the Version tab first.</p>
+                      )}
+                      {versions.map(v => (
+                        <button key={v.id} onClick={() => setSel(v)}
+                          className={`w-full text-left px-3 py-2 rounded-lg border text-xs transition-all ${sel?.id === v.id ? 'border-[#6C5CE7]/50 bg-[#6C5CE7]/10 text-white' : 'border-white/5 bg-[#0E1424] text-slate-400 hover:border-white/10 hover:text-white'}`}>
+                          <span className="font-semibold">v{v.version_num}</span>
+                          {v.label && <span className="ml-2 text-slate-500">{v.label}</span>}
+                          <span className="ml-2 text-slate-600">{timeAgo(v.created_at)}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Diff editor */}
+              {(vA || vB) && (
+                <div>
+                  <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide mb-2">Prompt diff</p>
+                  <div className="rounded-xl overflow-hidden border border-white/5" style={{ height: 300 }}>
+                    <Suspense fallback={<div className="h-full flex items-center justify-center text-slate-500 text-sm bg-[#0E1424]">Loading editor…</div>}>
+                      <DiffEditor
+                        original={vA?.system_prompt || ''}
+                        modified={vB?.system_prompt || ''}
+                        language="plaintext"
+                        theme="vs-dark"
+                        options={{
+                          readOnly: true,
+                          minimap: { enabled: false },
+                          scrollBeyondLastLine: false,
+                          fontSize: 12,
+                          lineNumbers: 'off',
+                          renderOverviewRuler: false,
+                          wordWrap: 'on',
+                        }}
+                      />
+                    </Suspense>
+                  </div>
+                </div>
+              )}
+
+              {/* Side-by-side test */}
+              {vA && vB && (
+                <div>
+                  <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide mb-2">Side-by-side test</p>
+                  <textarea
+                    value={testInput}
+                    onChange={e => setTestInput(e.target.value)}
+                    placeholder="Enter a test input to run against both versions…"
+                    rows={3}
+                    className="w-full bg-[#0E1424] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/40 resize-none mb-3"
+                  />
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    {[[vA, outputA, setOutputA, runningA, setRunningA, 'Run v' + vA.version_num],
+                      [vB, outputB, setOutputB, runningB, setRunningB, 'Run v' + vB.version_num]
+                    ].map(([v, out, , running, setRunning, label]) => (
+                      <div key={v.id} className="bg-[#0E1424] border border-white/5 rounded-xl p-4 space-y-3">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-semibold text-white">v{v.version_num} {v.label ? `· ${v.label}` : ''}</span>
+                          <button
+                            onClick={() => runVersion(v, appObj, v === vA ? setOutputA : setOutputB, setRunning)}
+                            disabled={running}
+                            className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors disabled:opacity-40">
+                            {running ? '▌' : '▶ ' + label}
+                          </button>
+                        </div>
+                        <div className="min-h-24 bg-[#09101F] rounded-lg p-3 text-xs text-slate-300 leading-relaxed whitespace-pre-wrap font-mono overflow-y-auto max-h-56">
+                          {out || <span className="text-slate-600">Output will appear here…</span>}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </>
+          )}
+        </>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <ComingSoonCard
+          icon="🔄"
+          title="A/B Testing"
+          desc="Split live traffic between two prompt or model variants and let real usage decide the winner."
+          bullets={[
+            'Configure traffic split (50/50, 80/20, etc.)',
+            'Auto-promote when statistical significance reached',
+            'Per-variant cost and quality metrics',
+            'Works across model providers',
+          ]}
+        />
+        <ComingSoonCard
+          icon="💡"
+          title="Model Swap Advisor"
+          desc="Running on GPT-4o for every run? Aistrix detects tasks where a cheaper model would match quality."
+          bullets={[
+            'Benchmark cheaper model against your test suite',
+            'Projected cost saving shown before you swap',
+            'One-click model switch with rollback',
+            'Supports cross-provider comparison',
+          ]}
+        />
+      </div>
     </div>
   )
 }
 
 // ─── Tab: Version ─────────────────────────────────────────────────────────────
 
-function VersionTab({ apps }) {
+function VersionTab({ apps, user, onAppUpdated }) {
+  const [selectedApp, setSelectedApp] = useState(apps[0]?.id || null)
+  const appObj = apps.find(a => a.id === selectedApp) || null
+
   return (
-    <div className="space-y-4">
-      {apps.length > 0 && (
-        <div>
-          <p className="text-xs text-slate-500 uppercase font-semibold tracking-wide mb-3">Published apps</p>
-          <div className="space-y-2">
-            {apps.map(app => (
-              <div key={app.id} className="bg-[#171B33] border border-white/5 rounded-xl px-4 py-3 flex items-center gap-3">
-                <span className="text-lg">{app.emoji}</span>
-                <div className="flex-1 min-w-0">
-                  <p className="text-white text-sm font-medium truncate">{app.name}</p>
-                  <p className="text-[11px] text-slate-500">Published · updated {timeAgo(app.updated_at || app.created_at)}</p>
-                </div>
-                <span className="text-[10px] text-[#A29BFE] bg-[#6C5CE7]/15 px-2 py-0.5 rounded-full">v{app.version || 1}</span>
-              </div>
-            ))}
-          </div>
-          <p className="text-[11px] text-slate-600 mt-2">Full version history is available in each app's detail panel → ⏱ History.</p>
+    <div className="space-y-5">
+      {/* App selector */}
+      <div>
+        <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide mb-2">Select app</p>
+        <div className="flex flex-wrap gap-2">
+          {apps.map(app => (
+            <button key={app.id} onClick={() => setSelectedApp(app.id)}
+              className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-medium border transition-all ${selectedApp === app.id ? 'border-[#6C5CE7]/60 bg-[#6C5CE7]/15 text-white' : 'border-white/5 bg-[#0E1424] text-slate-400 hover:text-white hover:border-white/10'}`}>
+              <span>{app.emoji}</span><span>{app.name}</span>
+            </button>
+          ))}
         </div>
+        {!apps.length && (
+          <p className="text-slate-500 text-sm py-4">No apps yet — create one in the Design tab.</p>
+        )}
+      </div>
+
+      {appObj && (
+        <VersionManager
+          app={appObj}
+          user={user}
+          onRollback={updated => onAppUpdated?.(updated)}
+        />
       )}
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <ComingSoonCard
           icon="📦"
@@ -1289,11 +1509,11 @@ export default function DevStudioPage({ user, onOpenCreate }) {
       {tab === 'design'   && <DesignTab   apps={apps} loading={loading} onOpenCreate={onOpenCreate} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
       {tab === 'test'     && <TestTab apps={apps} user={user} />}
       {tab === 'deploy'   && <DeployTab   apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
-      {tab === 'sell'     && <SellTab     apps={apps} />}
+      {tab === 'sell'     && <SellTab     apps={apps} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
       {tab === 'monitor'  && <MonitorTab  apps={apps} appStats={appStats} loading={loading} totalStats={totalStats} />}
       {tab === 'evaluate' && <EvaluateTab apps={apps} appStats={appStats} />}
-      {tab === 'improve'  && <ImproveTab />}
-      {tab === 'version'  && <VersionTab  apps={apps} />}
+      {tab === 'improve'  && <ImproveTab  apps={apps} user={user} />}
+      {tab === 'version'  && <VersionTab  apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
       {tab === 'monetize' && <MonetizeTab apps={apps} runs={runs} loading={loading} />}
     </div>
   )

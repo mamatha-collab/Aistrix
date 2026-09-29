@@ -193,6 +193,132 @@ aistrix run <app-id> -i "your input"`}
   )
 }
 
+// ─── Per-tab technical notes ─────────────────────────────────────────────────
+
+const TAB_NOTES = {
+  design: {
+    color: '#6C5CE7',
+    title: 'How Design works technically',
+    points: [
+      'Your **system prompt** is injected as the first message in every API call — it defines the AI\'s role, constraints, and output format.',
+      '**App types** determine the runner: text (single prompt), data (CSV/Sheet context), chat (conversation history), agent (tool calls), multi-page (chained steps), API/webhook (headless).',
+      '**Model selection** routes to Anthropic (Claude) or OpenAI (GPT-4o) via the backend `/run` endpoint with SSE streaming.',
+      '**Tools** (web search, code exec, file read) are injected as function definitions into the model\'s tool-use API; results are fed back as tool-result messages automatically.',
+      'Apps are stored in the `apps` table with `system_prompt`, `ai_model`, `ai_provider`, `app_type`, and metadata fields.',
+    ],
+  },
+  test: {
+    color: '#00B894',
+    title: 'How Test works technically',
+    points: [
+      'Test cases are stored in the `app_test_cases` table: each row has a name, input text, pass/fail rules, and optional context.',
+      'Each rule is evaluated with regex matching (for exact patterns) or semantic soft-matching (for meaning-based checks).',
+      '**Auto-gate**: when you hit "Save version", the suite runs first — each test fires a real `/run` call with the current prompt. All pass → version saved automatically. Any fail → you see results and choose to fix or override.',
+      'You can abort a running suite mid-way; each test uses an `AbortController` tied to the cancel button.',
+      'Results are not stored — they are ephemeral per-run. Use the Version tab to save a snapshot after passing tests.',
+    ],
+  },
+  deploy: {
+    color: '#0984E3',
+    title: 'How Deploy works technically',
+    points: [
+      'Setting `is_published = true` on an app row makes it visible to all authenticated users in their app list.',
+      'A **share link** points to `/app/{id}` — the AppPage loads the app by ID and checks the published flag before rendering.',
+      'You can restrict visibility: private (owner only), published (all users), or marketplace (public + listed).',
+      '**Webhook trigger**: each app can have a unique webhook token stored in `apps.webhook_token`. POST to `/webhooks/{token}` with `{ "input": "..." }` to trigger a run headlessly.',
+      'The backend enforces rate limits (hourly + daily) per user, tracked in-memory with a rolling window.',
+    ],
+  },
+  sell: {
+    color: '#FDCB6E',
+    title: 'How Sell works technically',
+    points: [
+      '`apps.is_paid` + `apps.price_per_run` control access. When `is_paid = true`, the runner checks `app_entitlements` before executing.',
+      '**Stripe Checkout** (redirect flow): frontend calls `/create-checkout-session`, backend creates a Stripe Session and returns the URL. On return, `?checkout=success` triggers a PostHog event.',
+      '**Stripe Elements** (embedded card): uses `@stripe/react-stripe-js` to collect card data client-side; `/create-payment-intent` on the backend creates the intent server-side.',
+      'On payment success, the backend webhook handler (`checkout.session.completed`, `payment_intent.succeeded`) upserts a row in `app_entitlements` with plan, quota, and period dates.',
+      'Subscriptions use a dynamically created recurring Stripe Price (per-app, created on first checkout). `customer.subscription.updated/deleted` events sync entitlement status.',
+    ],
+  },
+  monitor: {
+    color: '#E84393',
+    title: 'How Monitor works technically',
+    points: [
+      'Run data is pulled from `run_history` — every run inserts a row with `app_id`, `user_id`, `created_at`, `input_tokens`, `output_tokens`, `rating`, `input`, and `output`.',
+      'The **30-day volume chart** is computed client-side: runs are bucketed by day using `Math.round((today - runDate) / 86400000)`.',
+      '**Token usage** is reported by the AI provider in the SSE stream\'s `done` event and written to `run_history` at end of each run.',
+      '**Ratings** are stored as integers (1–5) in `run_history.rating`. Thumbs up/down maps to 1/0.',
+      '**Entitlement stats** are loaded from `app_entitlements` — subscriber counts, active vs cancelled, plan types — all fetched in parallel with run history on studio load.',
+    ],
+  },
+  evaluate: {
+    color: '#A29BFE',
+    title: 'How Evaluate works technically',
+    points: [
+      'Quality scores are computed per-app from `run_history`: satisfaction = thumbs-up / total rated; health = weighted score across satisfaction (60%), volume (20%), published (10%), verified (10%).',
+      'The **health score (0–100)** is a composite: high satisfaction + high volume + published + verified badge all contribute.',
+      'Run history rows include the full `input` and `output` text, so you can inspect what was sent and received for any run.',
+      'Failed or low-rated runs are surfaced in the failure list — click any row to see the exact prompt input and output that produced the bad result.',
+      'Quality signals feed back into the marketplace listing: apps above thresholds get "Verified" and "Top Rated" trust badges via the `update_app_badges` Supabase RPC.',
+    ],
+  },
+  improve: {
+    color: '#74B9FF',
+    title: 'How Improve works technically',
+    points: [
+      '**A/B prompt diffing**: select two saved versions (from `app_versions`) and run the same input through both using separate `/run` SSE calls fired in parallel.',
+      'Each call streams independently — outputs appear side-by-side in real time as tokens arrive.',
+      'The **diff view** (powered by Monaco DiffEditor) shows character-level changes between two version prompts so you can see exactly what changed.',
+      '**AI suggestions**: fires a `/run` call with a meta-prompt that asks Claude to review the current system prompt and suggest improvements based on recent failure patterns.',
+      'GitHub integration stores a `gh_token` + `gh_repo` in `developer_settings` (jsonb). Low-rated runs can be filed as GitHub issues via the GitHub REST API (`POST /repos/{owner}/{repo}/issues`).',
+    ],
+  },
+  version: {
+    color: '#55EFC4',
+    title: 'How Version works technically',
+    points: [
+      'Versions are stored in `app_versions`: each row captures `system_prompt`, `ai_model`, `ai_provider`, `semver`, `label`, `changelog`, and a `version_num` auto-increment.',
+      '**Semver bump**: you choose major/minor/patch — the new version is computed from the latest `semver` in the table using string split + increment.',
+      '**Auto-test gate**: before saving, the version manager runs the full test suite (same logic as the Test tab). All pass → saved automatically. Any fail → results shown with a "Save anyway" override.',
+      'Rolling back applies the selected version\'s `system_prompt`/model back to the live `apps` row — the app immediately runs the rolled-back prompt.',
+      'Version history is append-only — nothing is deleted. You always have a full audit trail of every prompt + model configuration you\'ve shipped.',
+    ],
+  },
+  monetize: {
+    color: '#FD79A8',
+    title: 'How Monetize works technically',
+    points: [
+      '**AI cost estimation**: for each run, `input_tokens × input_rate + output_tokens × output_rate` using a hard-coded model cost table (USD per 1M tokens).',
+      'Cost rates are stored client-side in `MODEL_COSTS` — updated manually as provider pricing changes. Rates cover Claude (Haiku, Sonnet, Opus) and OpenAI (GPT-4o, GPT-4o-mini).',
+      '**Revenue** is estimated as `price_per_run × total_run_count`. This is a projection — actual Stripe revenue depends on entitlement purchases, not run count.',
+      '**Margin %** = `(revenue − cost) / revenue × 100`. A healthy paid app should be above 60% margin; below 0% means you\'re losing money per run.',
+      'Token counts come from `run_history` — only runs with `input_tokens` / `output_tokens` populated are included in cost calculations. Runs without token data are excluded.',
+    ],
+  },
+}
+
+function TabNote({ id }) {
+  const note = TAB_NOTES[id]
+  if (!note) return null
+  return (
+    <div className="rounded-2xl border p-4 space-y-2.5"
+      style={{ background: note.color + '08', borderColor: note.color + '25' }}>
+      <div className="flex items-center gap-2">
+        <div className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: note.color }} />
+        <p className="text-xs font-semibold" style={{ color: note.color }}>{note.title}</p>
+      </div>
+      <ul className="space-y-1.5">
+        {note.points.map((pt, i) => (
+          <li key={i} className="flex gap-2 text-[11px] text-slate-400 leading-relaxed">
+            <span className="shrink-0 mt-0.5" style={{ color: note.color + 'CC' }}>›</span>
+            <span dangerouslySetInnerHTML={{ __html: pt.replace(/\*\*(.+?)\*\*/g, `<strong class="text-slate-200">$1</strong>`) }} />
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
 // ─── Model cost table (USD per 1M tokens) ────────────────────────────────────
 const MODEL_COSTS = {
   'gpt-4o':                  { input: 2.50,  output: 10.00 },
@@ -276,6 +402,7 @@ function DesignTab({ apps, loading, onOpenCreate, user, onAppUpdated }) {
 
   return (
     <>
+      <TabNote id="design" />
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <p className="text-xs text-slate-500">{apps.length} app{apps.length !== 1 ? 's' : ''}</p>
@@ -359,6 +486,7 @@ function DesignTab({ apps, loading, onOpenCreate, user, onAppUpdated }) {
 function TestTab({ apps, user }) {
   return (
     <div className="space-y-5">
+      <TabNote id="test" />
       <TestSuite apps={apps} user={user} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -706,6 +834,7 @@ function DeployTab({ apps, user, onAppUpdated }) {
 
   return (
     <div className="space-y-5">
+      <TabNote id="deploy" />
       {/* Per-app deploy cards */}
       <div className="space-y-4">
         {apps.map(app => (
@@ -1039,6 +1168,7 @@ function SellTab({ apps, user, onAppUpdated }) {
 
   return (
     <div className="space-y-4">
+      <TabNote id="sell" />
       <div>
         <p className="text-xs text-slate-500 uppercase font-semibold tracking-wide mb-3">Pricing editor</p>
         <div className="space-y-3">
@@ -1374,6 +1504,7 @@ function MonitorTab({ apps, appStats, loading, totalStats, runs, entitlements, u
 
   return (
     <div className="space-y-6">
+      <TabNote id="monitor" />
       {/* ── Top stats ── */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatTile label="Total runs" value={totalStats.runs} color="#6C5CE7" />
@@ -1707,6 +1838,7 @@ function EvaluateTab({ apps, appStats, runs, user }) {
 
   return (
     <div className="space-y-6">
+      <TabNote id="evaluate" />
       {/* ── Quality score overview table ── */}
       <div>
         <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide mb-3">Quality scores</p>
@@ -2074,6 +2206,7 @@ function ImproveTab({ apps, user, runs }) {
 
   return (
     <div className="space-y-5">
+      <TabNote id="improve" />
       {/* App selector */}
       <div>
         <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide mb-2">App</p>
@@ -2363,6 +2496,7 @@ function VersionTab({ apps, user, onAppUpdated }) {
 
   return (
     <div className="space-y-5">
+      <TabNote id="version" />
       {/* App selector */}
       <div>
         <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide mb-2">Select app</p>
@@ -2763,6 +2897,7 @@ function MonetizeTab({ apps, runs, loading, user }) {
 
   return (
     <div className="space-y-5">
+      <TabNote id="monetize" />
       {/* Summary tiles */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatTile label="Est. revenue" value={totals.revenue > 0 ? `$${totals.revenue.toFixed(2)}` : '—'} color="#00B894" sub="price × runs" />

@@ -185,13 +185,16 @@ function ListingCard({ listing: l, onClick }) {
 export function MarketplaceAppPage() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const [listing, setListing]   = useState(null)
-  const [app, setApp]           = useState(null)
-  const [notFound, setNotFound] = useState(false)
-  const [input, setInput]       = useState('')
-  const [output, setOutput]     = useState('')
-  const [running, setRunning]   = useState(false)
-  const [error, setError]       = useState(null)
+  const [listing, setListing]       = useState(null)
+  const [app, setApp]               = useState(null)
+  const [notFound, setNotFound]     = useState(false)
+  const [input, setInput]           = useState('')
+  const [output, setOutput]         = useState('')
+  const [running, setRunning]       = useState(false)
+  const [error, setError]           = useState(null)
+  const [entitlement, setEntitlement] = useState(null)   // null=loading, false=none, object=active
+  const [checkingOut, setCheckingOut] = useState(false)
+  const [reviews, setReviews]       = useState([])
 
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -204,10 +207,56 @@ export function MarketplaceAppPage() {
       .eq('app_id', id)
       .eq('status', 'live')
       .single()
-    if (!data) { setNotFound(true); return }
-    setListing(data)
-    setApp(data.apps)
-    track(EVENTS.MARKETPLACE_APP_VIEWED, { app_id: id, title: data.title, category: data.category })
+    if (!data) {
+      // Fallback: try loading published app directly
+      const { data: appData } = await supabase.from('apps').select('*').eq('id', id).eq('is_published', true).single()
+      if (!appData) { setNotFound(true); return }
+      setListing({ title: appData.name, tagline: appData.description, description: appData.description, tags: [], category: null, user_id: appData.created_by, developer_profiles: null })
+      setApp(appData)
+    } else {
+      setListing(data)
+      setApp(data.apps)
+    }
+    track(EVENTS.MARKETPLACE_APP_VIEWED, { app_id: id })
+
+    // Check entitlement
+    const { data: { session } } = await supabase.auth.getSession()
+    if (session) {
+      const { data: ent } = await supabase.from('app_entitlements')
+        .select('*').eq('app_id', id).eq('user_id', session.user.id).eq('status', 'active').maybeSingle()
+      setEntitlement(ent || false)
+    } else {
+      setEntitlement(false)
+    }
+
+    // Load reviews
+    const { data: revData } = await supabase.from('app_reviews')
+      .select('rating, review_text, created_at, user_id').eq('app_id', id).order('created_at', { ascending: false }).limit(10)
+    setReviews(revData || [])
+  }
+
+  async function startCheckout(plan = 'pay_per_run') {
+    setCheckingOut(true)
+    setError(null)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) { setError('Sign in to purchase access'); setCheckingOut(false); return }
+      const r = await fetch(`${API_URL}/create-checkout-session`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` },
+        body: JSON.stringify({
+          app_id: id, plan,
+          success_url: `${window.location.origin}/marketplace/${id}?purchased=1`,
+          cancel_url: window.location.href,
+        }),
+      })
+      const body = await r.json()
+      if (!r.ok) throw new Error(body.detail || 'Checkout failed')
+      window.location.href = body.checkout_url
+    } catch (e) {
+      setError(e.message)
+      setCheckingOut(false)
+    }
   }
 
   async function runApp() {
@@ -324,38 +373,68 @@ export function MarketplaceAppPage() {
           </div>
         )}
 
-        {/* Try it */}
-        <div className="bg-[#0E1424] border border-white/5 rounded-2xl p-5 space-y-4">
-          <p className="text-sm font-semibold text-white">Try it</p>
-          <textarea
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            placeholder="Enter your input…"
-            rows={4}
-            className="w-full bg-[#171B33] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/40 resize-none"
-          />
-          <div className="flex justify-end">
-            <button
-              onClick={runApp}
-              disabled={running || !input.trim()}
-              className="text-sm font-semibold px-5 py-2 rounded-xl bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors disabled:opacity-40">
-              {running ? 'Running…' : 'Run'}
-            </button>
-          </div>
-
-          {error && (
-            <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 text-xs text-red-400">{error}</div>
-          )}
-
-          {(output || running) && (
-            <div className="bg-[#171B33] border border-white/5 rounded-xl px-4 py-3 min-h-[80px]">
-              <p className="text-sm text-slate-200 whitespace-pre-wrap leading-relaxed">
-                {output}
-                {running && <span className="inline-block w-1.5 h-4 bg-[#A29BFE] ml-0.5 animate-pulse align-middle" />}
+        {/* Try it / Get access */}
+        {isPaid && entitlement === false ? (
+          <div className="bg-[#0E1424] border border-amber-500/20 rounded-2xl p-6 space-y-4 text-center">
+            <div className="text-3xl">🔒</div>
+            <div>
+              <p className="text-white font-semibold text-sm">Paid app</p>
+              <p className="text-slate-400 text-sm mt-1">
+                {price ? `$${price} per run` : 'Purchase required'} — get access to try this app.
               </p>
             </div>
-          )}
-        </div>
+            {error && (
+              <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 text-xs text-red-400">{error}</div>
+            )}
+            <button
+              onClick={() => startCheckout('pay_per_run')}
+              disabled={checkingOut}
+              className="text-sm font-semibold px-6 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-black transition-colors disabled:opacity-40">
+              {checkingOut ? 'Redirecting…' : `Get access${price ? ` — $${price}/run` : ''} →`}
+            </button>
+          </div>
+        ) : isPaid && entitlement === null ? (
+          <div className="bg-[#0E1424] border border-white/5 rounded-2xl p-5 flex items-center justify-center h-32">
+            <p className="text-slate-500 text-sm">Checking access…</p>
+          </div>
+        ) : (
+          <div className="bg-[#0E1424] border border-white/5 rounded-2xl p-5 space-y-4">
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-semibold text-white">Try it</p>
+              {isPaid && entitlement && (
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400">✓ Access active</span>
+              )}
+            </div>
+            <textarea
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              placeholder="Enter your input…"
+              rows={4}
+              className="w-full bg-[#171B33] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/40 resize-none"
+            />
+            <div className="flex justify-end">
+              <button
+                onClick={runApp}
+                disabled={running || !input.trim()}
+                className="text-sm font-semibold px-5 py-2 rounded-xl bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors disabled:opacity-40">
+                {running ? 'Running…' : 'Run'}
+              </button>
+            </div>
+
+            {error && (
+              <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 text-xs text-red-400">{error}</div>
+            )}
+
+            {(output || running) && (
+              <div className="bg-[#171B33] border border-white/5 rounded-xl px-4 py-3 min-h-[80px]">
+                <p className="text-sm text-slate-200 whitespace-pre-wrap leading-relaxed">
+                  {output}
+                  {running && <span className="inline-block w-1.5 h-4 bg-[#A29BFE] ml-0.5 animate-pulse align-middle" />}
+                </p>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )

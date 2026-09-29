@@ -1029,15 +1029,33 @@ function MarketplaceListings({ apps, user }) {
     toast('Listing saved', 'success', 2000)
   }
 
+  function publishGateErrors(app) {
+    const l = listingFor(app.id)
+    const errs = []
+    if (!app.system_prompt?.trim())           errs.push({ key: 'prompt',   label: 'System prompt is empty — add one in Design' })
+    if (!app.is_published)                    errs.push({ key: 'deploy',   label: 'App is not deployed — publish it in Deploy' })
+    if (app.is_paid && !(parseFloat(app.price_per_run) > 0))
+                                              errs.push({ key: 'price',    label: 'Paid app has no price — set one in Marketplace' })
+    if (!l?.title?.trim())                    errs.push({ key: 'title',    label: 'Listing title is missing — fill in the form above' })
+    if (!l?.tagline?.trim())                  errs.push({ key: 'tagline',  label: 'Tagline is missing — one sentence description' })
+    if (!l?.category)                         errs.push({ key: 'category', label: 'Category not selected' })
+    if (!(app.total_runs > 0))                errs.push({ key: 'run',      label: 'No runs yet — run the app at least once' })
+    return errs
+  }
+
   async function submitListing(appId) {
     const l = listingFor(appId)
     if (!l) { toast('Save a listing first', 'error', 2000); return }
+    const app = apps.find(a => a.id === appId)
+    const errs = publishGateErrors(app || {})
+    if (errs.length) { toast(errs[0].label, 'error', 3500); return }
+    // Auto-approve: go live immediately (admin review can be added later)
     const { data, error } = await supabase.from('marketplace_listings')
-      .update({ status: 'submitted', updated_at: new Date().toISOString() })
+      .update({ status: 'live', updated_at: new Date().toISOString() })
       .eq('id', l.id).select().single()
     if (error) { toast(error.message, 'error'); return }
     setListings(prev => prev.map(x => x.id === data.id ? data : x))
-    toast('Submitted for review — Aistrix team will review within 48 h', 'success', 4000)
+    toast('🎉 Your app is live on the Marketplace!', 'success', 4000)
     track(EVENTS.LISTING_SUBMITTED, { app_id: appId })
   }
 
@@ -1072,12 +1090,33 @@ function MarketplaceListings({ apps, user }) {
                 className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 transition-colors">
                 {isEditing ? 'Cancel' : l ? 'Edit' : '+ Create'}
               </button>
-              {l && l.status === 'draft' && !isEditing && (
-                <button onClick={() => submitListing(app.id)}
-                  className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors">
-                  Submit →
-                </button>
-              )}
+              {l && l.status === 'draft' && !isEditing && (() => {
+                const errs = publishGateErrors(app)
+                return errs.length === 0 ? (
+                  <button onClick={() => submitListing(app.id)}
+                    className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors">
+                    Go live →
+                  </button>
+                ) : (
+                  <div className="relative group">
+                    <button disabled
+                      className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-white/5 text-slate-500 cursor-not-allowed border border-white/10">
+                      {errs.length} issue{errs.length !== 1 ? 's' : ''} ⚠️
+                    </button>
+                    {/* Tooltip */}
+                    <div className="absolute right-0 top-8 z-20 hidden group-hover:block w-64 bg-[#0E1424] border border-white/10 rounded-xl p-3 shadow-xl">
+                      <p className="text-[10px] text-slate-400 uppercase font-semibold tracking-wide mb-2">Fix before going live</p>
+                      <ul className="space-y-1.5">
+                        {errs.map(e => (
+                          <li key={e.key} className="flex items-start gap-1.5 text-[11px] text-slate-300">
+                            <span className="text-red-400 shrink-0 mt-0.5">✕</span> {e.label}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                )
+              })()}
               {l && (l.status === 'live' || l.status === 'approved') && (
                 <a href={`/marketplace/${app.id}`} target="_blank" rel="noreferrer"
                   className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 transition-colors">

@@ -228,7 +228,7 @@ export default function AppTypeSelector({ onSelect, onClose }) {
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={onClose}>
       <div ref={panelRef} role="dialog" aria-modal="true" aria-label="What do you want to automate?"
-        className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-xl flex flex-col overflow-hidden"
+        className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-3xl flex flex-col overflow-hidden"
         style={{ maxHeight: '92vh' }}
         onClick={e => e.stopPropagation()}>
 

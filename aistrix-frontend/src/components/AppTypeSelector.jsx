@@ -315,7 +315,7 @@ export default function AppTypeSelector({ onSelect, onClose }) {
           {/* Divider */}
           <div className="flex items-center gap-3">
             <div className="flex-1 h-px bg-white/8" />
-            <span className="text-[10px] font-bold tracking-widest uppercase shrink-0 px-3 py-1 rounded-full"
+            <span className="text-sm font-extrabold tracking-wide uppercase shrink-0 px-4 py-1.5 rounded-full"
               style={{ background: 'linear-gradient(135deg, #6C5CE722, #8B5CF622)', color: '#A29BFE', border: '1px solid #6C5CE740' }}>
               Or choose a type directly
             </span>

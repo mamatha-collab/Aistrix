@@ -24,6 +24,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
+import { track, EVENTS } from '../lib/analytics'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -416,6 +417,8 @@ export default function TestSuite({ apps, user }) {
       }
     }
     setRunning(false)
+    const passed = Object.values(results).filter(r => r.passed).length
+    track(EVENTS.TEST_SUITE_RUN, { app_id: selectedApp?.id, app_name: selectedApp?.name, total: toRun.length, passed })
   }
 
   function stopRun() { abortRef.current?.abort(); setRunning(false) }

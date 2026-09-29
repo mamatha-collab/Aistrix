@@ -6,6 +6,7 @@ import AppGrid from './components/AppGrid'
 import DetailPanel from './components/DetailPanel'
 import Auth from './components/Auth'
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom'
+import { identify, resetIdentity } from './lib/analytics'
 import { getUserRole, isAdmin, isModerator } from './utils/roles'
 import { useKeyboard } from './hooks/useKeyboard'
 import { useMediaQuery } from './hooks/useMediaQuery'
@@ -152,8 +153,10 @@ export default function App() {
       }
     })
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       setSession(session)
+      if (session) identify(session.user.id, { email: session.user.email })
+      else if (event === 'SIGNED_OUT') resetIdentity()
       if (session && !localStorage.getItem('aistrix_welcomed')) setShowOnboarding(true)
       if (session && !localStorage.getItem('aistrix:app_onboarding_done')) {
         supabase.from('apps').select('id', { count: 'exact', head: true })

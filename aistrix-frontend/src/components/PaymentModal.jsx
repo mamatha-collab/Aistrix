@@ -3,7 +3,7 @@ import { loadStripe } from '@stripe/stripe-js'
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
-// useToast is used in CheckoutForm below and in PaymentModal
+import { track, EVENTS } from '../lib/analytics'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -73,6 +73,7 @@ function CheckoutForm({ app, user, onSuccess, onClose }) {
           plan: 'pay_per_run', status: 'active',
           runs_this_period: 0, run_quota: null,
         }, { onConflict: 'app_id,user_id', ignoreDuplicates: false })
+        track(EVENTS.CHECKOUT_COMPLETED, { app_id: app.id, app_name: app.name, plan: 'pay_per_run', method: 'elements' })
         toast(`Payment successful — running ${app.name}`, 'success')
         onSuccess()
       }
@@ -137,9 +138,13 @@ export default function PaymentModal({ app, user, onSuccess, onClose }) {
   const [checkoutError, setCheckoutError] = useState('')
   const toast = useToast()
 
+  // Track modal open
+  useState(() => { track(EVENTS.PAYMENT_MODAL_OPENED, { app_id: app.id, app_name: app.name, price: app.price_per_run }) })
+
   async function handleCheckout() {
     setCheckoutLoading(true)
     setCheckoutError('')
+    track(EVENTS.CHECKOUT_STARTED, { app_id: app.id, app_name: app.name, plan, price: app.price_per_run })
     try {
       await startCheckoutSession(app, user, plan)
       // page will redirect — no further action needed

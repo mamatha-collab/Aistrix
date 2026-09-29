@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { supabase } from '../supabase'
+import { track, EVENTS } from '../lib/analytics'
 
 const CATEGORY_ICONS = {
   'Productivity':        '⚡',
@@ -22,7 +23,10 @@ export function MarketplacePage() {
   const [search, setSearch]         = useState('')
   const navigate = useNavigate()
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    load()
+    track(EVENTS.MARKETPLACE_VIEWED)
+  }, [])
 
   async function load() {
     const { data } = await supabase
@@ -99,7 +103,7 @@ export function MarketplacePage() {
           </div>
         ) : (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {filtered.map(l => <ListingCard key={l.id} listing={l} onClick={() => navigate(`/marketplace/${l.app_id}`)} />)}
+            {filtered.map(l => <ListingCard key={l.id} listing={l} onClick={() => { track(EVENTS.MARKETPLACE_APP_CLICKED, { app_id: l.app_id, title: l.title, category: l.category }); navigate(`/marketplace/${l.app_id}`) }} />)}
           </div>
         )}
       </div>
@@ -176,6 +180,7 @@ export function MarketplaceAppPage() {
     if (!data) { setNotFound(true); return }
     setListing(data)
     setApp(data.apps)
+    track(EVENTS.MARKETPLACE_APP_VIEWED, { app_id: id, title: data.title, category: data.category })
   }
 
   async function runApp() {

@@ -1,6 +1,7 @@
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { useState, useEffect, lazy, Suspense } from 'react'
 import { supabase } from '../supabase'
+import { track, EVENTS } from '../lib/analytics'
 
 // Lazy-loaded — AppRunner is also dynamically imported from DetailPanel.jsx;
 // importing it statically here pins it to this page's chunk and makes that
@@ -23,9 +24,11 @@ export default function AppPage() {
     if (checkout === 'success') {
       setCheckoutBanner('success')
       setSearchParams({}, { replace: true })
+      track(EVENTS.CHECKOUT_COMPLETED, { app_id: id, method: 'checkout_session' })
     } else if (checkout === 'cancelled') {
       setCheckoutBanner('cancelled')
       setSearchParams({}, { replace: true })
+      track(EVENTS.CHECKOUT_CANCELLED, { app_id: id })
     }
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null)

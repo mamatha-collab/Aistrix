@@ -10,6 +10,7 @@ import { createNotification } from '../utils/notifications'
 import { parseSSELine } from '../lib/sse'
 import { duplicateApp, emailResult, friendlyErrorMessage } from '../utils/appActions'
 import RunRating from './RunRating'
+import { track, EVENTS } from '../lib/analytics'
 
 // Lazy-loaded — keeps the Stripe SDK out of the main bundle until a paid app is actually run
 const PaymentModal = lazy(() => import('./PaymentModal'))
@@ -382,6 +383,7 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
     if (!runInput.trim()) return
     setLoading(true); setResult(''); setError('')
     setProvider(''); setModel(''); setUsage(null); setBulkResults([]); setToolCalls([])
+    track(EVENTS.APP_RUN_STARTED, { app_id: app.id, app_name: app.name, app_type: app.app_type, is_paid: !!app.is_paid })
 
     // Check if this app has tools
     if (app.id) {
@@ -461,6 +463,7 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
         sendNotification(app.name)
         onRun?.()
         toast('Result saved to history', 'success')
+        track(EVENTS.APP_RUN_COMPLETED, { app_id: app.id, app_name: app.name, provider: p, model: m, input_tokens: u?.input_tokens, output_tokens: u?.output_tokens, is_paid: !!app.is_paid, entitled: !!entitlement })
         // Increment entitlement run count if entitled
         if (entitlement?.id) {
           const newCount = (entitlement.runs_this_period ?? 0) + 1
@@ -475,6 +478,7 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
       clearTimeout(timeoutId)
       const msg = friendlyErrorMessage(err)
       setError(msg); toast(msg, 'error')
+      track(EVENTS.APP_RUN_FAILED, { app_id: app.id, app_name: app.name, error: msg })
     } finally {
       setLoading(false)
     }

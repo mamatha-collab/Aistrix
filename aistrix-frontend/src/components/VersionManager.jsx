@@ -3,6 +3,7 @@ import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { timeAgo } from '../utils'
 import { runPrompt, evaluateCase } from './TestSuite'
+import { track, EVENTS } from '../lib/analytics'
 
 export const VERSION_SETUP_SQL = `create table app_versions (
   id            uuid primary key default gen_random_uuid(),
@@ -169,6 +170,7 @@ export default function VersionManager({ app, user, onRollback, selectedId, onSe
     setShowSaveForm(false)
     setTestGate(null)
     toast(`${nextVer} saved`, 'success', 2000)
+    track(EVENTS.VERSION_SAVED, { app_id: app.id, app_name: app.name, semver: nextVer, bump_type: bumpType })
   }
 
   async function saveSnapshot() {

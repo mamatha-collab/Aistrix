@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useRef, lazy, Suspense } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
+import { track, EVENTS } from '../lib/analytics'
 import { timeAgo } from '../utils'
 import ToolsEditor from '../components/ToolsEditor'
 import TestSuite from '../components/TestSuite'
@@ -711,6 +712,7 @@ function MarketplaceListings({ apps, user }) {
     if (error) { toast(error.message, 'error'); return }
     setListings(prev => prev.map(x => x.id === data.id ? data : x))
     toast('Submitted for review — Aistrix team will review within 48 h', 'success', 4000)
+    track(EVENTS.LISTING_SUBMITTED, { app_id: appId })
   }
 
   if (needsSetup) return <ListingSetupCard onRetry={load} />

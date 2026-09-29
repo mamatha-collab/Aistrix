@@ -3,6 +3,7 @@ import { loadStripe } from '@stripe/stripe-js'
 import { Elements, CardElement, useStripe, useElements } from '@stripe/react-stripe-js'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
+// useToast is used in CheckoutForm below and in PaymentModal
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -110,12 +111,45 @@ function CheckoutForm({ app, user, onSuccess, onClose }) {
   )
 }
 
+async function startCheckoutSession(app, user, plan) {
+  const { data: { session } } = await supabase.auth.getSession()
+  const origin = window.location.origin
+  const res = await fetch(`${API_URL}/create-checkout-session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
+    body: JSON.stringify({
+      app_id: app.id,
+      plan,
+      success_url: `${origin}/app/${app.id}?checkout=success`,
+      cancel_url:  `${origin}/app/${app.id}?checkout=cancelled`,
+    }),
+  })
+  const { checkout_url, error } = await res.json()
+  if (error) throw new Error(error)
+  window.location.href = checkout_url
+}
+
 export default function PaymentModal({ app, user, onSuccess, onClose }) {
   const stripe = getStripe()
   const hasStripe = !!import.meta.env.VITE_STRIPE_PUBLIC_KEY
+  const [plan, setPlan] = useState('pay_per_run')   // pay_per_run | subscription
+  const [checkoutLoading, setCheckoutLoading] = useState(false)
+  const [checkoutError, setCheckoutError] = useState('')
+  const toast = useToast()
+
+  async function handleCheckout() {
+    setCheckoutLoading(true)
+    setCheckoutError('')
+    try {
+      await startCheckoutSession(app, user, plan)
+      // page will redirect — no further action needed
+    } catch (e) {
+      setCheckoutError(e.message)
+      setCheckoutLoading(false)
+    }
+  }
 
   if (!hasStripe) {
-    // Stripe not configured — show a placeholder
     return (
       <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-6">
         <div className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-sm p-6 text-center space-y-4">
@@ -123,7 +157,7 @@ export default function PaymentModal({ app, user, onSuccess, onClose }) {
           <h3 className="text-white font-semibold">{app.name} — Paid App</h3>
           <p className="text-slate-400 text-sm">This app costs <strong className="text-white">${app.price_per_run}</strong> per run.</p>
           <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-3">
-            <p className="text-amber-400 text-xs">Stripe is not configured yet. Add <code>VITE_STRIPE_PUBLIC_KEY</code> to your frontend .env to enable payments.</p>
+            <p className="text-amber-400 text-xs">Stripe is not configured. Add <code>VITE_STRIPE_PUBLIC_KEY</code> to enable payments.</p>
           </div>
           <div className="flex gap-3">
             <button onClick={onClose} className="flex-1 bg-[#1F2444] text-slate-300 py-2.5 rounded-xl text-sm">Cancel</button>
@@ -139,6 +173,7 @@ export default function PaymentModal({ app, user, onSuccess, onClose }) {
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-6">
       <div className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-sm">
+        {/* Header */}
         <div className="flex items-center justify-between p-5 border-b border-white/5">
           <div className="flex items-center gap-3">
             <span className="text-2xl">{app.emoji}</span>
@@ -150,11 +185,70 @@ export default function PaymentModal({ app, user, onSuccess, onClose }) {
           <button aria-label="Close" onClick={onClose} className="text-slate-500 hover:text-white text-lg">✕</button>
         </div>
 
-        <div className="p-5">
-          <p className="text-slate-400 text-sm mb-4">Complete payment to run this app once. Your card will be charged <strong className="text-white">${app.price_per_run}</strong>.</p>
-          <Elements stripe={stripe}>
-            <CheckoutForm app={app} user={user} onSuccess={onSuccess} onClose={onClose} />
-          </Elements>
+        <div className="p-5 space-y-4">
+          {/* Plan selector */}
+          <div className="flex bg-[#0E1424] rounded-xl p-1 gap-1">
+            <button onClick={() => setPlan('pay_per_run')}
+              className={`flex-1 text-xs font-semibold py-2 rounded-lg transition-all ${plan === 'pay_per_run' ? 'bg-[#6C5CE7] text-white' : 'text-slate-500 hover:text-slate-300'}`}>
+              Pay per run
+            </button>
+            <button onClick={() => setPlan('subscription')}
+              className={`flex-1 text-xs font-semibold py-2 rounded-lg transition-all ${plan === 'subscription' ? 'bg-[#6C5CE7] text-white' : 'text-slate-500 hover:text-slate-300'}`}>
+              Subscribe monthly
+            </button>
+          </div>
+
+          {plan === 'pay_per_run' ? (
+            <>
+              <p className="text-slate-400 text-sm">
+                You'll be charged <strong className="text-white">${app.price_per_run}</strong> for this run.
+                You can also embed your card directly below.
+              </p>
+
+              {/* Tabs: Checkout redirect vs embedded card */}
+              <div className="space-y-3">
+                <button onClick={handleCheckout} disabled={checkoutLoading}
+                  className="w-full bg-[#6C5CE7] hover:bg-[#7D6FF0] disabled:opacity-40 text-white py-2.5 rounded-xl font-semibold text-sm transition-colors">
+                  {checkoutLoading ? 'Redirecting…' : 'Pay with Stripe Checkout →'}
+                </button>
+                <div className="relative flex items-center gap-2">
+                  <div className="flex-1 h-px bg-white/5" />
+                  <span className="text-[10px] text-slate-600">or enter card directly</span>
+                  <div className="flex-1 h-px bg-white/5" />
+                </div>
+                <Elements stripe={stripe}>
+                  <CheckoutForm app={app} user={user} onSuccess={onSuccess} onClose={onClose} />
+                </Elements>
+              </div>
+            </>
+          ) : (
+            <div className="space-y-3">
+              <div className="bg-[#6C5CE7]/10 border border-[#6C5CE7]/20 rounded-xl p-4 space-y-1">
+                <p className="text-white text-sm font-semibold">Monthly subscription</p>
+                <p className="text-slate-400 text-xs">
+                  <strong className="text-white">${app.price_per_run}/month</strong> — unlimited runs, cancel anytime.
+                  Your entitlement is activated automatically after payment.
+                </p>
+              </div>
+              {checkoutError && (
+                <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-3 text-red-400 text-xs">{checkoutError}</div>
+              )}
+              <div className="flex gap-3">
+                <button onClick={onClose} className="flex-1 bg-[#1F2444] hover:bg-[#272C52] text-slate-300 py-2.5 rounded-xl text-sm transition-colors">
+                  Cancel
+                </button>
+                <button onClick={handleCheckout} disabled={checkoutLoading}
+                  className="flex-1 bg-[#6C5CE7] hover:bg-[#7D6FF0] disabled:opacity-40 text-white py-2.5 rounded-xl font-semibold text-sm transition-colors">
+                  {checkoutLoading ? 'Redirecting…' : 'Subscribe →'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {checkoutError && plan === 'pay_per_run' && (
+            <p className="text-red-400 text-xs">{checkoutError}</p>
+          )}
+          <p className="text-[10px] text-slate-600 text-center">🔒 Secured by Stripe</p>
         </div>
       </div>
     </div>

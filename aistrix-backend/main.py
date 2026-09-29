@@ -1188,9 +1188,124 @@ async def create_payment_intent(req: PaymentIntentRequest, request: Request):
         raise HTTPException(status_code=400, detail=str(e.user_message))
 
 
+class CheckoutSessionRequest(BaseModel):
+    app_id: str
+    plan: str = "pay_per_run"          # pay_per_run | subscription
+    success_url: str
+    cancel_url: str
+    run_quota: Optional[int] = None    # for subscription plans
+
+
+@app.post("/create-checkout-session")
+async def create_checkout_session(req: CheckoutSessionRequest, request: Request):
+    """Create a Stripe Checkout Session for one-time purchase or subscription."""
+    import stripe
+    secret_key = os.getenv("STRIPE_SECRET_KEY")
+    if not secret_key:
+        raise HTTPException(status_code=503, detail="Stripe is not configured on this server")
+
+    auth_header = request.headers.get("Authorization", "")
+    user_jwt = auth_header.removeprefix("Bearer ").strip() or None
+    user_id = extract_user_id(user_jwt) if user_jwt else None
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Authentication required")
+
+    stripe.api_key = secret_key
+
+    # Fetch app to get price
+    app_row = await asyncio.to_thread(
+        lambda: get_anon_client().table("apps")
+            .select("name, price_per_run, is_paid")
+            .eq("id", req.app_id).single().execute()
+    )
+    if not app_row.data:
+        raise HTTPException(status_code=404, detail="App not found")
+    app_data = app_row.data
+
+    if not app_data.get("is_paid") or not app_data.get("price_per_run"):
+        raise HTTPException(status_code=400, detail="App is not a paid app")
+
+    amount_cents = int(float(app_data["price_per_run"]) * 100)
+    app_name = app_data.get("name", "AI App")
+
+    try:
+        if req.plan == "subscription":
+            # Create a recurring price on the fly and a Subscription Checkout Session
+            price = await asyncio.to_thread(
+                stripe.Price.create,
+                unit_amount=amount_cents,
+                currency="usd",
+                recurring={"interval": "month"},
+                product_data={"name": f"{app_name} — Monthly"},
+            )
+            session = await asyncio.to_thread(
+                stripe.checkout.Session.create,
+                mode="subscription",
+                line_items=[{"price": price.id, "quantity": 1}],
+                success_url=req.success_url,
+                cancel_url=req.cancel_url,
+                metadata={"app_id": req.app_id, "user_id": user_id, "plan": "subscription", "run_quota": str(req.run_quota or "")},
+            )
+        else:
+            # One-time pay-per-run checkout
+            session = await asyncio.to_thread(
+                stripe.checkout.Session.create,
+                mode="payment",
+                line_items=[{
+                    "price_data": {
+                        "currency": "usd",
+                        "unit_amount": amount_cents,
+                        "product_data": {"name": f"{app_name} — Run"},
+                    },
+                    "quantity": 1,
+                }],
+                success_url=req.success_url,
+                cancel_url=req.cancel_url,
+                metadata={"app_id": req.app_id, "user_id": user_id, "plan": "pay_per_run"},
+            )
+        return {"checkout_url": session.url, "session_id": session.id}
+    except stripe.error.StripeError as e:
+        raise HTTPException(status_code=400, detail=str(e.user_message))
+
+
+async def _upsert_entitlement(
+    app_id: str, user_id: str, plan: str,
+    stripe_customer_id: Optional[str] = None,
+    stripe_sub_id: Optional[str] = None,
+    status: str = "active",
+    run_quota: Optional[int] = None,
+    period_start: Optional[str] = None,
+    period_end: Optional[str] = None,
+):
+    """Upsert app_entitlements row using the service-role client (bypasses RLS)."""
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        print("WARN: SUPABASE_SERVICE_ROLE_KEY not set — cannot upsert entitlement")
+        return
+    sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    row = {
+        "app_id": app_id,
+        "user_id": user_id,
+        "plan": plan,
+        "status": status,
+        "runs_this_period": 0,
+    }
+    if stripe_customer_id: row["stripe_customer_id"] = stripe_customer_id
+    if stripe_sub_id:      row["stripe_sub_id"]      = stripe_sub_id
+    if run_quota is not None: row["run_quota"] = run_quota
+    if period_start:       row["current_period_start"] = period_start
+    if period_end:         row["current_period_end"]   = period_end
+
+    await asyncio.to_thread(
+        lambda: sb.table("app_entitlements")
+            .upsert(row, on_conflict="app_id,user_id")
+            .execute()
+    )
+    print(f"Entitlement upserted: app={app_id} user={user_id} plan={plan} status={status}")
+
+
 @app.post("/stripe/webhook")
 async def stripe_webhook(request: Request):
-    """Handle Stripe payment webhooks."""
+    """Handle Stripe payment and subscription webhooks."""
     import stripe
     secret_key = os.getenv("STRIPE_SECRET_KEY")
     webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
@@ -1203,19 +1318,91 @@ async def stripe_webhook(request: Request):
 
     try:
         if webhook_secret:
-            event = stripe.Webhook.construct_event(payload, sig_header, webhook_secret)
+            event = await asyncio.to_thread(
+                stripe.Webhook.construct_event, payload, sig_header, webhook_secret
+            )
         else:
-            event = stripe.Event.construct_from({"data": {"object": {}}}, secret_key)
+            # Dev mode: parse without signature verification
+            event = json.loads(payload)
+    except (ValueError, Exception):
+        raise HTTPException(status_code=400, detail="Invalid payload or signature")
 
-        if event["type"] == "payment_intent.succeeded":
-            pi = event["data"]["object"]
-            print(f"Payment succeeded: {pi['id']} for app {pi.get('metadata', {}).get('app_id')}")
+    event_type = event.get("type", "")
+    obj = event.get("data", {}).get("object", {})
+    meta = obj.get("metadata", {})
 
-        return {"received": True}
-    except ValueError:
-        raise HTTPException(status_code=400, detail="Invalid payload")
-    except stripe.error.SignatureVerificationError:
-        raise HTTPException(status_code=400, detail="Invalid signature")
+    # ── One-time payment via Checkout Session ───────────────────────────────
+    if event_type == "checkout.session.completed":
+        app_id  = meta.get("app_id")
+        user_id = meta.get("user_id")
+        plan    = meta.get("plan", "pay_per_run")
+        run_quota_str = meta.get("run_quota", "")
+        run_quota = int(run_quota_str) if run_quota_str and run_quota_str.isdigit() else None
+
+        if app_id and user_id:
+            customer_id = obj.get("customer")
+            sub_id      = obj.get("subscription")
+            await _upsert_entitlement(
+                app_id=app_id, user_id=user_id, plan=plan,
+                stripe_customer_id=customer_id, stripe_sub_id=sub_id,
+                run_quota=run_quota,
+            )
+
+    # ── PaymentIntent (Elements flow) ───────────────────────────────────────
+    elif event_type == "payment_intent.succeeded":
+        app_id  = meta.get("app_id")
+        user_id = meta.get("user_id")
+        if app_id and user_id and user_id != "anonymous":
+            await _upsert_entitlement(app_id=app_id, user_id=user_id, plan="pay_per_run")
+
+    # ── Subscription lifecycle ──────────────────────────────────────────────
+    elif event_type in ("customer.subscription.created", "customer.subscription.updated"):
+        sub = obj
+        app_id  = sub.get("metadata", {}).get("app_id")
+        user_id = sub.get("metadata", {}).get("user_id")
+        if not (app_id and user_id):
+            # Try to look up via customer in app_entitlements
+            customer_id = sub.get("customer")
+            if customer_id and SUPABASE_SERVICE_ROLE_KEY:
+                sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+                row = await asyncio.to_thread(
+                    lambda: sb.table("app_entitlements")
+                        .select("app_id, user_id")
+                        .eq("stripe_customer_id", customer_id)
+                        .limit(1).execute()
+                )
+                if row.data:
+                    app_id  = row.data[0]["app_id"]
+                    user_id = row.data[0]["user_id"]
+
+        if app_id and user_id:
+            status = "active" if sub.get("status") == "active" else sub.get("status", "active")
+            period = sub.get("current_period_end")
+            period_end_iso = datetime.fromtimestamp(period, tz=timezone.utc).isoformat() if period else None
+            period_start = sub.get("current_period_start")
+            period_start_iso = datetime.fromtimestamp(period_start, tz=timezone.utc).isoformat() if period_start else None
+            await _upsert_entitlement(
+                app_id=app_id, user_id=user_id, plan="subscription",
+                stripe_customer_id=sub.get("customer"),
+                stripe_sub_id=sub.get("id"),
+                status=status,
+                period_start=period_start_iso,
+                period_end=period_end_iso,
+            )
+
+    elif event_type == "customer.subscription.deleted":
+        sub_id = obj.get("id")
+        if sub_id and SUPABASE_SERVICE_ROLE_KEY:
+            sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+            await asyncio.to_thread(
+                lambda: sb.table("app_entitlements")
+                    .update({"status": "cancelled"})
+                    .eq("stripe_sub_id", sub_id)
+                    .execute()
+            )
+            print(f"Subscription cancelled: sub={sub_id}")
+
+    return {"received": True}
 
 
 @app.get("/sentry-test")

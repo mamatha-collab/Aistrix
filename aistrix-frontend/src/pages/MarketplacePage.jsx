@@ -89,23 +89,7 @@ export function MarketplacePage() {
   })
 
   return (
-    <div className="min-h-screen bg-[#09101F] text-white">
-      {/* Header */}
-      <div className="border-b border-white/5 bg-[#0E1424]/80 backdrop-blur-sm sticky top-0 z-10">
-        <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between gap-4">
-          <Link to="/" className="text-[#A29BFE] text-sm font-semibold hover:text-white transition-colors">
-            ← Aistrix
-          </Link>
-          <h1 className="text-base font-bold text-white">Marketplace</h1>
-          <input
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Search apps…"
-            className="bg-white/5 border border-white/10 rounded-lg px-3 py-1.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-[#6C5CE7]/50 w-56"
-          />
-        </div>
-      </div>
-
+    <div className="flex-1 overflow-y-auto text-white">
       <div className="max-w-6xl mx-auto px-6 py-8 space-y-6">
         {/* Hero */}
         <div className="text-center space-y-2 py-4">
@@ -202,6 +186,9 @@ export function MarketplaceAppPage({ appId }) {
   const [entitlement, setEntitlement] = useState(null)   // null=loading, false=none, object=active
   const [checkingOut, setCheckingOut] = useState(false)
   const [reviews, setReviews]       = useState([])
+  const [myRating, setMyRating]     = useState(0)
+  const [myReviewText, setMyReviewText] = useState('')
+  const [submittingReview, setSubmittingReview] = useState(false)
 
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -272,6 +259,34 @@ export function MarketplaceAppPage({ appId }) {
     }
   }
 
+  async function submitReview() {
+    if (!myRating) return
+    setSubmittingReview(true)
+    setError(null)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) { setError('Sign in to leave a review'); setSubmittingReview(false); return }
+      const { error: upsertErr } = await supabase.from('app_reviews').upsert({
+        app_id: id,
+        user_id: session.user.id,
+        rating: myRating,
+        review_text: myReviewText.trim() || null,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: 'app_id,user_id' })
+      if (upsertErr) throw new Error(upsertErr.message)
+      // Refresh reviews
+      const { data: revData } = await supabase.from('app_reviews')
+        .select('rating, review_text, created_at, user_id').eq('app_id', id)
+        .order('created_at', { ascending: false }).limit(10)
+      setReviews(revData || [])
+      setMyReviewText('')
+    } catch (e) {
+      setError(e.message)
+    } finally {
+      setSubmittingReview(false)
+    }
+  }
+
   async function runApp() {
     if (!input.trim() || !app) return
     setRunning(true)
@@ -322,14 +337,14 @@ export function MarketplaceAppPage({ appId }) {
   }
 
   if (notFound) return (
-    <div className="min-h-screen bg-[#09101F] flex flex-col items-center justify-center text-center gap-4">
+    <div className="flex-1 flex flex-col items-center justify-center text-center gap-4">
       <p className="text-slate-400 text-sm">This app isn't available in the marketplace.</p>
       <button onClick={() => navigate('/marketplace')} className="text-xs text-[#A29BFE] hover:underline">← Back to Marketplace</button>
     </div>
   )
 
   if (!listing) return (
-    <div className="min-h-screen bg-[#09101F] flex items-center justify-center">
+    <div className="flex-1 flex items-center justify-center">
       <p className="text-slate-500 text-sm">Loading…</p>
     </div>
   )
@@ -338,17 +353,17 @@ export function MarketplaceAppPage({ appId }) {
   const price  = app?.price_per_run
 
   return (
-    <div className="min-h-screen bg-[#09101F] text-white">
-      {/* Header */}
+    <div className="flex-1 overflow-y-auto text-white">
+      {/* Breadcrumb */}
       <div className="border-b border-white/5 bg-[#0E1424]/80 backdrop-blur-sm sticky top-0 z-10">
-        <div className="max-w-4xl mx-auto px-6 py-4 flex items-center gap-4">
-          <button onClick={() => navigate('/marketplace')} className="text-[#A29BFE] text-sm font-semibold hover:text-white transition-colors">
+        <div className="max-w-4xl mx-auto px-6 py-3 flex items-center gap-2 text-sm">
+          <button onClick={() => navigate('/marketplace')} className="text-[#A29BFE] font-semibold hover:text-white transition-colors">
             ← Marketplace
           </button>
         </div>
       </div>
 
-      <div className="max-w-4xl mx-auto px-6 py-10 space-y-8">
+      <div className="max-w-4xl mx-auto px-6 py-8 space-y-8">
         {/* App header */}
         <div className="flex items-start gap-5">
           <div className="w-16 h-16 rounded-2xl bg-[#6C5CE7]/20 flex items-center justify-center text-3xl shrink-0">
@@ -449,6 +464,56 @@ export function MarketplaceAppPage({ appId }) {
             )}
           </div>
         )}
+
+        {/* Reviews */}
+        <div className="space-y-4">
+          <h2 className="text-sm font-semibold text-white">Reviews</h2>
+
+          {/* Write a review */}
+          <div className="bg-[#0E1424] border border-white/5 rounded-2xl p-5 space-y-3">
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">Rate this app</p>
+            <div className="flex gap-1">
+              {[1,2,3,4,5].map(n => (
+                <button key={n} onClick={() => setMyRating(n)}
+                  className={`text-xl transition-transform hover:scale-110 ${n <= myRating ? 'text-amber-400' : 'text-slate-600'}`}>
+                  ★
+                </button>
+              ))}
+            </div>
+            <textarea
+              value={myReviewText}
+              onChange={e => setMyReviewText(e.target.value)}
+              placeholder="Share your experience (optional)…"
+              rows={3}
+              className="w-full bg-[#171B33] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/40 resize-none"
+            />
+            <div className="flex justify-end">
+              <button
+                onClick={submitReview}
+                disabled={!myRating || submittingReview}
+                className="text-xs font-semibold px-4 py-2 rounded-xl bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors disabled:opacity-40">
+                {submittingReview ? 'Saving…' : 'Submit review'}
+              </button>
+            </div>
+          </div>
+
+          {/* Existing reviews */}
+          {reviews.length > 0 ? (
+            <div className="space-y-3">
+              {reviews.map((r, i) => (
+                <div key={i} className="bg-[#0E1424] border border-white/5 rounded-2xl p-4 space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-amber-400 text-sm">{'★'.repeat(r.rating)}{'☆'.repeat(5 - r.rating)}</span>
+                    <span className="text-[10px] text-slate-600">{new Date(r.created_at).toLocaleDateString()}</span>
+                  </div>
+                  {r.review_text && <p className="text-sm text-slate-300 leading-relaxed">{r.review_text}</p>}
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-slate-600 text-center py-4">No reviews yet — be the first!</p>
+          )}
+        </div>
       </div>
     </div>
   )

@@ -15,6 +15,7 @@ import {
   Moon,
   Settings,
   Shield,
+  ShoppingBag,
   Sun,
   User,
   Workflow,
@@ -35,9 +36,10 @@ const DEVELOPER_NAV = [
 
 const BUSINESS_NAV = [
   { label: 'BUILD', alwaysOpen: true, items: [
-    { icon: Workflow,  label: 'AI Workflows',    view: 'flows' },
-    { icon: Box,       label: 'AI Apps',         view: 'apps' },
-    { icon: BookOpen,  label: 'Knowledge Vault', view: 'knowledge_vault' },
+    { icon: Workflow,     label: 'AI Workflows',    view: 'flows' },
+    { icon: Box,          label: 'AI Apps',         view: 'apps' },
+    { icon: ShoppingBag,  label: 'Marketplace',     view: 'marketplace' },
+    { icon: BookOpen,     label: 'Knowledge Vault', view: 'knowledge_vault' },
   ]},
   { label: 'OPERATE', items: [
     { icon: CircleDot, label: 'Overview',  view: 'overview' },

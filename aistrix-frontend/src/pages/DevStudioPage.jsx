@@ -3,6 +3,7 @@ import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { timeAgo } from '../utils'
 import ToolsEditor from '../components/ToolsEditor'
+import TestSuite from '../components/TestSuite'
 
 const PromptStudio = lazy(() => import('../components/PromptStudio'))
 
@@ -169,50 +170,30 @@ function DesignTab({ apps, loading, onOpenCreate, user, onAppUpdated }) {
 
 // ─── Tab: Test ────────────────────────────────────────────────────────────────
 
-function TestTab() {
+function TestTab({ apps, user }) {
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
+      <TestSuite apps={apps} user={user} />
+
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <ComingSoonCard
-          icon="🧪"
-          title="Evaluation Suite"
-          desc="Define test cases for your app and run them automatically whenever you change the prompt or model."
-          bullets={[
-            'Upload test inputs with expected outputs',
-            'Rules: must-include, must-not-include, tone, accuracy',
-            'Pass/fail scoring per test case',
-            'Regression alerts when quality drops between versions',
-          ]}
-        />
-        <ComingSoonCard
           icon="🎭"
-          title="User Simulation Emulator"
-          desc="Simulate how different user types interact with your app — before real users do."
+          title="Persona Pack Testing"
+          desc="Pre-built user personas (first-timer, power user, non-English speaker, edge-case input) auto-run your prompt across 8 realistic scenarios."
           bullets={[
-            'First-time user, power user, edge-case input profiles',
-            'Simulate API failures, missing files, long documents',
-            'Bad prompt injection stress tests',
-            'One-click run across all personas',
-          ]}
-        />
-        <ComingSoonCard
-          icon="📋"
-          title="Real-World Test Sandbox"
-          desc="One-click sample data libraries so you can test vertical apps with realistic inputs."
-          bullets={[
-            'Fake resumes, invoices, emails, contracts, tickets',
-            'Domain-matched: legal, HR, marketing, finance, sales',
-            'Pre-populated inputs that auto-fill your app runner',
-            'Contribute your own sample library',
+            'One-click multi-persona run',
+            'Flags persona-specific failures (e.g. breaks for long input)',
+            'Community persona packs per app category',
+            'Custom persona builder',
           ]}
         />
         <ComingSoonCard
           icon="📊"
           title="Latency & Cost Profiling"
-          desc="Understand how fast and how expensive each step of your app is before you ship it."
+          desc="Understand how fast and expensive each run is before you publish."
           bullets={[
-            'Per-step latency breakdown',
-            'Token count per step',
+            'Per-run latency percentiles (p50, p95)',
+            'Token count per run',
             'Simulated load testing',
             'Suggested model swap to cut cost without quality loss',
           ]}
@@ -1022,7 +1003,7 @@ export default function DevStudioPage({ user, onOpenCreate }) {
 
       {/* Tab content */}
       {tab === 'design'   && <DesignTab   apps={apps} loading={loading} onOpenCreate={onOpenCreate} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
-      {tab === 'test'     && <TestTab />}
+      {tab === 'test'     && <TestTab apps={apps} user={user} />}
       {tab === 'deploy'   && <DeployTab   apps={apps} user={user} />}
       {tab === 'sell'     && <SellTab     apps={apps} />}
       {tab === 'monitor'  && <MonitorTab  apps={apps} appStats={appStats} loading={loading} totalStats={totalStats} />}

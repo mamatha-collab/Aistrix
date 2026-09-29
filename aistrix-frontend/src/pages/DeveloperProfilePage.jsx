@@ -304,19 +304,18 @@ function Field({ label, value, onChange, placeholder, textarea }) {
 }
 
 function SetupCard({ sql, onRetry, label }) {
-  const [copied, setCopied] = useState(false)
   return (
-    <div className="bg-[#171B33] border border-amber-500/20 rounded-2xl p-5 space-y-3">
-      <p className="text-amber-400 text-sm font-semibold">⚙️ Run this SQL to enable {label}</p>
-      <div className="relative">
-        <pre className="text-[11px] text-slate-300 bg-[#0E1424] rounded-xl p-4 overflow-x-auto leading-relaxed">{sql}</pre>
-        <button onClick={() => { navigator.clipboard.writeText(sql); setCopied(true); setTimeout(() => setCopied(false), 2000) }}
-          className="absolute top-2 right-2 text-[10px] text-slate-400 hover:text-white bg-white/5 px-2 py-1 rounded-md transition-colors">
-          {copied ? '✓ Copied' : '📋 Copy'}
-        </button>
+    <div className="bg-[#171B33] border border-[#6C5CE7]/20 rounded-2xl p-5 space-y-3 text-center">
+      <div className="text-3xl">👤</div>
+      <div>
+        <p className="text-white font-semibold text-sm">Profile setup managed automatically</p>
+        <p className="text-slate-400 text-sm mt-1">
+          {label ? `${label} is` : 'This feature is'} handled by Aistrix during deployment.<br />
+          No manual setup required.
+        </p>
       </div>
       <button onClick={onRetry} className="text-xs font-semibold px-4 py-2 rounded-lg bg-[#6C5CE7]/15 hover:bg-[#6C5CE7]/25 text-[#A29BFE] border border-[#6C5CE7]/25 transition-colors">
-        ↺ I ran it — retry
+        ↺ Check again
       </button>
     </div>
   )

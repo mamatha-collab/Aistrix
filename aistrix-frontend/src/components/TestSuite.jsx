@@ -128,30 +128,19 @@ create policy "owner" on app_test_cases
   with check (auth.uid() = user_id);`
 
 function SetupCard({ onRetry }) {
-  const [copied, setCopied] = useState(false)
-  function copy() {
-    navigator.clipboard.writeText(SETUP_SQL)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }
   return (
-    <div className="bg-[#171B33] border border-amber-500/20 rounded-2xl p-6 space-y-4">
+    <div className="bg-[#171B33] border border-[#6C5CE7]/20 rounded-2xl p-6 space-y-3 text-center">
+      <div className="text-3xl">🧪</div>
       <div>
-        <p className="text-amber-400 font-semibold text-sm">⚙️ One-time setup required</p>
+        <p className="text-white font-semibold text-sm">Test suites managed automatically</p>
         <p className="text-slate-400 text-sm mt-1">
-          Run this SQL in your Supabase dashboard to enable test suites.
+          Test case storage is handled by Aistrix during deployment.<br />
+          No manual setup required.
         </p>
-      </div>
-      <div className="relative">
-        <pre className="text-[11px] text-slate-300 bg-[#0E1424] rounded-xl p-4 overflow-x-auto leading-relaxed">{SETUP_SQL}</pre>
-        <button onClick={copy}
-          className="absolute top-2 right-2 text-[10px] text-slate-400 hover:text-white bg-white/5 px-2 py-1 rounded-md transition-colors">
-          {copied ? '✓ Copied' : '📋 Copy'}
-        </button>
       </div>
       <button onClick={onRetry}
         className="text-xs font-semibold px-4 py-2 rounded-lg bg-[#6C5CE7]/15 hover:bg-[#6C5CE7]/25 text-[#A29BFE] border border-[#6C5CE7]/25 transition-colors">
-        ↺ I ran it — retry
+        ↺ Check again
       </button>
     </div>
   )

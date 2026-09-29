@@ -253,7 +253,7 @@ const TAB_NOTES = {
       'Run data is pulled from `run_history` — every run inserts a row with `app_id`, `user_id`, `created_at`, `input_tokens`, `output_tokens`, `rating`, `input`, and `output`.',
       'The **30-day volume chart** is computed client-side: runs are bucketed by day using `Math.round((today - runDate) / 86400000)`.',
       '**Token usage** is reported by the AI provider in the SSE stream\'s `done` event and written to `run_history` at end of each run.',
-      '**Ratings** are stored as integers (1–5) in `run_history.rating`. Thumbs up/down maps to 1/0.',
+      '**Feedback** is stored as `rating` in `run_history`: `1` = 👍 thumbs-up, `0` = 👎 thumbs-down, `null` = no feedback given.',
       '**Entitlement stats** are loaded from `app_entitlements` — subscriber counts, active vs cancelled, plan types — all fetched in parallel with run history on studio load.',
     ],
   },
@@ -261,7 +261,7 @@ const TAB_NOTES = {
     color: '#A29BFE',
     title: 'How Evaluate works technically',
     points: [
-      'Quality scores are computed per-app from `run_history`: satisfaction = thumbs-up / total rated; health = weighted score across satisfaction (60%), volume (20%), published (10%), verified (10%).',
+      'Quality scores are computed per-app from `run_history`: satisfaction = 👍 count / total rated runs; health = weighted score across satisfaction (60%), volume (20%), published (10%), verified (10%).',
       'The **health score (0–100)** is a composite: high satisfaction + high volume + published + verified badge all contribute.',
       'Run history rows include the full `input` and `output` text, so you can inspect what was sent and received for any run.',
       'Failed or low-rated runs are surfaced in the failure list — click any row to see the exact prompt input and output that produced the bad result.',
@@ -1691,10 +1691,6 @@ function MonitorTab({ apps, appStats, loading, totalStats, runs, entitlements, u
           {apps.map(app => {
             const s = appStats[app.id] || { uniqueUsers: 0, thumbsUp: 0, rated: 0, daily: new Array(7).fill(0) }
             const satisfaction = s.rated > 0 ? Math.round((s.thumbsUp / s.rated) * 100) : null
-            const appRuns   = runs.filter(r => r.app_id === app.id)
-            const appDist   = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 }
-            appRuns.forEach(r => { if (r.rating >= 1 && r.rating <= 5) appDist[r.rating]++ })
-
             // Health score: 0-100
             const health = (() => {
               if (!s.rated) return null

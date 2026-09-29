@@ -275,6 +275,7 @@ export function MarketplaceAppPage() {
           ...(session ? { 'Authorization': `Bearer ${session.access_token}` } : {}),
         },
         body: JSON.stringify({
+          app_id: app.id,
           input: input.trim(),
           system_prompt: app.system_prompt,
           ai_provider: app.ai_provider || 'claude',

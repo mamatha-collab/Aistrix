@@ -4,12 +4,12 @@
 -- Service-role (backend) bypasses RLS, so all backend reads/writes still work.
 
 -- Create table if it doesn't exist
--- integrations is a JSONB bag: { "github": { token, login, connected_at }, ... }
+-- settings is a JSONB bag: { "github": { token, login, connected_at }, ... }
 create table if not exists developer_settings (
-  user_id      uuid primary key references auth.users(id) on delete cascade,
-  integrations jsonb not null default '{}',
-  created_at   timestamptz default now(),
-  updated_at   timestamptz default now()
+  user_id    uuid primary key references auth.users(id) on delete cascade,
+  settings   jsonb not null default '{}',
+  created_at timestamptz default now(),
+  updated_at timestamptz default now()
 );
 
 alter table developer_settings enable row level security;

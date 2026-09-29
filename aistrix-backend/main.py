@@ -1906,16 +1906,16 @@ async def github_oauth_callback(code: str, state: str, request: Request):
         sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
         existing = await asyncio.to_thread(
             lambda: sb.table("developer_settings")
-                .select("integrations")
-                .eq("user_id", dev_id).single().execute()
+                .select("settings")
+                .eq("user_id", dev_id).maybe_single().execute()
         )
         current = {}
-        if existing.data:
-            current = existing.data.get("integrations") or {}
+        if existing and existing.data:
+            current = existing.data.get("settings") or {}
         current["github"] = {"token": access_token, "login": github_login, "connected_at": datetime.now(timezone.utc).isoformat()}
         await asyncio.to_thread(
             lambda: sb.table("developer_settings")
-                .upsert({"user_id": dev_id, "integrations": current}, on_conflict="user_id")
+                .upsert({"user_id": dev_id, "settings": current}, on_conflict="user_id")
                 .execute()
         )
 

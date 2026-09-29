@@ -1684,6 +1684,37 @@ async def trigger_via_webhook(token: str, request: Request):
     }
 
 
+@app.get("/apps")
+async def list_apps(request: Request):
+    """Return the authenticated user's apps."""
+    user = await require_verified_user(request)
+    result = (
+        supabase_service.table("apps")
+        .select("id, name, description, ai_model, ai_provider, is_paid, price_per_run, created_at, updated_at")
+        .eq("user_id", user["sub"])
+        .order("updated_at", desc=True)
+        .execute()
+    )
+    return {"apps": result.data or []}
+
+
+@app.get("/apps/{app_id}")
+async def get_app(app_id: str, request: Request):
+    """Return a single app by ID (must belong to the authenticated user)."""
+    user = await require_verified_user(request)
+    result = (
+        supabase_service.table("apps")
+        .select("id, name, description, system_prompt, ai_model, ai_provider, is_paid, price_per_run, created_at, updated_at")
+        .eq("id", app_id)
+        .eq("user_id", user["sub"])
+        .single()
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=404, detail="App not found")
+    return result.data
+
+
 @app.get("/health")
 def health():
     return {

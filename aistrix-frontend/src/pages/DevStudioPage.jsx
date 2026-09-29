@@ -412,18 +412,6 @@ const AI_PRESETS = [
   { id: 'developer_assistant', label: 'Developer assistant', hint: 'Technical, direct. Writes correct code and explains reasoning.' },
 ]
 
-function calcReadiness(app, bp) {
-  let score = 0
-  if (bp.business_problem?.trim())              score += 15
-  if (bp.audience?.trim())                      score += 10
-  if (bp.inputs?.length)                        score += 15
-  if (bp.output_contract?.required_fields?.length) score += 20
-  if (app?.system_prompt?.length > 200)         score += 15
-  if (bp.permissions)                           score += 10
-  if (bp.output_contract?.format)               score += 15
-  return Math.min(score, 100)
-}
-
 function readinessChecks(app, bp) {
   const oc = bp.output_contract || {}
   const hasFormatRules = oc.format === 'json'
@@ -1104,11 +1092,235 @@ function DesignTab({ apps, loading, onOpenCreate, user, onAppUpdated }) {
   )
 }
 
+// ─── Blueprint-driven test panel ─────────────────────────────────────────────
+
+function BlueprintTestPanel({ apps, user }) {
+  const [selectedApp, setSelectedApp] = useState(apps[0]?.id || null)
+  const [bp, setBp]             = useState(null)
+  const [generating, setGenerating] = useState(false)
+  const [cases, setCases]       = useState([])   // { input, expected_checks, status: null|'pass'|'fail', output, errors }
+  const [running, setRunning]   = useState(null) // index currently running
+  const [runResult, setRunResult] = useState({}) // { [idx]: { output, status, errors } }
+  const toast = useToast()
+  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+
+  const app = apps.find(a => a.id === selectedApp)
+
+  useEffect(() => {
+    if (!selectedApp) return
+    setBp(null); setCases([]); setRunResult({})
+    supabase.from('app_blueprints').select('blueprint').eq('app_id', selectedApp).maybeSingle()
+      .then(({ data }) => setBp(data?.blueprint || null))
+  }, [selectedApp])
+
+  function generateCasesFromBlueprint() {
+    if (!bp?.inputs?.length) return
+    const generated = []
+
+    // One happy-path case per required input combination
+    const happyInputs = bp.inputs.reduce((acc, f) => {
+      acc[f.key] = sampleValue(f.type, f.label)
+      return acc
+    }, {})
+    generated.push({ label: 'Happy path', input: formatInputs(happyInputs, bp), expected_checks: buildChecks(bp), status: null, output: '' })
+
+    // One missing-required-field case
+    const missingRequired = bp.inputs.find(f => f.required)
+    if (missingRequired) {
+      const partial = { ...happyInputs }
+      delete partial[missingRequired.key]
+      generated.push({ label: `Missing: ${missingRequired.label}`, input: formatInputs(partial, bp), expected_checks: [{ type: 'fallback', desc: 'Should ask for missing data or refuse gracefully' }], status: null, output: '' })
+    }
+
+    // One PII field edge case
+    const piiField = bp.inputs.find(f => f.pii)
+    if (piiField) {
+      generated.push({ label: `PII field: ${piiField.label}`, input: formatInputs({ ...happyInputs, [piiField.key]: '[REDACTED]' }, bp), expected_checks: [{ type: 'safety', desc: 'Should handle redacted PII gracefully' }], status: null, output: '' })
+    }
+
+    setCases(generated)
+    toast(`${generated.length} test cases generated from blueprint`, 'success', 3000)
+  }
+
+  function sampleValue(type, label) {
+    const lbl = label.toLowerCase()
+    if (type === 'long_text') return `Sample ${label} text for testing purposes. This is a realistic-length input to validate the app handles normal content correctly.`
+    if (type === 'short_text') return `Sample ${label}`
+    if (type === 'number') return 42
+    if (type === 'boolean') return true
+    if (type === 'url') return 'https://example.com'
+    if (type === 'date') return new Date().toISOString().split('T')[0]
+    if (type === 'email') return 'test@example.com'
+    if (type === 'select' || type === 'multi_select') return `Option A`
+    if (type === 'json') return '{"key": "value"}'
+    if (type === 'csv') return 'name,value\nRow 1,100\nRow 2,200'
+    return `Sample ${label}`
+  }
+
+  function formatInputs(inputs, bp) {
+    return Object.entries(inputs).map(([k, v]) => {
+      const field = bp.inputs.find(f => f.key === k)
+      return `${field?.label || k}:\n${v}`
+    }).join('\n\n')
+  }
+
+  function buildChecks(bp) {
+    const checks = []
+    const oc = bp.output_contract || {}
+    if (oc.format === 'json' && oc.required_fields?.length) {
+      oc.required_fields.forEach(f => checks.push({ type: 'field_present', desc: `Output contains field: ${f.field}`, field: f.field }))
+    } else if (oc.format && oc.format_rules) {
+      const sections = oc.format_rules.sections || oc.format_rules.columns || ''
+      if (sections) sections.split(',').map(s => s.trim()).filter(Boolean).forEach(s =>
+        checks.push({ type: 'section_present', desc: `Output contains: ${s}`, section: s })
+      )
+    }
+    if (bp.ai_behavior?.refusal_rules?.trim()) checks.push({ type: 'no_refusal_bypass', desc: 'Output respects refusal rules' })
+    return checks
+  }
+
+  async function runCase(idx) {
+    if (!app) return
+    setRunning(idx)
+    const tc = cases[idx]
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const res = await fetch(`${API_URL}/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(session ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+        body: JSON.stringify({ app_id: app.id, input: tc.input, system_prompt: app.system_prompt, ai_provider: app.ai_provider || 'claude', ai_model: app.ai_model || null }),
+      })
+      if (!res.ok) throw new Error('Run failed')
+      const reader = res.body.getReader(); const dec = new TextDecoder()
+      let buf = ''; let output = ''
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += dec.decode(value, { stream: true })
+        const lines = buf.split('\n'); buf = lines.pop()
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          try { const d = JSON.parse(line.slice(6)); if (d.token) output += d.token } catch (_) {}
+        }
+      }
+      // Validate output against checks
+      const errors = []
+      for (const chk of tc.expected_checks) {
+        if (chk.type === 'field_present') {
+          try { const parsed = JSON.parse(output); if (!(chk.field in parsed)) errors.push(`Missing field: ${chk.field}`) } catch (_) { errors.push(`Output is not valid JSON`) }
+        } else if (chk.type === 'section_present') {
+          if (!output.toLowerCase().includes(chk.section.toLowerCase())) errors.push(`Missing section: ${chk.section}`)
+        }
+      }
+      const status = errors.length === 0 ? 'pass' : 'fail'
+      setRunResult(p => ({ ...p, [idx]: { output, status, errors } }))
+    } catch (e) {
+      setRunResult(p => ({ ...p, [idx]: { output: '', status: 'fail', errors: [e.message] } }))
+    } finally {
+      setRunning(null)
+    }
+  }
+
+  async function runAll() {
+    for (let i = 0; i < cases.length; i++) await runCase(i)
+  }
+
+  const passed = Object.values(runResult).filter(r => r.status === 'pass').length
+  const ran    = Object.values(runResult).length
+
+  return (
+    <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5 space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-semibold text-white uppercase tracking-wider">Blueprint Tests</p>
+        {ran > 0 && (
+          <span className={`text-xs font-bold ${passed === ran ? 'text-emerald-400' : 'text-amber-400'}`}>
+            {passed}/{ran} passed
+          </span>
+        )}
+      </div>
+
+      {/* App selector */}
+      {apps.length > 1 && (
+        <div className="flex gap-2 flex-wrap">
+          {apps.map(a => (
+            <button key={a.id} onClick={() => setSelectedApp(a.id)}
+              className={`flex items-center gap-1.5 px-3 py-1 rounded-lg border text-xs transition-colors ${a.id === selectedApp ? 'bg-[#6C5CE7]/15 border-[#6C5CE7]/40 text-white' : 'bg-[#0E1424] border-white/8 text-slate-500 hover:text-white'}`}>
+              {a.emoji} {a.name}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {bp === null && <p className="text-slate-600 text-xs text-center py-3">Loading blueprint…</p>}
+
+      {bp !== null && !bp.inputs?.length && (
+        <div className="bg-[#0E1424] border border-amber-500/20 rounded-xl px-4 py-3">
+          <p className="text-amber-300 text-xs">No input schema defined. Add fields in the Design tab to generate test cases.</p>
+        </div>
+      )}
+
+      {bp?.inputs?.length > 0 && (
+        <div className="flex items-center gap-2">
+          <button onClick={generateCasesFromBlueprint}
+            className="text-xs font-semibold px-4 py-2 rounded-xl bg-[#6C5CE7]/15 hover:bg-[#6C5CE7]/25 text-[#A29BFE] border border-[#6C5CE7]/25 transition-colors">
+            ↺ Generate from blueprint
+          </button>
+          {cases.length > 0 && (
+            <button onClick={runAll} disabled={running !== null}
+              className="text-xs font-semibold px-4 py-2 rounded-xl bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors disabled:opacity-40">
+              {running !== null ? 'Running…' : `▶ Run all (${cases.length})`}
+            </button>
+          )}
+        </div>
+      )}
+
+      {cases.length > 0 && (
+        <div className="space-y-2">
+          {cases.map((tc, i) => {
+            const result = runResult[i]
+            return (
+              <div key={i} className={`border rounded-xl p-3 space-y-2 transition-colors ${result?.status === 'pass' ? 'border-emerald-500/20 bg-emerald-500/5' : result?.status === 'fail' ? 'border-red-500/20 bg-red-500/5' : 'border-white/5 bg-[#0E1424]'}`}>
+                <div className="flex items-center gap-2">
+                  <span className={`text-sm shrink-0 ${result?.status === 'pass' ? 'text-emerald-400' : result?.status === 'fail' ? 'text-red-400' : 'text-slate-600'}`}>
+                    {result?.status === 'pass' ? '✓' : result?.status === 'fail' ? '✕' : '○'}
+                  </span>
+                  <p className="text-xs font-semibold text-white flex-1">{tc.label}</p>
+                  <button onClick={() => runCase(i)} disabled={running !== null}
+                    className="text-[10px] text-slate-500 hover:text-[#A29BFE] transition-colors disabled:opacity-40 shrink-0">
+                    {running === i ? '…' : 'Run'}
+                  </button>
+                </div>
+                <div className="text-[10px] text-slate-600 space-y-0.5">
+                  {tc.expected_checks.map((chk, j) => (
+                    <p key={j}>✦ {chk.desc}</p>
+                  ))}
+                </div>
+                {result?.errors?.length > 0 && (
+                  <div className="space-y-0.5">
+                    {result.errors.map((e, j) => <p key={j} className="text-[10px] text-red-400">✕ {e}</p>)}
+                  </div>
+                )}
+                {result?.output && (
+                  <details className="text-[10px] text-slate-600">
+                    <summary className="cursor-pointer hover:text-slate-400">View output</summary>
+                    <pre className="mt-1 bg-[#171B33] rounded-lg p-2 overflow-x-auto text-slate-400 whitespace-pre-wrap leading-relaxed max-h-40">{result.output}</pre>
+                  </details>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Tab: Test ────────────────────────────────────────────────────────────────
 
 function TestTab({ apps, user }) {
   return (
     <div className="space-y-5">
+      <BlueprintTestPanel apps={apps} user={user} />
       <TestSuite apps={apps} user={user} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

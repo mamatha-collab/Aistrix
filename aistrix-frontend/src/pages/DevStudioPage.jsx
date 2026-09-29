@@ -956,17 +956,198 @@ function SellTab({ apps, user, onAppUpdated }) {
   )
 }
 
+// ─── Monitor helpers ──────────────────────────────────────────────────────────
+
+// Inline sparkline — no chart library needed
+function Sparkline({ data, color = '#6C5CE7', height = 36 }) {
+  if (!data?.length) return null
+  const max = Math.max(...data, 1)
+  const w = 100, h = height
+  const pts = data.map((v, i) => {
+    const x = (i / (data.length - 1)) * w
+    const y = h - (v / max) * (h - 4)
+    return `${x},${y}`
+  }).join(' ')
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} className="w-full" style={{ height }}>
+      <polyline points={pts} fill="none" stroke={color} strokeWidth="1.5" strokeLinejoin="round" />
+      {data.map((v, i) => {
+        const x = (i / (data.length - 1)) * w
+        const y = h - (v / max) * (h - 4)
+        return <circle key={i} cx={x} cy={y} r="2" fill={color} opacity={0.7} />
+      })}
+    </svg>
+  )
+}
+
+// Rating bar (1–5 stars distribution)
+function RatingBars({ dist }) {
+  const total = Object.values(dist).reduce((s, v) => s + v, 0)
+  if (!total) return <p className="text-slate-600 text-xs">No ratings yet</p>
+  return (
+    <div className="space-y-1">
+      {[5, 4, 3, 2, 1].map(star => {
+        const count = dist[star] || 0
+        const pct   = total ? Math.round((count / total) * 100) : 0
+        return (
+          <div key={star} className="flex items-center gap-2">
+            <span className="text-[10px] text-slate-500 w-3 shrink-0">{star}</span>
+            <div className="flex-1 bg-[#0E1424] rounded-full h-1.5">
+              <div className="h-1.5 rounded-full bg-amber-400 transition-all" style={{ width: `${pct}%` }} />
+            </div>
+            <span className="text-[10px] text-slate-500 w-6 text-right">{count}</span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+// Observability integration connection card
+function IntegrationCard({ icon, name, desc, docsUrl, fields, savedKeys, onSave }) {
+  const [open, setOpen]     = useState(false)
+  const [vals, setVals]     = useState(() => Object.fromEntries(fields.map(f => [f.key, savedKeys?.[f.key] || ''])))
+  const [saving, setSaving] = useState(false)
+  const toast = useToast()
+
+  async function save() {
+    setSaving(true)
+    await onSave(vals)
+    setSaving(false)
+    setOpen(false)
+    toast(`${name} settings saved`, 'success', 2000)
+  }
+
+  const connected = fields.every(f => savedKeys?.[f.key])
+  return (
+    <div className="bg-[#171B33] border border-white/5 rounded-2xl overflow-hidden">
+      <div className="flex items-center gap-3 px-4 py-3">
+        <span className="text-2xl shrink-0">{icon}</span>
+        <div className="flex-1 min-w-0">
+          <p className="text-white text-sm font-medium">{name}</p>
+          <p className="text-[11px] text-slate-500 truncate">{desc}</p>
+        </div>
+        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full shrink-0 ${connected ? 'bg-emerald-500/10 text-emerald-400' : 'bg-white/5 text-slate-500'}`}>
+          {connected ? 'Connected' : 'Not connected'}
+        </span>
+        <button onClick={() => setOpen(p => !p)}
+          className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 transition-colors shrink-0">
+          {open ? 'Cancel' : connected ? 'Edit' : 'Connect'}
+        </button>
+        {docsUrl && (
+          <a href={docsUrl} target="_blank" rel="noopener noreferrer"
+            className="text-[11px] text-slate-500 hover:text-slate-300 transition-colors shrink-0">Docs ↗</a>
+        )}
+      </div>
+      {open && (
+        <div className="border-t border-white/5 px-4 py-4 space-y-3">
+          {fields.map(f => (
+            <div key={f.key}>
+              <label className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide block mb-1">{f.label}</label>
+              <input
+                type={f.secret ? 'password' : 'text'}
+                value={vals[f.key]}
+                onChange={e => setVals(p => ({ ...p, [f.key]: e.target.value }))}
+                placeholder={f.placeholder}
+                className="w-full bg-[#0E1424] border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/40 font-mono"
+              />
+              {f.hint && <p className="text-[10px] text-slate-600 mt-1">{f.hint}</p>}
+            </div>
+          ))}
+          <div className="flex justify-end">
+            <button onClick={save} disabled={saving}
+              className="text-xs font-semibold px-4 py-2 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors disabled:opacity-40">
+              {saving ? '…' : 'Save'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Tab: Monitor ────────────────────────────────────────────────────────────
 
-function MonitorTab({ apps, appStats, loading, totalStats }) {
-  const [expandedApp, setExpandedApp] = useState(null)
+function MonitorTab({ apps, appStats, loading, totalStats, runs, user }) {
+  const [expandedApp, setExpandedApp]   = useState(null)
+  const [integrations, setIntegrations] = useState(null)   // loaded from developer_settings
+  const [intSetupNeeded, setIntSetupNeeded] = useState(false)
   const toast = useToast()
+
+  useEffect(() => { loadIntegrations() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function loadIntegrations() {
+    const { data, error } = await supabase
+      .from('developer_settings')
+      .select('settings')
+      .eq('user_id', user.id)
+      .single()
+    if (error) {
+      if (error.code === 'PGRST116') { setIntegrations({}); return }  // no row yet
+      if (error.code === '42P01') { setIntSetupNeeded(true); return }
+      return
+    }
+    setIntegrations(data?.settings || {})
+  }
+
+  async function saveIntegration(key, vals) {
+    const merged = { ...(integrations || {}), [key]: vals }
+    const { error } = await supabase.from('developer_settings')
+      .upsert({ user_id: user.id, settings: merged }, { onConflict: 'user_id' })
+    if (error) { toast(error.message, 'error'); return }
+    setIntegrations(merged)
+  }
 
   async function refreshBadges() {
     const { error } = await supabase.rpc('update_app_badges')
     if (error) toast(error.message, 'error')
     else toast('Trust badges updated', 'success')
   }
+
+  // Build 30-day run volume buckets across all apps
+  const volumeChart = useMemo(() => {
+    const days = 30
+    const buckets = Array.from({ length: days }, (_, i) => {
+      const d = new Date(); d.setDate(d.getDate() - (days - 1 - i)); d.setHours(0,0,0,0)
+      return { label: d.toLocaleDateString('en', { month: 'short', day: 'numeric' }), count: 0 }
+    })
+    runs.forEach(r => {
+      const d = new Date(r.created_at); d.setHours(0,0,0,0)
+      const idx = buckets.findIndex(b => {
+        const bd = new Date(b.label + ' ' + new Date().getFullYear()); bd.setHours(0,0,0,0)
+        return bd.getTime() === d.getTime()
+      })
+      // simpler: diff from today
+      const today = new Date(); today.setHours(0,0,0,0)
+      const diff = Math.round((today - d) / 86400000)
+      if (diff >= 0 && diff < days) buckets[days - 1 - diff].count++
+    })
+    return buckets
+  }, [runs])
+
+  // Rating distribution across all runs that have a rating
+  const ratingDist = useMemo(() => {
+    const dist = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 }
+    runs.forEach(r => { if (r.rating >= 1 && r.rating <= 5) dist[r.rating]++ })
+    return dist
+  }, [runs])
+
+  // Token usage last 14 days
+  const tokenChart = useMemo(() => {
+    const days = 14
+    const buckets = Array.from({ length: days }, () => ({ in: 0, out: 0 }))
+    runs.forEach(r => {
+      if (!r.input_tokens && !r.output_tokens) return
+      const today = new Date(); today.setHours(0,0,0,0)
+      const d = new Date(r.created_at); d.setHours(0,0,0,0)
+      const diff = Math.round((today - d) / 86400000)
+      if (diff >= 0 && diff < days) {
+        buckets[days - 1 - diff].in  += r.input_tokens  || 0
+        buckets[days - 1 - diff].out += r.output_tokens || 0
+      }
+    })
+    return buckets
+  }, [runs])
 
   if (loading) return <p className="text-slate-500 text-sm py-10 text-center">Loading…</p>
 
@@ -976,77 +1157,216 @@ function MonitorTab({ apps, appStats, loading, totalStats }) {
     </div>
   )
 
+  const totalRated = Object.values(ratingDist).reduce((s, v) => s + v, 0)
+  const avgRating  = totalRated
+    ? (Object.entries(ratingDist).reduce((s, [k, v]) => s + Number(k) * v, 0) / totalRated).toFixed(1)
+    : null
+
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
+      {/* ── Top stats ── */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatTile label="Total runs" value={totalStats.runs} color="#6C5CE7" />
         <StatTile label="Unique users" value={totalStats.users} color="#00B894" />
-        <StatTile label="Satisfaction" value={totalStats.satisfaction !== null ? `${totalStats.satisfaction}%` : '—'} color="#FDCB6E" />
+        <StatTile label="Avg rating" value={avgRating ? `${avgRating} ★` : '—'} color="#FDCB6E"
+          sub={totalRated ? `${totalRated} rated` : undefined} />
         <StatTile label="Active apps" value={apps.filter(a => a.is_published).length} color="#E84393" />
       </div>
 
-      <div className="flex justify-end">
-        <button onClick={refreshBadges}
-          className="text-xs text-slate-400 hover:text-white bg-[#1F2444] hover:bg-[#272C52] px-3 py-1.5 rounded-lg transition-colors">
-          🏆 Refresh trust badges
-        </button>
+      {/* ── Run volume chart (30 days) ── */}
+      <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5">
+        <div className="flex items-center justify-between mb-4">
+          <p className="text-xs text-slate-400 font-semibold uppercase tracking-wide">Run volume — last 30 days</p>
+          <p className="text-xs text-slate-500">{totalStats.runs} total</p>
+        </div>
+        <div className="flex items-end gap-0.5 h-16">
+          {volumeChart.map((b, i) => {
+            const max = Math.max(...volumeChart.map(x => x.count), 1)
+            const h   = Math.max((b.count / max) * 56, b.count > 0 ? 3 : 0)
+            return (
+              <div key={i} className="flex-1 flex flex-col items-center gap-0.5 group relative">
+                <div className="w-full bg-[#6C5CE7] rounded-t transition-all" style={{ height: h }} />
+                <div className="absolute -top-7 left-1/2 -translate-x-1/2 bg-[#0E1424] text-white text-[10px] px-1.5 py-0.5 rounded opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap pointer-events-none z-10">
+                  {b.label}: {b.count}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+        <div className="flex justify-between mt-1 text-[9px] text-slate-600">
+          <span>{volumeChart[0]?.label}</span>
+          <span>{volumeChart[volumeChart.length - 1]?.label}</span>
+        </div>
       </div>
 
+      {/* ── Rating dist + token usage ── */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {apps.map(app => {
-          const s = appStats[app.id] || { uniqueUsers: 0, thumbsUp: 0, rated: 0, daily: new Array(7).fill(0) }
-          const satisfaction = s.rated > 0 ? Math.round((s.thumbsUp / s.rated) * 100) : null
-          return (
-            <div key={app.id} className="bg-[#171B33] border border-white/5 rounded-2xl p-5">
-              <div className="flex items-start justify-between mb-4">
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl"
-                    style={{ background: (app.color || '#6C5CE7') + '33' }}>{app.emoji}</div>
-                  <div>
-                    <p className="text-white text-sm font-medium">{app.name}</p>
-                    <div className="flex gap-1 mt-0.5">
-                      {app.is_verified  && <span className="text-[9px] text-blue-400 bg-blue-400/10 px-1.5 py-0.5 rounded-full">✓ Verified</span>}
-                      {app.is_trending  && <span className="text-[9px] text-orange-400 bg-orange-400/10 px-1.5 py-0.5 rounded-full">🔥 Trending</span>}
-                      {app.is_top_rated && <span className="text-[9px] text-yellow-400 bg-yellow-400/10 px-1.5 py-0.5 rounded-full">⭐ Top Rated</span>}
+        <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5">
+          <p className="text-xs text-slate-400 font-semibold uppercase tracking-wide mb-4">Rating distribution</p>
+          <RatingBars dist={ratingDist} />
+          {avgRating && (
+            <p className="text-xs text-slate-500 mt-3">Average: <span className="text-amber-400 font-semibold">{avgRating} ★</span> across {totalRated} rated runs</p>
+          )}
+        </div>
+
+        <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5">
+          <p className="text-xs text-slate-400 font-semibold uppercase tracking-wide mb-4">Token usage — last 14 days</p>
+          <div className="space-y-3">
+            {[
+              { label: 'Input tokens',  data: tokenChart.map(b => b.in),  color: '#6C5CE7' },
+              { label: 'Output tokens', data: tokenChart.map(b => b.out), color: '#00B894' },
+            ].map(({ label, data, color }) => {
+              const total = data.reduce((s, v) => s + v, 0)
+              return (
+                <div key={label}>
+                  <div className="flex justify-between text-[10px] text-slate-500 mb-1">
+                    <span>{label}</span>
+                    <span>{total.toLocaleString()}</span>
+                  </div>
+                  <Sparkline data={data} color={color} height={28} />
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Per-app cards ── */}
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <p className="text-xs text-slate-400 font-semibold uppercase tracking-wide">Per-app health</p>
+          <button onClick={refreshBadges}
+            className="text-xs text-slate-400 hover:text-white bg-[#1F2444] hover:bg-[#272C52] px-3 py-1.5 rounded-lg transition-colors">
+            🏆 Refresh trust badges
+          </button>
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {apps.map(app => {
+            const s = appStats[app.id] || { uniqueUsers: 0, thumbsUp: 0, rated: 0, daily: new Array(7).fill(0) }
+            const satisfaction = s.rated > 0 ? Math.round((s.thumbsUp / s.rated) * 100) : null
+            const appRuns   = runs.filter(r => r.app_id === app.id)
+            const appDist   = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 }
+            appRuns.forEach(r => { if (r.rating >= 1 && r.rating <= 5) appDist[r.rating]++ })
+
+            // Health score: 0-100
+            const health = (() => {
+              if (!s.rated) return null
+              let score = (s.thumbsUp / s.rated) * 60          // satisfaction 60%
+              if (app.total_runs > 10) score += 20             // volume 20%
+              if (app.is_published) score += 10                // published 10%
+              if (app.is_verified)  score += 10                // verified  10%
+              return Math.min(100, Math.round(score))
+            })()
+            const healthColor = health === null ? '#334155' : health >= 70 ? '#00B894' : health >= 40 ? '#FDCB6E' : '#E84393'
+
+            return (
+              <div key={app.id} className="bg-[#171B33] border border-white/5 rounded-2xl p-5">
+                <div className="flex items-start justify-between mb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl"
+                      style={{ background: (app.color || '#6C5CE7') + '33' }}>{app.emoji}</div>
+                    <div>
+                      <p className="text-white text-sm font-medium">{app.name}</p>
+                      <div className="flex gap-1 mt-0.5 flex-wrap">
+                        {app.is_verified  && <span className="text-[9px] text-blue-400 bg-blue-400/10 px-1.5 py-0.5 rounded-full">✓ Verified</span>}
+                        {app.is_trending  && <span className="text-[9px] text-orange-400 bg-orange-400/10 px-1.5 py-0.5 rounded-full">🔥 Trending</span>}
+                        {app.is_top_rated && <span className="text-[9px] text-yellow-400 bg-yellow-400/10 px-1.5 py-0.5 rounded-full">⭐ Top Rated</span>}
+                      </div>
                     </div>
                   </div>
+                  {health !== null && (
+                    <div className="flex flex-col items-end">
+                      <span className="text-lg font-bold" style={{ color: healthColor }}>{health}</span>
+                      <span className="text-[9px] text-slate-600">health score</span>
+                    </div>
+                  )}
                 </div>
-                <span className="text-[10px] text-slate-500">{app.ai_provider === 'openai' ? '🟢 GPT' : '🟣 Claude'}</span>
-              </div>
-              <div className="grid grid-cols-3 gap-3 mb-4">
-                {[
-                  { label: 'Total runs',    value: app.total_runs || 0 },
-                  { label: 'Unique users',  value: s.uniqueUsers },
-                  { label: 'Satisfaction',  value: satisfaction !== null ? `${satisfaction}%` : '—' },
-                ].map(({ label, value }) => (
-                  <div key={label} className="bg-[#1F2444] rounded-xl p-3 text-center">
-                    <p className="text-white font-bold text-lg">{value}</p>
-                    <p className="text-[10px] text-slate-500 mt-0.5">{label}</p>
+
+                <div className="grid grid-cols-3 gap-3 mb-4">
+                  {[
+                    { label: 'Total runs',   value: app.total_runs || 0 },
+                    { label: 'Unique users', value: s.uniqueUsers },
+                    { label: 'Satisfaction', value: satisfaction !== null ? `${satisfaction}%` : '—' },
+                  ].map(({ label, value }) => (
+                    <div key={label} className="bg-[#1F2444] rounded-xl p-3 text-center">
+                      <p className="text-white font-bold text-lg">{value}</p>
+                      <p className="text-[10px] text-slate-500 mt-0.5">{label}</p>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mb-3">
+                  <div className="flex items-center justify-between mb-1">
+                    <p className="text-[10px] text-slate-500 uppercase">Run volume · last 7 days</p>
+                    <p className="text-[10px] text-slate-600">{s.daily.reduce((a, b) => a + b, 0)} runs</p>
                   </div>
-                ))}
-              </div>
-              <div>
-                <p className="text-[10px] text-slate-500 uppercase mb-2">Last 7 days</p>
-                <div className="flex items-end gap-1 h-8">
-                  {s.daily.map((count, i) => {
-                    const max = Math.max(...s.daily, 1)
-                    return <div key={i} className="flex-1 bg-[#6C5CE7] rounded-t opacity-70"
-                      style={{ height: `${Math.max((count / max) * 28, count > 0 ? 3 : 0)}px` }} />
-                  })}
+                  <div className="flex items-end gap-1 h-8">
+                    {s.daily.map((count, i) => {
+                      const max = Math.max(...s.daily, 1)
+                      return <div key={i} className="flex-1 bg-[#6C5CE7] rounded-t opacity-70"
+                        style={{ height: `${Math.max((count / max) * 28, count > 0 ? 3 : 0)}px` }} />
+                    })}
+                  </div>
                 </div>
+
+                {Object.values(appDist).some(v => v > 0) && (
+                  <div className="mb-3">
+                    <p className="text-[10px] text-slate-500 uppercase mb-2">Rating breakdown</p>
+                    <RatingBars dist={appDist} />
+                  </div>
+                )}
+
+                <button onClick={() => setExpandedApp(p => p === app.id ? null : app.id)}
+                  className="w-full text-xs text-slate-500 hover:text-white bg-[#1F2444] py-1.5 rounded-lg transition-colors">
+                  {expandedApp === app.id ? '▲ Hide tools' : '🔧 Manage tools'}
+                </button>
+                {expandedApp === app.id && (
+                  <div className="mt-3 border-t border-white/5 pt-3">
+                    <ToolsEditor appId={app.id} />
+                  </div>
+                )}
               </div>
-              <button onClick={() => setExpandedApp(p => p === app.id ? null : app.id)}
-                className="mt-3 w-full text-xs text-slate-500 hover:text-white bg-[#1F2444] py-1.5 rounded-lg transition-colors">
-                {expandedApp === app.id ? '▲ Hide tools' : '🔧 Manage tools'}
-              </button>
-              {expandedApp === app.id && (
-                <div className="mt-3 border-t border-white/5 pt-3">
-                  <ToolsEditor appId={app.id} />
-                </div>
-              )}
-            </div>
-          )
-        })}
+            )
+          })}
+        </div>
+      </div>
+
+      {/* ── Observability integrations ── */}
+      <div>
+        <p className="text-xs text-slate-400 font-semibold uppercase tracking-wide mb-3">Observability integrations</p>
+        {intSetupNeeded && (
+          <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl px-4 py-3 mb-3 text-xs text-amber-400">
+            Run <code className="bg-black/20 px-1 rounded">create table developer_settings (id uuid primary key default gen_random_uuid(), user_id uuid references auth.users(id) unique, settings jsonb default '&#123;&#125;'); alter table developer_settings enable row level security; create policy "owner" on developer_settings using (auth.uid() = user_id) with check (auth.uid() = user_id);</code> in Supabase, then reload.
+          </div>
+        )}
+        <div className="space-y-3">
+          <IntegrationCard
+            icon="🔭"
+            name="Langfuse"
+            desc="LLM tracing, prompt management, cost and latency tracking per run."
+            docsUrl="https://langfuse.com/docs"
+            fields={[
+              { key: 'langfuse_public_key', label: 'Public key',  placeholder: 'pk-lf-…', secret: false, hint: 'Found in your Langfuse project settings → API keys' },
+              { key: 'langfuse_secret_key', label: 'Secret key',  placeholder: 'sk-lf-…', secret: true  },
+              { key: 'langfuse_host',       label: 'Host (optional)', placeholder: 'https://cloud.langfuse.com', secret: false },
+            ]}
+            savedKeys={integrations?.langfuse}
+            onSave={vals => saveIntegration('langfuse', vals)}
+          />
+          <IntegrationCard
+            icon="🛡️"
+            name="Sentry"
+            desc="Frontend and backend error tracking — captures exceptions and traces."
+            docsUrl="https://docs.sentry.io"
+            fields={[
+              { key: 'dsn', label: 'DSN', placeholder: 'https://…@o….ingest.sentry.io/…', secret: false,
+                hint: 'Sentry project → Settings → Client Keys (DSN)' },
+            ]}
+            savedKeys={integrations?.sentry}
+            onSave={vals => saveIntegration('sentry', vals)}
+          />
+        </div>
+        <p className="text-[10px] text-slate-600 mt-2">Keys are stored in your Supabase account (developer_settings table) and only readable by you. The Aistrix backend uses them to forward traces automatically.</p>
       </div>
     </div>
   )
@@ -1740,7 +2060,7 @@ export default function DevStudioPage({ user, onOpenCreate }) {
       {tab === 'test'     && <TestTab apps={apps} user={user} />}
       {tab === 'deploy'   && <DeployTab   apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
       {tab === 'sell'     && <SellTab     apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
-      {tab === 'monitor'  && <MonitorTab  apps={apps} appStats={appStats} loading={loading} totalStats={totalStats} />}
+      {tab === 'monitor'  && <MonitorTab  apps={apps} appStats={appStats} loading={loading} totalStats={totalStats} runs={runs} user={user} />}
       {tab === 'evaluate' && <EvaluateTab apps={apps} appStats={appStats} />}
       {tab === 'improve'  && <ImproveTab  apps={apps} user={user} />}
       {tab === 'version'  && <VersionTab  apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}

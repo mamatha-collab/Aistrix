@@ -257,7 +257,7 @@ export default function FlowRunner({ flow, user, onClose, onShowHistory, onRunCo
         if (!isLast) setInputs(p => ({ ...p, [stepIndex + 1]: resultText }))
         const thisStepIndex = stepIndex
         async function saveHistory() {
-          const { data: row, error } = await supabase.from('run_history').insert({ user_id: user.id, app_id: null, app_name: current.app_name, input: fill(current.api_url), result: resultText, flow_id: flow.id, flow_name: flow.name }).select('id').single()
+          const { data: row, error } = await supabase.from('run_history').insert({ user_id: user.id, app_id: null, app_name: current.app_name, input: fill(current.api_url), output: resultText, flow_id: flow.id, flow_name: flow.name }).select('id').single()
           if (row) { setStepRunIds(p => ({ ...p, [thisStepIndex]: row.id })); return }
           if (error) toast(`Step completed, but wasn't saved to history: ${error.message}`, 'error', 8000, { label: 'Retry', onClick: saveHistory })
         }
@@ -352,7 +352,7 @@ export default function FlowRunner({ flow, user, onClose, onShowHistory, onRunCo
       const thisStepIndex = stepIndex
       async function saveHistory() {
         const { data: row, error } = await supabase.from('run_history').insert({
-          user_id: user.id, app_id: current.app_id, app_name: current.app_name, input: stepInput, result: full,
+          user_id: user.id, app_id: current.app_id, app_name: current.app_name, input: stepInput, output: full,
           flow_id: flow.id, flow_name: flow.name,
           input_tokens: runUsage?.input_tokens ?? null, output_tokens: runUsage?.output_tokens ?? null,
         }).select('id').single()

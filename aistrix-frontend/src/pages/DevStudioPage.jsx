@@ -2776,7 +2776,7 @@ export default function DevStudioPage({ user, onOpenCreate }) {
     setApps(myApps)
 
     const { data: runData } = await supabase.from('run_history')
-      .select('id, app_id, app_name, created_at, rating, user_id, input_tokens, output_tokens')
+      .select('id, app_id, app_name, created_at, rating, user_id, input_tokens, output_tokens, input, output')
       .in('app_id', myApps.map(a => a.id))
     const allRuns = runData || []
     setRuns(allRuns)

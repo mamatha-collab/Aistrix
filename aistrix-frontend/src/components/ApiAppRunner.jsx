@@ -91,7 +91,7 @@ export default function ApiAppRunner({ app, user, onClose, onRun, inline = false
       async function saveHistory() {
         const { data: row, error } = await supabase.from('run_history').insert({
           user_id: user.id, app_id: app.id, app_name: app.name,
-          input: paramString, result: resultRef.current,
+          input: paramString, output: resultRef.current,
           input_tokens: finalUsage?.input_tokens ?? null, output_tokens: finalUsage?.output_tokens ?? null,
         }).select('id').single()
         if (row) { setLastRunId(row.id); return true }

@@ -78,7 +78,7 @@ export default function MultiPageRunner({ app, user, onClose, onRun, inline = fa
       async function saveHistory() {
         const { data: row, error } = await supabase.from('run_history').insert({
           user_id: user.id, app_id: app.id, app_name: `${app.name} — ${thisPageTitle}`,
-          input: rawInput, result: full,
+          input: rawInput, output: full,
           input_tokens: finalUsage?.input_tokens ?? null, output_tokens: finalUsage?.output_tokens ?? null,
         }).select('id').single()
         if (row) { setPageRunIds(prev => ({ ...prev, [thisPageIndex]: row.id })); return true }

@@ -392,7 +392,7 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
           const runIndex = i
           async function saveBulkHistory() {
             const { data: row, error } = await supabase.from('run_history').insert({
-              user_id: user.id, app_id: app.id, app_name: app.name, input: lines[runIndex], result: text,
+              user_id: user.id, app_id: app.id, app_name: app.name, input: lines[runIndex], output: text,
               input_tokens: u?.input_tokens ?? null, output_tokens: u?.output_tokens ?? null,
             }).select('id').single()
             if (error) { toast(`Run ${runIndex + 1} completed but wasn't saved to history: ${error.message}`, 'error', 8000, { label: 'Retry', onClick: saveBulkHistory }); return }
@@ -413,7 +413,7 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
         async function saveHistory() {
           const { data: row, error } = await supabase.from('run_history')
             .insert({
-              user_id: user.id, app_id: app.id, app_name: app.name, input, result: text,
+              user_id: user.id, app_id: app.id, app_name: app.name, input, output: text,
               input_tokens: u?.input_tokens ?? null, output_tokens: u?.output_tokens ?? null,
             })
             .select('id').single()

@@ -99,7 +99,7 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
         const { data: row, error } = await supabase.from('run_history').insert({
           user_id: user.id, app_id: app.id, app_name: app.name,
           input: rawData.slice(0, 500) + (rawData.length > 500 ? '...' : ''),
-          result: resultRef.current,
+          output: resultRef.current,
           input_tokens: finalUsage?.input_tokens ?? null, output_tokens: finalUsage?.output_tokens ?? null,
         }).select('id').single()
         if (row) { setLastRunId(row.id); return true }

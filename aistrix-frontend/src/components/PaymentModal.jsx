@@ -60,12 +60,18 @@ function CheckoutForm({ app, user, onSuccess, onClose }) {
       if (stripeError) throw new Error(stripeError.message)
 
       if (paymentIntent.status === 'succeeded') {
-        // Record in DB
+        // Record payment
         await supabase.from('app_payments').insert({
           app_id: app.id, user_id: user.id,
           amount: app.price_per_run, currency: 'usd', status: 'completed',
           stripe_payment_intent_id: paymentIntent.id,
         })
+        // Upsert entitlement for this pay-per-run purchase
+        await supabase.from('app_entitlements').upsert({
+          app_id: app.id, user_id: user.id,
+          plan: 'pay_per_run', status: 'active',
+          runs_this_period: 0, run_quota: null,
+        }, { onConflict: 'app_id,user_id', ignoreDuplicates: false })
         toast(`Payment successful — running ${app.name}`, 'success')
         onSuccess()
       }

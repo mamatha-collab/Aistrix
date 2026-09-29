@@ -225,6 +225,7 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
   const [nextApp, setNextApp] = useState(null)
   const [bulkMode, setBulkMode] = useState(false)
   const [showPayment, setShowPayment] = useState(false)
+  const [entitlement, setEntitlement] = useState(undefined) // undefined=loading, null=none, obj=found
   const [toolCalls, setToolCalls] = useState([])
   const [hasTools, setHasTools] = useState(false)
   const [, startTransition] = useTransition()
@@ -264,8 +265,20 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
       ])
       setRunStatus({ hasKey: (keys?.length ?? 0) > 0, provider: appProvider, runsToday: runsToday ?? 0, limit: 50 })
     }
+    async function loadEntitlement() {
+      if (!app.is_paid) { setEntitlement(null); return }
+      const { data } = await supabase
+        .from('app_entitlements')
+        .select('*')
+        .eq('app_id', app.id)
+        .eq('user_id', user.id)
+        .eq('status', 'active')
+        .maybeSingle()
+      setEntitlement(data ?? null)
+    }
     loadContext()
     loadRunStatus()
+    loadEntitlement()
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when user changes
   }, [user])
 
@@ -448,8 +461,12 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
         sendNotification(app.name)
         onRun?.()
         toast('Result saved to history', 'success')
-        // Notify if paid run completed
-        if (app.is_paid && app.price_per_run > 0) {
+        // Increment entitlement run count if entitled
+        if (entitlement?.id) {
+          const newCount = (entitlement.runs_this_period ?? 0) + 1
+          await supabase.from('app_entitlements').update({ runs_this_period: newCount }).eq('id', entitlement.id)
+          setEntitlement(prev => prev ? { ...prev, runs_this_period: newCount } : prev)
+        } else if (app.is_paid && app.price_per_run > 0) {
           await createNotification(user.id, { type: 'payment', title: 'Run completed', message: `${app.name} — $${app.price_per_run} charged`, link_view: 'apps' })
         }
       }
@@ -659,8 +676,17 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
       <div className="flex gap-2">
         <button
           onClick={() => {
-            // Payment gate for paid apps
-            if (app.is_paid && app.price_per_run > 0) { setShowPayment(true); return }
+            if (app.is_paid && app.price_per_run > 0) {
+              // Over quota check
+              if (entitlement && entitlement.run_quota != null && entitlement.runs_this_period >= entitlement.run_quota) {
+                toast(`You've used all ${entitlement.run_quota} runs in your current period`, 'error', 5000)
+                return
+              }
+              // Entitled — skip payment
+              if (entitlement) { if (isNative) handleRun(buildNativeInput()); else handleRun(); return }
+              // Not entitled — show payment modal
+              setShowPayment(true); return
+            }
             if (isNative) handleRun(buildNativeInput()); else handleRun()
           }}
           disabled={loading || (isNative ? !nativeInputReady : !input.trim())}
@@ -681,6 +707,21 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
           </button>
         )}
       </div>
+
+      {/* Entitlement status */}
+      {app.is_paid && entitlement && (
+        <div className="flex items-center gap-2 text-[11px]">
+          <span className="text-emerald-400">✓ Subscribed</span>
+          {entitlement.run_quota != null && (
+            <span className="text-slate-500">
+              {entitlement.runs_this_period ?? 0}/{entitlement.run_quota} runs used this period
+            </span>
+          )}
+          {entitlement.current_period_end && (
+            <span className="text-slate-600">· resets {new Date(entitlement.current_period_end).toLocaleDateString()}</span>
+          )}
+        </div>
+      )}
 
       {error && (() => {
         const c = classifyError(error)

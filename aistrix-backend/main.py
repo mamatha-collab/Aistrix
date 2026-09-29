@@ -6,6 +6,7 @@ import math
 import operator
 import os
 import re
+import secrets
 import socket
 import time
 from collections import Counter, defaultdict, deque
@@ -62,6 +63,9 @@ FRONTEND_URL              = os.getenv("FRONTEND_URL", "http://localhost:5173")
 GITHUB_CLIENT_ID          = os.getenv("GITHUB_CLIENT_ID")
 GITHUB_CLIENT_SECRET      = os.getenv("GITHUB_CLIENT_SECRET")
 GITHUB_REDIRECT_URI       = os.getenv("GITHUB_REDIRECT_URI")  # e.g. https://api.aistrix.app/auth/github/callback
+
+# Short-lived nonce store for GitHub OAuth CSRF protection: nonce → (user_id, expiry_ts)
+_oauth_nonces: dict[str, tuple[str, float]] = {}
 CRON_SECRET               = os.getenv("CRON_SECRET")
 SECRET_ENCRYPTION_KEY     = os.getenv("SECRET_ENCRYPTION_KEY")  # Fernet key (base64, 32 bytes)
 _fernet: "Fernet | None" = Fernet(SECRET_ENCRYPTION_KEY.encode()) if SECRET_ENCRYPTION_KEY else None
@@ -287,9 +291,9 @@ async def fetch_app_tools(app_id: str) -> list:
 
 async def fetch_app_webhook(app_id: str) -> Optional[str]:
     try:
-        query = get_anon_client().table("apps").select("webhook_url").eq("id", app_id).single()
+        query = get_anon_client().table("apps").select("webhook_url").eq("id", app_id).maybe_single()
         result = await db(query)
-        return result.data.get("webhook_url") if result.data else None
+        return result.data.get("webhook_url") if result and result.data else None
     except Exception:
         return None
 
@@ -751,11 +755,38 @@ async def run_app(req: RunRequest, request: Request):
     # Knowledge base + API key + tools + webhook are all independent Supabase
     # lookups — run them concurrently instead of one after another, since each
     # is a separate network round-trip.
-    # Resolve app owner for secrets lookup
+    # Resolve app owner + paid flag (single lookup covers secrets + entitlement gate)
     _app_owner_id: str | None = None
-    if req.app_id and _fernet:
-        _owner_row = supabase_service.table("apps").select("created_by").eq("id", req.app_id).maybe_single().execute()
-        _app_owner_id = _owner_row.data.get("created_by") if _owner_row.data else None
+    _app_is_paid: bool = False
+    if req.app_id and SUPABASE_SERVICE_ROLE_KEY:
+        try:
+            _sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+            _owner_row = await asyncio.to_thread(
+                lambda: _sb.table("apps").select("created_by, is_paid").eq("id", req.app_id).maybe_single().execute()
+            )
+            if _owner_row and _owner_row.data:
+                _app_owner_id = _owner_row.data.get("created_by")
+                _app_is_paid = bool(_owner_row.data.get("is_paid"))
+        except Exception:
+            pass
+
+    # Entitlement gate — paid apps require an active entitlement row
+    if _app_is_paid and req.app_id:
+        caller_id = extract_user_id(user_jwt) if user_jwt else None
+        if not caller_id:
+            return JSONResponse(status_code=401, content={"error": "Sign in to run this app"})
+        try:
+            _sb2 = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+            _ent = await asyncio.to_thread(
+                lambda: _sb2.table("app_entitlements")
+                    .select("id").eq("app_id", req.app_id).eq("user_id", caller_id)
+                    .eq("status", "active").maybe_single().execute()
+            )
+            if not (_ent and _ent.data):
+                return JSONResponse(status_code=402, content={"error": "Purchase access to run this app"})
+        except Exception as e:
+            print(f"Entitlement check error: {e}")
+            return JSONResponse(status_code=500, content={"error": "Could not verify access"})
 
     knowledge, user_api_key, tools, webhook_url, app_secrets = await asyncio.gather(
         fetch_app_knowledge(req.app_id) if req.app_id else _default(""),
@@ -930,6 +961,7 @@ async def _fire_webhook(webhook_url: str, app_id: str, user_input: str, result: 
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
     try:
+        assert_public_url(webhook_url)
         async with httpx.AsyncClient(timeout=10) as client:
             await client.post(webhook_url, json=payload, headers={"Content-Type": "application/json", "User-Agent": "Aistrix-Webhook/1.0"})
     except Exception as e:
@@ -1202,7 +1234,7 @@ async def create_payment_intent(req: PaymentIntentRequest, request: Request):
     stripe.api_key = secret_key
     auth_header = request.headers.get("Authorization", "")
     user_jwt = auth_header.removeprefix("Bearer ").strip() or None
-    user_id = extract_user_id(user_jwt) if user_jwt else None
+    user_id = await verify_user_jwt(user_jwt) if user_jwt else None
 
     try:
         # stripe's SDK is synchronous/blocking — offload it so it doesn't stall
@@ -1238,7 +1270,7 @@ async def create_checkout_session(req: CheckoutSessionRequest, request: Request)
 
     auth_header = request.headers.get("Authorization", "")
     user_jwt = auth_header.removeprefix("Bearer ").strip() or None
-    user_id = extract_user_id(user_jwt) if user_jwt else None
+    user_id = await verify_user_jwt(user_jwt) if user_jwt else None
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
 
@@ -1401,13 +1433,18 @@ async def _record_purchase(
                     destination=stripe_account_id,
                     metadata={"app_id": app_id, "buyer_id": buyer_id, "plan": plan},
                 )
-                await asyncio.to_thread(
+                purchase_row = await asyncio.to_thread(
                     lambda: sb.table("purchases")
-                        .update({"payout_status": "transferred"})
-                        .eq("app_id", app_id).eq("buyer_id", buyer_id)
-                        .order("created_at", desc=True).limit(1)
-                        .execute()
+                        .select("id").eq("app_id", app_id).eq("buyer_id", buyer_id)
+                        .order("created_at", desc=True).limit(1).execute()
                 )
+                if purchase_row.data:
+                    purchase_id = purchase_row.data[0]["id"]
+                    await asyncio.to_thread(
+                        lambda: sb.table("purchases")
+                            .update({"payout_status": "transferred"})
+                            .eq("id", purchase_id).execute()
+                    )
                 print(f"Transfer {transfer_amount}c → connect/{stripe_account_id} for app={app_id}")
             except Exception as te:
                 print(f"Stripe Transfer failed: {te}")
@@ -1435,8 +1472,10 @@ async def _upsert_entitlement(
         "user_id": user_id,
         "plan": plan,
         "status": status,
-        "runs_this_period": 0,
     }
+    # Only reset run counter on genuine period renewal, not on status-only updates
+    if period_start:
+        row["runs_this_period"] = 0
     if stripe_customer_id: row["stripe_customer_id"] = stripe_customer_id
     if stripe_sub_id:      row["stripe_sub_id"]      = stripe_sub_id
     if run_quota is not None: row["run_quota"] = run_quota
@@ -1644,8 +1683,7 @@ class QuotaWarningRequest(BaseModel):
 @app.post("/notify/quota-warning")
 async def notify_quota_warning(body: QuotaWarningRequest, request: Request):
     """Send a quota-warning email to the authenticated user (buyer)."""
-    user = await require_verified_user(request)
-    user_id = user["sub"]
+    user_id = await require_verified_user(request)
     user_email = await _lookup_email(user_id)
     if user_email:
         pct = round((body.runs_used / body.run_quota) * 100)
@@ -1675,8 +1713,7 @@ async def stripe_connect_onboard(request: Request):
     if not secret_key:
         raise HTTPException(status_code=503, detail="Stripe not configured")
 
-    user = await require_verified_user(request)
-    dev_id = user["sub"]
+    dev_id = await require_verified_user(request)
     stripe.api_key = secret_key
 
     if not SUPABASE_SERVICE_ROLE_KEY:
@@ -1687,7 +1724,7 @@ async def stripe_connect_onboard(request: Request):
     dev_row = await asyncio.to_thread(
         lambda: sb.table("developer_profiles")
             .select("stripe_account_id")
-            .eq("user_id", dev_id).single().execute()
+            .eq("user_id", dev_id).maybe_single().execute()
     )
     stripe_account_id = dev_row.data.get("stripe_account_id") if dev_row.data else None
 
@@ -1722,8 +1759,7 @@ async def stripe_connect_status(request: Request):
     import stripe
     secret_key = os.getenv("STRIPE_SECRET_KEY")
 
-    user = await require_verified_user(request)
-    dev_id = user["sub"]
+    dev_id = await require_verified_user(request)
 
     if not SUPABASE_SERVICE_ROLE_KEY:
         return {"connected": False}
@@ -1732,9 +1768,10 @@ async def stripe_connect_status(request: Request):
     dev_row = await asyncio.to_thread(
         lambda: sb.table("developer_profiles")
             .select("stripe_account_id")
-            .eq("user_id", dev_id).single().execute()
+            .eq("user_id", dev_id).maybe_single().execute()
     )
-    stripe_account_id = dev_row.data.get("stripe_account_id") if dev_row.data else None
+    dev_data = dev_row.data if dev_row and dev_row.data else (dev_row if isinstance(dev_row, dict) else None)
+    stripe_account_id = dev_data.get("stripe_account_id") if dev_data else None
     if not stripe_account_id or not secret_key:
         return {"connected": False, "stripe_account_id": None}
 
@@ -1758,8 +1795,7 @@ async def stripe_connect_status(request: Request):
 @app.get("/stripe/earnings")
 async def stripe_earnings(request: Request):
     """Return the developer's earnings summary from the purchases table."""
-    user = await require_verified_user(request)
-    dev_id = user["sub"]
+    dev_id = await require_verified_user(request)
 
     if not SUPABASE_SERVICE_ROLE_KEY:
         raise HTTPException(status_code=503, detail="Service role key not configured")
@@ -1809,15 +1845,20 @@ async def github_oauth_start(request: Request, token: Optional[str] = None):
         if not user_id:
             raise HTTPException(status_code=401, detail="Invalid token")
     else:
-        user = await require_verified_user(request)
-        user_id = user["sub"]
+        user_id = await require_verified_user(request)
+    nonce = secrets.token_urlsafe(32)
+    _oauth_nonces[nonce] = (user_id, time.time() + 600)  # 10-min window
+    # Prune stale nonces
+    now = time.time()
+    for k in [k for k, (_, exp) in list(_oauth_nonces.items()) if exp < now]:
+        _oauth_nonces.pop(k, None)
     scope = "repo"
     url = (
         f"https://github.com/login/oauth/authorize"
         f"?client_id={GITHUB_CLIENT_ID}"
         f"&redirect_uri={GITHUB_REDIRECT_URI}"
         f"&scope={scope}"
-        f"&state={user_id}"
+        f"&state={nonce}"
     )
     return RedirectResponse(url)
 
@@ -1828,7 +1869,11 @@ async def github_oauth_callback(code: str, state: str, request: Request):
     if not GITHUB_CLIENT_ID or not GITHUB_CLIENT_SECRET:
         raise HTTPException(status_code=503, detail="GitHub OAuth not configured")
 
-    dev_id = state  # state carries the user_id set during /auth/github
+    # Verify CSRF nonce and extract user_id
+    nonce_entry = _oauth_nonces.pop(state, None)
+    if not nonce_entry or nonce_entry[1] < time.time():
+        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
+    dev_id = nonce_entry[0]
 
     # Exchange code for token
     async with httpx.AsyncClient(timeout=15) as c:
@@ -1886,17 +1931,26 @@ class SecretUpsert(BaseModel):
 @app.get("/apps/{app_id}/secrets")
 async def list_secrets(app_id: str, request: Request):
     """Return secret key names only — never values."""
-    user_id = await extract_user_id(request)
-    rows = supabase_service.table("app_secrets") \
-        .select("key, created_at, updated_at") \
-        .eq("app_id", app_id).eq("user_id", user_id) \
-        .order("key").execute()
+    if not _fernet:
+        return {"secrets": [], "warning": "SECRET_ENCRYPTION_KEY not configured"}
+    user_id = await require_verified_user(request)
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        return {"secrets": []}
+    sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    rows = await asyncio.to_thread(
+        lambda: sb.table("app_secrets")
+            .select("key, created_at, updated_at")
+            .eq("app_id", app_id).eq("user_id", user_id)
+            .order("key").execute()
+    )
     return {"secrets": rows.data or []}
 
 @app.put("/apps/{app_id}/secrets")
 async def upsert_secret(app_id: str, body: SecretUpsert, request: Request):
     """Create or update a secret value (stored encrypted, value never returned)."""
-    user_id = await extract_user_id(request)
+    if not _fernet:
+        raise HTTPException(status_code=503, detail="SECRET_ENCRYPTION_KEY not set on server — add it to .env and restart")
+    user_id = await require_verified_user(request)
     if not body.key.strip():
         raise HTTPException(status_code=400, detail="Key cannot be empty")
     if len(body.key) > 100:
@@ -1905,30 +1959,39 @@ async def upsert_secret(app_id: str, body: SecretUpsert, request: Request):
         raise HTTPException(status_code=400, detail="Key must contain only letters, numbers, and underscores")
     encrypted = _encrypt(body.value)
     now = datetime.now(timezone.utc).isoformat()
-    supabase_service.table("app_secrets").upsert({
-        "app_id":           app_id,
-        "user_id":          user_id,
-        "key":              body.key.upper(),
-        "encrypted_value":  encrypted,
-        "updated_at":       now,
-    }, on_conflict="app_id,key").execute()
+    sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    await asyncio.to_thread(
+        lambda: sb.table("app_secrets").upsert({
+            "app_id":           app_id,
+            "user_id":          user_id,
+            "key":              body.key.upper(),
+            "encrypted_value":  encrypted,
+            "updated_at":       now,
+        }, on_conflict="app_id,key").execute()
+    )
     return {"ok": True, "key": body.key.upper()}
 
 @app.delete("/apps/{app_id}/secrets/{key}")
 async def delete_secret(app_id: str, key: str, request: Request):
-    user_id = await extract_user_id(request)
-    supabase_service.table("app_secrets") \
-        .delete().eq("app_id", app_id).eq("user_id", user_id).eq("key", key.upper()) \
-        .execute()
+    user_id = await require_verified_user(request)
+    sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    await asyncio.to_thread(
+        lambda: sb.table("app_secrets")
+            .delete().eq("app_id", app_id).eq("user_id", user_id).eq("key", key.upper())
+            .execute()
+    )
     return {"ok": True}
 
 async def _load_app_secrets(app_id: str, user_id: str) -> dict[str, str]:
     """Load decrypted secrets for injection into a run — server-side only."""
-    if not _fernet:
+    if not _fernet or not SUPABASE_SERVICE_ROLE_KEY:
         return {}
-    rows = supabase_service.table("app_secrets") \
-        .select("key, encrypted_value") \
-        .eq("app_id", app_id).eq("user_id", user_id).execute()
+    sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    rows = await asyncio.to_thread(
+        lambda: sb.table("app_secrets")
+            .select("key, encrypted_value")
+            .eq("app_id", app_id).eq("user_id", user_id).execute()
+    )
     result = {}
     for r in (rows.data or []):
         try:
@@ -2220,13 +2283,13 @@ async def trigger_via_webhook(token: str, request: Request):
 @app.get("/apps")
 async def list_apps(request: Request):
     """Return the authenticated user's apps."""
-    user = await require_verified_user(request)
-    result = (
-        supabase_service.table("apps")
-        .select("id, name, description, ai_model, ai_provider, is_paid, price_per_run, created_at, updated_at")
-        .eq("user_id", user["sub"])
-        .order("updated_at", desc=True)
-        .execute()
+    user_id = await require_verified_user(request)
+    result = await asyncio.to_thread(
+        lambda: get_anon_client().table("apps")
+            .select("id, name, description, ai_model, ai_provider, is_paid, price_per_run, created_at, updated_at")
+            .eq("created_by", user_id)
+            .order("updated_at", desc=True)
+            .execute()
     )
     return {"apps": result.data or []}
 
@@ -2234,18 +2297,48 @@ async def list_apps(request: Request):
 @app.get("/apps/{app_id}")
 async def get_app(app_id: str, request: Request):
     """Return a single app by ID (must belong to the authenticated user)."""
-    user = await require_verified_user(request)
-    result = (
-        supabase_service.table("apps")
-        .select("id, name, description, system_prompt, ai_model, ai_provider, is_paid, price_per_run, created_at, updated_at")
-        .eq("id", app_id)
-        .eq("user_id", user["sub"])
-        .single()
-        .execute()
+    user_id = await require_verified_user(request)
+    result = await asyncio.to_thread(
+        lambda: get_anon_client().table("apps")
+            .select("id, name, description, system_prompt, ai_model, ai_provider, is_paid, price_per_run, created_at, updated_at")
+            .eq("id", app_id)
+            .eq("created_by", user_id)
+            .maybe_single()
+            .execute()
     )
-    if not result.data:
+    if not result or not result.data:
         raise HTTPException(status_code=404, detail="App not found")
     return result.data
+
+
+@app.post("/apps/{app_id}/publish")
+async def publish_app(app_id: str, request: Request):
+    """Validate publish criteria server-side and set status='live'."""
+    user_id = await require_verified_user(request)
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        raise HTTPException(status_code=503, detail="Service not configured")
+    sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    app_row = await asyncio.to_thread(
+        lambda: sb.table("apps")
+            .select("id, name, system_prompt, created_by")
+            .eq("id", app_id).eq("created_by", user_id).maybe_single().execute()
+    )
+    if not app_row or not app_row.data:
+        raise HTTPException(status_code=404, detail="App not found")
+    data = app_row.data
+    errors = []
+    if not (data.get("name") or "").strip():
+        errors.append("App name is required")
+    if not (data.get("system_prompt") or "").strip():
+        errors.append("System prompt is required")
+    if errors:
+        raise HTTPException(status_code=422, detail="; ".join(errors))
+    await asyncio.to_thread(
+        lambda: sb.table("marketplace_listings")
+            .update({"status": "live"})
+            .eq("app_id", app_id).eq("user_id", user_id).execute()
+    )
+    return {"status": "live"}
 
 
 @app.get("/health")

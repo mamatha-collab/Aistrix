@@ -229,10 +229,12 @@ export function MarketplaceAppPage() {
       setEntitlement(false)
     }
 
-    // Load reviews
-    const { data: revData } = await supabase.from('app_reviews')
-      .select('rating, review_text, created_at, user_id').eq('app_id', id).order('created_at', { ascending: false }).limit(10)
-    setReviews(revData || [])
+    // Load reviews (table may not exist yet — swallow the error gracefully)
+    try {
+      const { data: revData, error: revErr } = await supabase.from('app_reviews')
+        .select('rating, review_text, created_at, user_id').eq('app_id', id).order('created_at', { ascending: false }).limit(10)
+      if (!revErr) setReviews(revData || [])
+    } catch (_) {}
   }
 
   async function startCheckout(plan = 'pay_per_run') {

@@ -317,6 +317,7 @@ function TabNote({ id }) {
         {note.points.map((pt, i) => (
           <li key={i} className="flex gap-2 text-[11px] text-slate-400 leading-relaxed">
             <span className="shrink-0 mt-0.5" style={{ color: note.color + 'CC' }}>›</span>
+            {/* Safe: pt is a developer-authored constant, never user input */}
             <span dangerouslySetInnerHTML={{ __html: pt.replace(/\*\*(.+?)\*\*/g, `<strong class="text-slate-200">$1</strong>`) }} />
           </li>
         ))}
@@ -831,6 +832,9 @@ function AppDeployCard({ app: initialApp, onUpdate }) {
 
 function DeployTab({ apps, user, onAppUpdated }) {
   const [selectedId, setSelectedId] = useState(apps[0]?.id ?? null)
+  useEffect(() => {
+    setSelectedId(id => apps.find(a => a.id === id) ? id : (apps[0]?.id ?? null))
+  }, [apps])
   const selectedApp = apps.find(a => a.id === selectedId)
 
   if (!apps.length) return (
@@ -3334,6 +3338,7 @@ function SecretsTab({ apps, user }) {
       const body = await r.json()
       if (!r.ok) throw new Error(body.detail || 'Failed to load secrets')
       setSecrets(body.secrets || [])
+      if (body.warning) setError('⚠️ ' + body.warning)
     } catch (e) { setError(e.message) }
     finally { setLoading(false) }
   }

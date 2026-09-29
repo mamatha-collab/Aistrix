@@ -29,12 +29,39 @@ export function MarketplacePage() {
   }, [])
 
   async function load() {
-    const { data } = await supabase
+    // Primary: formal marketplace listings
+    const { data: listingRows } = await supabase
       .from('marketplace_listings')
       .select('*, apps(name, description, ai_model, ai_provider, price_per_run, is_paid), developer_profiles(display_name)')
       .eq('status', 'live')
       .order('updated_at', { ascending: false })
-    setListings(data || [])
+
+    if (listingRows && listingRows.length > 0) {
+      setListings(listingRows)
+      return
+    }
+
+    // Fallback: any published app without a formal listing
+    const { data: appRows } = await supabase
+      .from('apps')
+      .select('id, name, description, ai_model, ai_provider, price_per_run, is_paid, app_type, created_at, updated_at')
+      .eq('is_published', true)
+      .order('updated_at', { ascending: false })
+
+    const synthetic = (appRows || []).map(a => ({
+      id: a.id,
+      app_id: a.id,
+      title: a.name,
+      tagline: a.description || '',
+      description: a.description || '',
+      category: null,
+      tags: [],
+      status: 'live',
+      updated_at: a.updated_at,
+      apps: { name: a.name, description: a.description, ai_model: a.ai_model, ai_provider: a.ai_provider, price_per_run: a.price_per_run, is_paid: a.is_paid },
+      developer_profiles: null,
+    }))
+    setListings(synthetic)
   }
 
   const categories = listings

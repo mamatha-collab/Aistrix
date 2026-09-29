@@ -32,12 +32,12 @@ const LIFECYCLE_STEPS = [
   { step: 1, icon: '✏️',  label: 'Design',   desc: 'Write a system prompt, pick a model (Claude, GPT-4o, …), set input fields.' },
   { step: 2, icon: '🧪',  label: 'Test',      desc: 'Create test cases with pass/fail rules. Run them any time — or auto-run before saving a version.' },
   { step: 3, icon: '🚀',  label: 'Deploy',    desc: 'Publish the app so users can run it from their dashboard or via a public link.' },
-  { step: 4, icon: '💳',  label: 'Sell',      desc: 'Flip the pricing switch to Paid and set a price per run — or offer it free.' },
+  { step: 4, icon: '🛒',  label: 'Marketplace', desc: 'List your app on the Marketplace and set pricing — free, one-time, or subscription.' },
   { step: 5, icon: '📡',  label: 'Monitor',   desc: 'Watch run volume, ratings, token usage, and subscriber counts in real time.' },
   { step: 6, icon: '🎯',  label: 'Evaluate',  desc: 'Deep-dive into quality: per-prompt scoring, failure analysis, regression tracking.' },
   { step: 7, icon: '🔬',  label: 'Improve',   desc: 'A/B-test prompt variants and compare output quality before shipping changes.' },
   { step: 8, icon: '📦',  label: 'Version',   desc: 'Snapshot any working state. Roll back in one click. See the full change history.' },
-  { step: 9, icon: '💰',  label: 'Monetize',  desc: 'See real margin: estimated revenue vs. AI cost per run, broken down by app.' },
+  { step: 9, icon: '💰',  label: 'Revenue',   desc: 'See real margin: estimated revenue vs. AI cost per run, broken down by app.' },
 ]
 
 const FEATURES = [
@@ -138,7 +138,7 @@ function HelpPanel({ onClose }) {
                 { n: 2, t: 'Run and iterate', d: 'Open the app and test your prompt. Tweak in PromptStudio until results are good.' },
                 { n: 3, t: 'Add test cases', d: 'Go to Test → add cases with expected pass/fail rules. Auto-runs before every version save.' },
                 { n: 4, t: 'Deploy', d: 'Flip "Published" in Deploy. Users can now run it. Share the app link.' },
-                { n: 5, t: 'Optionally monetize', d: 'Set a price in Sell. Stripe handles payment; entitlements are created automatically.' },
+                { n: 5, t: 'List on Marketplace', d: 'Set a price in Marketplace. Stripe handles payment; entitlements are created automatically.' },
               ].map(({ n, t, d }) => (
                 <li key={n} className="flex gap-3">
                   <span className="shrink-0 w-5 h-5 rounded-full bg-[#6C5CE7]/20 text-[#A29BFE] text-[10px] font-bold flex items-center justify-center mt-0.5">{n}</span>
@@ -237,7 +237,7 @@ const TAB_NOTES = {
   },
   sell: {
     color: '#FDCB6E',
-    title: 'How Sell works technically',
+    title: 'How Marketplace works technically',
     points: [
       '`apps.is_paid` + `apps.price_per_run` control access. When `is_paid = true`, the runner checks `app_entitlements` before executing.',
       '**Stripe Checkout** (redirect flow): frontend calls `/create-checkout-session`, backend creates a Stripe Session and returns the URL. On return, `?checkout=success` triggers a PostHog event.',
@@ -292,7 +292,7 @@ const TAB_NOTES = {
   },
   monetize: {
     color: '#FD79A8',
-    title: 'How Monetize works technically',
+    title: 'How Revenue works technically',
     points: [
       '**AI cost estimation**: for each run, `input_tokens × input_rate + output_tokens × output_rate` using a hard-coded model cost table (USD per 1M tokens).',
       'Cost rates are stored client-side in `MODEL_COSTS` — updated manually as provider pricing changes. Rates cover Claude (Haiku, Sonnet, Opus) and OpenAI (GPT-4o, GPT-4o-mini).',
@@ -830,6 +830,9 @@ function AppDeployCard({ app: initialApp, onUpdate }) {
 }
 
 function DeployTab({ apps, user, onAppUpdated }) {
+  const [selectedId, setSelectedId] = useState(apps[0]?.id ?? null)
+  const selectedApp = apps.find(a => a.id === selectedId)
+
   if (!apps.length) return (
     <div className="bg-[#171B33] border border-white/5 rounded-2xl p-10 text-center">
       <p className="text-slate-400 text-sm">Create an app in the Design tab to start deploying.</p>
@@ -838,12 +841,25 @@ function DeployTab({ apps, user, onAppUpdated }) {
 
   return (
     <div className="space-y-5">
-      {/* Per-app deploy cards */}
-      <div className="space-y-4">
-        {apps.map(app => (
-          <AppDeployCard key={app.id} app={app} onUpdate={onAppUpdated} />
-        ))}
+      {/* App selector */}
+      <div>
+        <p className="text-xs text-slate-500 uppercase font-semibold tracking-wide mb-2">Select app to deploy</p>
+        <div className="flex flex-wrap gap-2">
+          {apps.map(app => (
+            <button key={app.id} onClick={() => setSelectedId(app.id)}
+              className={`text-xs px-3 py-1.5 rounded-lg border transition-all font-medium ${
+                selectedId === app.id
+                  ? 'bg-[#6C5CE7]/20 border-[#6C5CE7]/60 text-white'
+                  : 'bg-[#1A2038] border-white/10 text-slate-400 hover:text-white hover:border-white/25'
+              }`}>
+              {app.name}
+            </button>
+          ))}
+        </div>
       </div>
+
+      {/* Selected app deploy card */}
+      {selectedApp && <AppDeployCard key={selectedApp.id} app={selectedApp} onUpdate={onAppUpdated} />}
 
       {/* API Keys */}
       <ApiKeySection user={user} />
@@ -3129,12 +3145,12 @@ const LIFECYCLE_TABS = [
   { id: 'design',   label: 'Design',   icon: '✏️',  desc: 'Build apps' },
   { id: 'test',     label: 'Test',     icon: '🧪',  desc: 'Validate' },
   { id: 'deploy',   label: 'Deploy',   icon: '🚀',  desc: 'Ship it' },
-  { id: 'sell',     label: 'Sell',     icon: '💳',  desc: 'Monetize' },
-  { id: 'monitor',  label: 'Monitor',  icon: '📡',  desc: 'Watch it' },
-  { id: 'evaluate', label: 'Evaluate', icon: '🎯',  desc: 'Quality' },
-  { id: 'improve',  label: 'Improve',  icon: '🔬',  desc: 'Iterate' },
-  { id: 'version',  label: 'Version',  icon: '📦',  desc: 'History' },
-  { id: 'monetize', label: 'Monetize', icon: '💰',  desc: 'Profit' },
+  { id: 'sell',     label: 'Marketplace', icon: '🛒',  desc: 'List & sell' },
+  { id: 'monitor',  label: 'Monitor',     icon: '📡',  desc: 'Watch it' },
+  { id: 'evaluate', label: 'Evaluate',    icon: '🎯',  desc: 'Quality' },
+  { id: 'improve',  label: 'Improve',     icon: '🔬',  desc: 'Iterate' },
+  { id: 'version',  label: 'Version',     icon: '📦',  desc: 'History' },
+  { id: 'monetize', label: 'Revenue',     icon: '💰',  desc: 'Profit' },
 ]
 
 export default function DevStudioPage({ user, onOpenCreate }) {
@@ -3204,7 +3220,7 @@ export default function DevStudioPage({ user, onOpenCreate }) {
           <div className="flex items-start justify-between gap-3">
             <div>
               <h1 className="text-white text-xl font-semibold">Dev Studio</h1>
-              <p className="text-slate-400 text-sm mt-0.5">Design → Test → Deploy → Sell → Monitor → Evaluate → Improve → Version → Monetize</p>
+              <p className="text-slate-400 text-sm mt-0.5">Design → Test → Deploy → Marketplace → Monitor → Evaluate → Improve → Version → Revenue</p>
             </div>
             <button onClick={() => setShowHelp(true)}
               className="shrink-0 flex items-center gap-1.5 text-xs text-slate-400 hover:text-white bg-[#1F2444] hover:bg-[#272C52] border border-white/10 px-3 py-1.5 rounded-lg transition-colors">

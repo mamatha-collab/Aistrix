@@ -2095,7 +2095,24 @@ function ImproveTab({ apps, user, runs }) {
 
 function VersionTab({ apps, user, onAppUpdated }) {
   const [selectedApp, setSelectedApp] = useState(apps[0]?.id || null)
+  const [integrations, setIntegrations] = useState(null)
   const appObj = apps.find(a => a.id === selectedApp) || null
+  const toast  = useToast()
+
+  useEffect(() => { loadIntegrations() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function loadIntegrations() {
+    const { data } = await supabase.from('developer_settings').select('settings').eq('user_id', user.id).single()
+    setIntegrations(data?.settings || {})
+  }
+
+  async function saveIntegration(key, vals) {
+    const merged = { ...(integrations || {}), [key]: vals }
+    const { error } = await supabase.from('developer_settings')
+      .upsert({ user_id: user.id, settings: merged }, { onConflict: 'user_id' })
+    if (error) { toast(error.message, 'error'); return }
+    setIntegrations(merged)
+  }
 
   return (
     <div className="space-y-5">
@@ -2122,6 +2139,52 @@ function VersionTab({ apps, user, onAppUpdated }) {
           onRollback={updated => onAppUpdated?.(updated)}
         />
       )}
+
+      {/* Feature flag integrations */}
+      <div>
+        <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide mb-3">Feature flag integrations</p>
+        <p className="text-xs text-slate-600 mb-3">Connect a feature flag service to gate new prompt versions to a percentage of users before full rollout.</p>
+        <div className="space-y-3">
+          <IntegrationCard
+            icon="🚩"
+            name="Unleash"
+            desc="Open-source feature flag platform — self-host or use Unleash Cloud."
+            docsUrl="https://docs.getunleash.io"
+            fields={[
+              { key: 'api_url',  label: 'API URL',   placeholder: 'https://app.unleash-hosted.com/api', secret: false,
+                hint: 'Your Unleash instance URL — ends in /api' },
+              { key: 'api_token', label: 'API token', placeholder: '*:production.abc123…', secret: true },
+            ]}
+            savedKeys={integrations?.unleash}
+            onSave={vals => saveIntegration('unleash', vals)}
+          />
+          <IntegrationCard
+            icon="🎌"
+            name="Flagsmith"
+            desc="Feature flags and remote config — cloud or self-hosted."
+            docsUrl="https://docs.flagsmith.com"
+            fields={[
+              { key: 'environment_key', label: 'Environment key', placeholder: 'ser.abc123…', secret: true,
+                hint: 'Flagsmith dashboard → Environment → SDK Keys → Server-side' },
+            ]}
+            savedKeys={integrations?.flagsmith}
+            onSave={vals => saveIntegration('flagsmith', vals)}
+          />
+          <IntegrationCard
+            icon="🦔"
+            name="PostHog feature flags"
+            desc="Use PostHog feature flags alongside product analytics — same SDK."
+            docsUrl="https://posthog.com/docs/feature-flags"
+            fields={[
+              { key: 'personal_api_key', label: 'Personal API key', placeholder: 'phx_abc123…', secret: true,
+                hint: 'PostHog → Settings → Personal API keys' },
+              { key: 'project_id', label: 'Project ID', placeholder: '12345', secret: false },
+            ]}
+            savedKeys={integrations?.posthog_flags}
+            onSave={vals => saveIntegration('posthog_flags', vals)}
+          />
+        </div>
+      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <ComingSoonCard

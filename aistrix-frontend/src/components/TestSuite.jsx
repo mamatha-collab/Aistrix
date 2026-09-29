@@ -74,7 +74,9 @@ function parseSSELine(line) {
   try { return JSON.parse(line.slice(6)) } catch { return null }
 }
 
-async function runPrompt(app, input, signal) {
+export { evaluateRule, evaluateCase }
+
+export async function runPrompt(app, input, signal) {
   const { data: { session } } = await supabase.auth.getSession()
   const res = await fetch(`${API_URL}/run`, {
     method: 'POST', signal,

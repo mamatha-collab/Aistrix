@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { timeAgo } from '../utils'
+import { runPrompt, evaluateCase } from './TestSuite'
 
 export const VERSION_SETUP_SQL = `create table app_versions (
   id            uuid primary key default gen_random_uuid(),
@@ -136,16 +137,14 @@ export default function VersionManager({ app, user, onRollback, selectedId, onSe
   const [labelDraft, setLabelDraft]   = useState('')
   const [expandId, setExpandId]       = useState(null)
   const [migrateCopied, setMigrateCopied] = useState(false)
+  const [testGate, setTestGate]       = useState(null) // null | { results, passCount, total, running }
+  const testAbortRef = useRef(null)
   const toast = useToast()
 
   const nextVer = nextSemver(versions, bumpType)
   const hasSemverCol = versions.length === 0 || versions[0]?.semver !== undefined
 
-  async function saveSnapshot() {
-    if (!app.system_prompt?.trim()) {
-      toast('App has no system prompt — write one in Prompt Studio first', 'error', 4000)
-      return
-    }
+  async function doSave() {
     setSaving(true)
     const { count } = await supabase
       .from('app_versions')
@@ -168,7 +167,54 @@ export default function VersionManager({ app, user, onRollback, selectedId, onSe
     setVersions(prev => [data, ...prev])
     setChangelog('')
     setShowSaveForm(false)
+    setTestGate(null)
     toast(`${nextVer} saved`, 'success', 2000)
+  }
+
+  async function saveSnapshot() {
+    if (!app.system_prompt?.trim()) {
+      toast('App has no system prompt — write one in Prompt Studio first', 'error', 4000)
+      return
+    }
+
+    // Fetch test cases for this app
+    const { data: testCases, error: tcErr } = await supabase
+      .from('app_test_cases')
+      .select('id, name, input, rules')
+      .eq('app_id', app.id)
+      .eq('user_id', user.id)
+
+    // No test table or no tests — skip gate
+    if (tcErr || !testCases?.length) { await doSave(); return }
+
+    // Run tests
+    testAbortRef.current?.abort()
+    const ctrl = new AbortController()
+    testAbortRef.current = ctrl
+    setTestGate({ results: [], passCount: 0, total: testCases.length, running: true })
+    setShowSaveForm(true)
+
+    const results = []
+    for (const tc of testCases) {
+      if (ctrl.signal.aborted) break
+      try {
+        const output = await runPrompt(app, tc.input, ctrl.signal)
+        const { passed, results: ruleResults } = evaluateCase(output, tc.rules)
+        results.push({ id: tc.id, name: tc.name, passed, output, ruleResults })
+      } catch (e) {
+        if (e.name === 'AbortError') break
+        results.push({ id: tc.id, name: tc.name, passed: false, error: e.message })
+      }
+      const passCount = results.filter(r => r.passed).length
+      setTestGate({ results: [...results], passCount, total: testCases.length, running: true })
+    }
+    const passCount = results.filter(r => r.passed).length
+    setTestGate({ results, passCount, total: testCases.length, running: false })
+
+    if (passCount === testCases.length) {
+      toast(`All ${testCases.length} tests passed — saving ${nextVer}`, 'success', 3000)
+      await doSave()
+    }
   }
 
   async function rollback(v) {
@@ -219,7 +265,7 @@ export default function VersionManager({ app, user, onRollback, selectedId, onSe
         <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide">
           {versions.length} snapshot{versions.length !== 1 ? 's' : ''}
         </p>
-        <button onClick={() => setShowSaveForm(p => !p)}
+        <button onClick={() => { setShowSaveForm(p => !p); setTestGate(null); testAbortRef.current?.abort() }}
           className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors">
           {showSaveForm ? '✕ Cancel' : '📸 Save snapshot'}
         </button>
@@ -266,10 +312,46 @@ export default function VersionManager({ app, user, onRollback, selectedId, onSe
             />
           </div>
 
+          {/* Test gate results */}
+          {testGate && (
+            <div className={`rounded-xl border p-3 space-y-2 ${
+              testGate.running ? 'border-white/10 bg-white/5' :
+              testGate.passCount === testGate.total ? 'border-emerald-500/20 bg-emerald-500/5' :
+              'border-red-500/20 bg-red-500/5'
+            }`}>
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-semibold text-slate-300">
+                  {testGate.running
+                    ? `Running tests… ${testGate.results.length}/${testGate.total}`
+                    : testGate.passCount === testGate.total
+                      ? `✓ All ${testGate.total} tests passed`
+                      : `${testGate.passCount}/${testGate.total} tests passed`}
+                </p>
+                {!testGate.running && testGate.passCount < testGate.total && (
+                  <button onClick={doSave} disabled={saving}
+                    className="text-[10px] font-semibold px-2 py-1 rounded-md bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white border border-white/10 transition-colors disabled:opacity-40">
+                    Save anyway
+                  </button>
+                )}
+              </div>
+              <div className="space-y-1">
+                {testGate.results.map(r => (
+                  <div key={r.id} className="flex items-center gap-2">
+                    <span className={`text-[10px] font-bold w-3 shrink-0 ${r.passed ? 'text-emerald-400' : 'text-red-400'}`}>
+                      {r.passed ? '✓' : '✗'}
+                    </span>
+                    <span className="text-[11px] text-slate-400 truncate">{r.name}</span>
+                    {r.error && <span className="text-[10px] text-red-400 truncate">{r.error}</span>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="flex justify-end">
-            <button onClick={saveSnapshot} disabled={saving}
+            <button onClick={saveSnapshot} disabled={saving || testGate?.running}
               className="text-xs font-semibold px-4 py-2 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors disabled:opacity-40">
-              {saving ? '…' : `Save ${nextVer}`}
+              {saving ? 'Saving…' : testGate?.running ? 'Running tests…' : `Save ${nextVer}`}
             </button>
           </div>
         </div>

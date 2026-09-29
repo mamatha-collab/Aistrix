@@ -125,6 +125,7 @@ function AnalyticsView({ app, user, onClose }) {
 
 export default function DetailPanel({ app, user, onClose, onRun, onDeleted }) {
   const [running, setRunning] = useState(!!app._runNow)
+  const [directRun, setDirectRun] = useState(!!app._runNow)
   const [copied, setCopied] = useState(false)
   const [stats, setStats] = useState(null)
   const [showAnalytics, setShowAnalytics] = useState(false)
@@ -159,6 +160,8 @@ export default function DetailPanel({ app, user, onClose, onRun, onDeleted }) {
 
   useEffect(() => {
     setCurrentApp(app)
+    setRunning(!!app._runNow)
+    setDirectRun(!!app._runNow)
     if (app && user) {
       fetchStats()
       checkKeyStatus(app)
@@ -169,6 +172,14 @@ export default function DetailPanel({ app, user, onClose, onRun, onDeleted }) {
     setEditing(false)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when app.id or user changes
   }, [app.id, user])
+
+  function handleRunnerClose() {
+    if (directRun) {
+      onClose()
+      return
+    }
+    setRunning(false)
+  }
 
   async function checkKeyStatus(a) {
     const provider = a.ai_provider || 'claude'
@@ -215,6 +226,36 @@ export default function DetailPanel({ app, user, onClose, onRun, onDeleted }) {
     }
   }
 
+  const runnerPortal = running ? createPortal(
+    <Suspense fallback={null}>
+      {currentApp.app_type === 'agent'
+        ? <AgentRunner    app={currentApp} user={user} onClose={handleRunnerClose} onRun={() => { fetchStats(); setLocalTotalRuns(p => (p ?? currentApp.total_runs ?? 0) + 1); onRun?.(currentApp.id) }} />
+        : currentApp.app_type === 'api'
+        ? <ApiAppRunner   app={currentApp} user={user} onClose={handleRunnerClose} onRun={() => { fetchStats(); setLocalTotalRuns(p => (p ?? currentApp.total_runs ?? 0) + 1); onRun?.(currentApp.id) }} />
+        : currentApp.app_type === 'data'
+        ? <DataAppRunner  app={currentApp} user={user} onClose={handleRunnerClose} onRun={() => { fetchStats(); setLocalTotalRuns(p => (p ?? currentApp.total_runs ?? 0) + 1); onRun?.(currentApp.id) }} />
+        : currentApp.has_memory
+        ? <ConversationThread app={currentApp} user={user} onClose={handleRunnerClose} />
+        : currentApp.pages?.length > 0
+        ? <MultiPageRunner app={currentApp} user={user} onClose={handleRunnerClose} onRun={() => { fetchStats(); setLocalTotalRuns(prev => (prev ?? currentApp.total_runs ?? 0) + 1); onRun?.(currentApp.id) }} />
+        : <AppRunner
+        app={currentApp}
+        user={user}
+        onClose={handleRunnerClose}
+        onRun={() => {
+          fetchStats()
+          setLocalTotalRuns(prev => (prev ?? currentApp.total_runs ?? 0) + 1)
+          onRun?.(currentApp.id)
+        }}
+      />}
+    </Suspense>,
+    document.body
+  ) : null
+
+  if (directRun && running) {
+    return runnerPortal
+  }
+
   return (
     <aside className="w-72 bg-[#171B33] border-l border-white/5 flex flex-col shrink-0 overflow-y-auto animate-slide-in" onClick={e => e.stopPropagation()}>
       {editing && (
@@ -236,31 +277,7 @@ export default function DetailPanel({ app, user, onClose, onRun, onDeleted }) {
         document.body
       )}
 
-      {running && createPortal(
-        <Suspense fallback={null}>
-          {currentApp.app_type === 'agent'
-            ? <AgentRunner    app={currentApp} user={user} onClose={() => setRunning(false)} onRun={() => { fetchStats(); setLocalTotalRuns(p => (p ?? currentApp.total_runs ?? 0) + 1); onRun?.(currentApp.id) }} />
-            : currentApp.app_type === 'api'
-            ? <ApiAppRunner   app={currentApp} user={user} onClose={() => setRunning(false)} onRun={() => { fetchStats(); setLocalTotalRuns(p => (p ?? currentApp.total_runs ?? 0) + 1); onRun?.(currentApp.id) }} />
-            : currentApp.app_type === 'data'
-            ? <DataAppRunner  app={currentApp} user={user} onClose={() => setRunning(false)} onRun={() => { fetchStats(); setLocalTotalRuns(p => (p ?? currentApp.total_runs ?? 0) + 1); onRun?.(currentApp.id) }} />
-            : currentApp.has_memory
-            ? <ConversationThread app={currentApp} user={user} onClose={() => setRunning(false)} />
-            : currentApp.pages?.length > 0
-            ? <MultiPageRunner app={currentApp} user={user} onClose={() => setRunning(false)} onRun={() => { fetchStats(); setLocalTotalRuns(prev => (prev ?? currentApp.total_runs ?? 0) + 1); onRun?.(currentApp.id) }} />
-            : <AppRunner
-            app={currentApp}
-            user={user}
-            onClose={() => setRunning(false)}
-            onRun={() => {
-              fetchStats()
-              setLocalTotalRuns(prev => (prev ?? currentApp.total_runs ?? 0) + 1)
-              onRun?.(currentApp.id)
-            }}
-          />}
-        </Suspense>,
-        document.body
-      )}
+      {runnerPortal}
 
       <div className="p-4 border-b border-white/5 flex items-start justify-between">
         <div className="flex items-center gap-3">

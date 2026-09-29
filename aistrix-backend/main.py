@@ -20,7 +20,7 @@ import sentry_sdk
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from jose import jwt as jose_jwt
 from pydantic import BaseModel, Field, field_validator
 from sentry_sdk.integrations.fastapi import FastApiIntegration
@@ -56,6 +56,11 @@ SUPABASE_ANON_KEY         = os.getenv("SUPABASE_ANON_KEY")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 RESEND_API_KEY            = os.getenv("RESEND_API_KEY")
 EMAIL_FROM                = os.getenv("EMAIL_FROM", "Aistrix <noreply@aistrix.app>")
+STRIPE_PLATFORM_FEE_PCT   = float(os.getenv("STRIPE_PLATFORM_FEE_PCT", "20"))  # % Aistrix keeps
+FRONTEND_URL              = os.getenv("FRONTEND_URL", "http://localhost:5173")
+GITHUB_CLIENT_ID          = os.getenv("GITHUB_CLIENT_ID")
+GITHUB_CLIENT_SECRET      = os.getenv("GITHUB_CLIENT_SECRET")
+GITHUB_REDIRECT_URI       = os.getenv("GITHUB_REDIRECT_URI")  # e.g. https://api.aistrix.app/auth/github/callback
 CRON_SECRET               = os.getenv("CRON_SECRET")
 REQUEST_TIMEOUT           = int(os.getenv("REQUEST_TIMEOUT", "90"))
 HOURLY_LIMIT              = int(os.getenv("RATE_LIMIT_PER_HOUR", "30"))
@@ -1318,6 +1323,74 @@ async def _lookup_email(user_id: str) -> Optional[str]:
         return None
 
 
+async def _record_purchase(
+    app_id: str, buyer_id: str, dev_id: str, plan: str,
+    stripe_customer_id: Optional[str], stripe_sub_id: Optional[str],
+    sb,
+):
+    """Insert a row into purchases and attempt a Stripe Connect transfer to the developer."""
+    try:
+        # Fetch app price + dev's Connect account id
+        app_row = await asyncio.to_thread(
+            lambda: sb.table("apps").select("price_per_run").eq("id", app_id).single().execute()
+        )
+        price = float(app_row.data.get("price_per_run") or 0) if app_row.data else 0.0
+
+        dev_row = await asyncio.to_thread(
+            lambda: sb.table("developer_profiles")
+                .select("stripe_account_id")
+                .eq("user_id", dev_id).single().execute()
+        )
+        stripe_account_id = dev_row.data.get("stripe_account_id") if dev_row.data else None
+
+        platform_fee = round(price * STRIPE_PLATFORM_FEE_PCT / 100, 6)
+        dev_share    = round(price - platform_fee, 6)
+
+        # Insert purchase record
+        purchase_row = {
+            "app_id":             app_id,
+            "buyer_id":           buyer_id,
+            "dev_id":             dev_id,
+            "plan":               plan,
+            "gross_amount":       price,
+            "platform_fee":       platform_fee,
+            "dev_share":          dev_share,
+            "stripe_customer_id": stripe_customer_id,
+            "stripe_sub_id":      stripe_sub_id,
+            "payout_status":      "pending" if stripe_account_id else "no_connect_account",
+        }
+        await asyncio.to_thread(
+            lambda: sb.table("purchases").insert(purchase_row).execute()
+        )
+
+        # Attempt transfer if developer has Connect account and price > 0
+        if stripe_account_id and dev_share > 0:
+            import stripe
+            stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+            transfer_amount = int(dev_share * 100)  # cents
+            try:
+                await asyncio.to_thread(
+                    stripe.Transfer.create,
+                    amount=transfer_amount,
+                    currency="usd",
+                    destination=stripe_account_id,
+                    metadata={"app_id": app_id, "buyer_id": buyer_id, "plan": plan},
+                )
+                await asyncio.to_thread(
+                    lambda: sb.table("purchases")
+                        .update({"payout_status": "transferred"})
+                        .eq("app_id", app_id).eq("buyer_id", buyer_id)
+                        .order("created_at", desc=True).limit(1)
+                        .execute()
+                )
+                print(f"Transfer {transfer_amount}c → connect/{stripe_account_id} for app={app_id}")
+            except Exception as te:
+                print(f"Stripe Transfer failed: {te}")
+
+    except Exception as e:
+        print(f"_record_purchase error: {e}")
+
+
 async def _upsert_entitlement(
     app_id: str, user_id: str, plan: str,
     stripe_customer_id: Optional[str] = None,
@@ -1395,6 +1468,14 @@ async def _upsert_entitlement(
                     cta_label="View in Dev Studio →",
                 ),
             )
+
+    # Record purchase for revenue tracking + attempt Connect transfer
+    if dev_user_id:
+        await _record_purchase(
+            app_id=app_id, buyer_id=user_id, dev_id=dev_user_id,
+            plan=plan, stripe_customer_id=stripe_customer_id,
+            stripe_sub_id=stripe_sub_id, sb=sb,
+        )
 
 
 @app.post("/stripe/webhook")
@@ -1557,6 +1638,218 @@ async def notify_quota_warning(body: QuotaWarningRequest, request: Request):
             ),
         )
     return {"sent": bool(user_email)}
+
+
+# ─── Stripe Connect ───────────────────────────────────────────────────────────
+
+@app.post("/stripe/connect/onboard")
+async def stripe_connect_onboard(request: Request):
+    """Create a Stripe Connect onboarding link for the authenticated developer."""
+    import stripe
+    secret_key = os.getenv("STRIPE_SECRET_KEY")
+    if not secret_key:
+        raise HTTPException(status_code=503, detail="Stripe not configured")
+
+    user = await require_verified_user(request)
+    dev_id = user["sub"]
+    stripe.api_key = secret_key
+
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        raise HTTPException(status_code=503, detail="Service role key not configured")
+    sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
+    # Check if dev already has a Connect account
+    dev_row = await asyncio.to_thread(
+        lambda: sb.table("developer_profiles")
+            .select("stripe_account_id")
+            .eq("user_id", dev_id).single().execute()
+    )
+    stripe_account_id = dev_row.data.get("stripe_account_id") if dev_row.data else None
+
+    if not stripe_account_id:
+        # Create new Express account
+        account = await asyncio.to_thread(
+            stripe.Account.create,
+            type="express",
+            metadata={"aistrix_user_id": dev_id},
+        )
+        stripe_account_id = account.id
+        await asyncio.to_thread(
+            lambda: sb.table("developer_profiles")
+                .upsert({"user_id": dev_id, "stripe_account_id": stripe_account_id}, on_conflict="user_id")
+                .execute()
+        )
+
+    # Generate onboarding link
+    link = await asyncio.to_thread(
+        stripe.AccountLink.create,
+        account=stripe_account_id,
+        refresh_url=f"{FRONTEND_URL}/studio?stripe_connect=refresh",
+        return_url=f"{FRONTEND_URL}/studio?stripe_connect=success",
+        type="account_onboarding",
+    )
+    return {"url": link.url, "stripe_account_id": stripe_account_id}
+
+
+@app.get("/stripe/connect/status")
+async def stripe_connect_status(request: Request):
+    """Return the developer's Connect account status."""
+    import stripe
+    secret_key = os.getenv("STRIPE_SECRET_KEY")
+
+    user = await require_verified_user(request)
+    dev_id = user["sub"]
+
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        return {"connected": False}
+    sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
+    dev_row = await asyncio.to_thread(
+        lambda: sb.table("developer_profiles")
+            .select("stripe_account_id")
+            .eq("user_id", dev_id).single().execute()
+    )
+    stripe_account_id = dev_row.data.get("stripe_account_id") if dev_row.data else None
+    if not stripe_account_id or not secret_key:
+        return {"connected": False, "stripe_account_id": None}
+
+    try:
+        stripe.api_key = secret_key
+        account = await asyncio.to_thread(stripe.Account.retrieve, stripe_account_id)
+        charges_enabled  = account.get("charges_enabled", False)
+        payouts_enabled  = account.get("payouts_enabled", False)
+        details_submitted = account.get("details_submitted", False)
+        return {
+            "connected": charges_enabled,
+            "stripe_account_id": stripe_account_id,
+            "charges_enabled": charges_enabled,
+            "payouts_enabled": payouts_enabled,
+            "details_submitted": details_submitted,
+        }
+    except Exception as e:
+        return {"connected": False, "stripe_account_id": stripe_account_id, "error": str(e)}
+
+
+@app.get("/stripe/earnings")
+async def stripe_earnings(request: Request):
+    """Return the developer's earnings summary from the purchases table."""
+    user = await require_verified_user(request)
+    dev_id = user["sub"]
+
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        raise HTTPException(status_code=503, detail="Service role key not configured")
+    sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
+    purchases = await asyncio.to_thread(
+        lambda: sb.table("purchases")
+            .select("app_id, plan, gross_amount, platform_fee, dev_share, payout_status, created_at")
+            .eq("dev_id", dev_id)
+            .order("created_at", desc=True)
+            .execute()
+    )
+    rows = purchases.data or []
+
+    total_gross   = sum(r.get("gross_amount", 0) or 0 for r in rows)
+    total_dev     = sum(r.get("dev_share", 0) or 0 for r in rows)
+    total_pending = sum(r.get("dev_share", 0) or 0 for r in rows if r.get("payout_status") == "pending")
+    by_app: dict = {}
+    for r in rows:
+        aid = r["app_id"]
+        if aid not in by_app:
+            by_app[aid] = {"app_id": aid, "total_gross": 0, "total_dev_share": 0, "sale_count": 0}
+        by_app[aid]["total_gross"]     += r.get("gross_amount", 0) or 0
+        by_app[aid]["total_dev_share"] += r.get("dev_share", 0) or 0
+        by_app[aid]["sale_count"]      += 1
+
+    return {
+        "total_gross":       round(total_gross, 2),
+        "total_dev_share":   round(total_dev, 2),
+        "total_pending":     round(total_pending, 2),
+        "platform_fee_pct":  STRIPE_PLATFORM_FEE_PCT,
+        "by_app":            list(by_app.values()),
+        "recent":            rows[:20],
+    }
+
+
+# ─── GitHub OAuth ─────────────────────────────────────────────────────────────
+
+@app.get("/auth/github")
+async def github_oauth_start(request: Request, token: Optional[str] = None):
+    """Redirect developer to GitHub OAuth authorisation page."""
+    if not GITHUB_CLIENT_ID:
+        raise HTTPException(status_code=503, detail="GitHub OAuth not configured")
+    # Accept token as query param (browser redirect can't set headers)
+    if token:
+        user_id = extract_user_id(token)
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Invalid token")
+    else:
+        user = await require_verified_user(request)
+        user_id = user["sub"]
+    scope = "repo"
+    url = (
+        f"https://github.com/login/oauth/authorize"
+        f"?client_id={GITHUB_CLIENT_ID}"
+        f"&redirect_uri={GITHUB_REDIRECT_URI}"
+        f"&scope={scope}"
+        f"&state={user_id}"
+    )
+    return RedirectResponse(url)
+
+
+@app.get("/auth/github/callback")
+async def github_oauth_callback(code: str, state: str, request: Request):
+    """Exchange GitHub OAuth code for access token and store it server-side."""
+    if not GITHUB_CLIENT_ID or not GITHUB_CLIENT_SECRET:
+        raise HTTPException(status_code=503, detail="GitHub OAuth not configured")
+
+    dev_id = state  # state carries the user_id set during /auth/github
+
+    # Exchange code for token
+    async with httpx.AsyncClient(timeout=15) as c:
+        r = await c.post(
+            "https://github.com/login/oauth/access_token",
+            headers={"Accept": "application/json"},
+            json={
+                "client_id":     GITHUB_CLIENT_ID,
+                "client_secret": GITHUB_CLIENT_SECRET,
+                "code":          code,
+                "redirect_uri":  GITHUB_REDIRECT_URI,
+            },
+        )
+    token_data = r.json()
+    access_token = token_data.get("access_token")
+    if not access_token:
+        raise HTTPException(status_code=400, detail=f"GitHub token exchange failed: {token_data.get('error_description', 'unknown error')}")
+
+    # Fetch GitHub username to confirm the connection
+    async with httpx.AsyncClient(timeout=10) as c:
+        me = await c.get(
+            "https://api.github.com/user",
+            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/vnd.github+json"},
+        )
+    github_user = me.json()
+    github_login = github_user.get("login", "")
+
+    # Store token server-side in developer_settings (service-role only)
+    if SUPABASE_SERVICE_ROLE_KEY:
+        sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+        existing = await asyncio.to_thread(
+            lambda: sb.table("developer_settings")
+                .select("integrations")
+                .eq("user_id", dev_id).single().execute()
+        )
+        current = {}
+        if existing.data:
+            current = existing.data.get("integrations") or {}
+        current["github"] = {"token": access_token, "login": github_login, "connected_at": datetime.now(timezone.utc).isoformat()}
+        await asyncio.to_thread(
+            lambda: sb.table("developer_settings")
+                .upsert({"user_id": dev_id, "integrations": current}, on_conflict="user_id")
+                .execute()
+        )
+
+    return RedirectResponse(f"{FRONTEND_URL}/studio?github_connected=1&login={github_login}")
 
 
 @app.get("/sentry-test")

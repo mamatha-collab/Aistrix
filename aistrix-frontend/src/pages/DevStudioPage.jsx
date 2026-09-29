@@ -2398,16 +2398,16 @@ function ImproveTab({ apps, user, runs }) {
           </span>
         </div>
 
-        {/* OAuth connection prompt */}
+        {/* OAuth connection */}
         {!ghConnected && (
           <div className="border-t border-white/5 px-4 py-4 space-y-3">
             <div className="flex items-start gap-3 bg-[#0E1424] rounded-xl p-4">
               <span className="text-xl shrink-0 mt-0.5">🔐</span>
               <div className="flex-1 min-w-0">
-                <p className="text-white text-sm font-medium">OAuth connection required</p>
+                <p className="text-white text-sm font-medium">Connect via GitHub OAuth</p>
                 <p className="text-slate-400 text-xs mt-1 leading-relaxed">
-                  GitHub integration uses a secure OAuth App flow — no personal access tokens needed.
-                  Click below to authorise Aistrix and select a repository.
+                  Authorise Aistrix with GitHub — no personal access tokens needed.
+                  Your token is stored server-side only.
                 </p>
               </div>
             </div>
@@ -2419,10 +2419,13 @@ function ImproveTab({ apps, user, runs }) {
                   className="bg-[#0E1424] border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/40 w-56" />
               </div>
               <button
-                disabled
-                title="GitHub OAuth coming soon"
-                className="mt-5 flex items-center gap-2 text-xs font-semibold px-4 py-2 rounded-lg bg-white/5 text-slate-400 border border-white/10 cursor-not-allowed opacity-60">
-                <span>🐙</span> Connect GitHub <span className="text-[9px] text-slate-500 font-normal">(soon)</span>
+                onClick={async () => {
+                  const { data: { session } } = await supabase.auth.getSession()
+                  const API_URL = import.meta.env.VITE_API_URL || ''
+                  window.location.href = `${API_URL}/auth/github?token=${session?.access_token}`
+                }}
+                className="mt-5 flex items-center gap-2 text-xs font-semibold px-4 py-2 rounded-lg bg-[#24292e] hover:bg-[#2f363d] text-white border border-white/10 transition-colors">
+                <span>🐙</span> Connect GitHub
               </button>
             </div>
           </div>
@@ -2873,7 +2876,109 @@ function EntitlementsSection({ apps, user }) {
   )
 }
 
-// ─── Tab: Monetize (Cost & Profit Meter) ─────────────────────────────────────
+// ─── Tab: Revenue (Cost & Profit Meter + Connect Payout) ─────────────────────
+
+function ConnectPayoutPanel({ user }) {
+  const [status, setStatus] = useState(null)  // null | object
+  const [loading, setLoading] = useState(true)
+  const [onboarding, setOnboarding] = useState(false)
+  const [earnings, setEarnings] = useState(null)
+  const API_URL = import.meta.env.VITE_API_URL || ''
+
+  useEffect(() => { load() }, []) // eslint-disable-line
+
+  async function load() {
+    setLoading(true)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const headers = { Authorization: `Bearer ${session?.access_token}` }
+      const [sRes, eRes] = await Promise.all([
+        fetch(`${API_URL}/stripe/connect/status`, { headers }),
+        fetch(`${API_URL}/stripe/earnings`, { headers }),
+      ])
+      if (sRes.ok) setStatus(await sRes.json())
+      if (eRes.ok) setEarnings(await eRes.json())
+    } catch (_) {}
+    setLoading(false)
+  }
+
+  async function startOnboarding() {
+    setOnboarding(true)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const r = await fetch(`${API_URL}/stripe/connect/onboard`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session?.access_token}` },
+      })
+      if (r.ok) {
+        const { url } = await r.json()
+        window.location.href = url
+      }
+    } catch (_) {}
+    setOnboarding(false)
+  }
+
+  if (loading) return null
+
+  const connected = status?.charges_enabled
+  const detailsSubmitted = status?.details_submitted
+
+  return (
+    <div className="bg-[#171B33] border border-white/5 rounded-2xl overflow-hidden">
+      <div className="flex items-center gap-3 px-5 py-4 border-b border-white/5">
+        <span className="text-xl">💳</span>
+        <div className="flex-1">
+          <p className="text-white text-sm font-semibold">Stripe Connect — Payout account</p>
+          <p className="text-[11px] text-slate-500 mt-0.5">Receive your share of revenue directly to your bank account.</p>
+        </div>
+        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${
+          connected ? 'bg-emerald-500/10 text-emerald-400'
+          : detailsSubmitted ? 'bg-amber-500/10 text-amber-400'
+          : 'bg-white/5 text-slate-500'
+        }`}>
+          {connected ? 'Active' : detailsSubmitted ? 'Pending review' : 'Not connected'}
+        </span>
+      </div>
+
+      {earnings && connected && (
+        <div className="grid grid-cols-3 divide-x divide-white/5 border-b border-white/5">
+          {[
+            { label: 'Total earned', value: `$${earnings.total_dev_share.toFixed(2)}` },
+            { label: 'Pending payout', value: `$${earnings.total_pending.toFixed(2)}` },
+            { label: 'Platform fee', value: `${earnings.platform_fee_pct}%` },
+          ].map(({ label, value }) => (
+            <div key={label} className="px-5 py-3 text-center">
+              <p className="text-white font-bold text-lg">{value}</p>
+              <p className="text-slate-500 text-[10px] mt-0.5">{label}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="px-5 py-4 flex items-center justify-between gap-3">
+        {!connected ? (
+          <>
+            <p className="text-slate-400 text-xs leading-relaxed">
+              {detailsSubmitted
+                ? 'Your Connect account is under review by Stripe. You\'ll receive an email when it\'s approved.'
+                : 'Connect a Stripe account to receive payouts. Aistrix keeps ' + (earnings?.platform_fee_pct ?? 20) + '% as a platform fee.'}
+            </p>
+            {!detailsSubmitted && (
+              <button onClick={startOnboarding} disabled={onboarding}
+                className="shrink-0 text-xs font-semibold px-4 py-2 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors disabled:opacity-40">
+                {onboarding ? 'Redirecting…' : 'Set up payouts →'}
+              </button>
+            )}
+          </>
+        ) : (
+          <p className="text-slate-400 text-xs">
+            Payouts are active. Transfers are sent automatically after each sale.
+          </p>
+        )}
+      </div>
+    </div>
+  )
+}
 
 function MonetizeTab({ apps, runs, loading, user }) {
   const profitData = useMemo(() => {
@@ -2919,6 +3024,9 @@ function MonetizeTab({ apps, runs, loading, user }) {
 
   return (
     <div className="space-y-5">
+      {/* Stripe Connect payout panel */}
+      <ConnectPayoutPanel user={user} />
+
       {/* Summary tiles */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatTile label="Est. revenue" value={totals.revenue > 0 ? `$${totals.revenue.toFixed(2)}` : '—'} color="#00B894" sub="price × runs" />
@@ -3179,7 +3287,20 @@ export default function DevStudioPage({ user, onOpenCreate }) {
   const [loading, setLoading] = useState(true)
   const [showHelp, setShowHelp] = useState(false)
 
-  useEffect(() => { load() }, [user.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    load()
+    // Handle OAuth / Connect return redirects
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('github_connected') === '1') {
+      const login = params.get('login') || 'GitHub'
+      // toast shown by next render; clean up URL
+      window.history.replaceState({}, '', window.location.pathname)
+    }
+    if (params.get('stripe_connect') === 'success') {
+      window.history.replaceState({}, '', window.location.pathname)
+      setTab('monetize')
+    }
+  }, [user.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function load() {
     setLoading(true)

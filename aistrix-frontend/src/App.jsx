@@ -97,6 +97,7 @@ export default function App() {
   const [createdApp, setCreatedApp] = useState(null)
   const [workspaceRecoApp, setWorkspaceRecoApp] = useState(null)
   const [showAppOnboarding, setShowAppOnboarding] = useState(false)
+  const [mode, setMode] = useState(() => localStorage.getItem('aistrix_mode') || 'business')
   // Mount build section once and keep alive — enables cross-fade between flows/apps with no remount
   const [buildMounted, setBuildMounted] = useState(() => ['flows', 'apps'].includes(PATH_VIEW_MAP[window.location.pathname] || 'flows'))
   const searchInputRef = useRef(null)
@@ -260,6 +261,12 @@ export default function App() {
                 onShowHistory={() => changeView('history')}
                 activeView={activeView}
                 onNavChange={changeView}
+                mode={mode}
+                onModeChange={next => {
+                  setMode(next)
+                  localStorage.setItem('aistrix_mode', next)
+                  changeView(next === 'developer' ? 'developer' : 'flows')
+                }}
               />
             </div>
           )}

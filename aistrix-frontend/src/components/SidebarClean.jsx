@@ -24,7 +24,16 @@ import {
 import { supabase } from '../supabase'
 import { applyTheme } from '../utils/theme'
 
-const NAV_GROUPS = [
+const DEVELOPER_NAV = [
+  { label: 'STUDIO', alwaysOpen: true, items: [
+    { icon: Code2,    label: 'Dev Studio',      view: 'developer' },
+  ]},
+  { label: 'MANAGE', items: [
+    { icon: Settings, label: 'Settings', view: 'settings' },
+  ]},
+]
+
+const BUSINESS_NAV = [
   { label: 'BUILD', alwaysOpen: true, items: [
     { icon: Workflow,  label: 'AI Workflows',    view: 'flows' },
     { icon: Box,       label: 'AI Apps',         view: 'apps' },
@@ -39,7 +48,6 @@ const NAV_GROUPS = [
   { label: 'CONNECT', items: [
     { icon: Database, label: 'Data Sources', view: 'data_sources' },
     { icon: Link,     label: 'Integrations', view: 'integrations' },
-    { icon: Code2,    label: 'Dev Studio',   view: 'developer' },
   ]},
   { label: 'MANAGE', items: [
     { icon: User,        label: 'Profiles', view: 'profiles' },
@@ -48,12 +56,15 @@ const NAV_GROUPS = [
   ]},
 ]
 
-export default function SidebarClean({ user, userRole, onClose, onShowProfile, activeView, onNavChange }) {
+export default function SidebarClean({ user, userRole, onClose, onShowProfile, activeView, onNavChange, mode, onModeChange }) {
   const [usage, setUsage] = useState({ today: 0, limit: 50 })
   const [theme, setTheme] = useState(() => localStorage.getItem('aistrix_theme') || 'dark')
+
+  const navGroups = mode === 'developer' ? DEVELOPER_NAV : BUSINESS_NAV
+
   const [expanded, setExpanded] = useState(() => {
     const active = new Set()
-    for (const group of NAV_GROUPS) {
+    for (const group of navGroups) {
       if (!group.alwaysOpen && group.items.some(item => item.view === activeView)) active.add(group.label)
     }
     return active
@@ -69,12 +80,12 @@ export default function SidebarClean({ user, userRole, onClose, onShowProfile, a
   }
 
   useEffect(() => {
-    for (const group of NAV_GROUPS) {
+    for (const group of navGroups) {
       if (!group.alwaysOpen && group.items.some(item => item.view === activeView)) {
         setExpanded(prev => { const next = new Set(prev); next.add(group.label); return next })
       }
     }
-  }, [activeView])
+  }, [activeView, mode]) // eslint-disable-line react-hooks/exhaustive-deps
 
   function toggleTheme() {
     const next = theme === 'dark' ? 'light' : 'dark'
@@ -105,15 +116,35 @@ export default function SidebarClean({ user, userRole, onClose, onShowProfile, a
       )}
 
       <button
-        onClick={() => onNavChange?.('flows')}
-        className="px-5 pt-5 pb-4 flex flex-col gap-0.5 hover:opacity-80 transition-opacity w-full text-left"
+        onClick={() => onNavChange?.(mode === 'developer' ? 'developer' : 'flows')}
+        className="px-5 pt-5 pb-3 flex flex-col gap-0.5 hover:opacity-80 transition-opacity w-full text-left"
       >
         <div className="flex items-center gap-2">
           <div className="brand-mark w-7 h-7 rounded-lg bg-[#6C5CE7] flex items-center justify-center text-white text-sm font-bold shrink-0">A</div>
           <span className="font-semibold text-white text-base">Aistrix</span>
         </div>
-        <p className="text-[10px] text-slate-500 pl-9 leading-tight">AI workflows for your business</p>
+        <p className="text-[10px] text-slate-500 pl-9 leading-tight">
+          {mode === 'developer' ? 'Developer platform' : 'AI workflows for your business'}
+        </p>
       </button>
+
+      {/* Mode switcher */}
+      <div className="px-3 pb-3">
+        <div className="flex bg-[#09101F] rounded-lg p-0.5 gap-0.5">
+          <button
+            onClick={() => onModeChange?.('business')}
+            className={`flex-1 text-[10px] font-semibold py-1.5 rounded-md transition-all ${mode === 'business' ? 'bg-[#1A2038] text-white shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
+          >
+            Business
+          </button>
+          <button
+            onClick={() => onModeChange?.('developer')}
+            className={`flex-1 text-[10px] font-semibold py-1.5 rounded-md transition-all ${mode === 'developer' ? 'bg-[#6C5CE7] text-white shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
+          >
+            Developer
+          </button>
+        </div>
+      </div>
 
       {(userRole === 'admin' || userRole === 'moderator') && (
         <div className="px-3 pb-2 space-y-0.5">
@@ -133,7 +164,7 @@ export default function SidebarClean({ user, userRole, onClose, onShowProfile, a
       )}
 
       <nav className="flex-1 px-3 overflow-y-auto pt-1 pb-2">
-        {NAV_GROUPS.map(({ label, items, alwaysOpen }) => {
+        {navGroups.map(({ label, items, alwaysOpen }) => {
           const isOpen = alwaysOpen || expanded.has(label)
           const hasActive = items.some(item => item.view === activeView)
 

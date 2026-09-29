@@ -749,6 +749,12 @@ function MarketplaceListings({ apps, user }) {
                   Submit →
                 </button>
               )}
+              {l && (l.status === 'live' || l.status === 'approved') && (
+                <a href={`/marketplace/${app.id}`} target="_blank" rel="noreferrer"
+                  className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 transition-colors">
+                  View ↗
+                </a>
+              )}
             </div>
 
             {/* Inline form */}

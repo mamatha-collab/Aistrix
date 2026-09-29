@@ -211,7 +211,6 @@ export default function AppTypeSelector({ onSelect, onClose }) {
   const panelRef = useRef(null)
   const [intent, setIntent] = useState('')
   const [suggestion, setSuggestion] = useState(null)
-  const [showAllTypes, setShowAllTypes] = useState(false)
   useFocusTrap(panelRef, { onEscape: onClose })
 
   function handleIntentSubmit(e) {
@@ -313,34 +312,31 @@ export default function AppTypeSelector({ onSelect, onClose }) {
             </div>
           )}
 
-          {/* Divider + "pick manually" */}
-          <div>
-            <button onClick={() => setShowAllTypes(v => !v)}
-              className="w-full flex items-center gap-3 text-slate-500 hover:text-slate-300 transition-colors group">
-              <div className="flex-1 h-px bg-white/8" />
-              <span className="text-xs shrink-0 group-hover:text-slate-300 transition-colors">
-                {showAllTypes ? '▴ Hide app types' : '▾ Or choose an app type manually'}
-              </span>
-              <div className="flex-1 h-px bg-white/8" />
-            </button>
+          {/* Divider */}
+          <div className="flex items-center gap-3">
+            <div className="flex-1 h-px bg-white/8" />
+            <span className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide shrink-0">Or choose a type directly</span>
+            <div className="flex-1 h-px bg-white/8" />
+          </div>
 
-            {showAllTypes && (
-              <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {TYPES.map(t => (
-                  <button key={t.id} onClick={() => onSelect(t.id)}
-                    className="text-left flex items-center gap-3 p-3 rounded-xl border border-white/8 hover:border-white/20 bg-[#1A2038] hover:bg-[#1E2444] transition-all group">
-                    <div className="w-8 h-8 rounded-lg flex items-center justify-center text-base shrink-0"
-                      style={{ background: t.color + '22', color: t.color }}>
-                      {t.icon}
-                    </div>
-                    <div className="min-w-0">
-                      <p className="text-white text-xs font-semibold">{t.label}</p>
-                      <p className="text-slate-500 text-[10px] truncate">{t.desc}</p>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            )}
+          {/* App type grid — always visible */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            {TYPES.map(t => (
+              <button key={t.id} onClick={() => onSelect(t.id)}
+                className="text-left flex flex-col gap-1.5 p-3 rounded-xl border border-white/8 hover:border-white/25 bg-[#1A2038] hover:bg-[#1E2444] transition-all group relative overflow-hidden">
+                {/* subtle colour bar at top */}
+                <div className="absolute top-0 left-0 right-0 h-0.5 rounded-t-xl opacity-0 group-hover:opacity-100 transition-opacity"
+                  style={{ background: t.color }} />
+                <div className="w-8 h-8 rounded-lg flex items-center justify-center text-sm shrink-0"
+                  style={{ background: t.color + '22', color: t.color }}>
+                  {t.icon}
+                </div>
+                <div className="min-w-0">
+                  <p className="text-white text-xs font-semibold leading-snug">{t.label}</p>
+                  <p className="text-slate-500 text-[10px] leading-snug mt-0.5 line-clamp-2">{t.bestFor}</p>
+                </div>
+              </button>
+            ))}
           </div>
         </div>
       </div>

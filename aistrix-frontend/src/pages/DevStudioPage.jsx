@@ -402,7 +402,6 @@ function DesignTab({ apps, loading, onOpenCreate, user, onAppUpdated }) {
 
   return (
     <>
-      <TabNote id="design" />
       <div className="space-y-4">
         <div className="flex items-center justify-between">
           <p className="text-xs text-slate-500">{apps.length} app{apps.length !== 1 ? 's' : ''}</p>
@@ -486,7 +485,6 @@ function DesignTab({ apps, loading, onOpenCreate, user, onAppUpdated }) {
 function TestTab({ apps, user }) {
   return (
     <div className="space-y-5">
-      <TabNote id="test" />
       <TestSuite apps={apps} user={user} />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -834,7 +832,6 @@ function DeployTab({ apps, user, onAppUpdated }) {
 
   return (
     <div className="space-y-5">
-      <TabNote id="deploy" />
       {/* Per-app deploy cards */}
       <div className="space-y-4">
         {apps.map(app => (
@@ -1168,7 +1165,6 @@ function SellTab({ apps, user, onAppUpdated }) {
 
   return (
     <div className="space-y-4">
-      <TabNote id="sell" />
       <div>
         <p className="text-xs text-slate-500 uppercase font-semibold tracking-wide mb-3">Pricing editor</p>
         <div className="space-y-3">
@@ -1504,7 +1500,6 @@ function MonitorTab({ apps, appStats, loading, totalStats, runs, entitlements, u
 
   return (
     <div className="space-y-6">
-      <TabNote id="monitor" />
       {/* ── Top stats ── */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatTile label="Total runs" value={totalStats.runs} color="#6C5CE7" />
@@ -1838,7 +1833,6 @@ function EvaluateTab({ apps, appStats, runs, user }) {
 
   return (
     <div className="space-y-6">
-      <TabNote id="evaluate" />
       {/* ── Quality score overview table ── */}
       <div>
         <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide mb-3">Quality scores</p>
@@ -2206,7 +2200,6 @@ function ImproveTab({ apps, user, runs }) {
 
   return (
     <div className="space-y-5">
-      <TabNote id="improve" />
       {/* App selector */}
       <div>
         <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide mb-2">App</p>
@@ -2496,7 +2489,6 @@ function VersionTab({ apps, user, onAppUpdated }) {
 
   return (
     <div className="space-y-5">
-      <TabNote id="version" />
       {/* App selector */}
       <div>
         <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide mb-2">Select app</p>
@@ -2897,7 +2889,6 @@ function MonetizeTab({ apps, runs, loading, user }) {
 
   return (
     <div className="space-y-5">
-      <TabNote id="monetize" />
       {/* Summary tiles */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <StatTile label="Est. revenue" value={totals.revenue > 0 ? `$${totals.revenue.toFixed(2)}` : '—'} color="#00B894" sub="price × runs" />
@@ -3198,57 +3189,73 @@ export default function DevStudioPage({ user, onOpenCreate }) {
   const card = 'bg-[#171B33] border border-white/5 rounded-2xl'
 
   return (
-    <div className="flex-1 overflow-y-auto px-6 py-6 space-y-5 max-w-5xl">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h1 className="text-white text-xl font-semibold">Dev Studio</h1>
-          <p className="text-slate-400 text-sm mt-0.5">Design → Test → Deploy → Sell → Monitor → Evaluate → Improve → Version → Monetize</p>
-        </div>
-        <button onClick={() => setShowHelp(true)}
-          className="shrink-0 flex items-center gap-1.5 text-xs text-slate-400 hover:text-white bg-[#1F2444] hover:bg-[#272C52] border border-white/10 px-3 py-1.5 rounded-lg transition-colors">
-          <span className="w-4 h-4 rounded-full bg-[#6C5CE7]/30 text-[#A29BFE] text-[10px] font-bold flex items-center justify-center">?</span>
-          Guide
-        </button>
-      </div>
+    <div className="flex-1 overflow-y-auto">
+      <div className="flex min-h-full">
 
-      {/* First-time welcome screen */}
-      {!loading && apps.length === 0 && (
-        <WelcomeScreen onCreateApp={onOpenCreate} />
-      )}
-
-      {/* Lifecycle tab strip + content (hidden on first visit) */}
-      {(loading || apps.length > 0) && <>
-        <div className="overflow-x-auto no-scrollbar">
-          <div className="flex gap-1 bg-[#1A2038] p-1 rounded-xl w-max min-w-full">
-            {LIFECYCLE_TABS.map((t, i) => {
-              const active = tab === t.id
-              return (
-                <button key={t.id} onClick={() => setTab(t.id)}
-                  className={`flex flex-col items-center px-3 py-2 rounded-lg transition-all min-w-[68px] ${active ? 'bg-[#6C5CE7] text-white shadow-md shadow-[#6C5CE7]/25' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}>
-                  {i > 0 && !active && (
-                    <span className="absolute -left-1 top-1/2 -translate-y-1/2 text-slate-700 text-[8px] pointer-events-none hidden sm:block">›</span>
-                  )}
-                  <span className="text-base leading-none mb-0.5">{t.icon}</span>
-                  <span className="text-[10px] font-semibold leading-none">{t.label}</span>
-                  <span className={`text-[8px] leading-none mt-0.5 ${active ? 'text-white/70' : 'text-slate-600'}`}>{t.desc}</span>
-                </button>
-              )
-            })}
+        {/* ── Left: main content ── */}
+        <div className="flex-1 min-w-0 px-6 py-6 space-y-5">
+          {/* Header */}
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h1 className="text-white text-xl font-semibold">Dev Studio</h1>
+              <p className="text-slate-400 text-sm mt-0.5">Design → Test → Deploy → Sell → Monitor → Evaluate → Improve → Version → Monetize</p>
+            </div>
+            <button onClick={() => setShowHelp(true)}
+              className="shrink-0 flex items-center gap-1.5 text-xs text-slate-400 hover:text-white bg-[#1F2444] hover:bg-[#272C52] border border-white/10 px-3 py-1.5 rounded-lg transition-colors">
+              <span className="w-4 h-4 rounded-full bg-[#6C5CE7]/30 text-[#A29BFE] text-[10px] font-bold flex items-center justify-center">?</span>
+              Guide
+            </button>
           </div>
+
+          {/* First-time welcome screen */}
+          {!loading && apps.length === 0 && (
+            <WelcomeScreen onCreateApp={onOpenCreate} />
+          )}
+
+          {/* Lifecycle tab strip + content (hidden on first visit) */}
+          {(loading || apps.length > 0) && <>
+            <div className="overflow-x-auto no-scrollbar">
+              <div className="flex gap-1 bg-[#1A2038] p-1 rounded-xl w-max min-w-full">
+                {LIFECYCLE_TABS.map((t, i) => {
+                  const active = tab === t.id
+                  return (
+                    <button key={t.id} onClick={() => setTab(t.id)}
+                      className={`flex flex-col items-center px-3 py-2 rounded-lg transition-all min-w-[68px] ${active ? 'bg-[#6C5CE7] text-white shadow-md shadow-[#6C5CE7]/25' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}>
+                      {i > 0 && !active && (
+                        <span className="absolute -left-1 top-1/2 -translate-y-1/2 text-slate-700 text-[8px] pointer-events-none hidden sm:block">›</span>
+                      )}
+                      <span className="text-base leading-none mb-0.5">{t.icon}</span>
+                      <span className="text-[10px] font-semibold leading-none">{t.label}</span>
+                      <span className={`text-[8px] leading-none mt-0.5 ${active ? 'text-white/70' : 'text-slate-600'}`}>{t.desc}</span>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
+
+            {/* Tab content */}
+            {tab === 'design'   && <DesignTab   apps={apps} loading={loading} onOpenCreate={onOpenCreate} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
+            {tab === 'test'     && <TestTab apps={apps} user={user} />}
+            {tab === 'deploy'   && <DeployTab   apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
+            {tab === 'sell'     && <SellTab     apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
+            {tab === 'monitor'  && <MonitorTab  apps={apps} appStats={appStats} loading={loading} totalStats={totalStats} runs={runs} entitlements={entitlements} user={user} />}
+            {tab === 'evaluate' && <EvaluateTab apps={apps} appStats={appStats} runs={runs} user={user} />}
+            {tab === 'improve'  && <ImproveTab  apps={apps} user={user} runs={runs} />}
+            {tab === 'version'  && <VersionTab  apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
+            {tab === 'monetize' && <MonetizeTab apps={apps} runs={runs} loading={loading} user={user} />}
+          </>}
         </div>
 
-        {/* Tab content */}
-        {tab === 'design'   && <DesignTab   apps={apps} loading={loading} onOpenCreate={onOpenCreate} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
-        {tab === 'test'     && <TestTab apps={apps} user={user} />}
-        {tab === 'deploy'   && <DeployTab   apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
-        {tab === 'sell'     && <SellTab     apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
-        {tab === 'monitor'  && <MonitorTab  apps={apps} appStats={appStats} loading={loading} totalStats={totalStats} runs={runs} entitlements={entitlements} user={user} />}
-        {tab === 'evaluate' && <EvaluateTab apps={apps} appStats={appStats} runs={runs} user={user} />}
-        {tab === 'improve'  && <ImproveTab  apps={apps} user={user} runs={runs} />}
-        {tab === 'version'  && <VersionTab  apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
-        {tab === 'monetize' && <MonetizeTab apps={apps} runs={runs} loading={loading} user={user} />}
-      </>}
+        {/* ── Right: sticky tab note panel ── */}
+        {apps.length > 0 && TAB_NOTES[tab] && (
+          <div className="hidden xl:block w-72 shrink-0 border-l border-white/5">
+            <div className="sticky top-0 h-screen overflow-y-auto px-4 py-6">
+              <TabNote id={tab} />
+            </div>
+          </div>
+        )}
+
+      </div>
 
       {/* Help panel */}
       {showHelp && <HelpPanel onClose={() => setShowHelp(false)} />}

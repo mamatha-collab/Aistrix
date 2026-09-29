@@ -582,9 +582,231 @@ Content-Type: application/json
   )
 }
 
+// ─── Marketplace listing helpers ─────────────────────────────────────────────
+
+const LISTING_SETUP_SQL = `create table marketplace_listings (
+  id          uuid primary key default gen_random_uuid(),
+  app_id      uuid references apps(id) on delete cascade unique,
+  user_id     uuid references auth.users(id) on delete cascade,
+  title       text not null,
+  tagline     text,
+  description text,
+  category    text,
+  tags        text[],
+  status      text not null default 'draft',
+  created_at  timestamptz default now(),
+  updated_at  timestamptz default now()
+);
+alter table marketplace_listings enable row level security;
+create policy "owner" on marketplace_listings
+  using  (auth.uid() = user_id)
+  with check (auth.uid() = user_id);`
+
+const LISTING_CATEGORIES = [
+  'Productivity', 'Writing & Content', 'Data & Analysis',
+  'Customer Support', 'HR & Recruiting', 'Sales & Marketing',
+  'Legal & Compliance', 'Engineering', 'Education', 'Other',
+]
+const STATUS_COLORS = {
+  draft:     'bg-slate-500/10 text-slate-400',
+  submitted: 'bg-amber-500/10 text-amber-400',
+  approved:  'bg-emerald-500/10 text-emerald-400',
+  live:      'bg-emerald-500/15 text-emerald-300',
+  rejected:  'bg-red-500/10 text-red-400',
+}
+
+function ListingSetupCard({ onRetry }) {
+  const [copied, setCopied] = useState(false)
+  function copy() { navigator.clipboard.writeText(LISTING_SETUP_SQL); setCopied(true); setTimeout(() => setCopied(false), 2000) }
+  return (
+    <div className="bg-[#171B33] border border-amber-500/20 rounded-2xl p-6 space-y-4">
+      <div>
+        <p className="text-amber-400 font-semibold text-sm">⚙️ One-time setup required</p>
+        <p className="text-slate-400 text-sm mt-1">Run this SQL in Supabase to enable marketplace listings.</p>
+      </div>
+      <div className="relative">
+        <pre className="text-[11px] text-slate-300 bg-[#0E1424] rounded-xl p-4 overflow-x-auto leading-relaxed">{LISTING_SETUP_SQL}</pre>
+        <button onClick={copy} className="absolute top-2 right-2 text-[10px] text-slate-400 hover:text-white bg-white/5 px-2 py-1 rounded-md transition-colors">
+          {copied ? '✓ Copied' : '📋 Copy'}
+        </button>
+      </div>
+      <button onClick={onRetry} className="text-xs font-semibold px-4 py-2 rounded-lg bg-[#6C5CE7]/15 hover:bg-[#6C5CE7]/25 text-[#A29BFE] border border-[#6C5CE7]/25 transition-colors">
+        ↺ I ran it — retry
+      </button>
+    </div>
+  )
+}
+
+function MarketplaceListings({ apps, user }) {
+  const [listings, setListings]   = useState(null)   // null = not loaded yet
+  const [needsSetup, setNeedsSetup] = useState(false)
+  const [editId, setEditId]       = useState(null)   // app.id being edited
+  const [form, setForm]           = useState({})
+  const [saving, setSaving]       = useState(false)
+  const toast = useToast()
+
+  useEffect(() => { load() }, [])   // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function load() {
+    const { data, error } = await supabase
+      .from('marketplace_listings')
+      .select('*')
+      .eq('user_id', user.id)
+    if (error) {
+      if (error.code === '42P01' || error.message?.includes('does not exist')) { setNeedsSetup(true); return }
+      toast(error.message, 'error'); return
+    }
+    setNeedsSetup(false)
+    setListings(data || [])
+  }
+
+  function listingFor(appId) { return listings?.find(l => l.app_id === appId) }
+
+  function openEdit(app) {
+    const l = listingFor(app.id)
+    setForm({
+      title:       l?.title       ?? app.name,
+      tagline:     l?.tagline     ?? '',
+      description: l?.description ?? app.description ?? '',
+      category:    l?.category    ?? '',
+      tags:        (l?.tags ?? []).join(', '),
+    })
+    setEditId(app.id)
+  }
+
+  async function saveListing() {
+    if (!form.title?.trim()) { toast('Title is required', 'error', 2000); return }
+    setSaving(true)
+    const payload = {
+      app_id:      editId,
+      user_id:     user.id,
+      title:       form.title.trim(),
+      tagline:     form.tagline.trim() || null,
+      description: form.description.trim() || null,
+      category:    form.category || null,
+      tags:        form.tags ? form.tags.split(',').map(t => t.trim()).filter(Boolean) : [],
+      updated_at:  new Date().toISOString(),
+    }
+    const existing = listingFor(editId)
+    let data, error
+    if (existing) {
+      ;({ data, error } = await supabase.from('marketplace_listings').update(payload).eq('id', existing.id).select().single())
+    } else {
+      ;({ data, error } = await supabase.from('marketplace_listings').insert(payload).select().single())
+    }
+    setSaving(false)
+    if (error) { toast(error.message, 'error'); return }
+    setListings(prev => existing ? prev.map(l => l.id === data.id ? data : l) : [...(prev || []), data])
+    setEditId(null)
+    toast('Listing saved', 'success', 2000)
+  }
+
+  async function submitListing(appId) {
+    const l = listingFor(appId)
+    if (!l) { toast('Save a listing first', 'error', 2000); return }
+    const { data, error } = await supabase.from('marketplace_listings')
+      .update({ status: 'submitted', updated_at: new Date().toISOString() })
+      .eq('id', l.id).select().single()
+    if (error) { toast(error.message, 'error'); return }
+    setListings(prev => prev.map(x => x.id === data.id ? data : x))
+    toast('Submitted for review — Aistrix team will review within 48 h', 'success', 4000)
+  }
+
+  if (needsSetup) return <ListingSetupCard onRetry={load} />
+  if (listings === null) return <p className="text-slate-500 text-sm py-4 text-center">Loading…</p>
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide">Marketplace listings</p>
+      </div>
+
+      {apps.map(app => {
+        const l         = listingFor(app.id)
+        const isEditing = editId === app.id
+        const statusCls = STATUS_COLORS[l?.status] ?? STATUS_COLORS.draft
+
+        return (
+          <div key={app.id} className="bg-[#171B33] border border-white/5 rounded-2xl overflow-hidden">
+            {/* Header row */}
+            <div className="flex items-center gap-3 px-4 py-3">
+              <span className="text-lg shrink-0">{app.emoji}</span>
+              <div className="flex-1 min-w-0">
+                <p className="text-white text-sm font-medium truncate">{app.name}</p>
+                {l?.tagline && <p className="text-[11px] text-slate-500 truncate">{l.tagline}</p>}
+              </div>
+              <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${statusCls}`}>
+                {l?.status ?? 'no listing'}
+              </span>
+              <button
+                onClick={() => isEditing ? setEditId(null) : openEdit(app)}
+                className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 transition-colors">
+                {isEditing ? 'Cancel' : l ? 'Edit' : '+ Create'}
+              </button>
+              {l && l.status === 'draft' && !isEditing && (
+                <button onClick={() => submitListing(app.id)}
+                  className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors">
+                  Submit →
+                </button>
+              )}
+            </div>
+
+            {/* Inline form */}
+            {isEditing && (
+              <div className="border-t border-white/5 px-4 py-4 space-y-3">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide block mb-1">Title *</label>
+                    <input value={form.title} onChange={e => setForm(p => ({ ...p, title: e.target.value }))}
+                      className="w-full bg-[#0E1424] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-[#6C5CE7]/40" />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide block mb-1">Tagline</label>
+                    <input value={form.tagline} onChange={e => setForm(p => ({ ...p, tagline: e.target.value }))}
+                      placeholder="One sentence pitch"
+                      className="w-full bg-[#0E1424] border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/40" />
+                  </div>
+                </div>
+                <div>
+                  <label className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide block mb-1">Description</label>
+                  <textarea value={form.description} onChange={e => setForm(p => ({ ...p, description: e.target.value }))}
+                    rows={3} placeholder="What does this app do? Who is it for?"
+                    className="w-full bg-[#0E1424] border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/40 resize-none" />
+                </div>
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide block mb-1">Category</label>
+                    <select value={form.category} onChange={e => setForm(p => ({ ...p, category: e.target.value }))}
+                      className="w-full bg-[#0E1424] border border-white/10 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-[#6C5CE7]/40">
+                      <option value="">Select…</option>
+                      {LISTING_CATEGORIES.map(c => <option key={c} value={c}>{c}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide block mb-1">Tags <span className="text-slate-600 normal-case font-normal">(comma-separated)</span></label>
+                    <input value={form.tags} onChange={e => setForm(p => ({ ...p, tags: e.target.value }))}
+                      placeholder="resume, hr, onboarding"
+                      className="w-full bg-[#0E1424] border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/40" />
+                  </div>
+                </div>
+                <div className="flex justify-end">
+                  <button onClick={saveListing} disabled={saving}
+                    className="text-xs font-semibold px-4 py-2 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors disabled:opacity-40">
+                    {saving ? '…' : 'Save listing'}
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
 // ─── Tab: Sell ────────────────────────────────────────────────────────────────
 
-function SellTab({ apps, onAppUpdated }) {
+function SellTab({ apps, user, onAppUpdated }) {
   const [saving, setSaving] = useState({})   // appId → bool
   const [drafts, setDrafts] = useState({})   // appId → { is_paid, price_per_run }
   const toast = useToast()
@@ -698,29 +920,37 @@ function SellTab({ apps, onAppUpdated }) {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <ComingSoonCard
-          icon="🏪"
-          title="Marketplace Listing"
-          desc="Submit your app for public discovery, featured placement, and category search."
-          bullets={[
-            'Self-serve marketplace submission',
-            'Developer profile and portfolio page',
-            'Star ratings separate from run quality scores',
-            'Featured / New / Trending automatic badges',
-          ]}
-        />
-        <ComingSoonCard
-          icon="💳"
-          title="Billing & Payouts"
-          desc="Set up subscriptions, usage-based pricing, or team licenses — Aistrix handles the billing layer."
-          bullets={[
-            'Subscription tiers (monthly / annual)',
-            'Pay-per-run and usage-based models',
-            'Team and enterprise license deals',
-            'Automatic payout when you cross the threshold',
-          ]}
-        />
+      {/* Marketplace listing editor */}
+      <MarketplaceListings apps={apps} user={user} />
+
+      {/* Stripe stub */}
+      <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5">
+        <div className="flex items-start gap-4">
+          <span className="text-3xl shrink-0">💳</span>
+          <div className="flex-1 min-w-0">
+            <p className="text-white font-semibold text-sm">Billing & Payouts via Stripe</p>
+            <p className="text-slate-400 text-xs mt-1 leading-relaxed">
+              Aistrix uses <strong className="text-slate-300">Stripe Checkout</strong> for business-user payments and <strong className="text-slate-300">Stripe Connect</strong> for developer payouts. Connect your Stripe account to start collecting revenue from paid apps.
+            </p>
+            <ul className="mt-2 space-y-1">
+              {['Pay-per-run and subscription billing', 'Automatic developer payouts (Stripe Connect)', 'Team & enterprise license deals', 'Full payout dashboard inside Aistrix'].map(b => (
+                <li key={b} className="text-[11px] text-slate-500 flex items-center gap-1.5">
+                  <span className="text-[#6C5CE7]">·</span>{b}
+                </li>
+              ))}
+            </ul>
+          </div>
+          <a
+            href="https://dashboard.stripe.com/register"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="shrink-0 text-xs font-semibold px-3 py-2 rounded-lg border border-[#6C5CE7]/30 text-[#A29BFE] hover:bg-[#6C5CE7]/10 transition-colors whitespace-nowrap">
+            Set up Stripe →
+          </a>
+        </div>
+        <p className="text-[10px] text-slate-600 mt-3 border-t border-white/5 pt-3">
+          Stripe Connect integration will be activated by the Aistrix team once your account is verified. The "Set up Stripe" button opens Stripe's registration page.
+        </p>
       </div>
     </div>
   )
@@ -1509,7 +1739,7 @@ export default function DevStudioPage({ user, onOpenCreate }) {
       {tab === 'design'   && <DesignTab   apps={apps} loading={loading} onOpenCreate={onOpenCreate} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
       {tab === 'test'     && <TestTab apps={apps} user={user} />}
       {tab === 'deploy'   && <DeployTab   apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
-      {tab === 'sell'     && <SellTab     apps={apps} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
+      {tab === 'sell'     && <SellTab     apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
       {tab === 'monitor'  && <MonitorTab  apps={apps} appStats={appStats} loading={loading} totalStats={totalStats} />}
       {tab === 'evaluate' && <EvaluateTab apps={apps} appStats={appStats} />}
       {tab === 'improve'  && <ImproveTab  apps={apps} user={user} />}

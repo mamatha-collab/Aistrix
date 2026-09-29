@@ -18,6 +18,7 @@ const VIEW_META = {
   data_sources:{ title: 'Data Sources',    subtitle: 'Manage your data connections' },
   admin:       { title: 'Admin',           subtitle: 'Platform administration' },
   moderator:   { title: 'Moderator',       subtitle: 'Content moderation tools' },
+  marketplace: { title: 'Marketplace',     subtitle: 'Discover AI apps built on Aistrix' },
 }
 
 export default function TopBarClean({ onShowHistory, onShowSettings, onToggleSidebar, onShowCreate, onShowWorkspace, search, onSearch, searchRef, user, onNavChange, activeView }) {

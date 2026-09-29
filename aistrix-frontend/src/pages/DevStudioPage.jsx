@@ -1374,81 +1374,289 @@ function MonitorTab({ apps, appStats, loading, totalStats, runs, user }) {
 
 // ─── Tab: Evaluate ────────────────────────────────────────────────────────────
 
-function EvaluateTab({ apps, appStats }) {
-  const hasRatings = apps.some(a => (appStats[a.id]?.rated || 0) > 0)
+function QualityScore({ score }) {
+  const color = score === null ? '#334155' : score >= 70 ? '#00B894' : score >= 40 ? '#FDCB6E' : '#E84393'
+  const label = score === null ? 'No data' : score >= 70 ? 'Good' : score >= 40 ? 'Fair' : 'Poor'
+  const r = 20, circ = 2 * Math.PI * r
+  const dash = score !== null ? (score / 100) * circ : 0
+  return (
+    <div className="flex flex-col items-center gap-1">
+      <svg width="56" height="56" viewBox="0 0 56 56">
+        <circle cx="28" cy="28" r={r} fill="none" stroke="#1F2444" strokeWidth="4" />
+        <circle cx="28" cy="28" r={r} fill="none" stroke={color} strokeWidth="4"
+          strokeDasharray={`${dash} ${circ}`} strokeLinecap="round"
+          transform="rotate(-90 28 28)" style={{ transition: 'stroke-dasharray 0.6s ease' }} />
+        <text x="28" y="33" textAnchor="middle" fill={color} fontSize="13" fontWeight="700">
+          {score !== null ? score : '—'}
+        </text>
+      </svg>
+      <span className="text-[10px] font-semibold" style={{ color }}>{label}</span>
+    </div>
+  )
+}
+
+function EvaluateTab({ apps, appStats, runs, user }) {
+  const [selectedApp, setSelectedApp] = useState(apps[0]?.id || null)
+  const [lowFilter, setLowFilter]     = useState(2)      // show runs rated ≤ this
+  const [expandRun, setExpandRun]     = useState(null)
+  const [integrations, setIntegrations] = useState(null)
+  const toast = useToast()
+
+  useEffect(() => { loadIntegrations() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function loadIntegrations() {
+    const { data, error } = await supabase
+      .from('developer_settings').select('settings').eq('user_id', user.id).single()
+    if (error) { setIntegrations({}); return }
+    setIntegrations(data?.settings || {})
+  }
+
+  async function saveIntegration(key, vals) {
+    const merged = { ...(integrations || {}), [key]: vals }
+    const { error } = await supabase.from('developer_settings')
+      .upsert({ user_id: user.id, settings: merged }, { onConflict: 'user_id' })
+    if (error) { toast(error.message, 'error'); return }
+    setIntegrations(merged)
+  }
+
+  // Per-app quality score (0-100): 70% satisfaction + 30% test pass rate (if available)
+  function qualityScore(app) {
+    const s = appStats[app.id] || {}
+    if (!s.rated) return null
+    const satisfaction = s.rated > 0 ? (s.thumbsUp / s.rated) : 0
+    return Math.min(100, Math.round(satisfaction * 100))
+  }
+
+  // Rating trend: avg rating per day for selected app, last 21 days
+  const ratingTrend = useMemo(() => {
+    const days = 21
+    const buckets = Array.from({ length: days }, (_, i) => {
+      const d = new Date(); d.setDate(d.getDate() - (days - 1 - i)); d.setHours(0,0,0,0)
+      return { date: d, sum: 0, count: 0 }
+    })
+    runs
+      .filter(r => r.app_id === selectedApp && r.rating >= 1 && r.rating <= 5)
+      .forEach(r => {
+        const today = new Date(); today.setHours(0,0,0,0)
+        const d = new Date(r.created_at); d.setHours(0,0,0,0)
+        const diff = Math.round((today - d) / 86400000)
+        if (diff >= 0 && diff < days) {
+          buckets[days - 1 - diff].sum   += r.rating
+          buckets[days - 1 - diff].count += 1
+        }
+      })
+    return buckets.map(b => b.count ? parseFloat((b.sum / b.count).toFixed(2)) : null)
+  }, [runs, selectedApp])
+
+  // Low-quality runs for selected app
+  const lowRuns = useMemo(() =>
+    runs
+      .filter(r => r.app_id === selectedApp && r.rating != null && r.rating <= lowFilter)
+      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+      .slice(0, 50)
+  , [runs, selectedApp, lowFilter])
+
+  const appObj = apps.find(a => a.id === selectedApp)
 
   return (
-    <div className="space-y-4">
-      {hasRatings && (
-        <div>
-          <p className="text-xs text-slate-500 uppercase font-semibold tracking-wide mb-3">Current quality signals</p>
-          <div className="bg-[#171B33] border border-white/5 rounded-2xl overflow-hidden">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="text-left text-[11px] text-slate-500 border-b border-white/5">
-                  <th className="px-4 py-3 font-medium">App</th>
-                  <th className="px-4 py-3 font-medium text-right">Rated runs</th>
-                  <th className="px-4 py-3 font-medium text-right">Useful</th>
-                  <th className="px-4 py-3 font-medium text-right">Not useful</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-white/5">
-                {apps.map(app => {
-                  const s = appStats[app.id] || {}
-                  const useful = s.rated > 0 ? Math.round((s.thumbsUp / s.rated) * 100) : null
-                  const notUseful = s.rated > 0 ? Math.round(((s.rated - s.thumbsUp) / s.rated) * 100) : null
-                  return (
-                    <tr key={app.id}>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center gap-2">
-                          <span>{app.emoji}</span>
-                          <span className="text-white font-medium truncate max-w-[160px]">{app.name}</span>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3 text-right text-slate-300">{s.rated || 0}</td>
-                      <td className="px-4 py-3 text-right">
-                        {useful !== null
-                          ? <span className={useful >= 70 ? 'text-green-400' : useful >= 50 ? 'text-yellow-400' : 'text-red-400'}>{useful}%</span>
-                          : <span className="text-slate-600">—</span>}
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        {notUseful !== null && notUseful > 0
-                          ? <span className="text-red-400">{notUseful}%</span>
-                          : <span className="text-slate-600">—</span>}
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-          <p className="text-[11px] text-slate-600 mt-2">Ratings come from 👍 👎 buttons in the app runner.</p>
+    <div className="space-y-6">
+      {/* ── Quality score overview table ── */}
+      <div>
+        <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide mb-3">Quality scores</p>
+        <div className="bg-[#171B33] border border-white/5 rounded-2xl overflow-hidden">
+          <table className="w-full text-xs">
+            <thead>
+              <tr className="text-left text-[11px] text-slate-500 border-b border-white/5">
+                <th className="px-4 py-3 font-medium">App</th>
+                <th className="px-4 py-3 font-medium text-center">Score</th>
+                <th className="px-4 py-3 font-medium text-right">Rated runs</th>
+                <th className="px-4 py-3 font-medium text-right">👍 Useful</th>
+                <th className="px-4 py-3 font-medium text-right">👎 Not useful</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-white/5">
+              {apps.map(app => {
+                const s       = appStats[app.id] || {}
+                const score   = qualityScore(app)
+                const useful    = s.rated > 0 ? Math.round((s.thumbsUp / s.rated) * 100) : null
+                const notUseful = s.rated > 0 ? Math.round(((s.rated - s.thumbsUp) / s.rated) * 100) : null
+                return (
+                  <tr key={app.id}
+                    onClick={() => setSelectedApp(app.id)}
+                    className={`cursor-pointer transition-colors ${selectedApp === app.id ? 'bg-[#6C5CE7]/5' : 'hover:bg-white/2'}`}>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2">
+                        <span>{app.emoji}</span>
+                        <span className="text-white font-medium truncate max-w-[160px]">{app.name}</span>
+                      </div>
+                    </td>
+                    <td className="px-4 py-2 text-center">
+                      {score !== null ? (
+                        <span className={`text-xs font-bold ${score >= 70 ? 'text-emerald-400' : score >= 40 ? 'text-amber-400' : 'text-red-400'}`}>
+                          {score}
+                        </span>
+                      ) : <span className="text-slate-600">—</span>}
+                    </td>
+                    <td className="px-4 py-3 text-right text-slate-300">{s.rated || 0}</td>
+                    <td className="px-4 py-3 text-right">
+                      {useful !== null ? <span className={useful >= 70 ? 'text-emerald-400' : useful >= 50 ? 'text-amber-400' : 'text-red-400'}>{useful}%</span>
+                        : <span className="text-slate-600">—</span>}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      {notUseful !== null && notUseful > 0
+                        ? <span className="text-red-400">{notUseful}%</span>
+                        : <span className="text-slate-600">—</span>}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+          {!apps.length && <p className="text-center text-slate-500 text-sm py-6">No apps yet.</p>}
         </div>
+        <p className="text-[11px] text-slate-600 mt-2">Click a row to drill into that app. Ratings come from 👍 👎 in the app runner.</p>
+      </div>
+
+      {/* ── Per-app drill-down ── */}
+      {appObj && (
+        <>
+          <div className="flex items-center gap-2 border-t border-white/5 pt-5">
+            <span className="text-xl">{appObj.emoji}</span>
+            <p className="text-white font-semibold text-sm">{appObj.name}</p>
+            <QualityScore score={qualityScore(appObj)} />
+          </div>
+
+          {/* Rating trend sparkline */}
+          <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5">
+            <div className="flex items-center justify-between mb-3">
+              <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide">Rating trend — last 21 days</p>
+              <p className="text-[10px] text-slate-600">avg ★ per day</p>
+            </div>
+            {ratingTrend.every(v => v === null) ? (
+              <p className="text-slate-600 text-xs text-center py-4">No rated runs in this period.</p>
+            ) : (
+              <>
+                <div className="flex items-end gap-0.5 h-16">
+                  {ratingTrend.map((v, i) => {
+                    if (v === null) return <div key={i} className="flex-1" />
+                    const h = Math.max(((v - 1) / 4) * 56, 4)
+                    const color = v >= 4 ? '#00B894' : v >= 3 ? '#FDCB6E' : '#E84393'
+                    return (
+                      <div key={i} className="flex-1 rounded-t transition-all group relative"
+                        style={{ height: h, background: color, opacity: 0.8 }}>
+                        <div className="absolute -top-6 left-1/2 -translate-x-1/2 bg-[#0E1424] text-white text-[10px] px-1 py-0.5 rounded opacity-0 group-hover:opacity-100 whitespace-nowrap pointer-events-none z-10">
+                          {v}★
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+                <div className="flex justify-between mt-1 text-[9px] text-slate-600">
+                  <span>21 days ago</span><span>Today</span>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Low-quality run browser */}
+          <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5">
+            <div className="flex items-center justify-between mb-4">
+              <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide">Low-quality run browser</p>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] text-slate-500">Show runs rated ≤</span>
+                <select value={lowFilter} onChange={e => setLowFilter(Number(e.target.value))}
+                  className="bg-[#0E1424] border border-white/10 rounded-lg px-2 py-1 text-xs text-white focus:outline-none">
+                  {[1,2,3].map(n => <option key={n} value={n}>{n} ★</option>)}
+                </select>
+                <span className="text-[10px] text-slate-500">({lowRuns.length} runs)</span>
+              </div>
+            </div>
+
+            {lowRuns.length === 0 ? (
+              <p className="text-slate-600 text-xs text-center py-6">No runs match this filter — great sign!</p>
+            ) : (
+              <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
+                {lowRuns.map(r => (
+                  <div key={r.id}
+                    onClick={() => setExpandRun(p => p === r.id ? null : r.id)}
+                    className="bg-[#0E1424] border border-white/5 rounded-xl px-4 py-3 cursor-pointer hover:border-white/10 transition-colors">
+                    <div className="flex items-center gap-3">
+                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-full shrink-0 ${r.rating === 1 ? 'bg-red-500/15 text-red-400' : 'bg-amber-500/10 text-amber-400'}`}>
+                        {r.rating}★
+                      </span>
+                      <p className="text-slate-300 text-xs truncate flex-1">{r.input || r.app_name}</p>
+                      <span className="text-[10px] text-slate-600 shrink-0">{timeAgo(r.created_at)}</span>
+                      <span className="text-[10px] text-slate-600">{expandRun === r.id ? '▲' : '▼'}</span>
+                    </div>
+                    {expandRun === r.id && (
+                      <div className="mt-3 space-y-2 border-t border-white/5 pt-3">
+                        {r.input && (
+                          <div>
+                            <p className="text-[9px] text-slate-600 uppercase font-semibold mb-1">Input</p>
+                            <p className="text-xs text-slate-400 leading-relaxed">{r.input}</p>
+                          </div>
+                        )}
+                        {r.output && (
+                          <div>
+                            <p className="text-[9px] text-slate-600 uppercase font-semibold mb-1">Output</p>
+                            <p className="text-xs text-slate-400 leading-relaxed whitespace-pre-wrap">{r.output}</p>
+                          </div>
+                        )}
+                        {!r.input && !r.output && (
+                          <p className="text-slate-600 text-xs">Input/output not stored for this run.</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <ComingSoonCard
-          icon="✅"
-          title="Structured Test Cases"
-          desc="Define inputs and rules — Aistrix runs them on every version change and shows pass/fail."
-          bullets={[
-            'Upload test inputs with expected behaviour',
-            'Rules: must-include text, must-not-include text, tone, format',
-            'Auto-run on version publish',
-            'Diff between two versions on the same test suite',
-          ]}
-        />
-        <ComingSoonCard
-          icon="📉"
-          title="Regression Alerts"
-          desc="Get notified when a prompt or model change drops quality below your baseline."
-          bullets={[
-            'Set a minimum useful-rate threshold per app',
-            'Slack / email notification on regression',
-            'Automatic draft rollback option',
-            'Historical quality trend chart',
-          ]}
-        />
+      {/* ── Eval framework integrations ── */}
+      <div>
+        <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide mb-3">Evaluation framework integrations</p>
+        <div className="space-y-3">
+          <IntegrationCard
+            icon="🧪"
+            name="Promptfoo"
+            desc="Open-source LLM eval CLI — run structured test suites against your prompts from CI."
+            docsUrl="https://promptfoo.dev/docs"
+            fields={[
+              { key: 'api_key', label: 'API key (if using Promptfoo Cloud)', placeholder: 'pfoo-…', secret: true,
+                hint: 'Optional — needed only for Promptfoo Cloud sharing. Self-hosted runs need no key.' },
+            ]}
+            savedKeys={integrations?.promptfoo}
+            onSave={vals => saveIntegration('promptfoo', vals)}
+          />
+          <IntegrationCard
+            icon="🔬"
+            name="DeepEval"
+            desc="LLM evaluation metrics library — correctness, faithfulness, hallucination detection."
+            docsUrl="https://docs.confident-ai.com"
+            fields={[
+              { key: 'api_key', label: 'Confident AI API key', placeholder: 'deepeval-…', secret: true,
+                hint: 'From confident-ai.com dashboard → API Keys' },
+            ]}
+            savedKeys={integrations?.deepeval}
+            onSave={vals => saveIntegration('deepeval', vals)}
+          />
+          <IntegrationCard
+            icon="📊"
+            name="Ragas"
+            desc="Retrieval-augmented generation evaluation — faithfulness, context precision, answer relevancy."
+            docsUrl="https://docs.ragas.io"
+            fields={[
+              { key: 'app_token', label: 'Ragas app token', placeholder: 'rg-…', secret: true,
+                hint: 'From app.ragas.io → Settings → API tokens. Required for dataset syncing.' },
+            ]}
+            savedKeys={integrations?.ragas}
+            onSave={vals => saveIntegration('ragas', vals)}
+          />
+        </div>
+        <p className="text-[10px] text-slate-600 mt-2">Keys are stored in your developer_settings (Supabase) and forwarded by the Aistrix backend when running evaluations.</p>
       </div>
     </div>
   )
@@ -2061,7 +2269,7 @@ export default function DevStudioPage({ user, onOpenCreate }) {
       {tab === 'deploy'   && <DeployTab   apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
       {tab === 'sell'     && <SellTab     apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
       {tab === 'monitor'  && <MonitorTab  apps={apps} appStats={appStats} loading={loading} totalStats={totalStats} runs={runs} user={user} />}
-      {tab === 'evaluate' && <EvaluateTab apps={apps} appStats={appStats} />}
+      {tab === 'evaluate' && <EvaluateTab apps={apps} appStats={appStats} runs={runs} user={user} />}
       {tab === 'improve'  && <ImproveTab  apps={apps} user={user} />}
       {tab === 'version'  && <VersionTab  apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
       {tab === 'monetize' && <MonetizeTab apps={apps} runs={runs} loading={loading} />}

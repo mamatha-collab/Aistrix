@@ -11,6 +11,188 @@ const PromptStudio = lazy(() => import('../components/PromptStudio'))
 const DiffEditor   = lazy(() => import('@monaco-editor/react').then(m => ({ default: m.DiffEditor })))
 const DeveloperProfileEditor = lazy(() => import('./DeveloperProfilePage').then(m => ({ default: m.DeveloperProfileEditor })))
 
+// ─── Onboarding: what you can build ──────────────────────────────────────────
+
+const APP_TYPES = [
+  { icon: '📝', label: 'Text apps',      desc: 'Summarise, rewrite, translate, classify — any text-in / text-out task.' },
+  { icon: '📊', label: 'Data apps',      desc: 'Drop in a CSV or Google Sheet and let the AI analyse, clean, or chart it.' },
+  { icon: '💬', label: 'Chat apps',      desc: 'Conversational assistants with persistent memory across turns.' },
+  { icon: '🤖', label: 'Agent apps',     desc: 'Apps that call tools, search the web, run code, or read files autonomously.' },
+  { icon: '📄', label: 'Multi-page',     desc: 'Guided multi-step forms where each page feeds the next.' },
+  { icon: '🔌', label: 'API / Webhook',  desc: 'Headless apps triggered by external services — Zapier, Slack, your own code.' },
+]
+
+const LIFECYCLE_STEPS = [
+  { step: 1, icon: '✏️',  label: 'Design',   desc: 'Write a system prompt, pick a model (Claude, GPT-4o, …), set input fields.' },
+  { step: 2, icon: '🧪',  label: 'Test',      desc: 'Create test cases with pass/fail rules. Run them any time — or auto-run before saving a version.' },
+  { step: 3, icon: '🚀',  label: 'Deploy',    desc: 'Publish the app so users can run it from their dashboard or via a public link.' },
+  { step: 4, icon: '💳',  label: 'Sell',      desc: 'Flip the pricing switch to Paid and set a price per run — or offer it free.' },
+  { step: 5, icon: '📡',  label: 'Monitor',   desc: 'Watch run volume, ratings, token usage, and subscriber counts in real time.' },
+  { step: 6, icon: '🎯',  label: 'Evaluate',  desc: 'Deep-dive into quality: per-prompt scoring, failure analysis, regression tracking.' },
+  { step: 7, icon: '🔬',  label: 'Improve',   desc: 'A/B-test prompt variants and compare output quality before shipping changes.' },
+  { step: 8, icon: '📦',  label: 'Version',   desc: 'Snapshot any working state. Roll back in one click. See the full change history.' },
+  { step: 9, icon: '💰',  label: 'Monetize',  desc: 'See real margin: estimated revenue vs. AI cost per run, broken down by app.' },
+]
+
+const FEATURES = [
+  { icon: '🛒', label: 'Marketplace',    desc: 'List your app publicly so anyone can discover and launch it.' },
+  { icon: '💳', label: 'Stripe billing', desc: 'Per-run payments and subscriptions wired up out of the box.' },
+  { icon: '🗄️', label: 'Data sources',  desc: 'Inject your own docs, CSVs, or Google Sheets as context into any run.' },
+  { icon: '📈', label: 'Analytics',      desc: 'PostHog funnel events from first run to payment, no setup needed.' },
+  { icon: '🐍', label: 'SDK / CLI',      desc: 'pip install aistrix then run any app from your terminal or scripts.' },
+  { icon: '👤', label: 'Dev profile',    desc: 'Public profile page with your published apps and bio.' },
+]
+
+function WelcomeScreen({ onCreateApp }) {
+  return (
+    <div className="space-y-8 pb-10">
+      {/* Hero */}
+      <div className="bg-gradient-to-br from-[#6C5CE7]/20 to-[#0E1424] border border-[#6C5CE7]/20 rounded-2xl p-8 text-center">
+        <div className="text-5xl mb-3">🧩</div>
+        <h2 className="text-2xl font-bold text-white mb-2">Welcome to Aistrix Dev Studio</h2>
+        <p className="text-slate-400 text-sm max-w-lg mx-auto leading-relaxed">
+          Build, test, and sell AI-powered apps — without managing any infrastructure.
+          Write a prompt, pick a model, and you have a live app in minutes.
+        </p>
+        <button onClick={onCreateApp}
+          className="mt-6 inline-flex items-center gap-2 bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white text-sm font-semibold px-6 py-3 rounded-xl transition-colors shadow-lg shadow-[#6C5CE7]/25">
+          + Create your first app
+        </button>
+      </div>
+
+      {/* What you can build */}
+      <div>
+        <p className="text-xs text-slate-500 uppercase font-semibold tracking-wide mb-3">What can you build?</p>
+        <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
+          {APP_TYPES.map(({ icon, label, desc }) => (
+            <div key={label} className="bg-[#171B33] border border-white/5 hover:border-[#6C5CE7]/20 rounded-2xl p-4 transition-colors">
+              <div className="text-2xl mb-2">{icon}</div>
+              <p className="text-white text-sm font-semibold mb-1">{label}</p>
+              <p className="text-slate-500 text-xs leading-relaxed">{desc}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* How it works — 9 steps */}
+      <div>
+        <p className="text-xs text-slate-500 uppercase font-semibold tracking-wide mb-3">How it works — 9 lifecycle stages</p>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {LIFECYCLE_STEPS.map(({ step, icon, label, desc }) => (
+            <div key={step} className="bg-[#171B33] border border-white/5 rounded-2xl p-4 flex gap-3">
+              <div className="shrink-0 w-7 h-7 rounded-full bg-[#6C5CE7]/20 flex items-center justify-center text-[11px] font-bold text-[#A29BFE]">{step}</div>
+              <div>
+                <p className="text-white text-xs font-semibold mb-0.5">{icon} {label}</p>
+                <p className="text-slate-500 text-[11px] leading-relaxed">{desc}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Features */}
+      <div>
+        <p className="text-xs text-slate-500 uppercase font-semibold tracking-wide mb-3">Built-in features</p>
+        <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
+          {FEATURES.map(({ icon, label, desc }) => (
+            <div key={label} className="bg-[#171B33] border border-white/5 rounded-xl p-4 flex gap-3 items-start">
+              <span className="text-xl shrink-0">{icon}</span>
+              <div>
+                <p className="text-white text-xs font-semibold">{label}</p>
+                <p className="text-slate-500 text-[11px] leading-relaxed mt-0.5">{desc}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function HelpPanel({ onClose }) {
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end" onClick={onClose}>
+      <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" />
+      <div
+        className="relative w-full max-w-sm bg-[#0E1424] border-l border-white/5 h-full overflow-y-auto shadow-2xl"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="sticky top-0 bg-[#0E1424]/95 backdrop-blur-sm px-5 py-4 border-b border-white/5 flex items-center justify-between">
+          <p className="text-white font-semibold text-sm">Developer Guide</p>
+          <button onClick={onClose} className="text-slate-400 hover:text-white text-lg leading-none transition-colors">×</button>
+        </div>
+
+        <div className="px-5 py-5 space-y-6">
+          {/* Quick start */}
+          <div>
+            <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide mb-3">Quick start</p>
+            <ol className="space-y-3">
+              {[
+                { n: 1, t: 'Create an app', d: 'Go to Design → click "+ New app". Pick a type, write a system prompt, choose a model.' },
+                { n: 2, t: 'Run and iterate', d: 'Open the app and test your prompt. Tweak in PromptStudio until results are good.' },
+                { n: 3, t: 'Add test cases', d: 'Go to Test → add cases with expected pass/fail rules. Auto-runs before every version save.' },
+                { n: 4, t: 'Deploy', d: 'Flip "Published" in Deploy. Users can now run it. Share the app link.' },
+                { n: 5, t: 'Optionally monetize', d: 'Set a price in Sell. Stripe handles payment; entitlements are created automatically.' },
+              ].map(({ n, t, d }) => (
+                <li key={n} className="flex gap-3">
+                  <span className="shrink-0 w-5 h-5 rounded-full bg-[#6C5CE7]/20 text-[#A29BFE] text-[10px] font-bold flex items-center justify-center mt-0.5">{n}</span>
+                  <div>
+                    <p className="text-white text-xs font-semibold">{t}</p>
+                    <p className="text-slate-500 text-[11px] leading-relaxed mt-0.5">{d}</p>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          </div>
+
+          {/* 9 stages */}
+          <div>
+            <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide mb-3">The 9 lifecycle stages</p>
+            <div className="space-y-3">
+              {LIFECYCLE_STEPS.map(({ step, icon, label, desc }) => (
+                <div key={step} className="flex gap-3">
+                  <span className="shrink-0 w-5 h-5 rounded-full bg-[#1F2444] text-slate-400 text-[10px] font-bold flex items-center justify-center mt-0.5">{step}</span>
+                  <div>
+                    <p className="text-white text-xs font-semibold">{icon} {label}</p>
+                    <p className="text-slate-500 text-[11px] leading-relaxed mt-0.5">{desc}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* App types */}
+          <div>
+            <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide mb-3">App types</p>
+            <div className="space-y-2">
+              {APP_TYPES.map(({ icon, label, desc }) => (
+                <div key={label} className="flex gap-2 items-start">
+                  <span className="shrink-0 text-base mt-0.5">{icon}</span>
+                  <div>
+                    <p className="text-white text-xs font-semibold">{label}</p>
+                    <p className="text-slate-500 text-[11px] leading-relaxed">{desc}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* SDK */}
+          <div className="bg-[#171B33] border border-white/5 rounded-xl p-4">
+            <p className="text-white text-xs font-semibold mb-2">🐍 Use from your terminal</p>
+            <pre className="text-[11px] text-[#A29BFE] font-mono leading-relaxed whitespace-pre-wrap">
+{`pip install aistrix
+aistrix configure
+aistrix apps
+aistrix run <app-id> -i "your input"`}
+            </pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Model cost table (USD per 1M tokens) ────────────────────────────────────
 const MODEL_COSTS = {
   'gpt-4o':                  { input: 2.50,  output: 10.00 },
@@ -2831,6 +3013,7 @@ export default function DevStudioPage({ user, onOpenCreate }) {
   const [totalStats, setTotalStats] = useState({ runs: 0, users: 0, satisfaction: null })
   const [entitlements, setEntitlements] = useState([])
   const [loading, setLoading] = useState(true)
+  const [showHelp, setShowHelp] = useState(false)
 
   useEffect(() => { load() }, [user.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -2882,41 +3065,58 @@ export default function DevStudioPage({ user, onOpenCreate }) {
   return (
     <div className="flex-1 overflow-y-auto px-6 py-6 space-y-5 max-w-5xl">
       {/* Header */}
-      <div>
-        <h1 className="text-white text-xl font-semibold">Dev Studio</h1>
-        <p className="text-slate-400 text-sm mt-0.5">Design → Test → Deploy → Sell → Monitor → Evaluate → Improve → Version → Monetize</p>
-      </div>
-
-      {/* Lifecycle tab strip */}
-      <div className="overflow-x-auto no-scrollbar">
-        <div className="flex gap-1 bg-[#1A2038] p-1 rounded-xl w-max min-w-full">
-          {LIFECYCLE_TABS.map((t, i) => {
-            const active = tab === t.id
-            return (
-              <button key={t.id} onClick={() => setTab(t.id)}
-                className={`flex flex-col items-center px-3 py-2 rounded-lg transition-all min-w-[68px] ${active ? 'bg-[#6C5CE7] text-white shadow-md shadow-[#6C5CE7]/25' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}>
-                {i > 0 && !active && (
-                  <span className="absolute -left-1 top-1/2 -translate-y-1/2 text-slate-700 text-[8px] pointer-events-none hidden sm:block">›</span>
-                )}
-                <span className="text-base leading-none mb-0.5">{t.icon}</span>
-                <span className="text-[10px] font-semibold leading-none">{t.label}</span>
-                <span className={`text-[8px] leading-none mt-0.5 ${active ? 'text-white/70' : 'text-slate-600'}`}>{t.desc}</span>
-              </button>
-            )
-          })}
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h1 className="text-white text-xl font-semibold">Dev Studio</h1>
+          <p className="text-slate-400 text-sm mt-0.5">Design → Test → Deploy → Sell → Monitor → Evaluate → Improve → Version → Monetize</p>
         </div>
+        <button onClick={() => setShowHelp(true)}
+          className="shrink-0 flex items-center gap-1.5 text-xs text-slate-400 hover:text-white bg-[#1F2444] hover:bg-[#272C52] border border-white/10 px-3 py-1.5 rounded-lg transition-colors">
+          <span className="w-4 h-4 rounded-full bg-[#6C5CE7]/30 text-[#A29BFE] text-[10px] font-bold flex items-center justify-center">?</span>
+          Guide
+        </button>
       </div>
 
-      {/* Tab content */}
-      {tab === 'design'   && <DesignTab   apps={apps} loading={loading} onOpenCreate={onOpenCreate} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
-      {tab === 'test'     && <TestTab apps={apps} user={user} />}
-      {tab === 'deploy'   && <DeployTab   apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
-      {tab === 'sell'     && <SellTab     apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
-      {tab === 'monitor'  && <MonitorTab  apps={apps} appStats={appStats} loading={loading} totalStats={totalStats} runs={runs} entitlements={entitlements} user={user} />}
-      {tab === 'evaluate' && <EvaluateTab apps={apps} appStats={appStats} runs={runs} user={user} />}
-      {tab === 'improve'  && <ImproveTab  apps={apps} user={user} runs={runs} />}
-      {tab === 'version'  && <VersionTab  apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
-      {tab === 'monetize' && <MonetizeTab apps={apps} runs={runs} loading={loading} user={user} />}
+      {/* First-time welcome screen */}
+      {!loading && apps.length === 0 && (
+        <WelcomeScreen onCreateApp={onOpenCreate} />
+      )}
+
+      {/* Lifecycle tab strip + content (hidden on first visit) */}
+      {(loading || apps.length > 0) && <>
+        <div className="overflow-x-auto no-scrollbar">
+          <div className="flex gap-1 bg-[#1A2038] p-1 rounded-xl w-max min-w-full">
+            {LIFECYCLE_TABS.map((t, i) => {
+              const active = tab === t.id
+              return (
+                <button key={t.id} onClick={() => setTab(t.id)}
+                  className={`flex flex-col items-center px-3 py-2 rounded-lg transition-all min-w-[68px] ${active ? 'bg-[#6C5CE7] text-white shadow-md shadow-[#6C5CE7]/25' : 'text-slate-400 hover:text-white hover:bg-white/5'}`}>
+                  {i > 0 && !active && (
+                    <span className="absolute -left-1 top-1/2 -translate-y-1/2 text-slate-700 text-[8px] pointer-events-none hidden sm:block">›</span>
+                  )}
+                  <span className="text-base leading-none mb-0.5">{t.icon}</span>
+                  <span className="text-[10px] font-semibold leading-none">{t.label}</span>
+                  <span className={`text-[8px] leading-none mt-0.5 ${active ? 'text-white/70' : 'text-slate-600'}`}>{t.desc}</span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        {/* Tab content */}
+        {tab === 'design'   && <DesignTab   apps={apps} loading={loading} onOpenCreate={onOpenCreate} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
+        {tab === 'test'     && <TestTab apps={apps} user={user} />}
+        {tab === 'deploy'   && <DeployTab   apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
+        {tab === 'sell'     && <SellTab     apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
+        {tab === 'monitor'  && <MonitorTab  apps={apps} appStats={appStats} loading={loading} totalStats={totalStats} runs={runs} entitlements={entitlements} user={user} />}
+        {tab === 'evaluate' && <EvaluateTab apps={apps} appStats={appStats} runs={runs} user={user} />}
+        {tab === 'improve'  && <ImproveTab  apps={apps} user={user} runs={runs} />}
+        {tab === 'version'  && <VersionTab  apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
+        {tab === 'monetize' && <MonetizeTab apps={apps} runs={runs} loading={loading} user={user} />}
+      </>}
+
+      {/* Help panel */}
+      {showHelp && <HelpPanel onClose={() => setShowHelp(false)} />}
     </div>
   )
 }

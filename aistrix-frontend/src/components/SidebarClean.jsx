@@ -39,7 +39,7 @@ const NAV_GROUPS = [
   { label: 'CONNECT', items: [
     { icon: Database, label: 'Data Sources', view: 'data_sources' },
     { icon: Link,     label: 'Integrations', view: 'integrations' },
-    { icon: Code2,    label: 'API',          view: 'developer' },
+    { icon: Code2,    label: 'Dev Studio',   view: 'developer' },
   ]},
   { label: 'MANAGE', items: [
     { icon: User,        label: 'Profiles', view: 'profiles' },

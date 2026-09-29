@@ -30,6 +30,7 @@ const ModeratorPage   = lazy(() => import('./pages/ModeratorPage'))
 const AnalyticsPage   = lazy(() => import('./pages/AnalyticsPage'))
 const ReportsPage     = lazy(() => import('./pages/ReportsPage'))
 const DevDashboardPage = lazy(() => import('./pages/DevDashboardPage'))
+const DevStudioPage    = lazy(() => import('./pages/DevStudioPage'))
 const KnowledgeVaultPage = lazy(() => import('./pages/KnowledgeVaultPage'))
 const PrivacyPage     = lazy(() => import('./pages/LegalPages').then(m => ({ default: m.PrivacyPage })))
 const TermsPage       = lazy(() => import('./pages/LegalPages').then(m => ({ default: m.TermsPage })))
@@ -222,7 +223,7 @@ export default function App() {
     reports:     <ReportsPage     user={session.user} />,
     settings:    <SettingsPage    user={session.user} />,
     alerts:      <AlertsPage      user={session.user} />,
-    developer:   <DevDashboardPage user={session.user} />,
+    developer:   <DevStudioPage user={session.user} onOpenCreate={() => setShowTypeSelector(true)} />,
     data_sources:<DataSourcesPage user={session.user} />,
     integrations:<IntegrationsPage user={session.user} />,
     admin:          isAdmin(userRole)     ? <AdminPage          user={session.user} /> : null,

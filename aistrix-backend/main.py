@@ -17,6 +17,7 @@ import anthropic
 import httpx
 import openai
 import sentry_sdk
+from cryptography.fernet import Fernet
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -62,6 +63,18 @@ GITHUB_CLIENT_ID          = os.getenv("GITHUB_CLIENT_ID")
 GITHUB_CLIENT_SECRET      = os.getenv("GITHUB_CLIENT_SECRET")
 GITHUB_REDIRECT_URI       = os.getenv("GITHUB_REDIRECT_URI")  # e.g. https://api.aistrix.app/auth/github/callback
 CRON_SECRET               = os.getenv("CRON_SECRET")
+SECRET_ENCRYPTION_KEY     = os.getenv("SECRET_ENCRYPTION_KEY")  # Fernet key (base64, 32 bytes)
+_fernet: "Fernet | None" = Fernet(SECRET_ENCRYPTION_KEY.encode()) if SECRET_ENCRYPTION_KEY else None
+
+def _encrypt(value: str) -> str:
+    if not _fernet:
+        raise HTTPException(status_code=503, detail="Secret encryption not configured (set SECRET_ENCRYPTION_KEY)")
+    return _fernet.encrypt(value.encode()).decode()
+
+def _decrypt(token: str) -> str:
+    if not _fernet:
+        raise HTTPException(status_code=503, detail="Secret encryption not configured")
+    return _fernet.decrypt(token.encode()).decode()
 REQUEST_TIMEOUT           = int(os.getenv("REQUEST_TIMEOUT", "90"))
 HOURLY_LIMIT              = int(os.getenv("RATE_LIMIT_PER_HOUR", "30"))
 DAILY_LIMIT               = int(os.getenv("RATE_LIMIT_PER_DAY", "200"))
@@ -738,15 +751,27 @@ async def run_app(req: RunRequest, request: Request):
     # Knowledge base + API key + tools + webhook are all independent Supabase
     # lookups — run them concurrently instead of one after another, since each
     # is a separate network round-trip.
-    knowledge, user_api_key, tools, webhook_url = await asyncio.gather(
+    # Resolve app owner for secrets lookup
+    _app_owner_id: str | None = None
+    if req.app_id and _fernet:
+        _owner_row = supabase_service.table("apps").select("created_by").eq("id", req.app_id).maybe_single().execute()
+        _app_owner_id = _owner_row.data.get("created_by") if _owner_row.data else None
+
+    knowledge, user_api_key, tools, webhook_url, app_secrets = await asyncio.gather(
         fetch_app_knowledge(req.app_id) if req.app_id else _default(""),
         fetch_user_api_key(user_jwt, provider) if user_jwt else _default(None),
         fetch_app_tools(req.app_id) if req.app_id else _default([]),
         fetch_app_webhook(req.app_id) if req.app_id else _default(None),
+        _load_app_secrets(req.app_id, _app_owner_id) if (req.app_id and _app_owner_id) else _default({}),
     )
 
     if knowledge:
         system = f"<knowledge_base>\n{knowledge}\n</knowledge_base>\n\n{system}"
+
+    # Inject secrets as env-like variables the model can reference
+    if app_secrets:
+        secrets_block = "\n".join(f"{k}={v}" for k, v in app_secrets.items())
+        system = f"<env_secrets>\n{secrets_block}\n</env_secrets>\n\n{system}"
 
     collected: list[str] = []
     usage: dict = {}
@@ -1850,6 +1875,67 @@ async def github_oauth_callback(code: str, state: str, request: Request):
         )
 
     return RedirectResponse(f"{FRONTEND_URL}/studio?github_connected=1&login={github_login}")
+
+
+# ─── App Secrets ─────────────────────────────────────────────────────────────
+
+class SecretUpsert(BaseModel):
+    key:   str
+    value: str
+
+@app.get("/apps/{app_id}/secrets")
+async def list_secrets(app_id: str, request: Request):
+    """Return secret key names only — never values."""
+    user_id = await extract_user_id(request)
+    rows = supabase_service.table("app_secrets") \
+        .select("key, created_at, updated_at") \
+        .eq("app_id", app_id).eq("user_id", user_id) \
+        .order("key").execute()
+    return {"secrets": rows.data or []}
+
+@app.put("/apps/{app_id}/secrets")
+async def upsert_secret(app_id: str, body: SecretUpsert, request: Request):
+    """Create or update a secret value (stored encrypted, value never returned)."""
+    user_id = await extract_user_id(request)
+    if not body.key.strip():
+        raise HTTPException(status_code=400, detail="Key cannot be empty")
+    if len(body.key) > 100:
+        raise HTTPException(status_code=400, detail="Key too long (max 100 chars)")
+    if not re.match(r'^[A-Z0-9_]+$', body.key.upper()):
+        raise HTTPException(status_code=400, detail="Key must contain only letters, numbers, and underscores")
+    encrypted = _encrypt(body.value)
+    now = datetime.now(timezone.utc).isoformat()
+    supabase_service.table("app_secrets").upsert({
+        "app_id":           app_id,
+        "user_id":          user_id,
+        "key":              body.key.upper(),
+        "encrypted_value":  encrypted,
+        "updated_at":       now,
+    }, on_conflict="app_id,key").execute()
+    return {"ok": True, "key": body.key.upper()}
+
+@app.delete("/apps/{app_id}/secrets/{key}")
+async def delete_secret(app_id: str, key: str, request: Request):
+    user_id = await extract_user_id(request)
+    supabase_service.table("app_secrets") \
+        .delete().eq("app_id", app_id).eq("user_id", user_id).eq("key", key.upper()) \
+        .execute()
+    return {"ok": True}
+
+async def _load_app_secrets(app_id: str, user_id: str) -> dict[str, str]:
+    """Load decrypted secrets for injection into a run — server-side only."""
+    if not _fernet:
+        return {}
+    rows = supabase_service.table("app_secrets") \
+        .select("key, encrypted_value") \
+        .eq("app_id", app_id).eq("user_id", user_id).execute()
+    result = {}
+    for r in (rows.data or []):
+        try:
+            result[r["key"]] = _decrypt(r["encrypted_value"])
+        except Exception:
+            pass
+    return result
 
 
 @app.get("/sentry-test")

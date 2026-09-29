@@ -3302,18 +3302,201 @@ function ApiKeySection({ user }) {
   )
 }
 
+// ─── Secrets Tab ─────────────────────────────────────────────────────────────
+
+function SecretsTab({ apps, user }) {
+  const [selectedApp, setSelectedApp] = useState(apps[0]?.id || null)
+  const [secrets, setSecrets]         = useState([])
+  const [loading, setLoading]         = useState(false)
+  const [newKey, setNewKey]           = useState('')
+  const [newVal, setNewVal]           = useState('')
+  const [saving, setSaving]           = useState(false)
+  const [error, setError]             = useState(null)
+  const [toast, setToast]             = useState(null)
+
+  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+
+  useEffect(() => { if (selectedApp) loadSecrets(selectedApp) }, [selectedApp]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function getToken() {
+    const { data: { session } } = await supabase.auth.getSession()
+    return session?.access_token
+  }
+
+  async function loadSecrets(appId) {
+    setLoading(true)
+    setError(null)
+    try {
+      const token = await getToken()
+      const r = await fetch(`${API_URL}/apps/${appId}/secrets`, {
+        headers: { Authorization: `Bearer ${token}` },
+      })
+      const body = await r.json()
+      if (!r.ok) throw new Error(body.detail || 'Failed to load secrets')
+      setSecrets(body.secrets || [])
+    } catch (e) { setError(e.message) }
+    finally { setLoading(false) }
+  }
+
+  async function addSecret() {
+    if (!newKey.trim() || !newVal.trim()) return
+    setSaving(true)
+    setError(null)
+    try {
+      const token = await getToken()
+      const r = await fetch(`${API_URL}/apps/${selectedApp}/secrets`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ key: newKey.trim(), value: newVal.trim() }),
+      })
+      const body = await r.json()
+      if (!r.ok) throw new Error(body.detail || 'Failed to save')
+      setNewKey(''); setNewVal('')
+      showToast(`${body.key} saved`)
+      await loadSecrets(selectedApp)
+    } catch (e) { setError(e.message) }
+    finally { setSaving(false) }
+  }
+
+  async function deleteSecret(key) {
+    const token = await getToken()
+    await fetch(`${API_URL}/apps/${selectedApp}/secrets/${key}`, {
+      method: 'DELETE', headers: { Authorization: `Bearer ${token}` },
+    })
+    showToast(`${key} deleted`)
+    await loadSecrets(selectedApp)
+  }
+
+  function showToast(msg) {
+    setToast(msg)
+    setTimeout(() => setToast(null), 2500)
+  }
+
+  const app = apps.find(a => a.id === selectedApp)
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <h2 className="text-lg font-bold text-white">Secrets & Environment Variables</h2>
+          <p className="text-slate-400 text-sm mt-0.5">Encrypted, server-only — never exposed to the browser or users.</p>
+        </div>
+        {toast && (
+          <span className="text-xs font-semibold px-3 py-1.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+            ✓ {toast}
+          </span>
+        )}
+      </div>
+
+      {/* App selector */}
+      {apps.length > 1 && (
+        <div className="flex flex-wrap gap-2">
+          {apps.map(a => (
+            <button key={a.id} onClick={() => setSelectedApp(a.id)}
+              className={`text-xs font-semibold px-3 py-1.5 rounded-lg border transition-all ${selectedApp === a.id ? 'bg-[#6C5CE7]/20 border-[#6C5CE7]/40 text-[#A29BFE]' : 'bg-white/3 border-white/8 text-slate-400 hover:text-white hover:border-white/20'}`}>
+              {a.emoji} {a.name}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {!selectedApp ? (
+        <p className="text-slate-500 text-sm">Create an app first.</p>
+      ) : (
+        <div className="space-y-4">
+          {/* Security notice */}
+          <div className="bg-[#6C5CE7]/5 border border-[#6C5CE7]/15 rounded-xl px-4 py-3 flex gap-3">
+            <span className="text-lg shrink-0">🔐</span>
+            <div className="text-xs text-slate-400 space-y-0.5">
+              <p className="text-slate-300 font-semibold">Secrets are encrypted at rest and injected server-side during runs.</p>
+              <p>Values are never returned via API or visible after saving. Reference them in your system prompt as <code className="bg-black/20 px-1 rounded text-[#A29BFE]">env.YOUR_KEY</code> (coming soon) — for now they are available to the model via a hidden system block.</p>
+            </div>
+          </div>
+
+          {/* Existing secrets */}
+          {loading ? (
+            <p className="text-slate-500 text-sm py-4">Loading…</p>
+          ) : secrets.length === 0 ? (
+            <div className="bg-[#0E1424] border border-white/5 rounded-xl px-5 py-8 text-center">
+              <p className="text-slate-500 text-sm">No secrets yet for <span className="text-white">{app?.name}</span>.</p>
+            </div>
+          ) : (
+            <div className="bg-[#0E1424] border border-white/5 rounded-xl overflow-hidden">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-white/5">
+                    <th className="text-left px-4 py-2.5 text-[10px] text-slate-500 uppercase font-semibold tracking-wide">Key</th>
+                    <th className="text-left px-4 py-2.5 text-[10px] text-slate-500 uppercase font-semibold tracking-wide">Value</th>
+                    <th className="px-4 py-2.5 text-[10px] text-slate-500 uppercase font-semibold tracking-wide">Updated</th>
+                    <th className="w-8" />
+                  </tr>
+                </thead>
+                <tbody>
+                  {secrets.map(s => (
+                    <tr key={s.key} className="border-b border-white/3 last:border-0 hover:bg-white/2 transition-colors">
+                      <td className="px-4 py-3 font-mono text-[#A29BFE] text-xs">{s.key}</td>
+                      <td className="px-4 py-3 text-slate-600 text-xs tracking-widest">••••••••</td>
+                      <td className="px-4 py-3 text-slate-600 text-[10px] text-center">{new Date(s.updated_at).toLocaleDateString()}</td>
+                      <td className="px-4 py-3">
+                        <button onClick={() => deleteSecret(s.key)}
+                          className="text-slate-600 hover:text-red-400 transition-colors text-xs">✕</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+
+          {error && (
+            <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 text-xs text-red-400">{error}</div>
+          )}
+
+          {/* Add new secret */}
+          <div className="bg-[#0E1424] border border-white/5 rounded-xl p-4 space-y-3">
+            <p className="text-xs font-semibold text-slate-300">Add / update secret</p>
+            <div className="flex gap-2 flex-wrap sm:flex-nowrap">
+              <input
+                value={newKey}
+                onChange={e => setNewKey(e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, ''))}
+                placeholder="KEY_NAME"
+                className="flex-1 min-w-0 bg-[#171B33] border border-white/10 rounded-lg px-3 py-2 text-xs text-[#A29BFE] font-mono placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/40"
+              />
+              <input
+                value={newVal}
+                onChange={e => setNewVal(e.target.value)}
+                placeholder="secret value"
+                type="password"
+                className="flex-1 min-w-0 bg-[#171B33] border border-white/10 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/40"
+              />
+              <button
+                onClick={addSecret}
+                disabled={saving || !newKey.trim() || !newVal.trim()}
+                className="shrink-0 text-xs font-semibold px-4 py-2 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors disabled:opacity-40">
+                {saving ? 'Saving…' : 'Save'}
+              </button>
+            </div>
+            <p className="text-[10px] text-slate-600">Keys auto-uppercased. Saving again with the same key overwrites the value.</p>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 const LIFECYCLE_TABS = [
-  { id: 'design',   label: 'Design',   icon: '✏️',  desc: 'Build apps' },
-  { id: 'test',     label: 'Test',     icon: '🧪',  desc: 'Validate' },
-  { id: 'deploy',   label: 'Deploy',   icon: '🚀',  desc: 'Ship it' },
-  { id: 'sell',     label: 'Marketplace', icon: '🛒',  desc: 'List & sell' },
-  { id: 'monitor',  label: 'Monitor',     icon: '📡',  desc: 'Watch it' },
-  { id: 'evaluate', label: 'Evaluate',    icon: '🎯',  desc: 'Quality' },
-  { id: 'improve',  label: 'Improve',     icon: '🔬',  desc: 'Iterate' },
-  { id: 'version',  label: 'Version',     icon: '📦',  desc: 'History' },
-  { id: 'monetize', label: 'Revenue',     icon: '💰',  desc: 'Profit' },
+  { id: 'design',   label: 'Design',     icon: '✏️',  desc: 'Build apps' },
+  { id: 'test',     label: 'Test',       icon: '🧪',  desc: 'Validate' },
+  { id: 'deploy',   label: 'Deploy',     icon: '🚀',  desc: 'Ship it' },
+  { id: 'sell',     label: 'Marketplace', icon: '🛒', desc: 'List & sell' },
+  { id: 'monitor',  label: 'Monitor',    icon: '📡',  desc: 'Watch it' },
+  { id: 'evaluate', label: 'Evaluate',   icon: '🎯',  desc: 'Quality' },
+  { id: 'improve',  label: 'Improve',    icon: '🔬',  desc: 'Iterate' },
+  { id: 'version',  label: 'Version',    icon: '📦',  desc: 'History' },
+  { id: 'monetize', label: 'Revenue',    icon: '💰',  desc: 'Profit' },
+  { id: 'secrets',  label: 'Secrets',    icon: '🔐',  desc: 'Env vars' },
 ]
 
 export default function DevStudioPage({ user, onOpenCreate }) {
@@ -3441,6 +3624,7 @@ export default function DevStudioPage({ user, onOpenCreate }) {
             {tab === 'improve'  && <ImproveTab  apps={apps} user={user} runs={runs} />}
             {tab === 'version'  && <VersionTab  apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
             {tab === 'monetize' && <MonetizeTab apps={apps} runs={runs} loading={loading} user={user} />}
+            {tab === 'secrets'  && <SecretsTab  apps={apps} user={user} />}
           </>}
         </div>
 

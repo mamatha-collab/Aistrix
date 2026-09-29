@@ -1082,7 +1082,7 @@ function IntegrationCard({ icon, name, desc, docsUrl, fields, savedKeys, onSave 
 
 // ─── Tab: Monitor ────────────────────────────────────────────────────────────
 
-function MonitorTab({ apps, appStats, loading, totalStats, runs, user }) {
+function MonitorTab({ apps, appStats, loading, totalStats, runs, entitlements, user }) {
   const [expandedApp, setExpandedApp]   = useState(null)
   const [integrations, setIntegrations] = useState(null)   // loaded from developer_settings
   const [intSetupNeeded, setIntSetupNeeded] = useState(false)
@@ -1163,6 +1163,20 @@ function MonitorTab({ apps, appStats, loading, totalStats, runs, user }) {
     return buckets
   }, [runs])
 
+  // Entitlement-derived stats
+  const activeEnt   = (entitlements || []).filter(e => e.status === 'active')
+  const paidEnt     = (entitlements || []).filter(e => ['active', 'paid'].includes(e.status))
+  const subCount    = new Set(activeEnt.map(e => e.user_id)).size
+  const paidCount   = new Set(paidEnt.map(e => e.user_id)).size
+
+  // Per-app run counts for breakdown chart
+  const appRunCounts = useMemo(() => {
+    return apps.map(a => ({
+      id: a.id, name: a.name, emoji: a.emoji,
+      count: runs.filter(r => r.app_id === a.id).length,
+    })).sort((a, b) => b.count - a.count).slice(0, 8)
+  }, [apps, runs])
+
   if (loading) return <p className="text-slate-500 text-sm py-10 text-center">Loading…</p>
 
   if (!apps.length) return (
@@ -1186,6 +1200,43 @@ function MonitorTab({ apps, appStats, loading, totalStats, runs, user }) {
           sub={totalRated ? `${totalRated} rated` : undefined} />
         <StatTile label="Active apps" value={apps.filter(a => a.is_published).length} color="#E84393" />
       </div>
+
+      {/* ── Subscriber tiles ── */}
+      {(entitlements || []).length > 0 && (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <StatTile label="Active subscribers" value={subCount} color="#00B894" sub="status = active" />
+          <StatTile label="Paying customers" value={paidCount} color="#FDCB6E" sub="ever purchased" />
+          <StatTile label="Entitlements" value={(entitlements || []).length} color="#6C5CE7" sub="all time" />
+          <StatTile label="Subscriptions" value={activeEnt.filter(e => e.plan === 'subscription').length} color="#A29BFE" sub="recurring" />
+        </div>
+      )}
+
+      {/* ── Per-app run breakdown ── */}
+      {appRunCounts.length > 1 && (
+        <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5">
+          <p className="text-xs text-slate-400 font-semibold uppercase tracking-wide mb-4">Runs by app</p>
+          <div className="space-y-2">
+            {appRunCounts.map(({ id, name, emoji, count }) => {
+              const max = appRunCounts[0].count || 1
+              const pct = Math.max((count / max) * 100, count > 0 ? 2 : 0)
+              return (
+                <div key={id} className="flex items-center gap-3">
+                  <span className="text-base w-6 shrink-0">{emoji}</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between mb-0.5">
+                      <p className="text-xs text-slate-300 truncate">{name}</p>
+                      <p className="text-xs text-slate-500 shrink-0 ml-2">{count.toLocaleString()}</p>
+                    </div>
+                    <div className="h-1.5 bg-[#0E1424] rounded-full overflow-hidden">
+                      <div className="h-full bg-[#6C5CE7] rounded-full transition-all" style={{ width: `${pct}%` }} />
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
 
       {/* ── Run volume chart (30 days) ── */}
       <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5">
@@ -2778,6 +2829,7 @@ export default function DevStudioPage({ user, onOpenCreate }) {
   const [runs, setRuns] = useState([])
   const [appStats, setAppStats] = useState({})
   const [totalStats, setTotalStats] = useState({ runs: 0, users: 0, satisfaction: null })
+  const [entitlements, setEntitlements] = useState([])
   const [loading, setLoading] = useState(true)
 
   useEffect(() => { load() }, [user.id]) // eslint-disable-line react-hooks/exhaustive-deps
@@ -2789,11 +2841,17 @@ export default function DevStudioPage({ user, onOpenCreate }) {
     if (!myApps?.length) { setLoading(false); return }
     setApps(myApps)
 
-    const { data: runData } = await supabase.from('run_history')
-      .select('id, app_id, app_name, created_at, rating, user_id, input_tokens, output_tokens, input, output')
-      .in('app_id', myApps.map(a => a.id))
+    const [{ data: runData }, { data: entData }] = await Promise.all([
+      supabase.from('run_history')
+        .select('id, app_id, app_name, created_at, rating, user_id, input_tokens, output_tokens, input, output')
+        .in('app_id', myApps.map(a => a.id)),
+      supabase.from('app_entitlements')
+        .select('id, app_id, user_id, plan, status, runs_this_period, run_quota, current_period_end, created_at')
+        .in('app_id', myApps.map(a => a.id)),
+    ])
     const allRuns = runData || []
     setRuns(allRuns)
+    setEntitlements(entData || [])
 
     const sevenDaysAgo = new Date(); sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
     const statsMap = {}
@@ -2854,7 +2912,7 @@ export default function DevStudioPage({ user, onOpenCreate }) {
       {tab === 'test'     && <TestTab apps={apps} user={user} />}
       {tab === 'deploy'   && <DeployTab   apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
       {tab === 'sell'     && <SellTab     apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
-      {tab === 'monitor'  && <MonitorTab  apps={apps} appStats={appStats} loading={loading} totalStats={totalStats} runs={runs} user={user} />}
+      {tab === 'monitor'  && <MonitorTab  apps={apps} appStats={appStats} loading={loading} totalStats={totalStats} runs={runs} entitlements={entitlements} user={user} />}
       {tab === 'evaluate' && <EvaluateTab apps={apps} appStats={appStats} runs={runs} user={user} />}
       {tab === 'improve'  && <ImproveTab  apps={apps} user={user} runs={runs} />}
       {tab === 'version'  && <VersionTab  apps={apps} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}

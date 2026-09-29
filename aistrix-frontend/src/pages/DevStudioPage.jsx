@@ -1,8 +1,10 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, lazy, Suspense } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { timeAgo } from '../utils'
 import ToolsEditor from '../components/ToolsEditor'
+
+const PromptStudio = lazy(() => import('../components/PromptStudio'))
 
 // ─── Model cost table (USD per 1M tokens) ────────────────────────────────────
 const MODEL_COSTS = {
@@ -67,8 +69,9 @@ function ComingSoonCard({ icon, title, desc, bullets }) {
 
 // ─── Tab: Design ─────────────────────────────────────────────────────────────
 
-function DesignTab({ apps, loading, onOpenCreate }) {
+function DesignTab({ apps, loading, onOpenCreate, user, onAppUpdated }) {
   const [expandedApp, setExpandedApp] = useState(null)
+  const [studioApp, setStudioApp]     = useState(null) // app currently open in PromptStudio
 
   if (loading) return <p className="text-slate-500 text-sm py-10 text-center">Loading…</p>
 
@@ -85,54 +88,82 @@ function DesignTab({ apps, loading, onOpenCreate }) {
   )
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <p className="text-xs text-slate-500">{apps.length} published app{apps.length !== 1 ? 's' : ''}</p>
-        <button onClick={onOpenCreate}
-          className="text-xs font-semibold px-4 py-1.5 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors">
-          + New app
-        </button>
-      </div>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {apps.map(app => (
-          <div key={app.id} className="bg-[#171B33] border border-white/5 rounded-2xl p-5 space-y-3">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl shrink-0"
-                style={{ background: (app.color || '#6C5CE7') + '33' }}>{app.emoji}</div>
-              <div className="flex-1 min-w-0">
-                <p className="text-white font-medium text-sm truncate">{app.name}</p>
-                <div className="flex gap-1 mt-0.5 flex-wrap">
-                  <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-white/5 text-slate-400 capitalize">{app.app_type}</span>
-                  {app.is_published
-                    ? <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-green-500/10 text-green-400">● Published</span>
-                    : <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-white/5 text-slate-500">◌ Draft</span>}
-                  {app.ai_provider && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-white/5 text-slate-400">
-                    {app.ai_provider === 'openai' ? '🟢' : '🟣'} {app.ai_model?.split('-').slice(0, 2).join('-') || app.ai_provider}
-                  </span>}
+    <>
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <p className="text-xs text-slate-500">{apps.length} app{apps.length !== 1 ? 's' : ''}</p>
+          <button onClick={onOpenCreate}
+            className="text-xs font-semibold px-4 py-1.5 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors">
+            + New app
+          </button>
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {apps.map(app => (
+            <div key={app.id} className="bg-[#171B33] border border-white/5 rounded-2xl p-5 space-y-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl shrink-0"
+                  style={{ background: (app.color || '#6C5CE7') + '33' }}>{app.emoji}</div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-white font-medium text-sm truncate">{app.name}</p>
+                  <div className="flex gap-1 mt-0.5 flex-wrap">
+                    <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-white/5 text-slate-400 capitalize">{app.app_type}</span>
+                    {app.is_published
+                      ? <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-green-500/10 text-green-400">● Published</span>
+                      : <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-white/5 text-slate-500">◌ Draft</span>}
+                    {app.ai_provider && <span className="text-[9px] px-1.5 py-0.5 rounded-full bg-white/5 text-slate-400">
+                      {app.ai_provider === 'openai' ? '🟢' : '🟣'} {app.ai_model?.split('-').slice(0, 2).join('-') || app.ai_provider}
+                    </span>}
+                  </div>
                 </div>
               </div>
-            </div>
-            {app.description && (
-              <p className="text-xs text-slate-400 line-clamp-2">{app.description}</p>
-            )}
-            <div className="flex items-center gap-2 text-[11px] text-slate-500">
-              <span>⚡ {app.total_runs || 0} runs</span>
-              {app.is_paid && <span>· 💳 ${app.price_per_run}/run</span>}
-              {app.has_memory && <span>· 💬 Memory</span>}
-            </div>
-            <button onClick={() => setExpandedApp(p => p === app.id ? null : app.id)}
-              className="w-full text-xs text-slate-500 hover:text-white bg-[#1F2444] py-1.5 rounded-lg transition-colors">
-              {expandedApp === app.id ? '▲ Hide tools' : '🔧 Manage tools'}
-            </button>
-            {expandedApp === app.id && (
-              <div className="border-t border-white/5 pt-3">
-                <ToolsEditor appId={app.id} />
+              {app.description && (
+                <p className="text-xs text-slate-400 line-clamp-2">{app.description}</p>
+              )}
+              <div className="flex items-center gap-2 text-[11px] text-slate-500">
+                <span>⚡ {app.total_runs || 0} runs</span>
+                {app.is_paid && <span>· 💳 ${app.price_per_run}/run</span>}
+                {app.has_memory && <span>· 💬 Memory</span>}
               </div>
-            )}
-          </div>
-        ))}
+
+              {/* Prompt preview */}
+              {app.system_prompt && (
+                <div className="bg-[#0E1424] rounded-lg px-3 py-2 border border-white/5">
+                  <p className="text-[9px] text-slate-600 uppercase font-semibold mb-1">System Prompt</p>
+                  <p className="text-[11px] text-slate-400 line-clamp-2 font-mono leading-relaxed">{app.system_prompt}</p>
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-2">
+                <button onClick={() => setStudioApp(app)}
+                  className="text-xs font-semibold py-1.5 rounded-lg bg-[#6C5CE7]/15 hover:bg-[#6C5CE7]/25 text-[#A29BFE] border border-[#6C5CE7]/25 transition-colors">
+                  ✏️ Edit prompt
+                </button>
+                <button onClick={() => setExpandedApp(p => p === app.id ? null : app.id)}
+                  className="text-xs text-slate-500 hover:text-white bg-[#1F2444] py-1.5 rounded-lg transition-colors">
+                  {expandedApp === app.id ? '▲ Tools' : '🔧 Tools'}
+                </button>
+              </div>
+              {expandedApp === app.id && (
+                <div className="border-t border-white/5 pt-3">
+                  <ToolsEditor appId={app.id} />
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
       </div>
-    </div>
+
+      {studioApp && (
+        <Suspense fallback={null}>
+          <PromptStudio
+            app={studioApp}
+            user={user}
+            onClose={() => setStudioApp(null)}
+            onSaved={updated => { onAppUpdated?.(updated); setStudioApp(null) }}
+          />
+        </Suspense>
+      )}
+    </>
   )
 }
 
@@ -990,7 +1021,7 @@ export default function DevStudioPage({ user, onOpenCreate }) {
       </div>
 
       {/* Tab content */}
-      {tab === 'design'   && <DesignTab   apps={apps} loading={loading} onOpenCreate={onOpenCreate} />}
+      {tab === 'design'   && <DesignTab   apps={apps} loading={loading} onOpenCreate={onOpenCreate} user={user} onAppUpdated={updated => setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))} />}
       {tab === 'test'     && <TestTab />}
       {tab === 'deploy'   && <DeployTab   apps={apps} user={user} />}
       {tab === 'sell'     && <SellTab     apps={apps} />}

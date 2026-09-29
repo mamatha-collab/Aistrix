@@ -424,7 +424,32 @@ function calcReadiness(app, bp) {
   return Math.min(score, 100)
 }
 
-function ReadinessBar({ score }) {
+function readinessChecks(app, bp) {
+  const oc = bp.output_contract || {}
+  const hasFormatRules = oc.format === 'json'
+    ? oc.required_fields?.length > 0
+    : oc.format_rules && Object.values(oc.format_rules).some(v => Array.isArray(v) ? v.length : v?.trim?.())
+  return [
+    { key: 'business', label: 'Business',   ok: !!(bp.business_problem?.trim() && bp.audience?.trim()) },
+    { key: 'inputs',   label: 'Inputs',     ok: !!(bp.inputs?.length > 0) },
+    { key: 'output',   label: 'Output',     ok: !!(oc.format && hasFormatRules) },
+    { key: 'prompt',   label: 'Prompt',     ok: !!(app?.system_prompt?.length > 200) },
+    { key: 'perms',    label: 'Permissions',ok: bp.permissions !== undefined },
+  ]
+}
+
+function calcReadiness(app, bp) {
+  const checks = readinessChecks(app, bp)
+  const weights = { business: 20, inputs: 20, output: 25, prompt: 25, perms: 10 }
+  return checks.reduce((s, c) => s + (c.ok ? weights[c.key] : 0), 0)
+}
+
+function ReadinessBar({ app, bp }) {
+  const checks = readinessChecks(app, bp)
+  const score  = checks.reduce((s, c) => {
+    const weights = { business: 20, inputs: 20, output: 25, prompt: 25, perms: 10 }
+    return s + (c.ok ? weights[c.key] : 0)
+  }, 0)
   const color = score >= 70 ? '#00B894' : score >= 40 ? '#FDCB6E' : '#E84393'
   const label = score >= 70 ? 'Ready to test' : score >= 40 ? 'Needs work' : 'Incomplete'
   return (
@@ -436,16 +461,11 @@ function ReadinessBar({ score }) {
       <div className="h-2 bg-[#0E1424] rounded-full overflow-hidden">
         <div className="h-full rounded-full transition-all duration-500" style={{ width: `${score}%`, background: color }} />
       </div>
-      <div className="grid grid-cols-4 gap-1 pt-1">
-        {[
-          { label: 'Business', ok: score >= 15 },
-          { label: 'Inputs',   ok: score >= 30 },
-          { label: 'Output',   ok: score >= 50 },
-          { label: 'Prompt',   ok: score >= 65 },
-        ].map(({ label, ok }) => (
-          <div key={label} className="flex items-center gap-1">
-            <span className={`text-[10px] ${ok ? 'text-emerald-400' : 'text-slate-600'}`}>{ok ? '✓' : '○'}</span>
-            <span className="text-[10px] text-slate-500">{label}</span>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 pt-1">
+        {checks.map(({ key, label, ok }) => (
+          <div key={key} className="flex items-center gap-1">
+            <span className={`text-[10px] ${ok ? 'text-emerald-400' : 'text-red-400'}`}>{ok ? '✓' : '○'}</span>
+            <span className={`text-[10px] ${ok ? 'text-slate-400' : 'text-slate-600'}`}>{label}</span>
           </div>
         ))}
       </div>
@@ -453,28 +473,87 @@ function ReadinessBar({ score }) {
   )
 }
 
+// Design → Test handoff card
+function DesignTestHandoff({ app, bp }) {
+  const oc = bp?.output_contract || {}
+  const hasFormatRules = oc.format === 'json'
+    ? oc.required_fields?.length > 0
+    : oc.format_rules && Object.values(oc.format_rules).some(v => Array.isArray(v) ? v.length : v?.trim?.())
+
+  const items = [
+    { ok: bp?.inputs?.length > 0,     label: `${bp?.inputs?.length || 0} input field${bp?.inputs?.length !== 1 ? 's' : ''} defined` },
+    { ok: hasFormatRules,              label: oc.format ? `Output contract: ${oc.format}${hasFormatRules ? ' ✓' : ' — rules missing'}` : 'No output format chosen' },
+    { ok: !!app?.system_prompt?.trim(),label: app?.system_prompt?.trim() ? 'System prompt written' : 'System prompt missing' },
+    { ok: bp?.ai_behavior?.fallback_behavior?.trim(), label: bp?.ai_behavior?.fallback_behavior?.trim() ? 'Fallback behavior set' : 'No fallback behavior defined' },
+  ]
+  const ready = items.filter(i => i.ok).length
+  const total = items.length
+  const allGood = ready === total
+
+  return (
+    <div className={`border rounded-2xl p-5 space-y-3 ${allGood ? 'bg-emerald-500/5 border-emerald-500/20' : 'bg-[#171B33] border-white/5'}`}>
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-semibold text-white uppercase tracking-wider">Design → Test readiness</p>
+        <span className={`text-xs font-bold ${allGood ? 'text-emerald-400' : 'text-slate-500'}`}>{ready}/{total} ready</span>
+      </div>
+      <div className="space-y-1.5">
+        {items.map((item, i) => (
+          <div key={i} className="flex items-center gap-2">
+            <span className={`text-sm shrink-0 ${item.ok ? 'text-emerald-400' : 'text-red-400'}`}>{item.ok ? '✓' : '○'}</span>
+            <span className={`text-xs ${item.ok ? 'text-slate-300' : 'text-slate-500'}`}>{item.label}</span>
+          </div>
+        ))}
+      </div>
+      {allGood && (
+        <p className="text-[11px] text-emerald-400">All checks passed — save your blueprint and head to the Test tab.</p>
+      )}
+    </div>
+  )
+}
+
+// Reusable comma-separated list editor for format rules
+function FormatRulesEditor({ label, hint, rulesKey, bp, setBp }) {
+  const val = bp.output_contract?.format_rules?.[rulesKey] || ''
+  return (
+    <div className="space-y-0.5">
+      <label className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide">{label}</label>
+      <input value={val}
+        onChange={e => setBp({ ...bp, output_contract: { ...bp.output_contract, format_rules: { ...(bp.output_contract?.format_rules || {}), [rulesKey]: e.target.value } } })}
+        placeholder={hint}
+        className="w-full bg-[#0E1424] border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/40" />
+      <p className="text-[10px] text-slate-600">Comma-separated values</p>
+    </div>
+  )
+}
+
+const EMPTY_BP = {
+  business_problem: '',
+  audience: '',
+  inputs: [],
+  output_contract: { format: 'markdown', required_fields: [], format_rules: {} },
+  ai_behavior: { tone_preset: '', refusal_rules: '', fallback_behavior: '' },
+  permissions: { stores_user_data: false, requires_external_api: false, handles_sensitive_data: false },
+  copilot_suggestions: {},
+}
+
 function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio }) {
   const toast   = useToast()
-  const [bp, setBp]       = useState(null)   // null = loading
-  const [saving, setSaving] = useState(false)
+  const [bp, setBp]           = useState(null)   // null = loading
+  const [tableNeeded, setTableNeeded] = useState(false)
+  const [saving, setSaving]   = useState(false)
   const [copilot, setCopilot] = useState('')
   const [generating, setGenerating] = useState(false)
   const [copilotOutput, setCopilotOutput] = useState('')
+  const [copilotSuggestions, setCopilotSuggestions] = useState(null)
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
   useEffect(() => { loadBlueprint() }, [app.id])  // eslint-disable-line react-hooks/exhaustive-deps
 
   async function loadBlueprint() {
-    const { data } = await supabase.from('app_blueprints')
+    const { data, error } = await supabase.from('app_blueprints')
       .select('blueprint').eq('app_id', app.id).maybeSingle()
-    setBp(data?.blueprint || {
-      business_problem: '',
-      audience: '',
-      inputs: [],
-      output_contract: { format: 'markdown', required_fields: [] },
-      ai_behavior: { tone_preset: '', refusal_rules: '' },
-      permissions: { stores_user_data: false, requires_external_api: false, handles_sensitive_data: false },
-    })
+    if (error?.code === '42P01') { setTableNeeded(true); return }
+    setBp(data?.blueprint ? { ...EMPTY_BP, ...data.blueprint } : { ...EMPTY_BP })
   }
 
   async function save(next) {
@@ -552,11 +631,16 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio }) {
         const next = {
           ...bp,
           business_problem: parsed.business_problem || bp.business_problem,
-          audience: parsed.audience || bp.audience,
-          inputs: parsed.inputs?.length ? parsed.inputs : bp.inputs,
-          output_contract: parsed.output_contract || bp.output_contract,
+          audience:          parsed.audience          || bp.audience,
+          inputs:            parsed.inputs?.length    ? parsed.inputs : bp.inputs,
+          output_contract:   parsed.output_contract   || bp.output_contract,
         }
         setBp(next)
+        // Surface extra suggestions (not auto-applied)
+        const extras = {}
+        if (parsed.system_prompt_hint)  extras.system_prompt_hint  = parsed.system_prompt_hint
+        if (parsed.marketplace_tagline) extras.marketplace_tagline = parsed.marketplace_tagline
+        if (Object.keys(extras).length) setCopilotSuggestions(extras)
         toast('Blueprint generated — review and save', 'success', 4000)
       } catch (_) {
         toast('Generated — copy from preview below', 'info', 3000)
@@ -568,9 +652,19 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio }) {
     }
   }
 
-  if (!bp) return <p className="text-slate-500 text-sm py-6 text-center">Loading blueprint…</p>
+  if (tableNeeded) return (
+    <div className="bg-[#171B33] border border-amber-500/20 rounded-2xl p-6 space-y-3">
+      <p className="text-amber-300 font-semibold text-sm">⚠️ Blueprint table not set up</p>
+      <p className="text-slate-400 text-xs leading-relaxed">
+        Run <code className="bg-[#0E1424] px-1.5 py-0.5 rounded text-amber-300">supabase_app_blueprints.sql</code> in your Supabase SQL editor to enable the Blueprint Studio.
+      </p>
+      <button onClick={loadBlueprint} className="text-xs font-semibold px-4 py-2 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 transition-colors">
+        Retry
+      </button>
+    </div>
+  )
 
-  const score = calcReadiness(app, bp)
+  if (!bp) return <p className="text-slate-500 text-sm py-6 text-center">Loading blueprint…</p>
 
   return (
     <div className="space-y-5">
@@ -599,7 +693,7 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio }) {
 
       {/* Readiness */}
       <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5">
-        <ReadinessBar score={score} />
+        <ReadinessBar app={app} bp={bp} />
       </div>
 
       {/* Copilot */}
@@ -622,6 +716,26 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio }) {
             <summary className="cursor-pointer hover:text-slate-400">View raw output</summary>
             <pre className="mt-2 bg-[#0E1424] rounded-lg p-3 overflow-x-auto text-slate-400 leading-relaxed whitespace-pre-wrap">{copilotOutput}</pre>
           </details>
+        )}
+        {copilotSuggestions && (
+          <div className="bg-[#0E1424] border border-[#6C5CE7]/20 rounded-xl p-4 space-y-2">
+            <p className="text-[10px] font-semibold text-[#A29BFE] uppercase tracking-wider">Copilot suggestions — review before applying</p>
+            {copilotSuggestions.system_prompt_hint && (
+              <div className="space-y-1">
+                <p className="text-[10px] text-slate-500 uppercase font-semibold">Prompt hint</p>
+                <p className="text-xs text-slate-300 leading-relaxed">{copilotSuggestions.system_prompt_hint}</p>
+                <button onClick={() => onOpenPromptStudio(app)} className="text-[11px] text-[#A29BFE] hover:underline">Apply in Prompt Studio →</button>
+              </div>
+            )}
+            {copilotSuggestions.marketplace_tagline && (
+              <div className="space-y-1">
+                <p className="text-[10px] text-slate-500 uppercase font-semibold">Marketplace tagline</p>
+                <p className="text-xs text-slate-300">{copilotSuggestions.marketplace_tagline}</p>
+                <p className="text-[10px] text-slate-600">Use this when submitting to the Marketplace.</p>
+              </div>
+            )}
+            <button onClick={() => setCopilotSuggestions(null)} className="text-[10px] text-slate-600 hover:text-slate-400 transition-colors">Dismiss</button>
+          </div>
         )}
       </div>
 
@@ -717,6 +831,7 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio }) {
           </div>
         </div>
 
+        {/* JSON: required fields */}
         {bp.output_contract?.format === 'json' && (
           <div className="space-y-2">
             <div className="flex items-center justify-between">
@@ -750,6 +865,87 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio }) {
               </div>
             )}
           </div>
+        )}
+
+        {/* Markdown: required sections */}
+        {bp.output_contract?.format === 'markdown' && (
+          <FormatRulesEditor
+            label="Required sections"
+            hint="e.g. Summary, Findings, Recommendations"
+            rulesKey="sections"
+            bp={bp} setBp={setBp}
+          />
+        )}
+
+        {/* Table: required columns */}
+        {bp.output_contract?.format === 'table' && (
+          <FormatRulesEditor
+            label="Required columns"
+            hint="e.g. Name, Score, Recommendation"
+            rulesKey="columns"
+            bp={bp} setBp={setBp}
+          />
+        )}
+
+        {/* Email: subject / tone / required parts */}
+        {bp.output_contract?.format === 'email' && (
+          <div className="space-y-2">
+            {[
+              { key: 'subject_hint',  label: 'Subject line hint',  ph: 'e.g. "[Action required] {{topic}}"' },
+              { key: 'tone',          label: 'Tone',               ph: 'e.g. Professional and concise' },
+              { key: 'required_parts',label: 'Required parts',     ph: 'e.g. Greeting, Context, Ask, Sign-off' },
+            ].map(({ key, label, ph }) => (
+              <div key={key} className="space-y-0.5">
+                <label className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide">{label}</label>
+                <input value={bp.output_contract?.format_rules?.[key] || ''}
+                  onChange={e => setBp({ ...bp, output_contract: { ...bp.output_contract, format_rules: { ...(bp.output_contract.format_rules || {}), [key]: e.target.value } } })}
+                  placeholder={ph}
+                  className="w-full bg-[#0E1424] border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/40" />
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Checklist: minimum items */}
+        {bp.output_contract?.format === 'checklist' && (
+          <div className="space-y-2">
+            <FormatRulesEditor label="Required item categories" hint="e.g. Completed, Pending, Blocked" rulesKey="categories" bp={bp} setBp={setBp} />
+            <div className="space-y-0.5">
+              <label className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide">Minimum items</label>
+              <input type="number" min={1} value={bp.output_contract?.format_rules?.min_items || ''}
+                onChange={e => setBp({ ...bp, output_contract: { ...bp.output_contract, format_rules: { ...(bp.output_contract.format_rules || {}), min_items: e.target.value } } })}
+                placeholder="e.g. 3"
+                className="w-32 bg-[#0E1424] border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/40" />
+            </div>
+          </div>
+        )}
+
+        {/* Scorecard: score range + required dimensions */}
+        {bp.output_contract?.format === 'scorecard' && (
+          <div className="space-y-2">
+            <FormatRulesEditor label="Scored dimensions" hint="e.g. Relevance, Clarity, Completeness" rulesKey="dimensions" bp={bp} setBp={setBp} />
+            <div className="flex gap-3">
+              {[['min_score','Min score','0'],['max_score','Max score','100']].map(([key, label, ph]) => (
+                <div key={key} className="space-y-0.5 flex-1">
+                  <label className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide">{label}</label>
+                  <input type="number" value={bp.output_contract?.format_rules?.[key] || ''}
+                    onChange={e => setBp({ ...bp, output_contract: { ...bp.output_contract, format_rules: { ...(bp.output_contract.format_rules || {}), [key]: e.target.value } } })}
+                    placeholder={ph}
+                    className="w-full bg-[#0E1424] border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/40" />
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Decision memo: required sections */}
+        {bp.output_contract?.format === 'decision' && (
+          <FormatRulesEditor label="Required sections" hint="e.g. Context, Options, Recommendation, Risks" rulesKey="sections" bp={bp} setBp={setBp} />
+        )}
+
+        {/* Multi-section document */}
+        {bp.output_contract?.format === 'document' && (
+          <FormatRulesEditor label="Required sections" hint="e.g. Executive Summary, Analysis, Appendix" rulesKey="sections" bp={bp} setBp={setBp} />
         )}
       </div>
 
@@ -824,6 +1020,9 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio }) {
         <p className="text-xs font-semibold text-white uppercase tracking-wider">Tools & Capabilities</p>
         <ToolsEditor appId={app.id} />
       </div>
+
+      {/* Design → Test handoff */}
+      <DesignTestHandoff app={app} bp={bp} />
 
       {/* Save footer */}
       <div className="flex justify-end pt-2 pb-6">

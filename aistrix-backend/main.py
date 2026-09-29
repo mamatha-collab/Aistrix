@@ -514,11 +514,16 @@ async def execute_tool(tool: dict, tool_input: dict) -> str:
             return "Provide a 'url' pointing to the image file."
 
         elif tool_type == "email":
-            to = tool_input.get("to", "")
+            to = tool_input.get("to", "").strip()
             subject = tool_input.get("subject", "Message from Aistrix")
             body = tool_input.get("body", "")
             if not to or not body:
                 return "Missing 'to' or 'body' for email."
+            if not re.match(r'^[^\s@]+@[^\s@]+\.[^\s@]{2,}$', to):
+                return "Invalid recipient email address."
+            allowed = config.get("allowed_recipients", [])
+            if allowed and to not in allowed:
+                return f"Recipient not permitted by this tool's configuration."
             api_key = config.get("api_key", "")
             if api_key and api_key.startswith("SG."):
                 async with httpx.AsyncClient(timeout=10) as client:
@@ -540,6 +545,8 @@ async def execute_tool(tool: dict, tool_input: dict) -> str:
 
         elif tool_type == "storage":
             action = tool_input.get("action", "list")
+            if action not in ("list", "url"):
+                return f"Storage action '{action}' is not supported."
             bucket = config.get("bucket", "uploads")
             filename = tool_input.get("filename", "")
             sb = get_anon_client()

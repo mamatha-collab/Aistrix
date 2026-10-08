@@ -1861,7 +1861,7 @@ async def create_api_key(body: ApiKeyCreateRequest, request: Request):
         }))
     except Exception as e:
         print(f"create_api_key error: {e}")
-        raise HTTPException(status_code=503, detail="Key storage isn't migrated — run supabase_developer_platform.sql")
+        raise HTTPException(status_code=503, detail="Key storage isn't set up — apply the database migrations (npm run db:push)")
     row = res.data[0]
     return {"id": row["id"], "name": row["name"], "key": raw, "key_prefix": row["key_prefix"],
             "workspace_id": ws, "app_ids": row.get("app_ids") or [], "created_at": row.get("created_at")}
@@ -2019,7 +2019,7 @@ async def create_batch(app_id: str, body: BatchCreateRequest, request: Request):
         }))).data[0]
     except Exception as e:
         print(f"create_batch error: {e}")
-        raise HTTPException(status_code=503, detail="Batch storage isn't migrated — run supabase_developer_platform.sql")
+        raise HTTPException(status_code=503, detail="Batch storage isn't set up — apply the database migrations (npm run db:push)")
     rows = [{"job_id": job["id"], "idx": i, "input": t, "status": "pending"} for i, t in enumerate(inputs)]
     for i in range(0, len(rows), 500):
         await db(sb.table("batch_job_rows").insert(rows[i:i + 500]))

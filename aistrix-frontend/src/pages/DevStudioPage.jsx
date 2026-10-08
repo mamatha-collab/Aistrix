@@ -2232,7 +2232,7 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
       <p className="text-amber-300 font-semibold text-sm">⚠️ Blueprint table not set up</p>
       <p className="text-slate-300 text-xs leading-relaxed">
         The frontend can read and write blueprints after the table exists, but it cannot create Supabase tables with the public anon key.
-        Run <code className="bg-[#0E1424] px-1.5 py-0.5 rounded text-amber-300">supabase_app_blueprints.sql</code> in your Supabase SQL editor to enable the Blueprint Studio.
+        Apply the database migrations (<code className="bg-[#0E1424] px-1.5 py-0.5 rounded text-amber-300">npm run db:push</code>) to enable the Blueprint Studio.
       </p>
       <div className="flex flex-wrap gap-2">
         <button

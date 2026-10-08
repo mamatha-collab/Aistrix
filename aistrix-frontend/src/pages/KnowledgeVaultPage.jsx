@@ -3,6 +3,7 @@ import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { timeAgo } from '../utils'
 import { parseSSELine } from '../lib/sse'
+import { scopeToWorkspace } from '../lib/workspace'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -38,10 +39,9 @@ export default function KnowledgeVaultPage({ user }) {
 
   async function load() {
     setLoading(true)
-    const { data } = await supabase
+    const { data } = await scopeToWorkspace(supabase
       .from('knowledge_vault')
-      .select('*')
-      .eq('user_id', user.id)
+      .select('*'), user)
       .order('created_at', { ascending: false })
     setItems(data || [])
     setLoading(false)
@@ -59,7 +59,7 @@ export default function KnowledgeVaultPage({ user }) {
           input: url,
           system_prompt: 'Fetch and return the main text content of this URL. Return only the clean text content, no HTML, no navigation menus, no ads, no footers. Preserve meaningful structure with line breaks.',
           ai_provider: 'claude',
-          ai_model: 'claude-haiku-4-5-20251001',
+          ai_model: 'claude-haiku-5-5',
         }),
       })
       const reader = res.body.getReader()

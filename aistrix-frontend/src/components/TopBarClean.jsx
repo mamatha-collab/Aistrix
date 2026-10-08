@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { Box, Clock, KeyRound, LayoutGrid, Menu, Search, Sparkles, Workflow, X } from 'lucide-react'
 import NotificationsPanel from './NotificationsPanel'
+import WorkspaceSwitcher from './WorkspaceSwitcher'
 
 const VIEW_META = {
   apps:        { title: 'AI Apps',        subtitle: 'Build and run AI-powered apps', icon: LayoutGrid, label: 'AI APPS', buildView: true },
@@ -14,14 +15,15 @@ const VIEW_META = {
   profiles:    { title: 'Profiles',        subtitle: 'User and team profiles' },
   integrations:{ title: 'Integrations',    subtitle: 'Connect external services' },
   settings:    { title: 'Settings',        subtitle: 'Account and preferences' },
-  developer:   { title: 'Developer',       subtitle: 'API keys and developer tools' },
+  developer:   { title: 'Developer',       subtitle: 'Build, test, publish, and monetize AI apps' },
   data_sources:{ title: 'Data Sources',    subtitle: 'Manage your data connections' },
   admin:       { title: 'Admin',           subtitle: 'Platform administration' },
   moderator:   { title: 'Moderator',       subtitle: 'Content moderation tools' },
   marketplace: { title: 'Marketplace',     subtitle: 'Discover AI apps built on Aistrix' },
 }
 
-export default function TopBarClean({ onShowHistory, onShowSettings, onToggleSidebar, onShowCreate, onShowWorkspace, search, onSearch, searchRef, user, onNavChange, activeView }) {
+export default function TopBarClean({ onShowHistory, onShowSettings, onToggleSidebar, onShowCreate, onShowWorkspace, search, onSearch, searchRef, user, onNavChange, activeView,
+  workspaces = [], activeWorkspace, onSwitchWorkspace, onCreateWorkspace, onManageWorkspace }) {
   const [buildOpen, setBuildOpen] = useState(false)
   const buildRef = useRef(null)
 
@@ -77,6 +79,8 @@ export default function TopBarClean({ onShowHistory, onShowSettings, onToggleSid
           )}
         </div>
 
+        <WorkspaceSwitcher workspaces={workspaces} active={activeWorkspace}
+          onSwitch={onSwitchWorkspace} onCreate={onCreateWorkspace} onManage={onManageWorkspace} />
         {user && <NotificationsPanel user={user} onNavChange={onNavChange} />}
         <button
           onClick={onShowHistory}

@@ -32,7 +32,7 @@ Return ONLY valid JSON — no markdown, no explanation:
   "app_type": "prompt OR native",
   "system_prompt": "Detailed, well-crafted system prompt that makes the AI behave correctly for this use case. Include output format instructions based on the chosen output format.",
   "ai_provider": "claude OR openai",
-  "ai_model": "claude-sonnet-4-6 OR gpt-4o-mini OR gpt-4o",
+  "ai_model": "claude-sonnet-5-5 OR gpt-4o-mini OR gpt-4o",
   "tags": ["tag1", "tag2", "tag3"],
   "form_schema": [
     // Only include if app_type is native. Array of field objects:
@@ -48,7 +48,7 @@ Return ONLY valid JSON — no markdown, no explanation:
 Rules:
 - Use app_type "native" if the developer wants structured form inputs (multiple distinct fields)
 - Use app_type "prompt" for single text input
-- Recommend claude-sonnet-4-6 by default unless GPT was specifically chosen
+- Recommend claude-sonnet-5-5 by default unless GPT was specifically chosen
 - Only add tools if genuinely needed (search for real-time data, calculator for math)
 - Make the system_prompt professional and detailed — this is the heart of the app`
 
@@ -61,7 +61,7 @@ async function callAI(systemPrompt, userMessage) {
       input: userMessage,
       system_prompt: systemPrompt,
       ai_provider: 'claude',
-      ai_model: 'claude-sonnet-4-6',
+      ai_model: 'claude-sonnet-5-5',
     }),
   })
 
@@ -123,7 +123,7 @@ function TestRunPanel({ config }) {
           input,
           system_prompt: config.system_prompt,
           ai_provider: config.ai_provider || 'claude',
-          ai_model: config.ai_model || 'claude-sonnet-4-6',
+          ai_model: config.ai_model || 'claude-sonnet-5-5',
         }),
       })
       const reader = res.body.getReader()
@@ -342,7 +342,7 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated }) {
         form_schema: cfg.form_schema || [],
         output_type: outputType,
         ai_provider: cfg.ai_provider || 'claude',
-        ai_model: cfg.ai_model || 'claude-sonnet-4-6',
+        ai_model: cfg.ai_model || 'claude-sonnet-5-5',
         tags: cfg.tags || [],
         is_published: publish,
         created_by: user.id,
@@ -393,20 +393,22 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated }) {
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-      <div className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-lg flex flex-col max-h-[90vh]">
+      <div className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-lg flex flex-col" style={{ maxHeight: '92vh' }}>
 
         {/* Header */}
-        <div className="flex items-center justify-between p-5 border-b border-white/5">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-[#6C5CE7] to-[#E84393] flex items-center justify-center text-white font-bold text-sm">✦</div>
-            <div>
-              <p className="text-white font-semibold">Build with AI</p>
-              <p className="text-xs text-slate-400">Describe your app — AI configures everything</p>
+        <div className="px-6 pt-6 pb-5 shrink-0 border-b border-white/5">
+          <div className="flex items-start justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#6C5CE7] to-[#E84393] flex items-center justify-center text-white font-bold shrink-0">✦</div>
+              <div>
+                <p className="text-white font-bold text-xl leading-snug">Build with AI</p>
+                <p className="text-slate-400 text-sm mt-0.5">Describe your app — AI configures everything</p>
+              </div>
             </div>
+            <button aria-label="Close" onClick={onBack && phase === 'describe' ? onBack : onClose} className="text-slate-500 hover:text-white transition-colors p-1 shrink-0 ml-4">
+              {onBack && phase === 'describe' ? '← Back' : '✕'}
+            </button>
           </div>
-          <button onClick={onBack && phase === 'describe' ? onBack : onClose} className="text-slate-500 hover:text-white transition-colors text-sm">
-            {onBack && phase === 'describe' ? '← Back' : '✕'}
-          </button>
         </div>
 
         {/* Progress bar */}

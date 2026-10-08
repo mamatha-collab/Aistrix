@@ -3,14 +3,16 @@ import { supabase } from '../supabase'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useToast } from '../hooks/useToast'
 import { parseSSELine } from '../lib/sse'
+import OutputSchemaEditor from './OutputSchemaEditor'
+import { formSchemaToInputFields, getOutputSchemaFields, outputFieldsErrors } from '../utils/schemaContracts'
 
 const EMOJI_OPTIONS = ['🤖','🧠','✍️','📊','🔍','💡','📝','🎯','🚀','🛠️','💬','📈','🔧','🎨','📧','🌐','⚡','🏆','🎓','🔑']
 
 const MODELS = {
   claude: [
-    { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (Recommended)' },
-    { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (Fast)' },
-    { id: 'claude-opus-4-8', label: 'Claude Opus 4.8 (Powerful)' },
+    { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5 (Recommended)' },
+    { id: 'claude-haiku-5-5', label: 'Claude Haiku 5.5 (Fast)' },
+    { id: 'claude-opus-5-5', label: 'Claude Opus 5.5 (Powerful)' },
   ],
   openai: [
     { id: 'gpt-4o-mini', label: 'GPT-4o Mini (Recommended)' },
@@ -350,14 +352,14 @@ export default function CreateAppModal({ user, onClose, onBack, onCreated, onUpd
     description: existingApp?.description || websitePrefilled?.description || '',
     system_prompt: existingApp?.system_prompt || websitePrefilled?.system_prompt || '',
     ai_provider: existingApp?.ai_provider || 'claude',
-    ai_model: existingApp?.ai_model || 'claude-sonnet-4-6',
+    ai_model: existingApp?.ai_model || 'claude-sonnet-5-5',
     tags: existingApp?.tags?.join(', ') || websitePrefilled?.tags || '',
     input_placeholder: existingApp?.input_placeholder || websitePrefilled?.input_placeholder || '',
     webhook_url: existingApp?.webhook_url || '',
     domain_id: existingApp?.domain_id || null,
     required_context: existingApp?.required_context || [],
     compose_hint: existingApp?.compose_hint || '',
-    output_type: existingApp?.output_type || (initialType === 'api' ? 'json' : initialType === 'data' ? 'table' : 'markdown'),
+    output_type: existingApp?.output_type || (initialType === 'api' || initialType === 'structured' ? 'json' : initialType === 'data' ? 'table' : 'markdown'),
     visibility: existingApp?.visibility || 'public',
     is_paid: existingApp?.is_paid || false,
     price_per_run: existingApp?.price_per_run || 0,
@@ -367,6 +369,8 @@ export default function CreateAppModal({ user, onClose, onBack, onCreated, onUpd
     sample_input: existingApp?.sample_input || '',
   })
   const [formSchema, setFormSchema] = useState(existingApp?.form_schema || [])
+  const [outputFields, setOutputFields] = useState([])
+  const [existingBlueprint, setExistingBlueprint] = useState(null)
   const [pendingTools, setPendingTools] = useState([])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -381,6 +385,8 @@ export default function CreateAppModal({ user, onClose, onBack, onCreated, onUpd
   const isApi     = appType === 'api'
   const isData    = appType === 'data'
   const isWebsite = appType === 'website'
+  const isStructured = appType === 'structured'
+  const hasOutputSchema = isStructured || isApi
   const [generating, setGenerating] = useState(false)
   const [websiteUrl, setWebsiteUrl] = useState('')
   const [websiteScraping, setWebsiteScraping] = useState(false)
@@ -411,7 +417,7 @@ Return ONLY valid JSON with these fields:
   "tags": "comma-separated tags, e.g. 'support, retail, customer service'",
   "input_placeholder": "a helpful prompt placeholder, e.g. 'Ask about our products, hours, or services…'"
 }`,
-          ai_provider: 'claude', ai_model: 'claude-sonnet-4-6',
+          ai_provider: 'claude', ai_model: 'claude-sonnet-5-5',
         }),
       })
       const reader = res.body.getReader(); const decoder = new TextDecoder()
@@ -446,7 +452,7 @@ Return ONLY valid JSON with these fields:
         body: JSON.stringify({
           input: form.system_prompt,
           system_prompt: 'Given this AI app system prompt, generate a concise app name, a one-sentence description, a single relevant emoji, and 3-4 relevant tags. Return ONLY valid JSON: {"name":"...","description":"...","emoji":"...","tags":"tag1, tag2, tag3"}',
-          ai_provider: 'claude', ai_model: 'claude-haiku-4-5-20251001',
+          ai_provider: 'claude', ai_model: 'claude-haiku-5-5',
         }),
       })
       const reader = res.body.getReader(); const decoder = new TextDecoder()
@@ -472,6 +478,43 @@ Return ONLY valid JSON with these fields:
       .then(({ data }) => { if (data) startTransition(() => setDomains(data)) })
   }, [])
 
+  // Editing: load the saved contract so output fields round-trip (and so we
+  // merge into, rather than overwrite, anything Blueprint Studio added).
+  useEffect(() => {
+    if (!existingApp?.id) return
+    supabase.from('app_blueprints').select('blueprint').eq('app_id', existingApp.id).maybeSingle()
+      .then(({ data }) => {
+        const bp = data?.blueprint || {}
+        setExistingBlueprint(bp)
+        setOutputFields(getOutputSchemaFields(bp).map(f => ({ ...f })))
+      })
+  }, [existingApp?.id])
+
+  async function saveBlueprint(appId) {
+    const inputFields = (isNative || isApi) ? formSchemaToInputFields(formSchema) : []
+    if (!outputFields.length && !inputFields.length && !existingBlueprint) return null
+    let base = existingBlueprint
+    if (!base) {
+      const { data } = await supabase.from('app_blueprints').select('blueprint').eq('app_id', appId).maybeSingle()
+      base = data?.blueprint || {}
+    }
+    const blueprint = { ...base }
+    if (inputFields.length) blueprint.input_schema = { type: 'object', fields: inputFields }
+    if (hasOutputSchema) {
+      if (outputFields.length) {
+        blueprint.output_schema = { type: 'object', fields: outputFields }
+        blueprint.output_contract = { ...(base.output_contract || {}), format: 'json', fields: outputFields }
+      } else {
+        delete blueprint.output_schema
+        if (blueprint.output_contract) blueprint.output_contract = { ...blueprint.output_contract, fields: [] }
+      }
+    }
+    const { error } = await supabase.from('app_blueprints').upsert({
+      app_id: appId, user_id: user.id, blueprint, updated_at: new Date().toISOString(),
+    }, { onConflict: 'app_id' })
+    return error
+  }
+
   function set(key, val) {
     setForm(prev => {
       const next = { ...prev, [key]: val }
@@ -489,6 +532,12 @@ Return ONLY valid JSON with these fields:
       setError('Add at least one input field for a Native App.')
       return
     }
+    if (isStructured && outputFields.length === 0) {
+      setError('Add at least one output field — it defines the JSON every response must match.')
+      return
+    }
+    const fieldsError = hasOutputSchema ? outputFieldsErrors(outputFields) : ''
+    if (fieldsError) { setError(fieldsError); return }
     setSaving(true); setError('')
 
     const tags = form.tags ? form.tags.split(',').map(t => t.trim()).filter(Boolean) : []
@@ -501,7 +550,7 @@ Return ONLY valid JSON with these fields:
       compose_hint: form.compose_hint.trim() || null,
       app_type: appType,
       form_schema: isNative ? formSchema : [],
-      output_type: form.output_type,
+      output_type: isStructured ? 'json' : form.output_type,
       visibility: form.visibility || 'public',
       is_paid: form.is_paid || false,
       price_per_run: form.is_paid ? Number(form.price_per_run) : 0,
@@ -528,20 +577,34 @@ Return ONLY valid JSON with these fields:
       if (versionErr) toast(`Couldn't snapshot the previous version: ${versionErr.message}`, 'error')
       const { data, error: err } = await supabase.from('apps').update(payload)
         .eq('id', existingApp.id).select('*, domains(name, emoji, color, slug)').single()
+      if (err) { setSaving(false); setError(err.message); return }
+      const bpErr = await saveBlueprint(existingApp.id)
       setSaving(false)
-      if (err) { setError(err.message); return }
+      if (bpErr) toast(`Saved, but the input/output contract wasn't: ${bpErr.message}`, 'error', 8000)
       onUpdated?.(data)
     } else {
       const { data, error: err } = await supabase.from('apps')
         .insert({ ...payload, is_published: true, created_by: user.id, workflow_order: 999, total_runs: 0 })
         .select('*, domains(name, emoji, color, slug)').single()
+      if (err) { setSaving(false); setError(err.message); return }
+      const bpErr = await saveBlueprint(data.id)
       setSaving(false)
-      if (err) { setError(err.message); return }
+      if (bpErr) toast(`"${data.name}" saved, but its input/output contract wasn't: ${bpErr.message}`, 'error', 8000)
       if (pendingTools.length > 0) {
         const { error: toolsErr } = await supabase.from('app_tools').insert(pendingTools.map(t => ({ ...t, app_id: data.id })))
         // The app itself saved fine — surface this via toast (not setError,
         // which the modal is about to unmount) so it isn't lost silently.
         if (toolsErr) toast(`"${data.name}" saved, but its tools weren't: ${toolsErr.message}`, 'error', 6000)
+      }
+      if (isWebsite && websitePrefilled?.source_text) {
+        const { error: kbErr } = await supabase.from('app_knowledge').insert({
+          app_id: data.id,
+          title: websitePrefilled.source_url ? `Website source: ${websitePrefilled.source_url}` : 'Website source',
+          content: websitePrefilled.source_text.slice(0, 20000),
+          source_url: websitePrefilled.source_url || null,
+          type: 'url',
+        })
+        if (kbErr) toast(`"${data.name}" saved, but website source wasn't attached: ${kbErr.message}`, 'error', 6000)
       }
       onCreated?.(data)
     }
@@ -584,8 +647,8 @@ Return ONLY valid JSON with these fields:
   const promptStep = isWebsite ? 3 : 2
 
   const inputCls = 'w-full bg-[#1F2444] border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-[#6C5CE7] transition-colors'
-  const typeLabel = isNative ? 'Native App' : isApi ? 'API App' : isData ? 'Data App' : isWebsite ? 'From Website' : appType === 'agent' ? 'Agent' : appType === 'iframe' ? 'Iframe App' : 'Prompt App'
-  const typeColor = isNative ? '#00B894' : isApi ? '#0984E3' : isData ? '#E17055' : isWebsite ? '#00B894' : appType === 'agent' ? '#FDCB6E' : appType === 'iframe' ? '#E84393' : '#6C5CE7'
+  const typeLabel = isNative ? 'Native App' : isApi ? 'API App' : isData ? 'Data App' : isWebsite ? 'From Website' : isStructured ? 'Structured Output App' : appType === 'batch' ? 'Batch Processor' : appType === 'agent' ? 'Agent' : appType === 'iframe' ? 'Iframe App' : 'Prompt App'
+  const typeColor = isNative ? '#00B894' : isApi || isStructured ? '#0984E3' : isData ? '#E17055' : isWebsite ? '#00B894' : appType === 'batch' ? '#6C5CE7' : appType === 'agent' ? '#FDCB6E' : appType === 'iframe' ? '#E84393' : '#6C5CE7'
 
   const stepLabels = isWebsite
     ? (websiteScraped ? ['Website', 'Info', 'AI & Prompt', 'Tools'] : ['Website'])
@@ -596,30 +659,31 @@ Return ONLY valid JSON with these fields:
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
       <div ref={modalRef} role="dialog" aria-modal="true" aria-label={isEdit ? `Edit ${typeLabel}` : `New ${typeLabel}`}
-        className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-xl flex flex-col max-h-[90vh]">
+        className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-xl flex flex-col" style={{ maxHeight: '92vh' }}>
         {/* Header */}
-        <div className="flex items-center justify-between p-5 border-b border-white/5">
-          <div>
-            <div className="flex items-center gap-2 mb-0.5">
-              <p className="text-white font-medium">{isEdit ? `Edit — ${typeLabel}` : `New ${typeLabel}`}</p>
-              <span className="text-[10px] px-2 py-0.5 rounded-full font-medium" style={{ background: typeColor + '22', color: typeColor }}>
-                {typeLabel}
-              </span>
+        <div className="px-6 pt-6 pb-5 shrink-0 border-b border-white/5">
+          <div className="flex items-start justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl font-bold shrink-0"
+                style={{ background: typeColor + '22', color: typeColor }}>
+                {isNative ? '⊞' : isApi || isStructured ? '{}' : isData ? '▦' : isWebsite ? '🌐' : appType === 'batch' ? '⊞' : appType === 'agent' ? '◈' : appType === 'iframe' ? '⬡' : '✦'}
+              </div>
+              <div>
+                <p className="text-white font-bold text-xl leading-snug">{isEdit ? `Edit — ${typeLabel}` : `New ${typeLabel}`}</p>
+                <p className="text-slate-400 text-sm mt-0.5">Step {step} of {STEPS} — {stepLabels[step - 1]}</p>
+              </div>
             </div>
-            <p className="text-xs text-slate-400">
-              Step {step} of {STEPS} — {stepLabels[step - 1]}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            {form.system_prompt.trim() && (
-              <button onClick={() => { setShowPreview(v => { if (!v && form.sample_input.trim()) setPreviewInput(form.sample_input); return !v }); setPreviewResult('') }}
-                className={`text-xs px-3 py-1.5 rounded-lg font-medium transition-colors ${showPreview ? 'bg-green-500/20 text-green-400' : 'bg-[#1F2444] text-slate-400 hover:text-white'}`}>
-                {showPreview ? '✕ Close Test' : '▶ Test'}
+            <div className="flex items-center gap-2 ml-4 shrink-0">
+              {form.system_prompt.trim() && (
+                <button onClick={() => { setShowPreview(v => { if (!v && form.sample_input.trim()) setPreviewInput(form.sample_input); return !v }); setPreviewResult('') }}
+                  className={`text-xs px-3 py-1.5 rounded-lg font-medium transition-colors ${showPreview ? 'bg-green-500/20 text-green-400' : 'bg-[#1F2444] text-slate-400 hover:text-white'}`}>
+                  {showPreview ? '✕ Test' : '▶ Test'}
+                </button>
+              )}
+              <button aria-label="Close" onClick={onBack && !existingApp && step === 1 ? onBack : onClose} className="text-slate-500 hover:text-white transition-colors p-1">
+                {onBack && !existingApp && step === 1 ? '← Back' : '✕'}
               </button>
-            )}
-            <button onClick={onBack && !existingApp && step === 1 ? onBack : onClose} className="text-slate-500 hover:text-white transition-colors text-sm">
-              {onBack && !existingApp && step === 1 ? '← Back' : '✕'}
-            </button>
+            </div>
           </div>
         </div>
 
@@ -824,7 +888,20 @@ Return ONLY valid JSON with these fields:
                   </select>
                 </div>
               </div>
-              <div>
+              {hasOutputSchema && (
+                <div>
+                  <label className="text-xs text-slate-400 block mb-1">
+                    Output fields {isApi && <span className="text-slate-600">(optional — makes responses validated JSON)</span>}
+                  </label>
+                  <p className="text-[10px] text-slate-500 mb-2 leading-relaxed">
+                    Every response is checked against these fields. If the model gets it wrong, Aistrix asks it to fix the
+                    response once; if it still fails, the caller gets a clear contract error instead of bad data.
+                  </p>
+                  <OutputSchemaEditor fields={outputFields} onChange={setOutputFields} accent={typeColor} />
+                </div>
+              )}
+
+              {!isStructured && <div>
                 <label className="text-xs text-slate-400 block mb-2">Output format</label>
                 <div className="grid grid-cols-3 gap-2">
                   {[
@@ -844,7 +921,7 @@ Return ONLY valid JSON with these fields:
                     </button>
                   ))}
                 </div>
-              </div>
+              </div>}
 
               {/* Memory toggle */}
               <div className="flex items-center justify-between bg-[#1F2444] border border-white/10 rounded-xl px-4 py-3">

@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, lazy, Suspense } from 'react'
 import { supabase } from '../supabase'
 import AppCard, { AppTab } from './AppCard'
 import { useToast } from '../hooks/useToast'
+import { scopeToWorkspace } from '../lib/workspace'
 
 // Lazy-loaded — both are modals only rendered behind a toggle, and AppGrid is
 // statically imported from App.jsx, so anything imported statically here
@@ -136,8 +137,8 @@ function DomainTemplateCard({ domain, domainApps, selectedApp, user, onSelectApp
   async function useTemplate() {
     if (!user) return
     setInstalling(true)
-    const { data: existing } = await supabase.from('flows')
-      .select('id').eq('user_id', user.id).ilike('name', `%${domain.name}%`).maybeSingle()
+    const { data: existing } = await scopeToWorkspace(supabase.from('flows').select('id'), user)
+      .ilike('name', `%${domain.name}%`).limit(1).maybeSingle()
     if (existing) {
       setInstalled(true); setInstalling(false)
       onNavChange?.('flows'); return
@@ -294,10 +295,9 @@ export default function AppGrid({ onSelectApp, selectedApp, user, search, runCou
 
   async function fetchMyApps() {
     if (!user) return
-    const { data } = await supabase
+    const { data } = await scopeToWorkspace(supabase
       .from('apps')
-      .select('*, domains(name, emoji, color, slug)')
-      .eq('created_by', user.id)
+      .select('*, domains(name, emoji, color, slug)'), user, 'created_by')
       .order('created_at', { ascending: false })
     if (data) setMyApps(data)
   }
@@ -318,15 +318,19 @@ export default function AppGrid({ onSelectApp, selectedApp, user, search, runCou
   }
 
   async function togglePublish(app) {
-    const { data } = await supabase
-      .from('apps')
-      .update({ is_published: !app.is_published })
-      .eq('id', app.id)
-      .select()
-      .single()
-    if (data) {
-      setMyApps(prev => prev.map(a => a.id === app.id ? { ...a, is_published: data.is_published } : a))
+    const next = !app.is_published
+    const { data, error } = await supabase.rpc('set_app_published_with_gate', { p_app_id: app.id, p_publish: next })
+    if (error) {
+      toast(error.message.includes('set_app_published_with_gate') ? 'Publish gate SQL is not installed yet' : error.message, 'error')
+      return
     }
+    const result = Array.isArray(data) ? data[0] : data
+    if (!result?.ok) {
+      toast(`Publish blocked: ${(result?.errors || ['complete the schema checklist']).join('; ')}`, 'error', 8000)
+      return
+    }
+    setMyApps(prev => prev.map(a => a.id === app.id ? { ...a, is_published: next } : a))
+    toast(next ? 'App published' : 'App set to draft', next ? 'success' : 'info', 2500)
   }
 
   async function fetchFavorites() {

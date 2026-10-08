@@ -87,13 +87,17 @@ export default function ConversationThread({ app, user, threadId: initialThreadI
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
         body: JSON.stringify({
           app_id: app.id, input: conversationalInput,
-          system_prompt: (app.system_prompt || 'You are a helpful assistant.') +
-            '\n\nYou are in a conversation. Respond naturally to the latest message, maintaining context from the conversation history.',
+          system_prompt: app.system_prompt || 'You are a helpful assistant.',
+          run_mode: 'conversation',
           ai_provider: app.ai_provider || 'claude',
           ai_model: app.ai_model || null,
           output_type: 'markdown',
         }),
       })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.error || err.detail || `Run failed (${res.status})`)
+      }
 
       const reader = res.body.getReader()
       const decoder = new TextDecoder()

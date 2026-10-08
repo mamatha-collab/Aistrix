@@ -186,7 +186,7 @@ export default function AnalyticsPage({ user }) {
     const prevStart = new Date(start); prevStart.setDate(prevStart.getDate() - period)
 
     const [{ data: current }, { data: previous }, { data: apps }] = await Promise.all([
-      supabase.from('run_history').select('id, app_id, app_name, created_at, rating')
+      supabase.from('run_history').select('id, app_id, app_name, created_at, rating_value')
         .eq('user_id', user.id).gte('created_at', start.toISOString()).order('created_at'),
       supabase.from('run_history').select('id', { count: 'exact', head: false })
         .eq('user_id', user.id)
@@ -207,9 +207,9 @@ export default function AnalyticsPage({ user }) {
     const total = runs.length
     const prevTotal = prevRuns.length
     const trend = prevTotal > 0 ? Math.round(((total - prevTotal) / prevTotal) * 100) : null
-    const rated = runs.filter(r => r.rating != null)
-    const thumbsUp = rated.filter(r => r.rating === 1).length
-    const thumbsDown = rated.filter(r => r.rating === -1).length
+    const rated = runs.filter(r => r.rating_value != null)
+    const thumbsUp = rated.filter(r => r.rating_value === 1).length
+    const thumbsDown = rated.filter(r => r.rating_value === -1).length
     const ratingPct = rated.length > 0 ? Math.round((thumbsUp / rated.length) * 100) : null
 
     // Runs per day
@@ -269,9 +269,9 @@ export default function AnalyticsPage({ user }) {
     })
     return Object.values(byKey).map(app => {
       const total = app.runs.length
-      const rated = app.runs.filter(r => r.rating != null)
-      const thumbsUp = rated.filter(r => r.rating === 1).length
-      const thumbsDown = rated.filter(r => r.rating === -1).length
+      const rated = app.runs.filter(r => r.rating_value != null)
+      const thumbsUp = rated.filter(r => r.rating_value === 1).length
+      const thumbsDown = rated.filter(r => r.rating_value === -1).length
       const usefulPct = rated.length > 0 ? Math.round((thumbsUp / rated.length) * 100) : null
       const notUsefulPct = rated.length > 0 ? Math.round((thumbsDown / rated.length) * 100) : null
       const lastRunInPeriod = app.runs[app.runs.length - 1]?.created_at

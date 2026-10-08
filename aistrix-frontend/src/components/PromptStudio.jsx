@@ -168,7 +168,7 @@ function parseSSELine(line) {
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
-export default function PromptStudio({ app: initialApp, user, onClose, onSaved }) {
+export default function PromptStudio({ app: initialApp, user, onClose, onSaved, mode = 'modal' }) {
   const [prompt, setPrompt]       = useState(initialApp.system_prompt || '')
   const [saving, setSaving]       = useState(false)
   const [dirty, setDirty]         = useState(false)
@@ -304,8 +304,10 @@ export default function PromptStudio({ app: initialApp, user, onClose, onSaved }
     : '🟣 ' + initialApp.ai_model
     : '🟣 default model'
 
-  return createPortal(
-    <div className="fixed inset-0 z-50 flex flex-col bg-[#09101F]">
+  const studio = (
+    <div className={`${mode === 'inline'
+      ? 'h-[72vh] min-h-[560px] flex flex-col bg-[#09101F] border border-[#6C5CE7]/20 rounded-2xl overflow-hidden'
+      : 'fixed inset-0 z-50 flex flex-col bg-[#09101F]'}`}>
 
       {/* Header */}
       <div className="flex items-center gap-3 px-5 py-3 border-b border-white/8 bg-[#0E1424] shrink-0">
@@ -482,7 +484,8 @@ export default function PromptStudio({ app: initialApp, user, onClose, onSaved }
           )}
         </span>
       </div>
-    </div>,
-    document.body
+    </div>
   )
+
+  return mode === 'inline' ? studio : createPortal(studio, document.body)
 }

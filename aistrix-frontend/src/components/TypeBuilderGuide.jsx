@@ -2,6 +2,36 @@ import { useRef } from 'react'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 
 const TYPE_GUIDES = {
+  ai_builder: {
+    icon: '✦',
+    label: 'Build with AI',
+    color: '#E84393',
+    tagline: 'Describe the app. Aistrix drafts the build.',
+    what: 'Use the guided AI builder when you know the business outcome but do not want to choose every app setting manually. Aistrix asks clarifying questions, proposes the app structure, and creates the first version for you.',
+    steps: [
+      'Describe the problem, audience, and output you want',
+      'Answer the builder questions so Aistrix can shape the app',
+      'Review the generated prompt, inputs, and app details',
+      'Create the app, then test and refine it in Developer Studio',
+    ],
+    examples: ['Recruiter resume screener', 'Realtor listing writer', 'Support reply assistant', 'Market research helper'],
+    testTip: 'Give the AI builder a real business scenario, not just a generic app idea. Specific users and outputs create better first drafts.',
+  },
+  website: {
+    icon: '🌐',
+    label: 'From Website',
+    color: '#00B894',
+    tagline: 'Turn a website into an AI app.',
+    what: 'Start from a company page, product site, documentation page, or service landing page. Aistrix reads the URL and drafts an app using the site content as source context.',
+    steps: [
+      'Paste the public website URL',
+      'Let Aistrix analyse the page and generate app details',
+      'Review the name, description, prompt, and source knowledge',
+      'Create the app and test it against realistic customer questions',
+    ],
+    examples: ['Service business assistant', 'Product documentation helper', 'FAQ generator', 'Lead capture support app'],
+    testTip: 'Use a page with clear service or product content. Thin landing pages usually need manual prompt editing after generation.',
+  },
   native: {
     icon: '⊞',
     label: 'Form App',
@@ -92,6 +122,126 @@ const TYPE_GUIDES = {
     examples: ['Cold email writer', 'Meeting notes summarizer', 'Tone rewriter', 'Blog post generator'],
     testTip: 'Try at least 3 different inputs before publishing. Edge cases reveal gaps in your system prompt.',
   },
+  vision: {
+    icon: '👁',
+    label: 'Vision / Image',
+    color: '#00CEC9',
+    tagline: 'Upload an image. Get instant insight.',
+    what: 'Users upload one or more images. The AI analyses, describes, extracts data, or flags issues based on your instructions. No ML training required.',
+    steps: [
+      'Describe what the AI should look for in images',
+      'Set the output format (description, JSON fields, pass/fail)',
+      'Write a system prompt with specific visual criteria',
+      'Test with a real sample image before publishing',
+    ],
+    examples: ['Invoice OCR extractor', 'Product quality checker', 'Diagram analyser', 'Receipt data parser'],
+    testTip: 'Test with images of varying quality and lighting. Vision models can struggle with blurry or low-contrast images.',
+  },
+  structured: {
+    icon: '{ }',
+    label: 'Structured Output',
+    color: '#0984E3',
+    tagline: 'Always returns valid JSON.',
+    what: 'Every response is guaranteed to match a JSON schema you define. Zero parsing errors — perfect for feeding AI output into databases, APIs, or spreadsheets.',
+    steps: [
+      'Define the JSON schema (field names, types, required)',
+      'Write the extraction or classification system prompt',
+      'Test with edge cases to verify the schema holds',
+      'Connect the output to your downstream system',
+    ],
+    examples: ['Lead data extractor', 'Entity recogniser', 'Document classifier', 'Form field parser'],
+    testTip: 'Include optional fields in your schema for data that might be missing. Test with messy input to find schema gaps.',
+  },
+  document: {
+    icon: '📄',
+    label: 'Document / PDF',
+    color: '#E17055',
+    tagline: 'Upload docs. Ask anything.',
+    what: 'Users upload PDFs, Word docs, or text files. The AI reads the content and answers questions, extracts tables, summarises sections, or flags key clauses.',
+    steps: [
+      'Decide what users will ask (Q&A, summary, extraction)',
+      'Write a system prompt focused on the document type',
+      'Set the expected output format',
+      'Test with a real document from your domain',
+    ],
+    examples: ['Contract Q&A bot', 'Policy lookup tool', 'Research summariser', 'Report section extractor'],
+    testTip: 'Test with multi-page documents and tables. Ask edge-case questions the AI might not find answers to.',
+  },
+  batch: {
+    icon: '⊞',
+    label: 'Batch Processor',
+    color: '#6C5CE7',
+    tagline: 'Run AI over hundreds of rows at once.',
+    what: 'Upload a CSV and the same prompt runs against every row automatically. Get back a new CSV with AI-generated columns alongside your original data.',
+    steps: [
+      'Define the column(s) users will provide as input',
+      'Write the per-row system prompt',
+      'Set the output column name and format',
+      'Test with a 5-row sample before running at scale',
+    ],
+    examples: ['Lead scorer', 'Bulk email personaliser', 'Mass categoriser', 'Sentiment analyser'],
+    testTip: 'Always test with a small sample first. A prompt that works on one row may behave differently across 500 rows.',
+  },
+  voice: {
+    icon: '🎙',
+    label: 'Voice / Audio',
+    color: '#A29BFE',
+    tagline: 'Upload audio. Get the transcript and more.',
+    what: 'Users upload audio files (MP3, WAV, M4A). Whisper transcribes them, then your system prompt transforms the transcript — summaries, action items, key quotes.',
+    steps: [
+      'Choose what happens after transcription (summary, actions, insights)',
+      'Write the post-transcription system prompt',
+      'Set the output format for the processed transcript',
+      'Test with a real audio file from your use case',
+    ],
+    examples: ['Meeting notes generator', 'Call summary tool', 'Podcast highlight extractor', 'Lecture summariser'],
+    testTip: 'Test with audio that has multiple speakers or background noise. Whisper handles accents well but struggles with very low quality audio.',
+  },
+  translation: {
+    icon: '🌐',
+    label: 'Translation',
+    color: '#00B894',
+    tagline: 'Translate text with glossary control.',
+    what: 'Users paste text or upload a document. The AI translates into the target language while respecting any glossary or tone instructions you define.',
+    steps: [
+      'Set the target language (or let users choose)',
+      'Define any glossary terms that must stay consistent',
+      'Set tone instructions (formal, casual, technical)',
+      'Test with a real sample from your domain',
+    ],
+    examples: ['Marketing copy translator', 'Legal doc localiser', 'Product UI string translator', 'Support reply translator'],
+    testTip: 'Include 5–10 glossary terms specific to your domain. Generic translations miss brand voice and technical terminology.',
+  },
+  code: {
+    icon: '</>',
+    label: 'Code Gen / Review',
+    color: '#FDCB6E',
+    tagline: 'Generate, review, and explain code.',
+    what: 'Users paste code, describe a feature, or share a PR diff. The AI generates new code, reviews for bugs, explains functions, or writes tests according to your guidelines.',
+    steps: [
+      'Define the coding task (generate, review, explain, test)',
+      'Set the language and any style guide rules',
+      'Write the system prompt with quality criteria',
+      'Test with real code snippets from your codebase',
+    ],
+    examples: ['PR review bot', 'Test generator', 'Code explainer', 'Refactor assistant'],
+    testTip: 'Include language version and framework in your system prompt. GPT-4 and Claude can produce outdated syntax without that context.',
+  },
+  chatbot: {
+    icon: '💬',
+    label: 'Chatbot with Persona',
+    color: '#E84393',
+    tagline: 'A named assistant with personality.',
+    what: 'A multi-turn chat assistant with a custom name, avatar, greeting, and tone. Users have back-and-forth conversations — the chatbot remembers context within the session.',
+    steps: [
+      'Name the chatbot and write its persona description',
+      'Set the greeting message users see on open',
+      'Define the scope (what it can and cannot discuss)',
+      'Choose the tone preset and test the conversation flow',
+    ],
+    examples: ['Customer support bot', 'Onboarding assistant', 'Product guide chatbot', 'HR FAQ bot'],
+    testTip: 'Test the full conversation arc — not just the first reply. Ask off-topic questions to verify the bot stays in scope.',
+  },
 }
 
 export default function TypeBuilderGuide({ type, onContinue, onClose }) {
@@ -101,28 +251,31 @@ export default function TypeBuilderGuide({ type, onContinue, onClose }) {
   if (!guide) { onContinue(); return null }
 
   return (
-    <div className="fixed inset-0 bg-black/30 flex items-center justify-center z-60 p-4" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-60 p-4" onClick={onClose}>
       <div ref={panelRef} role="dialog" aria-modal="true"
         className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-lg flex flex-col overflow-hidden"
-        style={{ maxHeight: '90vh' }}
+        style={{ maxHeight: '92vh' }}
         onClick={e => e.stopPropagation()}>
 
-        {/* Header */}
-        <div className="p-5 border-b border-white/5 flex items-start justify-between">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl font-bold shrink-0"
-              style={{ background: guide.color + '22', color: guide.color }}>
-              {guide.icon}
+        {/* Header — matches AppTypeSelector */}
+        <div className="px-6 pt-6 pb-5 shrink-0 border-b border-white/5">
+          <div className="flex items-start justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl font-bold shrink-0"
+                style={{ background: guide.color + '22', color: guide.color }}>
+                {guide.icon}
+              </div>
+              <div>
+                <p className="text-white font-bold text-xl leading-snug">{guide.label}</p>
+                <p className="text-slate-400 text-sm mt-0.5">{guide.tagline}</p>
+              </div>
             </div>
-            <div>
-              <p className="text-white font-bold text-base">{guide.label}</p>
-              <p className="text-slate-400 text-xs mt-0.5">{guide.tagline}</p>
-            </div>
+            <button aria-label="Close" onClick={onClose}
+              className="text-slate-500 hover:text-white transition-colors p-1 shrink-0 ml-4">✕</button>
           </div>
-          <button onClick={onClose} className="text-slate-500 hover:text-white transition-colors p-1 shrink-0">✕</button>
         </div>
 
-        <div className="overflow-y-auto flex-1 p-5 space-y-5">
+        <div className="overflow-y-auto flex-1 px-6 pb-6 pt-5 space-y-5">
           {/* What it is */}
           <p className="text-slate-300 text-sm leading-relaxed">{guide.what}</p>
 
@@ -161,11 +314,11 @@ export default function TypeBuilderGuide({ type, onContinue, onClose }) {
           </div>
         </div>
 
-        {/* CTA */}
-        <div className="p-5 border-t border-white/5 flex gap-3">
+        {/* Footer — matches AppTypeSelector style */}
+        <div className="px-6 py-4 border-t border-white/5 flex gap-3 shrink-0">
           <button onClick={onClose}
-            className="flex-1 bg-white/5 hover:bg-white/10 text-slate-300 text-sm py-2.5 rounded-xl transition-colors border border-white/10">
-            ← Change type
+            className="px-5 bg-white/5 hover:bg-white/10 text-slate-300 text-sm py-2.5 rounded-xl transition-colors border border-white/10">
+            ← Back
           </button>
           <button onClick={onContinue}
             className="flex-1 text-white text-sm py-2.5 rounded-xl font-semibold transition-all"

@@ -10,6 +10,7 @@ import { identify, resetIdentity } from './lib/analytics'
 import { getUserRole, isAdmin, isModerator } from './utils/roles'
 import { useKeyboard } from './hooks/useKeyboard'
 import { useMediaQuery } from './hooks/useMediaQuery'
+import { useWorkspaces } from './hooks/useWorkspaces'
 import { History, LayoutGrid, Settings, Workflow } from 'lucide-react'
 
 // Lazy-load heavy pages — only downloaded when first visited
@@ -38,6 +39,7 @@ const TermsPage         = lazy(() => import('./pages/LegalPages').then(m => ({ d
 const MarketplacePage    = lazy(() => import('./pages/MarketplacePage').then(m => ({ default: m.MarketplacePage })))
 const MarketplaceAppPage = lazy(() => import('./pages/MarketplacePage').then(m => ({ default: m.MarketplaceAppPage })))
 const DeveloperProfilePage = lazy(() => import('./pages/DeveloperProfilePage'))
+const InvitePage           = lazy(() => import('./pages/InvitePage'))
 
 // Lazy-load modal/panel components — all of these are gated behind a `show*`
 // toggle and never needed for the initial shell render, so there's no reason
@@ -53,6 +55,8 @@ const AIAppBuilder           = lazy(() => import('./components/AIAppBuilder'))
 const TypeBuilderGuide       = lazy(() => import('./components/TypeBuilderGuide'))
 const CreateFromWebsiteModal = lazy(() => import('./components/CreateFromWebsiteModal'))
 const WorkspaceRecommendations = lazy(() => import('./components/WorkspaceRecommendations'))
+const CreateAppModal           = lazy(() => import('./components/CreateAppModal'))
+const WorkspaceSettingsModal   = lazy(() => import('./components/WorkspaceSettingsModal'))
 
 // Legal pages must stay reachable without signing in.
 const PUBLIC_PAGES = { '/privacy': PrivacyPage, '/terms': TermsPage }
@@ -78,6 +82,20 @@ const PATH_VIEW_MAP = {
   '/marketplace': 'marketplace',
 }
 
+function isDeveloperExperiencePath(pathname) {
+  return pathname === '/developer'
+    || pathname === '/dev-studio'
+    || pathname === '/api'
+    || pathname === '/marketplace'
+    || pathname.startsWith('/developer/')
+    || pathname.startsWith('/marketplace/')
+}
+
+function shouldShowStarterOnboarding(pathname = window.location.pathname) {
+  const currentMode = localStorage.getItem('aistrix_mode') || 'business'
+  return currentMode !== 'developer' && !isDeveloperExperiencePath(pathname)
+}
+
 export default function App() {
   const [selectedApp, setSelectedApp] = useState(null)
   const [session, setSession] = useState(null)
@@ -90,12 +108,16 @@ export default function App() {
   const [showOnboarding, setShowOnboarding] = useState(false)
   const [showProfile, setShowProfile] = useState(false)
   const [runCounts, setRunCounts] = useState({})
-  const [activeView, setActiveView] = useState(() =>
-    PATH_VIEW_MAP[window.location.pathname]
-    ?? (window.location.pathname.startsWith('/marketplace') ? 'marketplace' : null)
-    ?? (window.location.pathname === '/dev-studio' ? 'developer' : null)
-    ?? 'flows'
-  )
+  const [activeView, setActiveView] = useState(() => {
+    const fromPath = PATH_VIEW_MAP[window.location.pathname]
+      ?? (window.location.pathname.startsWith('/marketplace') ? 'marketplace' : null)
+      ?? (window.location.pathname === '/dev-studio' ? 'developer' : null)
+    if (fromPath) return fromPath
+    // If no explicit path, restore to developer when mode was left as developer
+    const savedMode = localStorage.getItem('aistrix_mode')
+    if (savedMode === 'developer') return 'developer'
+    return 'flows'
+  })
   const [userRole, setUserRole] = useState(null)
   const [deletedAppId, setDeletedAppId] = useState(null)
   const [showTypeSelector, setShowTypeSelector] = useState(false)
@@ -108,8 +130,15 @@ export default function App() {
   const [workspaceRecoApp, setWorkspaceRecoApp] = useState(null)
   const [showAppOnboarding, setShowAppOnboarding] = useState(false)
   const [mode, setMode] = useState(() => localStorage.getItem('aistrix_mode') || 'business')
+  const [showWorkspaceSettings, setShowWorkspaceSettings] = useState(false)
+  const workspaces = useWorkspaces(session?.user ?? null)
   // Mount build section once and keep alive — enables cross-fade between flows/apps with no remount
-  const [buildMounted, setBuildMounted] = useState(() => ['flows', 'apps'].includes(PATH_VIEW_MAP[window.location.pathname] || 'flows'))
+  const [buildMounted, setBuildMounted] = useState(() => {
+    const fromPath = PATH_VIEW_MAP[window.location.pathname]
+    if (fromPath) return ['flows', 'apps'].includes(fromPath)
+    // default view: mount build layer only in business mode
+    return localStorage.getItem('aistrix_mode') !== 'developer'
+  })
   const searchInputRef = useRef(null)
   const isDesktopNav = useMediaQuery('(min-width: 768px)')
   const navigate = useNavigate()
@@ -118,6 +147,17 @@ export default function App() {
   const handleRunComplete = useCallback((appId) => {
     const id = String(appId)
     setRunCounts(prev => ({ ...prev, [id]: (prev[id] || 0) + 1 }))
+  }, [])
+
+  const dismissWelcomeOnboarding = useCallback(() => {
+    localStorage.setItem('aistrix_welcomed', '1')
+    localStorage.setItem('aistrix_onboarding_done', '1')
+    setShowOnboarding(false)
+  }, [])
+
+  const dismissAppOnboarding = useCallback(() => {
+    localStorage.setItem('aistrix:app_onboarding_done', '1')
+    setShowAppOnboarding(false)
   }, [])
 
   const handleEscape = useCallback(() => {
@@ -154,7 +194,7 @@ export default function App() {
       setSession(session)
       setLoading(false)
       if (session) {
-        if (!localStorage.getItem('aistrix_welcomed')) setShowOnboarding(true)
+        if (!localStorage.getItem('aistrix_welcomed') && shouldShowStarterOnboarding()) setShowOnboarding(true)
         getUserRole(session.user.id).then(setUserRole)
       }
     })
@@ -163,8 +203,8 @@ export default function App() {
       setSession(session)
       if (session) identify(session.user.id, { email: session.user.email })
       else if (event === 'SIGNED_OUT') resetIdentity()
-      if (session && !localStorage.getItem('aistrix_welcomed') && (localStorage.getItem('aistrix_mode') || 'business') !== 'developer') setShowOnboarding(true)
-      if (session && !localStorage.getItem('aistrix:app_onboarding_done')) {
+      if (session && !localStorage.getItem('aistrix_welcomed') && shouldShowStarterOnboarding()) setShowOnboarding(true)
+      if (session && !localStorage.getItem('aistrix:app_onboarding_done') && shouldShowStarterOnboarding()) {
         supabase.from('apps').select('id', { count: 'exact', head: true })
           .eq('created_by', session.user.id)
           .then(({ count }) => {
@@ -221,6 +261,16 @@ export default function App() {
   const PublicPage = PUBLIC_PAGES[location.pathname]
   if (PublicPage) return <Suspense fallback={null}><PublicPage /></Suspense>
 
+  // Widgets are framed into other websites: they must render for signed-out
+  // visitors too (AppEmbedPage shows its own sign-in gate when needed).
+  if (location.pathname.startsWith('/embed/')) {
+    return (
+      <Routes>
+        <Route path="/embed/:id" element={<Suspense fallback={null}><AppEmbedPage /></Suspense>} />
+      </Routes>
+    )
+  }
+
   if (loading) return (
     <div className="min-h-screen bg-[#09101F] flex items-center justify-center">
       <div className="text-slate-400 text-sm">Loading...</div>
@@ -228,6 +278,28 @@ export default function App() {
   )
 
   if (!session) return <Auth />
+
+  // Invite links: signed-out visitors log in first (the path is remembered
+  // above and restored after login), then the invite is accepted here.
+  if (location.pathname.startsWith('/invite/')) {
+    return (
+      <Routes>
+        <Route path="/invite/:token" element={<Suspense fallback={null}><InvitePage user={session.user} /></Suspense>} />
+      </Routes>
+    )
+  }
+
+  if (workspaces.loading) return (
+    <div className="min-h-screen bg-[#09101F] flex items-center justify-center">
+      <div className="text-slate-400 text-sm">Loading workspace…</div>
+    </div>
+  )
+
+  const switchWorkspace = id => {
+    setSelectedApp(null)
+    setShowWorkspaceSettings(false)
+    workspaces.switchTo(id)
+  }
 
   // Lookup table for non-apps views — avoids a wall of conditionals
   const viewMap = {
@@ -241,7 +313,7 @@ export default function App() {
     reports:     <ReportsPage     user={session.user} />,
     settings:    <SettingsPage    user={session.user} />,
     alerts:      <AlertsPage      user={session.user} />,
-    developer:   <DevStudioPage user={session.user} onOpenCreate={() => setShowTypeSelector(true)} />,
+    developer:   <DevStudioPage user={session.user} onOpenCreate={() => setShowTypeSelector(true)} createdApp={createdApp} onCreatedAppConsumed={() => setCreatedApp(null)} />,
     data_sources:<DataSourcesPage user={session.user} />,
     integrations:<IntegrationsPage user={session.user} />,
     admin:          isAdmin(userRole)     ? <AdminPage          user={session.user} /> : null,
@@ -262,7 +334,9 @@ export default function App() {
       <Route path="/gallery" element={<Suspense fallback={null}><Gallery /></Suspense>} />
       <Route path="/dev/:userId" element={<Suspense fallback={null}><DeveloperProfilePage /></Suspense>} />
       <Route path="/*" element={
-        <div className="app-shell flex h-screen overflow-hidden bg-[#09101F]">
+        // Keyed by workspace: switching remounts the shell so every page
+        // reloads its data for the newly active workspace.
+        <div key={workspaces.active?.id || 'no-workspace'} className="app-shell flex h-screen overflow-hidden bg-[#09101F]">
 
           {showMobileSidebar && (
             <div className="fixed inset-0 bg-black/50 z-30 md:hidden" onClick={() => setShowMobileSidebar(false)} />
@@ -286,6 +360,10 @@ export default function App() {
                 onModeChange={next => {
                   setMode(next)
                   localStorage.setItem('aistrix_mode', next)
+                  if (next === 'developer') {
+                    setShowOnboarding(false)
+                    setShowAppOnboarding(false)
+                  }
                   changeView(next === 'developer' ? 'developer' : 'flows')
                 }}
               />
@@ -305,7 +383,27 @@ export default function App() {
               searchRef={searchInputRef}
               user={session.user}
               onNavChange={changeView}
+              workspaces={workspaces.workspaces}
+              activeWorkspace={workspaces.active}
+              onSwitchWorkspace={switchWorkspace}
+              onCreateWorkspace={async name => { const id = await workspaces.createTeam(name); switchWorkspace(id) }}
+              onManageWorkspace={() => setShowWorkspaceSettings(true)}
             />
+            {showWorkspaceSettings && workspaces.active && !workspaces.active.is_personal && (
+              <Suspense fallback={null}>
+                <WorkspaceSettingsModal
+                  workspace={workspaces.active}
+                  user={session.user}
+                  onClose={() => setShowWorkspaceSettings(false)}
+                  onChanged={() => workspaces.refresh(workspaces.active.id)}
+                  onLeft={async () => {
+                    setShowWorkspaceSettings(false)
+                    const personal = workspaces.workspaces.find(w => w.is_personal)
+                    await workspaces.refresh(personal?.id)
+                  }}
+                />
+              </Suspense>
+            )}
             <main className="relative flex flex-1 overflow-hidden pb-14 md:pb-0" onClick={() => activeView === 'apps' && setSelectedApp(null)}>
               {/* Shared build container — flows + apps stay mounted; only the active layer animates in */}
               {buildMounted && (
@@ -364,14 +462,9 @@ export default function App() {
               <AppTypeSelector
                 onClose={() => setShowTypeSelector(false)}
                 onSelect={type => {
-                  if (type === 'ai_builder') { setShowTypeSelector(false); setShowAIBuilder(true) }
-                  else if (type === 'workspace') { setShowTypeSelector(false); navigateToView('flows') }
-                  else if (type === 'website') { setShowTypeSelector(false); setShowWebsiteBuilder(true) }
-                  else {
-                    setSelectedAppType(type)
-                    setShowTypeGuide(true)
-                    // keep showTypeSelector true — selector stays behind the guide
-                  }
+                  setSelectedAppType(type)
+                  setShowTypeGuide(true)
+                  // keep showTypeSelector true — selector stays behind the guide
                 }}
               />
             </Suspense>
@@ -384,8 +477,30 @@ export default function App() {
                 onContinue={() => {
                   setShowTypeGuide(false)
                   setShowTypeSelector(false)
-                  navigateToView('apps')
+                  if (selectedAppType === 'ai_builder') {
+                    setShowAIBuilder(true)
+                    return
+                  }
+                  if (selectedAppType === 'website') {
+                    setShowWebsiteBuilder(true)
+                    return
+                  }
+                  if (activeView !== 'developer') navigateToView('apps')
                   setShowCreate(true)
+                }}
+              />
+            </Suspense>
+          )}
+          {showCreate && activeView === 'developer' && (
+            <Suspense fallback={null}>
+              <CreateAppModal
+                user={session.user}
+                initialType={selectedAppType}
+                onClose={() => setShowCreate(false)}
+                onBack={() => { setShowCreate(false); setShowTypeSelector(true) }}
+                onCreated={newApp => {
+                  setShowCreate(false)
+                  setCreatedApp(newApp)
                 }}
               />
             </Suspense>
@@ -457,7 +572,7 @@ export default function App() {
             <Suspense fallback={null}>
               <OnboardingWizard
                 user={session.user}
-                onDismiss={() => setShowOnboarding(false)}
+                onDismiss={dismissWelcomeOnboarding}
                 onNavChange={changeView}
               />
             </Suspense>
@@ -465,10 +580,8 @@ export default function App() {
           {showAppOnboarding && (
             <Suspense fallback={null}>
               <OnboardingModal
-                onComplete={() => {
-                  localStorage.setItem('aistrix:app_onboarding_done', '1')
-                  setShowAppOnboarding(false)
-                }}
+                onClose={dismissAppOnboarding}
+                onComplete={dismissAppOnboarding}
               />
             </Suspense>
           )}

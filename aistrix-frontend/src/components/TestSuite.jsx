@@ -77,6 +77,17 @@ function parseSSELine(line) {
 
 export { evaluateRule, evaluateCase }
 
+const MODEL_COSTS_TS = {
+  'gpt-4o': { input: 2.50, output: 10.00 }, 'gpt-4o-mini': { input: 0.15, output: 0.60 },
+  'claude-haiku-4-5': { input: 0.80, output: 4.00 }, 'claude-sonnet-4-5': { input: 3.00, output: 15.00 },
+  'claude-sonnet-5': { input: 3.00, output: 15.00 }, 'claude-opus-4-5': { input: 15.00, output: 75.00 },
+  'claude-opus-5': { input: 15.00, output: 75.00 },
+}
+function getModelRates(model) {
+  if (!model) return MODEL_COSTS_TS['claude-sonnet-4-5']
+  return MODEL_COSTS_TS[model] || Object.entries(MODEL_COSTS_TS).find(([k]) => model.includes(k) || k.includes(model))?.[1] || null
+}
+
 export async function runPrompt(app, input, signal) {
   const { data: { session } } = await supabase.auth.getSession()
   const res = await fetch(`${API_URL}/run`, {
@@ -95,7 +106,7 @@ export async function runPrompt(app, input, signal) {
   }
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
-  let buf = '', out = ''
+  let buf = '', out = '', inputTokens = 0, outputTokens = 0
   while (true) {
     const { done, value } = await reader.read()
     if (done) break
@@ -106,9 +117,16 @@ export async function runPrompt(app, input, signal) {
       if (!d) continue
       if (d.token) out += d.token
       if (d.error) throw new Error(d.error)
+      if (d.input_tokens)  inputTokens  = d.input_tokens
+      if (d.output_tokens) outputTokens = d.output_tokens
     }
   }
-  return out
+  // Estimate tokens from character count if backend didn't return them
+  if (!inputTokens)  inputTokens  = Math.round(((app.system_prompt || '').length + (input || '').length) / 4)
+  if (!outputTokens) outputTokens = Math.round(out.length / 4)
+  const rates = getModelRates(app.ai_model)
+  const cost = rates ? ((inputTokens / 1e6) * rates.input) + ((outputTokens / 1e6) * rates.output) : null
+  return { output: out, inputTokens, outputTokens, cost }
 }
 
 // ─── Setup SQL card ───────────────────────────────────────────────────────────
@@ -261,18 +279,17 @@ function TestCaseEditor({ tc, onChange, onDelete, onClose }) {
 // ─── Result row ───────────────────────────────────────────────────────────────
 function ResultRow({ tc, result, onExpand, expanded }) {
   if (!result) return null
-  const { passed, output, results: ruleResults, error, running } = result
+  const { passed, output, results: ruleResults, error, running, inputTokens, outputTokens, cost } = result
+  const fmtCost = c => c < 0.001 ? `$${(c * 1000).toFixed(3)}m` : `$${c.toFixed(4)}`
 
   return (
     <div className={`rounded-xl border transition-colors ${passed ? 'border-green-500/20 bg-green-500/5' : error ? 'border-red-500/20 bg-red-500/5' : running ? 'border-[#6C5CE7]/20 bg-[#6C5CE7]/5' : 'border-red-500/20 bg-red-500/5'}`}>
-      <button
-        onClick={onExpand}
-        className="w-full flex items-center gap-3 px-4 py-3 text-left"
-      >
-        <span className="text-base shrink-0">
-          {running ? '⏳' : passed ? '✅' : error ? '⚠️' : '❌'}
-        </span>
+      <button onClick={onExpand} className="w-full flex items-center gap-3 px-4 py-3 text-left">
+        <span className="text-base shrink-0">{running ? '⏳' : passed ? '✅' : error ? '⚠️' : '❌'}</span>
         <span className="text-sm font-medium text-white flex-1 truncate">{tc.name}</span>
+        {!running && !error && cost != null && (
+          <span className="text-[10px] text-green-400/80 font-mono">{fmtCost(cost)}</span>
+        )}
         {!running && !error && (
           <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${passed ? 'text-green-400 bg-green-500/10' : 'text-red-400 bg-red-500/10'}`}>
             {ruleResults?.filter(r => r.passed).length}/{ruleResults?.length} rules
@@ -285,6 +302,14 @@ function ResultRow({ tc, result, onExpand, expanded }) {
 
       {expanded && (
         <div className="px-4 pb-4 space-y-3 border-t border-white/5 pt-3">
+          {/* Token + cost breakdown */}
+          {(inputTokens || outputTokens) && (
+            <div className="flex gap-4 text-[10px] bg-[#0A0F1E] rounded-lg px-3 py-2">
+              <span className="text-slate-500">In: <span className="text-slate-300">{inputTokens?.toLocaleString()} tok</span></span>
+              <span className="text-slate-500">Out: <span className="text-slate-300">{outputTokens?.toLocaleString()} tok</span></span>
+              {cost != null && <span className="text-slate-500">Cost: <span className="text-green-400 font-semibold">{fmtCost(cost)}</span></span>}
+            </div>
+          )}
           {/* Rule breakdown */}
           {ruleResults?.length > 0 && (
             <div className="space-y-1.5">
@@ -300,11 +325,35 @@ function ResultRow({ tc, result, onExpand, expanded }) {
               ))}
             </div>
           )}
-          {/* Output */}
+          {/* Output + diff against failed rules */}
           {output && (
             <div>
               <p className="text-[10px] text-slate-500 uppercase font-semibold mb-1">Output</p>
               <pre className="text-[11px] text-slate-400 bg-[#0E1424] rounded-lg p-3 whitespace-pre-wrap leading-relaxed max-h-40 overflow-y-auto">{output}</pre>
+              {!passed && ruleResults?.some(r => !r.passed) && (
+                <div className="mt-2 space-y-1">
+                  <p className="text-[10px] text-slate-500 uppercase font-semibold">Expected vs. actual</p>
+                  {ruleResults.filter(r => !r.passed).map((r, i) => (
+                    <div key={i} className="bg-[#1A0A0A] border border-red-500/15 rounded-lg px-3 py-2 space-y-1">
+                      <p className="text-[10px] text-red-400 font-semibold">{RULE_TYPES.find(rt => rt.id === r.type)?.label}</p>
+                      <div className="flex gap-2 text-[10px]">
+                        <span className="text-slate-500 shrink-0">Expected:</span>
+                        <code className="text-amber-300 font-mono break-all">{r.value}</code>
+                      </div>
+                      {(r.type === 'must-contain' || r.type === 'starts-with' || r.type === 'ends-with') && (
+                        <div className="flex gap-2 text-[10px]">
+                          <span className="text-slate-500 shrink-0">Got:</span>
+                          <code className="text-red-300 font-mono break-all line-clamp-2">{
+                            r.type === 'starts-with' ? output.slice(0, 80) :
+                            r.type === 'ends-with'   ? output.slice(-80) :
+                            output.slice(0, 120)
+                          }…</code>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -314,8 +363,10 @@ function ResultRow({ tc, result, onExpand, expanded }) {
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
-export default function TestSuite({ apps, user }) {
-  const [selectedAppId, setSelectedAppId] = useState(() => apps[0]?.id || null)
+export default function TestSuite({ apps, user, selectedAppId: controlledAppId, onSelectApp }) {
+  const [internalAppId, setInternalAppId] = useState(() => apps[0]?.id || null)
+  const selectedAppId = controlledAppId !== undefined ? controlledAppId : internalAppId
+  const setSelectedAppId = onSelectApp ?? setInternalAppId
   const [testCases, setTestCases]   = useState([])
   const [loadingTc, setLoadingTc]   = useState(false)
   const [needsSetup, setNeedsSetup] = useState(false)
@@ -397,9 +448,9 @@ export default function TestSuite({ apps, user }) {
     for (const tc of toRun) {
       if (ctrl.signal.aborted) break
       try {
-        const output = await runPrompt(selectedApp, tc.input, ctrl.signal)
-        const { passed, results: ruleResults } = evaluateCase(output, tc.rules)
-        setResults(prev => ({ ...prev, [tc.id]: { passed, output, results: ruleResults, running: false } }))
+        const run = await runPrompt(selectedApp, tc.input, ctrl.signal)
+        const { passed, results: ruleResults } = evaluateCase(run.output, tc.rules)
+        setResults(prev => ({ ...prev, [tc.id]: { passed, output: run.output, inputTokens: run.inputTokens, outputTokens: run.outputTokens, cost: run.cost, results: ruleResults, running: false } }))
       } catch (e) {
         if (e.name === 'AbortError') break
         setResults(prev => ({ ...prev, [tc.id]: { passed: false, error: e.message, running: false } }))
@@ -431,17 +482,12 @@ export default function TestSuite({ apps, user }) {
 
   return (
     <div className="space-y-4">
-      {/* App selector + header */}
-      <div className="flex items-center gap-3 flex-wrap">
-        <select
-          value={selectedAppId || ''}
-          onChange={e => setSelectedAppId(e.target.value)}
-          className="bg-[#171B33] border border-white/8 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-[#6C5CE7] transition-colors"
-        >
-          {apps.map(a => (
-            <option key={a.id} value={a.id}>{a.emoji} {a.name}</option>
-          ))}
-        </select>
+      {/* Header */}
+      <div className="flex items-start gap-3 flex-wrap">
+        <div className="space-y-0.5">
+          <p className="text-xs font-semibold text-white uppercase tracking-wider">Manual regression tests</p>
+          <p className="text-[10px] text-slate-500">Create custom cases for edge behavior, launch gates, and prompt regressions.</p>
+        </div>
 
         {selectedApp && !selectedApp.system_prompt && (
           <span className="text-[11px] text-amber-400 bg-amber-400/10 px-2 py-1 rounded-lg border border-amber-400/20">

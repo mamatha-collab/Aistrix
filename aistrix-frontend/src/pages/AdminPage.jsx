@@ -42,6 +42,16 @@ function AppsTab({ toast }) {
     toast('App updated', 'success', 2000)
   }
 
+  async function togglePublish(app) {
+    const next = !app.is_published
+    const { data, error } = await supabase.rpc('set_app_published_with_gate', { p_app_id: app.id, p_publish: next })
+    if (error) { toast(error.message.includes('set_app_published_with_gate') ? 'Publish gate SQL is not installed yet' : error.message, 'error'); return }
+    const result = Array.isArray(data) ? data[0] : data
+    if (!result?.ok) { toast(`Publish blocked: ${(result?.errors || ['complete the schema checklist']).join('; ')}`, 'error', 8000); return }
+    setApps(prev => prev.map(a => a.id === app.id ? { ...a, is_published: next } : a))
+    toast(next ? 'App published' : 'App set to draft', next ? 'success' : 'info', 2000)
+  }
+
   async function deleteApp(id, name) {
     if (!window.confirm(`Delete "${name}"? This cannot be undone.`)) return
     const { error } = await supabase.from('apps').delete().eq('id', id)
@@ -144,7 +154,7 @@ function AppsTab({ toast }) {
                 </td>
                 <td className="px-3 py-3">
                   <div className="flex gap-1">
-                    <button onClick={() => update(app.id, { is_published: !app.is_published })}
+                    <button onClick={() => togglePublish(app)}
                       className={`text-[10px] px-2 py-1 rounded-lg transition-colors ${app.is_published ? 'bg-green-400/10 text-green-400 hover:bg-red-400/10 hover:text-red-400' : 'bg-[#1F2444] text-slate-500 hover:text-white'}`}>
                       {app.is_published ? 'Live' : 'Draft'}
                     </button>

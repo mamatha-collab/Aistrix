@@ -40,7 +40,7 @@ export default function KnowledgeBaseEditor({ appId }) {
           input: url,
           system_prompt: 'Fetch and return the main text content of this URL. Return only the clean text content, no HTML, no navigation, no ads. If you cannot fetch it, return an error message.',
           ai_provider: 'claude',
-          ai_model: 'claude-haiku-4-5-20251001',
+          ai_model: 'claude-haiku-5-5',
         }),
       })
       const reader = res.body.getReader()

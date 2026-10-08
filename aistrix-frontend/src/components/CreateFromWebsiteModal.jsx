@@ -76,7 +76,7 @@ Return ONLY valid JSON:
   "input_placeholder": "example question a user might ask"
 }`,
           ai_provider: 'claude',
-          ai_model: 'claude-sonnet-4-6',
+          ai_model: 'claude-sonnet-5-5',
         }),
       })
       const reader = res.body.getReader()
@@ -92,7 +92,7 @@ Return ONLY valid JSON:
         }
       }
       const parsed = JSON.parse(full.replace(/^```json?\n?/i, '').replace(/\n?```$/i, '').trim())
-      onGenerated({ ...parsed, source_url: scraped.url })
+      onGenerated({ ...parsed, source_url: scraped.url, source_text: scraped.text })
     } catch {
       setError('Could not generate the app. Try again.')
     } finally {
@@ -104,23 +104,28 @@ Return ONLY valid JSON:
   const thinContent = scraped && wordCount < 80
 
   return (
-    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
       <div
         ref={panelRef}
         role="dialog"
         aria-modal="true"
         aria-label="Create app from website"
-        className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-3xl flex flex-col overflow-hidden"
-        style={{ maxHeight: '88vh' }}
+        className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-xl flex flex-col overflow-hidden"
+        style={{ maxHeight: '92vh' }}
         onClick={e => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-white/5 shrink-0">
-          <div className="flex items-center gap-2">
-            <span className="text-lg">🌐</span>
-            <p className="text-white font-semibold">Create from Website</p>
+        <div className="px-6 pt-6 pb-5 shrink-0 border-b border-white/5">
+          <div className="flex items-start justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl shrink-0" style={{ background: '#00B89422', color: '#00B894' }}>🌐</div>
+              <div>
+                <p className="text-white font-bold text-xl leading-snug">From Website</p>
+                <p className="text-slate-400 text-sm mt-0.5">Enter a URL — we'll read the site and generate the app.</p>
+              </div>
+            </div>
+            <button aria-label="Close" onClick={onClose} className="text-slate-500 hover:text-white transition-colors p-1 shrink-0 ml-4">✕</button>
           </div>
-          <button onClick={onClose} className="text-slate-500 hover:text-white transition-colors">✕</button>
         </div>
 
         {/* URL bar */}

@@ -3,6 +3,7 @@ import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { timeAgo } from '../utils'
 import { parseSSELine } from '../lib/sse'
+import { scopeToWorkspace } from '../lib/workspace'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -57,8 +58,8 @@ export default function DataSourcesPage({ user }) {
   useEffect(() => { load() }, [user.id])
 
   async function load() {
-    const { data } = await supabase.from('user_data_sources')
-      .select('*').eq('user_id', user.id).order('created_at', { ascending: false })
+    const { data } = await scopeToWorkspace(supabase.from('user_data_sources').select('*'), user)
+      .order('created_at', { ascending: false })
     setSources(data || [])
     setLoading(false)
   }
@@ -100,7 +101,7 @@ export default function DataSourcesPage({ user }) {
         body: JSON.stringify({
           input: url,
           system_prompt: 'Extract and return the main text content of this URL as clean plain text. Remove all navigation, ads, headers/footers. Return only the core content.',
-          ai_provider: 'claude', ai_model: 'claude-haiku-4-5-20251001',
+          ai_provider: 'claude', ai_model: 'claude-haiku-5-5',
         }),
       })
       const reader = res.body.getReader(); const decoder = new TextDecoder()

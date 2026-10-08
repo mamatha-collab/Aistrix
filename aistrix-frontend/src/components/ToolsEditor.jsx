@@ -47,6 +47,7 @@ const TOOL_TYPES = [
     configFields: [
       { key: 'url', label: 'Endpoint URL', placeholder: 'https://api.example.com/endpoint' },
       { key: 'method', label: 'Method', placeholder: 'POST', options: ['GET', 'POST', 'PUT'] },
+      { key: 'headers', label: 'Headers (JSON) — reference secrets as {{secrets.KEY}}, never paste raw keys', placeholder: '{"Authorization": "Bearer {{secrets.MY_API_KEY}}"}' },
     ],
     defaultSchema: {
       type: 'object',
@@ -86,6 +87,15 @@ function ToolForm({ appId, existingTool, onSave, onCancel }) {
 
   async function save() {
     if (!name.trim() || !description.trim()) return
+    if (typeof config.headers === 'string' && config.headers.trim()) {
+      try {
+        const parsed = JSON.parse(config.headers)
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error()
+      } catch {
+        toast('Headers must be a JSON object, e.g. {"Authorization": "Bearer {{secrets.MY_API_KEY}}"}', 'error')
+        return
+      }
+    }
     setSaving(true)
     const schema = typeDef.defaultSchema
 

@@ -1,120 +1,22 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../supabase'
-import { useToast } from '../hooks/useToast'
-import { timeAgo } from '../utils'
 import ToolsEditor from '../components/ToolsEditor'
+import ApiKeysManager from '../components/ApiKeysManager'
+import { scopeToWorkspace } from '../lib/workspace'
 
 // ─── API Key Management ───────────────────────────────────────────────────────
 function ApiKeySection({ user }) {
-  const [keys, setKeys] = useState([])
-  const [newKeyName, setNewKeyName] = useState('')
-  const [creating, setCreating] = useState(false)
-  const [revealed, setRevealed] = useState(null) // key id to show once
-  const toast = useToast()
-
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount only
-  useEffect(() => { loadKeys() }, [])
-
-  async function loadKeys() {
-    const { data } = await supabase.from('developer_api_keys')
-      .select('id, name, api_key, is_active, last_used_at, total_calls, created_at')
-      .eq('user_id', user.id).order('created_at', { ascending: false })
-    if (data) setKeys(data)
-  }
-
-  async function createKey() {
-    if (!newKeyName.trim()) return
-    setCreating(true)
-    const raw = 'ak_live_' + Array.from(crypto.getRandomValues(new Uint8Array(24)))
-      .map(b => b.toString(16).padStart(2, '0')).join('')
-    const { data, error } = await supabase.from('developer_api_keys').insert({
-      user_id: user.id, api_key: raw, name: newKeyName.trim(),
-    }).select().single()
-    setCreating(false)
-    if (error) { toast(error.message, 'error'); return }
-    setKeys(prev => [data, ...prev])
-    setNewKeyName('')
-    setRevealed(data.id)
-    toast('API key created — copy it now, it won\'t be shown again', 'info', 6000)
-  }
-
-  async function revokeKey(id) {
-    const { error } = await supabase.from('developer_api_keys').update({ is_active: false }).eq('id', id)
-    if (error) { toast(error.message, 'error'); return }
-    setKeys(prev => prev.map(k => k.id === id ? { ...k, is_active: false } : k))
-    toast('Key revoked', 'info')
-  }
-
-  async function deleteKey(id) {
-    const { error } = await supabase.from('developer_api_keys').delete().eq('id', id)
-    if (error) { toast(error.message, 'error'); return }
-    setKeys(prev => prev.filter(k => k.id !== id))
-    toast('Key deleted', 'info')
-  }
-
   return (
     <div className="space-y-4">
-      <div className="flex gap-2">
-        <input
-          className="flex-1 bg-[#1F2444] border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-[#6C5CE7] transition-colors"
-          placeholder="Key name, e.g. Production App"
-          value={newKeyName} onChange={e => setNewKeyName(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && createKey()}
-        />
-        <button onClick={createKey} disabled={creating || !newKeyName.trim()}
-          className="bg-[#6C5CE7] hover:bg-[#7D6FF0] disabled:opacity-40 text-white text-sm px-4 py-2 rounded-xl font-medium transition-colors shrink-0">
-          {creating ? '...' : '+ Generate key'}
-        </button>
-      </div>
-
-      {keys.length === 0 ? (
-        <p className="text-slate-500 text-sm text-center py-4">No API keys yet. Generate one to start calling your apps externally.</p>
-      ) : (
-        <div className="space-y-2">
-          {keys.map(k => (
-            <div key={k.id} className={`bg-[#1F2444] border rounded-xl p-4 ${k.is_active ? 'border-white/5' : 'border-white/5 opacity-50'}`}>
-              <div className="flex items-start justify-between mb-2">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <p className="text-white text-sm font-medium">{k.name}</p>
-                    {!k.is_active && <span className="text-[10px] text-red-400 bg-red-400/10 px-1.5 py-0.5 rounded-full">Revoked</span>}
-                  </div>
-                  <p className="text-[10px] text-slate-500 mt-0.5">
-                    Created {timeAgo(k.created_at)}
-                    {k.last_used_at && ` · Last used ${timeAgo(k.last_used_at)}`}
-                    {k.total_calls > 0 && ` · ${k.total_calls} calls`}
-                  </p>
-                </div>
-                <div className="flex gap-2 shrink-0">
-                  {k.is_active && <button onClick={() => revokeKey(k.id)} className="text-[10px] text-slate-500 hover:text-orange-400 transition-colors">Revoke</button>}
-                  <button onClick={() => deleteKey(k.id)} className="text-[10px] text-slate-500 hover:text-red-400 transition-colors">Delete</button>
-                </div>
-              </div>
-              {revealed === k.id ? (
-                <div className="flex items-center gap-2 bg-[#0F1225] border border-[#6C5CE7]/30 rounded-lg px-3 py-2">
-                  <code className="text-xs text-[#6C5CE7] flex-1 break-all font-mono">{k.api_key}</code>
-                  <button onClick={() => { navigator.clipboard.writeText(k.api_key); toast('Copied!', 'success', 2000) }}
-                    className="text-slate-400 hover:text-white text-xs shrink-0">📋</button>
-                </div>
-              ) : (
-                <code className="text-xs text-slate-600 font-mono">{k.api_key.slice(0, 16)}{'•'.repeat(20)}</code>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
+      <ApiKeysManager user={user} />
       <div className="bg-[#1F2444] border border-white/5 rounded-xl p-4 space-y-2">
         <p className="text-xs text-slate-400 font-medium">Using your API key</p>
-        <pre className="text-[11px] text-slate-400 bg-[#0F1225] rounded-lg p-3 overflow-x-auto leading-relaxed">{`POST https://api.aistrix.com/v1/apps/{app_id}/run
+        <pre className="text-[11px] text-slate-400 bg-[#0F1225] rounded-lg p-3 overflow-x-auto leading-relaxed">{`POST ${import.meta.env.VITE_API_URL || 'https://api.aistrix.com'}/v1/apps/{app_id}/run
 Authorization: Bearer ak_live_xxxxx
 Content-Type: application/json
 
-{
-  "input": "Your prompt here",
-  "inject_context": ["career_profile", "memory"]
-}`}</pre>
-        <p className="text-[10px] text-slate-500">User context and profiles are automatically injected when specified — no extra setup needed.</p>
+{ "input": "Your prompt here", "stream": false }`}</pre>
+        <p className="text-[10px] text-slate-500">Each app's API Docs page lists its fields, file upload and batch endpoints.</p>
       </div>
     </div>
   )
@@ -217,14 +119,14 @@ export default function DevDashboardPage({ user }) {
   useEffect(() => { load() }, [user.id])
 
   async function load() {
-    const { data: myApps } = await supabase.from('apps')
-      .select('*').eq('created_by', user.id).eq('is_published', true).order('total_runs', { ascending: false })
+    const { data: myApps } = await scopeToWorkspace(supabase.from('apps').select('*'), user, 'created_by')
+      .eq('is_published', true).order('total_runs', { ascending: false })
     if (!myApps?.length) { setLoading(false); return }
     setApps(myApps)
 
     const sevenDaysAgo = new Date(); sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
     const { data: runs } = await supabase.from('run_history')
-      .select('app_id, user_id, created_at, rating')
+      .select('app_id, user_id, created_at, rating_value')
       .in('app_id', myApps.map(a => a.id))
 
     const statsMap = {}
@@ -238,10 +140,10 @@ export default function DevDashboardPage({ user }) {
         const next = new Date(d); next.setDate(next.getDate() + 1)
         return recent.filter(r => new Date(r.created_at) >= d && new Date(r.created_at) < next).length
       })
-      const rated = appRuns.filter(r => r.rating != null)
+      const rated = appRuns.filter(r => r.rating_value != null)
       statsMap[id] = {
         uniqueUsers: new Set(appRuns.map(r => r.user_id)).size,
-        thumbsUp: rated.filter(r => r.rating === 1).length,
+        thumbsUp: rated.filter(r => r.rating_value === 1).length,
         rated: rated.length,
         daily,
       }
@@ -250,11 +152,11 @@ export default function DevDashboardPage({ user }) {
     setAppStats(statsMap)
 
     const allRuns = runs || []
-    const allRated = allRuns.filter(r => r.rating != null)
+    const allRated = allRuns.filter(r => r.rating_value != null)
     setTotalStats({
       runs: allRuns.length,
       users: new Set(allRuns.map(r => r.user_id)).size,
-      satisfaction: allRated.length > 0 ? Math.round((allRated.filter(r => r.rating === 1).length / allRated.length) * 100) : null,
+      satisfaction: allRated.length > 0 ? Math.round((allRated.filter(r => r.rating_value === 1).length / allRated.length) * 100) : null,
     })
     setLoading(false)
   }
@@ -376,7 +278,7 @@ export default function DevDashboardPage({ user }) {
 {
   "result": "Dear Hiring Manager...",
   "provider": "claude",
-  "model": "claude-sonnet-4-6",
+  "model": "claude-sonnet-5-5",
   "run_id": "uuid"
 }`,
             },

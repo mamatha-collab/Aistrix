@@ -26,6 +26,7 @@ const TYPE_LABELS = {
   agent:   { icon: '◈',  label: 'Agent',   color: '#FDCB6E' },
   api:     { icon: '{}', label: 'API',      color: '#0984E3' },
   data:    { icon: '▦',  label: 'Data',     color: '#E17055' },
+  batch:   { icon: '⊞',  label: 'Batch',    color: '#6C5CE7' },
   iframe:  { icon: '⬡',  label: 'Embed',   color: '#E84393' },
   native:  { icon: '⊞',  label: 'Form',    color: '#00B894' },
   website: { icon: '🌐', label: 'Website',  color: '#00B894' },

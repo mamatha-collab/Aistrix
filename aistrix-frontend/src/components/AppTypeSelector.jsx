@@ -144,7 +144,7 @@ const TYPES = [
     desc: 'A named assistant with a custom personality, greeting, and tone presets.',
     color: '#E84393',
     bestFor: 'Customer support bots, onboarding assistants, product guide chatbots.',
-    status: 'preview',
+    status: 'ready',
   },
 ]
 

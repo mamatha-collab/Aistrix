@@ -141,7 +141,7 @@ export default function AppEmbedPage() {
               ? <ApiAppRunner app={app} user={user} inline />
               : app.app_type === 'agent'
               ? <AgentRunner app={app} user={user} inline />
-              : app.has_memory
+              : (app.has_memory || app.app_type === 'chatbot')
               ? <ConversationThread app={app} user={user} inline />
               : <AppRunner app={app} user={user} inline />}
           </Suspense>

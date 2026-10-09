@@ -246,7 +246,7 @@ export default function PromptStudio({ app: initialApp, user, onClose, onSaved, 
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: 'Backend error' }))
-        throw new Error(err.detail || err.error || 'Backend error')
+        throw new Error(err.error || (typeof err.detail === 'string' ? err.detail : err.detail?.message) || 'Backend error')
       }
 
       const reader = res.body.getReader()

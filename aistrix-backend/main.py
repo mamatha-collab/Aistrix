@@ -1,6 +1,7 @@
 import asyncio
 import ast
 import csv
+import html as html_lib
 import hashlib
 import io
 import ipaddress
@@ -28,6 +29,7 @@ import sentry_sdk
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from jose import jwt as jose_jwt
@@ -61,6 +63,23 @@ async def lifespan(_app):
 
 
 app = FastAPI(title="Aistrix API", version="1.0.0", lifespan=lifespan)
+
+
+@app.exception_handler(RequestValidationError)
+async def readable_validation_error(request: Request, exc: RequestValidationError):
+    """422s used to reach the browser as a list of objects ("[object Object]").
+    Keep FastAPI's `detail` list and add one readable `error` sentence."""
+    errors = exc.errors()
+    first = errors[0] if errors else {}
+    msg = str(first.get("msg") or "Invalid request").removeprefix("Value error, ")
+    field = ".".join(str(x) for x in first.get("loc", []) if x != "body")
+    readable = msg if not field or field in msg.lower() else f"{field}: {msg}"
+    return JSONResponse(status_code=422, content={"detail": jsonable_errors(errors), "error": readable})
+
+
+def jsonable_errors(errors: list) -> list:
+    return [{k: (v if isinstance(v, (str, int, float, bool, list, type(None))) else str(v))
+             for k, v in e.items() if k != "ctx"} for e in errors]
 
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
 app.add_middleware(
@@ -1058,6 +1077,8 @@ class RunRequest(BaseModel):
     # instruction itself, so non-owners never need (or get to send) a prompt.
     run_mode: Optional[str] = Field(default=None, pattern="^(agent|conversation)$")
     page_index: Optional[int] = Field(default=None, ge=0, le=50)   # multi-page apps
+    # Form apps: field values for {{Field Name}} placeholders in the prompt.
+    field_values: Optional[dict[str, Any]] = None
 
     @field_validator("input")
     @classmethod
@@ -1235,6 +1256,39 @@ def _fields_to_input(fields: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+_PLACEHOLDER = re.compile(r"\{\{\s*([^{}]{1,80}?)\s*\}\}")
+
+
+def _field_key(name: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(name).lower()).strip("_")
+
+
+def fill_field_placeholders(prompt: str, values: dict[str, Any]) -> str:
+    """Replace {{Field Name}} / {{field_name}} in a Form app's prompt with
+    the submitted values (labels and API keys both match). Unknown
+    placeholders are left as they are; empty fields read "(not provided)"."""
+    lookup = {_field_key(k): v for k, v in (values or {}).items()}
+
+    def sub(m):
+        key = _field_key(m.group(1))
+        if key not in lookup:
+            return m.group(0)
+        v = lookup[key]
+        if v is None or v == "":
+            return "(not provided)"
+        return json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else str(v)[:5000]
+
+    return _PLACEHOLDER.sub(sub, prompt)
+
+
+TONE_INSTRUCTIONS = {
+    "friendly": "Tone: warm, friendly and approachable. Use plain language and a positive voice.",
+    "professional": "Tone: professional and precise. Courteous, clear, no slang or emoji.",
+    "concise": "Tone: concise. Short, direct answers; use bullet points when listing; no filler.",
+    "playful": "Tone: playful and upbeat, with light humour where it fits — but stay accurate and helpful.",
+    "empathetic": "Tone: empathetic and patient. Acknowledge the person's situation before answering.",
+}
+
 RUN_MODE_SUFFIX = {
     "agent": ("\n\nYou are operating in autonomous agent mode. Think through the problem step by step. "
               "Use available tools to gather information and take actions. Continue working until you have a "
@@ -1357,6 +1411,11 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
 
     # ── System prompt ────────────────────────────────────────────────────────
     base_system = (req.system_prompt or "You are a helpful AI assistant.") + RUN_MODE_SUFFIX.get(req.run_mode or "", "")
+    if req.field_values:
+        base_system = fill_field_placeholders(base_system, req.field_values)
+    tone = TONE_INSTRUCTIONS.get((app_row or {}).get("tone") or "")
+    if tone:
+        base_system += "\n\n" + tone
     fmt_instruction = OUTPUT_FORMAT_INSTRUCTIONS.get(req.output_type or "markdown", "")
 
     variation_block = ""
@@ -1664,9 +1723,10 @@ def _validated_fields_input(fields: dict, input_fields: list, where: str = "") -
 
 
 def _api_run_request(app_id: str, app_data: dict, input_text: str, *, output_type: Optional[str] = None,
-                     user_context: Optional[str] = None, temperature: Optional[float] = None) -> RunRequest:
+                     user_context: Optional[str] = None, temperature: Optional[float] = None,
+                     field_values: Optional[dict] = None) -> RunRequest:
     return RunRequest(
-        app_id=app_id, input=input_text,
+        app_id=app_id, input=input_text, field_values=field_values,
         system_prompt=app_data.get("system_prompt") or "You are a helpful AI assistant.",
         ai_provider=app_data.get("ai_provider") or "claude",
         ai_model=app_data.get("ai_model"),
@@ -1755,7 +1815,7 @@ async def run_published_app_api(app_id: str, req: ApiRunRequest, request: Reques
         input_text = combine + "\n\n".join(notes)[: MAX_INPUT_LENGTH - len(combine)]
 
     try:
-        run_req = _api_run_request(app_id, app_data, input_text, **kwargs)
+        run_req = _api_run_request(app_id, app_data, input_text, field_values=req.fields, **kwargs)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     response = await execute_run(run_req, request, caller=caller, on_complete=record)
@@ -3624,7 +3684,9 @@ async def proxy_request(body: ProxyRequest, request: Request):
 
 
 class ScrapeRequest(BaseModel):
-    url: str
+    url: str = Field(..., max_length=2048)
+    # Website apps read one page (~8k chars); Data apps fetch whole documents.
+    max_chars: int = Field(default=8000, ge=500, le=400_000)
 
 
 class SheetsRequest(BaseModel):
@@ -3673,6 +3735,27 @@ async def fetch_google_sheet(body: SheetsRequest, request: Request):
         raise HTTPException(status_code=502, detail="Could not fetch the sheet.")
 
 
+_HTML_DROP = re.compile(r"<(script|style|noscript|svg|template|iframe|nav|footer|header|form)\b[^>]*>.*?</\1\s*>",
+                        re.DOTALL | re.IGNORECASE)
+_HTML_BLOCK = re.compile(r"</?(p|div|section|article|li|ul|ol|h[1-6]|br|tr|table|blockquote|main)\b[^>]*>", re.IGNORECASE)
+
+
+def _html_to_text(page: str) -> str:
+    """Readable page text: title + meta description, then the body without
+    menus/footers/scripts, with entities decoded and paragraph breaks kept."""
+    title = re.search(r"<title[^>]*>(.*?)</title>", page, re.DOTALL | re.IGNORECASE)
+    desc = re.search(r'<meta[^>]+name=["\']description["\'][^>]+content=["\']([^"\']*)', page, re.IGNORECASE)
+    body = _HTML_DROP.sub(" ", page)
+    body = re.sub(r"<!--.*?-->", " ", body, flags=re.DOTALL)
+    body = _HTML_BLOCK.sub("\n", body)
+    body = re.sub(r"<[^>]+>", " ", body)
+    body = html_lib.unescape(body)
+    lines = [re.sub(r"[ \t\xa0]+", " ", ln).strip() for ln in body.splitlines()]
+    body = "\n".join(ln for ln in lines if ln)
+    head = [html_lib.unescape(m.group(1)).strip() for m in (title, desc) if m and m.group(1).strip()]
+    return "\n".join(head + [body]).strip()
+
+
 @app.post("/scrape")
 async def scrape_website(body: ScrapeRequest, request: Request):
     """Fetch a URL server-side and return its visible text content."""
@@ -3689,19 +3772,36 @@ async def scrape_website(body: ScrapeRequest, request: Request):
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5",
         }
-        resp = await fetch_safely("GET", url, timeout=15, headers=headers)
+        resp = await fetch_safely("GET", url, timeout=20, headers=headers)
         resp.raise_for_status()
-        html = resp.text
+        ctype = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+        final_url = str(resp.url)
+        path = urlsplit(final_url).path.lower()
+        if len(resp.content) > MAX_EXTRACT_BYTES:
+            raise HTTPException(status_code=413, detail=f"That file is larger than {MAX_EXTRACT_BYTES // (1024 * 1024)} MB")
 
-        # Strip tags and collapse whitespace to get clean readable text
-        # (re is already imported at module level — no need to re-import per request)
-        text = re.sub(r"<script[^>]*>.*?</script>", " ", html, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r"<style[^>]*>.*?</style>", " ", text, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r"<[^>]+>", " ", text)
-        text = re.sub(r"&[a-z]+;", " ", text)
-        text = re.sub(r"\s{2,}", " ", text).strip()
+        if ctype == "application/pdf" or path.endswith(".pdf"):
+            try:
+                text, kind = await asyncio.to_thread(_extract_pdf, resp.content), "text"
+            except ValueError as e:      # scanned / password-protected PDF
+                raise HTTPException(status_code=422, detail=str(e))
+        elif ctype in ("text/csv", "application/csv") or path.endswith(".csv"):
+            text, kind = resp.text, "csv"
+        elif ctype in ("application/json", "text/plain", "text/markdown") or path.endswith((".json", ".txt", ".md")):
+            text, kind = resp.text, "json" if "json" in ctype or path.endswith(".json") else "text"
+        elif "html" in ctype or not ctype:
+            text, kind = _html_to_text(resp.text), "text"
+        else:
+            raise HTTPException(status_code=415, detail=f"Can't read {ctype or 'this kind of'} content — use a web page, PDF, CSV or text URL")
 
-        return {"text": text[:8000], "url": str(resp.url)}
+        if not text.strip():
+            raise HTTPException(status_code=422, detail="The page has no readable text (it may need JavaScript to load). Try a different page.")
+        return {"text": text[: body.max_chars], "url": final_url, "kind": kind,
+                "truncated": len(text) > body.max_chars, "chars": len(text)}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=502, detail=f"Site returned {e.response.status_code}")
     except ValueError as e:

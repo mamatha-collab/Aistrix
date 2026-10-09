@@ -29,6 +29,9 @@ const TYPE_LABELS = {
   batch:   { icon: '⊞',  label: 'Batch',    color: '#6C5CE7' },
   iframe:  { icon: '⬡',  label: 'Embed',   color: '#E84393' },
   native:  { icon: '⊞',  label: 'Form',    color: '#00B894' },
+  prompt:  { icon: '✦',  label: 'Prompt',  color: '#A29BFE' },
+  structured: { icon: '{}', label: 'JSON', color: '#0984E3' },
+  chatbot: { icon: '💬', label: 'Chatbot', color: '#E84393' },
   website: { icon: '🌐', label: 'Website',  color: '#00B894' },
 }
 
@@ -128,6 +131,8 @@ export default function AppCard({ app, selected, starred, isOwn, sharedRole, onC
     app.app_type === 'api' && { label: 'API-ready', color: '#FDCB6E' },
     app.app_type === 'native' && { label: 'Guided form', color: '#6C5CE7' },
     app.app_type === 'data' && { label: 'Data input', color: '#E17055' },
+    app.app_type === 'structured' && { label: 'Schema-checked', color: '#0984E3' },
+    app.app_type === 'chatbot' && { label: 'Chatbot', color: '#E84393' },
   ].filter(Boolean)
   const primaryActionLabel = (app.total_runs || 0) > 0 ? 'Run app' : 'Open app'
 

@@ -2,9 +2,35 @@ import { useState, useEffect, useTransition, useRef } from 'react'
 import { supabase } from '../supabase'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { useToast } from '../hooks/useToast'
-import { parseSSELine } from '../lib/sse'
+import { generateJSON, normaliseUrl, readUrl, streamRun } from '../lib/runStream'
+import { TOOL_DEFAULT_SCHEMAS } from '../utils/toolTypes'
 import OutputSchemaEditor from './OutputSchemaEditor'
 import { formSchemaToInputFields, getOutputSchemaFields, outputFieldsErrors } from '../utils/schemaContracts'
+
+const TYPE_DEFAULTS = {
+  native: { emoji: '⊞', placeholder: 'Fill out the form fields and submit...' },
+  data: { emoji: '▦', output_type: 'table', placeholder: 'Upload or paste data to analyze...' },
+  website: { emoji: '🌐', placeholder: 'Ask about products, services, pricing, hours, or policies...' },
+  structured: {
+    emoji: '{}',
+    output_type: 'json',
+    placeholder: 'Paste messy text to extract structured fields...',
+    system_prompt: 'You extract useful information from the user input and return only valid JSON that matches the output schema. Do not include markdown fences, explanations, or extra keys.',
+  },
+  api: { emoji: '{}', output_type: 'json', placeholder: 'Send JSON fields through the API...' },
+  chatbot: {
+    emoji: '💬',
+    placeholder: 'Start a conversation...',
+    system_prompt: 'You are a friendly, knowledgeable chatbot with a clear persona. Greet the user warmly, ask clarifying questions when needed, remember the conversation context within the session, and give concise, useful answers in the configured tone.',
+    description: 'A conversational AI assistant with a custom persona and memory.',
+    tags: 'chatbot, support, assistant',
+  },
+  prompt: { emoji: '✦', placeholder: 'Describe what you need...' },
+}
+
+function defaultForType(type, key, fallback = '') {
+  return TYPE_DEFAULTS[type]?.[key] ?? fallback
+}
 
 const EMOJI_OPTIONS = ['🤖','🧠','✍️','📊','🔍','💡','📝','🎯','🚀','🛠️','💬','📈','🔧','🎨','📧','🌐','⚡','🏆','🎓','🔑']
 
@@ -183,7 +209,7 @@ function LocalToolBuilder({ tools, onChange }) {
   function addTool() {
     if (!name.trim() || !description.trim()) return
     onChange([...tools, { type, name: name.trim(), description: description.trim(), config,
-      input_schema: { type: 'object', properties: {}, required: [] } }])
+      input_schema: TOOL_DEFAULT_SCHEMAS[type] || { type: 'object', properties: {}, required: [] } }])
     setName(''); setDescription(''); setConfig({}); setType('search'); setShowForm(false)
   }
 
@@ -348,25 +374,27 @@ export default function CreateAppModal({ user, onClose, onBack, onCreated, onUpd
   const [domains, setDomains] = useState([])
   const [form, setForm] = useState({
     name: existingApp?.name || websitePrefilled?.name || '',
-    emoji: existingApp?.emoji || websitePrefilled?.emoji || (initialType === 'native' ? '⊞' : '🤖'),
-    description: existingApp?.description || websitePrefilled?.description || '',
-    system_prompt: existingApp?.system_prompt || websitePrefilled?.system_prompt || '',
+    emoji: existingApp?.emoji || websitePrefilled?.emoji || defaultForType(initialType, 'emoji', '🤖'),
+    description: existingApp?.description || websitePrefilled?.description || defaultForType(initialType, 'description'),
+    system_prompt: existingApp?.system_prompt || websitePrefilled?.system_prompt || defaultForType(initialType, 'system_prompt'),
     ai_provider: existingApp?.ai_provider || 'claude',
     ai_model: existingApp?.ai_model || 'claude-sonnet-5-5',
-    tags: existingApp?.tags?.join(', ') || websitePrefilled?.tags || '',
-    input_placeholder: existingApp?.input_placeholder || websitePrefilled?.input_placeholder || '',
+    tags: existingApp?.tags?.join(', ') || websitePrefilled?.tags || defaultForType(initialType, 'tags'),
+    input_placeholder: existingApp?.input_placeholder || websitePrefilled?.input_placeholder || defaultForType(initialType, 'placeholder'),
     webhook_url: existingApp?.webhook_url || '',
     domain_id: existingApp?.domain_id || null,
     required_context: existingApp?.required_context || [],
     compose_hint: existingApp?.compose_hint || '',
-    output_type: existingApp?.output_type || (initialType === 'api' || initialType === 'structured' ? 'json' : initialType === 'data' ? 'table' : 'markdown'),
+    output_type: existingApp?.output_type || defaultForType(initialType, 'output_type', 'markdown'),
     visibility: existingApp?.visibility || 'public',
     is_paid: existingApp?.is_paid || false,
     price_per_run: existingApp?.price_per_run || 0,
-    has_memory: existingApp?.has_memory || false,
+    has_memory: existingApp?.has_memory || initialType === 'chatbot',
     custom_model_url: existingApp?.custom_model_url || '',
     custom_model_name: existingApp?.custom_model_name || '',
     sample_input: existingApp?.sample_input || '',
+    greeting: existingApp?.greeting || '',
+    tone: existingApp?.tone || '',
   })
   const [formSchema, setFormSchema] = useState(existingApp?.form_schema || [])
   const [outputFields, setOutputFields] = useState([])
@@ -386,91 +414,72 @@ export default function CreateAppModal({ user, onClose, onBack, onCreated, onUpd
   const isData    = appType === 'data'
   const isWebsite = appType === 'website'
   const isStructured = appType === 'structured'
+  const isChatbot = appType === 'chatbot'
   const hasOutputSchema = isStructured || isApi
   const [generating, setGenerating] = useState(false)
   const [websiteUrl, setWebsiteUrl] = useState('')
   const [websiteScraping, setWebsiteScraping] = useState(false)
   // If prefilled data came from CreateFromWebsiteModal, skip the URL step
   const [websiteScraped, setWebsiteScraped] = useState(!!websitePrefilled)
+  const [websiteSource, setWebsiteSource] = useState(null)   // { url, text } read on this form's URL step
 
   async function scrapeWebsite() {
-    const url = websiteUrl.trim()
+    const url = normaliseUrl(websiteUrl)
     if (!url) return
     setWebsiteScraping(true); setError('')
     try {
-      const { data: { session } } = await supabase.auth.getSession()
-      const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
-        body: JSON.stringify({
-          input: url,
-          system_prompt: `You are an AI app generator. The user has given you a website URL: ${url}
+      const page = await readUrl(url, { maxChars: 20000 })
+      if (page.text.split(/\s+/).filter(Boolean).length < 80) {
+        throw new Error('That page has very little readable text. Try its About, Services, Pricing or Docs page.')
+      }
+      const parsed = await generateJSON(`You are an AI app generator. You have been given real text read from a business or service website.
 
-Analyse the URL and what you know about the business or service at that URL, then generate a complete AI assistant app for it.
+Based on this content, generate a complete AI assistant app that helps users of this business.
 
 Return ONLY valid JSON with these fields:
 {
   "name": "short app name, e.g. 'Acme Support Assistant'",
   "emoji": "one relevant emoji",
   "description": "one sentence describing what this app does for users",
-  "system_prompt": "a detailed system prompt (200+ chars) that tells an AI assistant how to help users of this business — include the business name, what they offer, tone, and how to handle common questions",
+  "system_prompt": "a detailed system prompt (300+ chars) for an assistant representing this business — business name, what they offer, tone, common questions, and what to say when the answer isn't in the site content",
   "tags": "comma-separated tags, e.g. 'support, retail, customer service'",
   "input_placeholder": "a helpful prompt placeholder, e.g. 'Ask about our products, hours, or services…'"
-}`,
-          ai_provider: 'claude', ai_model: 'claude-sonnet-5-5',
-        }),
-      })
-      const reader = res.body.getReader(); const decoder = new TextDecoder()
-      let buf = '', full = ''
-      while (true) {
-        const { done, value } = await reader.read(); if (done) break
-        buf += decoder.decode(value, { stream: true })
-        const lines = buf.split('\n'); buf = lines.pop()
-        for (const line of lines) { const d = parseSSELine(line); if (d?.token) full += d.token }
-      }
-      const parsed = JSON.parse(full.replace(/^```json?\n?/i, '').replace(/\n?```$/i, '').trim())
-      if (parsed.name)              set('name', parsed.name)
+}`, `Text read from ${page.url}:\n\n${page.text.slice(0, 12000)}`)
+      if (!parsed?.name || !parsed?.system_prompt) throw new Error('The AI response was missing the app name or instructions. Try again.')
+      set('name', parsed.name)
       if (parsed.emoji)             set('emoji', parsed.emoji)
       if (parsed.description)       set('description', parsed.description)
-      if (parsed.system_prompt)     set('system_prompt', parsed.system_prompt)
-      if (parsed.tags)              set('tags', parsed.tags)
+      set('system_prompt', parsed.system_prompt)
+      if (parsed.tags)              set('tags', Array.isArray(parsed.tags) ? parsed.tags.join(', ') : parsed.tags)
       if (parsed.input_placeholder) set('input_placeholder', parsed.input_placeholder)
+      setWebsiteSource({ url: page.url, text: page.text })
       setWebsiteScraped(true)
       setStep(2)
-    } catch { setError('Could not analyse that URL. Try again or enter details manually.') }
-    finally { setWebsiteScraping(false) }
+    } catch (e) {
+      setError(`Could not build an app from that URL: ${e.message}`)
+    } finally {
+      setWebsiteScraping(false)
+    }
   }
 
   async function aiGenerateDetails() {
     if (!form.system_prompt.trim()) { setError('Add a system prompt first so AI knows what to generate.'); return }
     setGenerating(true); setError('')
     try {
-      const { data: { session } } = await supabase.auth.getSession()
-      const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
-        body: JSON.stringify({
-          input: form.system_prompt,
-          system_prompt: 'Given this AI app system prompt, generate a concise app name, a one-sentence description, a single relevant emoji, and 3-4 relevant tags. Return ONLY valid JSON: {"name":"...","description":"...","emoji":"...","tags":"tag1, tag2, tag3"}',
-          ai_provider: 'claude', ai_model: 'claude-haiku-5-5',
-        }),
-      })
-      const reader = res.body.getReader(); const decoder = new TextDecoder()
-      let buf = '', full = ''
-      while (true) {
-        const { done, value } = await reader.read(); if (done) break
-        buf += decoder.decode(value, { stream: true })
-        const lines = buf.split('\n'); buf = lines.pop()
-        for (const line of lines) { const d = parseSSELine(line); if (d?.token) full += d.token }
-      }
-      const parsed = JSON.parse(full.replace(/^```json?\n?/i, '').replace(/\n?```$/i, '').trim())
+      const parsed = await generateJSON(
+        'Given this AI app system prompt, generate a concise app name, a one-sentence description, a single relevant emoji, and 3-4 relevant tags. Return ONLY valid JSON: {"name":"...","description":"...","emoji":"...","tags":"tag1, tag2, tag3"}',
+        form.system_prompt, { model: 'claude-haiku-5-5' })
       if (parsed.name) set('name', parsed.name)
       if (parsed.description) set('description', parsed.description)
       if (parsed.emoji) set('emoji', parsed.emoji)
-      if (parsed.tags) set('tags', parsed.tags)
-    } catch { setError('Could not generate details. Try again.') }
-    finally { setGenerating(false) }
+      if (parsed.tags) set('tags', Array.isArray(parsed.tags) ? parsed.tags.join(', ') : parsed.tags)
+    } catch (e) {
+      setError(`Could not generate details: ${e.message}`)
+    } finally {
+      setGenerating(false)
+    }
   }
+
   const STEPS = isEdit ? 2 : (isNative || isApi || isWebsite ? 4 : 3)
 
   useEffect(() => {
@@ -555,7 +564,8 @@ Return ONLY valid JSON with these fields:
       is_paid: form.is_paid || false,
       price_per_run: form.is_paid ? Number(form.price_per_run) : 0,
       webhook_url: form.webhook_url?.trim() || null,
-      has_memory: form.has_memory || false,
+      has_memory: isChatbot || form.has_memory || false,
+      ...(isChatbot ? { greeting: form.greeting.trim() || null, tone: form.tone || null } : {}),
       custom_model_url: form.custom_model_url?.trim() || null,
       custom_model_name: form.custom_model_name?.trim() || null,
       sample_input: form.sample_input?.trim() || null,
@@ -596,12 +606,15 @@ Return ONLY valid JSON with these fields:
         // which the modal is about to unmount) so it isn't lost silently.
         if (toolsErr) toast(`"${data.name}" saved, but its tools weren't: ${toolsErr.message}`, 'error', 6000)
       }
-      if (isWebsite && websitePrefilled?.source_text) {
+      const source = websitePrefilled?.source_text
+        ? { url: websitePrefilled.source_url, text: websitePrefilled.source_text }
+        : websiteSource
+      if (isWebsite && source?.text) {
         const { error: kbErr } = await supabase.from('app_knowledge').insert({
           app_id: data.id,
-          title: websitePrefilled.source_url ? `Website source: ${websitePrefilled.source_url}` : 'Website source',
-          content: websitePrefilled.source_text.slice(0, 20000),
-          source_url: websitePrefilled.source_url || null,
+          title: source.url ? `Website source: ${source.url}` : 'Website source',
+          content: source.text.slice(0, 20000),
+          source_url: source.url || null,
           type: 'url',
         })
         if (kbErr) toast(`"${data.name}" saved, but website source wasn't attached: ${kbErr.message}`, 'error', 6000)
@@ -621,34 +634,29 @@ Return ONLY valid JSON with these fields:
     if (!previewInput.trim() || !form.system_prompt.trim()) return
     setPreviewRunning(true); setPreviewResult('')
     try {
-      const { data: { session } } = await supabase.auth.getSession()
-      const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
-        body: JSON.stringify({ input: previewInput, system_prompt: form.system_prompt, ai_provider: form.ai_provider, ai_model: form.ai_model }),
-      })
-      const reader = res.body.getReader(); const decoder = new TextDecoder()
-      let buf = '', full = ''
-      while (true) {
-        const { done, value } = await reader.read(); if (done) break
-        buf += decoder.decode(value, { stream: true })
-        const lines = buf.split('\n'); buf = lines.pop()
-        for (const line of lines) {
-          const d = parseSSELine(line)
-          if (d?.token) { full += d.token; setPreviewResult(full) }
-        }
-      }
-    } catch (e) { setPreviewResult(`Error: ${e.message}`) }
-    setPreviewRunning(false)
+      await streamRun({
+        input: previewInput,
+        system_prompt: form.system_prompt,
+        ai_provider: form.ai_provider,
+        ai_model: form.ai_model,
+        output_type: isStructured ? 'json' : form.output_type,
+        run_mode: isChatbot ? 'conversation' : undefined,
+      }, { onToken: setPreviewResult })
+    } catch (e) {
+      setPreviewResult(`Error: ${e.message}`)
+    } finally {
+      setPreviewRunning(false)
+    }
   }
+
 
   // For website type steps are offset by 1: 1=URL, 2=Info, 3=Prompt, 4=Tools
   const infoStep   = isWebsite ? 2 : 1
   const promptStep = isWebsite ? 3 : 2
 
   const inputCls = 'w-full bg-[#1F2444] border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-[#6C5CE7] transition-colors'
-  const typeLabel = isNative ? 'Native App' : isApi ? 'API App' : isData ? 'Data App' : isWebsite ? 'From Website' : isStructured ? 'Structured Output App' : appType === 'batch' ? 'Batch Processor' : appType === 'agent' ? 'Agent' : appType === 'iframe' ? 'Iframe App' : 'Prompt App'
-  const typeColor = isNative ? '#00B894' : isApi || isStructured ? '#0984E3' : isData ? '#E17055' : isWebsite ? '#00B894' : appType === 'batch' ? '#6C5CE7' : appType === 'agent' ? '#FDCB6E' : appType === 'iframe' ? '#E84393' : '#6C5CE7'
+  const typeLabel = isNative ? 'Form App' : isApi ? 'API App' : isData ? 'Data App' : isWebsite ? 'From Website' : isStructured ? 'Structured Output App' : isChatbot ? 'Chatbot App' : appType === 'batch' ? 'Batch Processor' : appType === 'agent' ? 'Agent' : appType === 'iframe' ? 'Iframe App' : 'Prompt App'
+  const typeColor = isNative ? '#00B894' : isApi || isStructured ? '#0984E3' : isData ? '#E17055' : isWebsite ? '#00B894' : isChatbot ? '#E84393' : appType === 'batch' ? '#6C5CE7' : appType === 'agent' ? '#FDCB6E' : appType === 'iframe' ? '#E84393' : '#6C5CE7'
 
   const stepLabels = isWebsite
     ? (websiteScraped ? ['Website', 'Info', 'AI & Prompt', 'Tools'] : ['Website'])
@@ -666,7 +674,7 @@ Return ONLY valid JSON with these fields:
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl font-bold shrink-0"
                 style={{ background: typeColor + '22', color: typeColor }}>
-                {isNative ? '⊞' : isApi || isStructured ? '{}' : isData ? '▦' : isWebsite ? '🌐' : appType === 'batch' ? '⊞' : appType === 'agent' ? '◈' : appType === 'iframe' ? '⬡' : '✦'}
+                {isNative ? '⊞' : isApi || isStructured ? '{}' : isData ? '▦' : isWebsite ? '🌐' : isChatbot ? '💬' : appType === 'batch' ? '⊞' : appType === 'agent' ? '◈' : appType === 'iframe' ? '⬡' : '✦'}
               </div>
               <div>
                 <p className="text-white font-bold text-xl leading-snug">{isEdit ? `Edit — ${typeLabel}` : `New ${typeLabel}`}</p>
@@ -867,12 +875,40 @@ Return ONLY valid JSON with these fields:
                     The form fields you define in the next step will be combined and sent to the AI automatically. Use <code className="text-[#6C5CE7] bg-[#1F2444] px-1 rounded">{"{{Field Name}}"}</code> to reference specific fields.
                   </p>
                 )}
+              {isChatbot && (
+                <p className="text-[11px] text-slate-500 mb-2">
+                  Define the chatbot persona, boundaries, greeting style, and when it should ask a follow-up question. Memory is enabled by default for this app type.
+                </p>
+              )}
                 <textarea className="w-full bg-[#1F2444] border border-white/10 rounded-xl px-3 py-3 text-sm text-white placeholder-slate-500 resize-none focus:outline-none focus:border-[#6C5CE7] transition-colors leading-relaxed"
                   rows={6} value={form.system_prompt} onChange={e => set('system_prompt', e.target.value)}
-                  placeholder={isNative
+                  placeholder={isChatbot
+                    ? `You are Nova, a warm customer support chatbot for Acme. Greet users briefly, answer from the product context, ask one clarifying question when needed, and hand off when the request needs a human.`
+                    : isNative
                     ? `You are an expert assistant. The user will provide structured information via a form. Use all provided fields to generate a comprehensive, tailored response.`
                     : `You are a helpful assistant. Be specific, accurate, and actionable in your responses.`} />
               </div>
+              {isChatbot && (
+                <>
+                  <div>
+                    <label className="text-xs text-slate-400 block mb-1.5">Greeting message <span className="text-slate-600">(first message users see)</span></label>
+                    <textarea className="w-full bg-[#1F2444] border border-white/10 rounded-xl px-3 py-3 text-sm text-white placeholder-slate-500 resize-none focus:outline-none focus:border-[#6C5CE7] transition-colors leading-relaxed"
+                      rows={2} maxLength={1000} value={form.greeting} onChange={e => set('greeting', e.target.value)}
+                      placeholder="Hi! I'm Nova from Acme. Ask me about orders, returns or our products." />
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-400 block mb-1.5">Tone</label>
+                    <select className={inputCls} value={form.tone} onChange={e => set('tone', e.target.value)}>
+                      <option value="">Follow the system prompt</option>
+                      <option value="friendly">Friendly</option>
+                      <option value="professional">Professional</option>
+                      <option value="concise">Concise</option>
+                      <option value="playful">Playful</option>
+                      <option value="empathetic">Empathetic</option>
+                    </select>
+                  </div>
+                </>
+              )}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-xs text-slate-400 block mb-1.5">AI Provider</label>
@@ -927,9 +963,10 @@ Return ONLY valid JSON with these fields:
               <div className="flex items-center justify-between bg-[#1F2444] border border-white/10 rounded-xl px-4 py-3">
                 <div>
                   <p className="text-sm text-white font-medium">Conversation Memory</p>
-                  <p className="text-xs text-slate-400 mt-0.5">AI remembers previous messages in the same session</p>
+                  <p className="text-xs text-slate-400 mt-0.5">{isChatbot ? 'Required for chatbot-style back-and-forth conversations' : 'AI remembers previous messages in the same session'}</p>
                 </div>
-                <button type="button" onClick={() => set('has_memory', !form.has_memory)}
+                <button type="button" onClick={() => !isChatbot && set('has_memory', !form.has_memory)}
+                  disabled={isChatbot}
                   className={`relative w-10 h-5 rounded-full transition-colors shrink-0 ${form.has_memory ? 'bg-[#6C5CE7]' : 'bg-[#0F1225]'}`}>
                   <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${form.has_memory ? 'translate-x-5' : 'translate-x-0.5'}`} />
                 </button>

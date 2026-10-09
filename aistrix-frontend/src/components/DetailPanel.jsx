@@ -234,7 +234,7 @@ export default function DetailPanel({ app, user, onClose, onRun, onDeleted }) {
         ? <ApiAppRunner   app={currentApp} user={user} onClose={handleRunnerClose} onRun={() => { fetchStats(); setLocalTotalRuns(p => (p ?? currentApp.total_runs ?? 0) + 1); onRun?.(currentApp.id) }} />
         : currentApp.app_type === 'data'
         ? <DataAppRunner  app={currentApp} user={user} onClose={handleRunnerClose} onRun={() => { fetchStats(); setLocalTotalRuns(p => (p ?? currentApp.total_runs ?? 0) + 1); onRun?.(currentApp.id) }} />
-        : currentApp.has_memory
+        : (currentApp.has_memory || currentApp.app_type === 'chatbot')
         ? <ConversationThread app={currentApp} user={user} onClose={handleRunnerClose} />
         : currentApp.pages?.length > 0
         ? <MultiPageRunner app={currentApp} user={user} onClose={handleRunnerClose} onRun={() => { fetchStats(); setLocalTotalRuns(prev => (prev ?? currentApp.total_runs ?? 0) + 1); onRun?.(currentApp.id) }} />

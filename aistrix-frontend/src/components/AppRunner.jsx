@@ -379,13 +379,15 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
         ai_model: app.ai_model || null,
         user_context: (await buildUserContext()) || undefined,
         output_type: app.output_type || 'markdown',
+        // Form apps: lets {{Field Name}} placeholders in the prompt be filled.
+        ...(isNative ? { field_values: Object.fromEntries((app.form_schema || []).map(f => [f.label, formValues[f.id] ?? ''])) } : {}),
       }),
     })
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: 'Backend error' }))
       if (res.status === 429) throw new Error(err.error || 'Rate limit reached')
-      throw new Error(err.detail || err.error || 'Backend error')
+      throw new Error(err.error || (typeof err.detail === 'string' ? err.detail : err.detail?.message) || 'Backend error')
     }
 
     const reader = res.body.getReader()
@@ -505,7 +507,7 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
       body: JSON.stringify(body),
     })
     const payload = await res.json().catch(() => ({}))
-    if (!res.ok) throw new Error(payload.detail || payload.error || 'Could not start the batch')
+    if (!res.ok) throw new Error(payload.error || (typeof payload.detail === 'string' ? payload.detail : [payload.detail?.message, ...(payload.detail?.errors || [])].filter(Boolean).join(' — ')) || 'Could not start the batch')
 
     setBatchJobId(payload.id)
     setBatchJobStatus(payload.status)
@@ -550,7 +552,7 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
       const headers = await batchHeaders()
       const res = await fetch(`${API_URL}/v1/batches/${batchJobId}/retry`, { method: 'POST', headers })
       const payload = await res.json().catch(() => ({}))
-      if (!res.ok) throw new Error(payload.detail || payload.error || 'Could not retry the batch')
+      if (!res.ok) throw new Error(payload.error || (typeof payload.detail === 'string' ? payload.detail : payload.detail?.message) || 'Could not retry the batch')
       setBatchJobStatus(payload.status)
       await finishServerBatch(await pollServerBatch(payload, headers, { cancelled: false }))
     } catch (e) {

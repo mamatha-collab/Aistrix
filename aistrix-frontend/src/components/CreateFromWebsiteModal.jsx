@@ -1,7 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
-import { supabase } from '../supabase'
 import { useFocusTrap } from '../hooks/useFocusTrap'
-import { parseSSELine } from '../lib/sse'
+import { generateJSON, normaliseUrl, readUrl } from '../lib/runStream'
 
 export default function CreateFromWebsiteModal({ onClose, onGenerated }) {
   const [url, setUrl] = useState('')
@@ -15,12 +14,6 @@ export default function CreateFromWebsiteModal({ onClose, onGenerated }) {
 
   useEffect(() => { inputRef.current?.focus() }, [])
 
-  function normaliseUrl(raw) {
-    const t = raw.trim()
-    if (!t) return ''
-    return /^https?:\/\//i.test(t) ? t : 'https://' + t
-  }
-
   async function loadSite() {
     const full = normaliseUrl(url)
     if (!full) return
@@ -29,20 +22,7 @@ export default function CreateFromWebsiteModal({ onClose, onGenerated }) {
     setScraped(null)
     setError('')
     try {
-      const { data: { session } } = await supabase.auth.getSession()
-      const res = await fetch(
-        `${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/scrape`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
-          body: JSON.stringify({ url: full }),
-        }
-      )
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}))
-        throw new Error(err.detail || `Server returned ${res.status}`)
-      }
-      const data = await res.json()
+      const data = await readUrl(full, { maxChars: 20000 })
       setScraped({ text: data.text || '', url: data.url || full })
     } catch (e) {
       setError(e.message || "Could not fetch that URL. Check it's correct and publicly accessible.")
@@ -56,13 +36,7 @@ export default function CreateFromWebsiteModal({ onClose, onGenerated }) {
     setGenerating(true)
     setError('')
     try {
-      const { data: { session } } = await supabase.auth.getSession()
-      const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
-        body: JSON.stringify({
-          input: `Here is the actual text content scraped from ${scraped.url}:\n\n${scraped.text.slice(0, 6000)}`,
-          system_prompt: `You are an AI app generator. You have been given real scraped text from a business or service website.
+      const parsed = await generateJSON(`You are an AI app generator. You have been given real scraped text from a business or service website.
 
 Based on this content, generate a complete AI assistant app that would help users of this business.
 
@@ -74,27 +48,11 @@ Return ONLY valid JSON:
   "system_prompt": "detailed system prompt (300+ chars) for an AI assistant representing this business — include business name, what they offer, tone, common questions, and what to say when uncertain",
   "tags": "3-5 comma-separated tags",
   "input_placeholder": "example question a user might ask"
-}`,
-          ai_provider: 'claude',
-          ai_model: 'claude-sonnet-5-5',
-        }),
-      })
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let buf = '', full = ''
-      while (true) {
-        const { done, value } = await reader.read(); if (done) break
-        buf += decoder.decode(value, { stream: true })
-        const lines = buf.split('\n'); buf = lines.pop()
-        for (const line of lines) {
-          const d = parseSSELine(line)
-          if (d?.token) full += d.token
-        }
-      }
-      const parsed = JSON.parse(full.replace(/^```json?\n?/i, '').replace(/\n?```$/i, '').trim())
+}`, `Here is the actual text content read from ${scraped.url}:\n\n${scraped.text.slice(0, 12000)}`)
+      if (!parsed?.name || !parsed?.system_prompt) throw new Error('The AI response was missing the app name or instructions. Try again.')
       onGenerated({ ...parsed, source_url: scraped.url, source_text: scraped.text })
-    } catch {
-      setError('Could not generate the app. Try again.')
+    } catch (e) {
+      setError(`Could not generate the app: ${e.message}`)
     } finally {
       setGenerating(false)
     }
@@ -171,8 +129,8 @@ Return ONLY valid JSON:
           {/* Error */}
           {error && (
             <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-4 text-red-400 text-sm">
-              <p className="font-medium mb-1">Could not read that URL</p>
-              <p className="text-red-400/70 text-xs">{error}</p>
+              <p className="font-medium mb-1">{error.startsWith('Could not generate') ? 'Could not generate the app' : 'Could not read that URL'}</p>
+              <p className="text-red-400/70 text-xs">{error.replace(/^Could not generate the app: /, '')}</p>
             </div>
           )}
 

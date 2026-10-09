@@ -5,6 +5,7 @@ import OutputRenderer, { ThinkingIndicator } from './OutputRenderer'
 import { parseSSELine } from '../lib/sse'
 import RunRating from './RunRating'
 import { friendlyErrorMessage } from '../utils/appActions'
+import { normaliseUrl, readUrl } from '../lib/runStream'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 // Must stay under the backend's MAX_INPUT_LENGTH (20k chars by default).
@@ -213,16 +214,24 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
       const totalUsage = { input_tokens: 0, output_tokens: 0 }
       const addUsage = u => { if (u) { totalUsage.input_tokens += u.input_tokens || 0; totalUsage.output_tokens += u.output_tokens || 0 } }
 
+      // URL: read the page/document server-side, then analyse its real text
+      // (the model has no web access — asking it to "fetch" made it guess).
+      let source = rawData, sourceIsCsv = dataType === 'csv', sourceHeader = header
       if (dataType === 'url') {
-        final = await streamRun(`Please fetch and analyze this URL: ${rawData}`, outputType, live)
-        addUsage(final.usage)
-      } else {
-        const chunks = chunkText(rawData, dataType === 'csv')
+        setProgressLabel('Reading the URL…')
+        const page = await readUrl(normaliseUrl(rawData), { maxChars: MAX_ANALYSIS_CHARS })
+        source = page.text
+        sourceIsCsv = page.kind === 'csv'
+        sourceHeader = `Data source: ${page.url}${page.truncated ? ` (first ${page.text.length.toLocaleString()} of ${page.chars.toLocaleString()} characters)` : ''}`
+        setProgressLabel('')
+      }
+      {
+        const chunks = chunkText(source, sourceIsCsv)
         if (chunks.length > MAX_CHUNKS) {
-          throw new Error(`This data is too large for an interactive run (${rawData.length.toLocaleString()} chars, ${chunks.length} parts). This runner analyzes about ${MAX_ANALYSIS_CHARS.toLocaleString()} characters at a time. Trim it or split the file.`)
+          throw new Error(`This data is too large for an interactive run (${source.length.toLocaleString()} chars, ${chunks.length} parts). This runner analyzes about ${MAX_ANALYSIS_CHARS.toLocaleString()} characters at a time. Trim it or split the file.`)
         }
         if (chunks.length === 1) {
-          final = await streamRun(`${header}\n\n${rawData}`, outputType, live)
+          final = await streamRun(`${sourceHeader}\n\n${source}`, outputType, live)
           addUsage(final.usage)
         } else {
           // Map: analyse each part. Reduce: merge the partial findings using
@@ -231,14 +240,14 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
           for (let i = 0; i < chunks.length; i++) {
             setProgressLabel(`Analysing part ${i + 1} of ${chunks.length}…`)
             const part = await streamRun(
-              `${header}\nThis is part ${i + 1} of ${chunks.length} of a larger dataset. Extract every finding, figure and row-level detail relevant to the task as concise notes; a later step will merge all parts.\n\n${chunks[i]}`,
+              `${sourceHeader}\nThis is part ${i + 1} of ${chunks.length} of a larger dataset. Extract every finding, figure and row-level detail relevant to the task as concise notes; a later step will merge all parts.\n\n${chunks[i]}`,
               'markdown')
             addUsage(part.usage)
             notes.push(`## Part ${i + 1}\n${part.text}`)
           }
           setProgressLabel(`Combining ${chunks.length} parts…`)
           final = await streamRun(
-            `${header}\nThe data was too large for one pass, so it was analysed in ${chunks.length} parts. Combine these partial results into one complete answer to the original task. Totals and counts must cover ALL parts.\n\n${notes.join('\n\n').slice(0, CHUNK_CHARS)}`,
+            `${sourceHeader}\nThe data was too large for one pass, so it was analysed in ${chunks.length} parts. Combine these partial results into one complete answer to the original task. Totals and counts must cover ALL parts.\n\n${notes.join('\n\n').slice(0, CHUNK_CHARS)}`,
             outputType, live)
           addUsage(final.usage)
         }

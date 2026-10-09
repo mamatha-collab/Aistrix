@@ -9,6 +9,9 @@ import { track, EVENTS } from '../lib/analytics'
 // just to run an app from the dashboard). Lazy here too so it splits into
 // its own shared chunk both places can fetch on demand.
 const AppRunner = lazy(() => import('../components/AppRunner'))
+const DataAppRunner = lazy(() => import('../components/DataAppRunner'))
+const ApiAppRunner = lazy(() => import('../components/ApiAppRunner'))
+const ConversationThread = lazy(() => import('../components/ConversationThread'))
 
 export default function AppPage() {
   const { id } = useParams()
@@ -131,7 +134,13 @@ export default function AppPage() {
 
           <div className="bg-[#171B33] border border-white/10 rounded-2xl p-6">
             <Suspense fallback={null}>
-              <AppRunner app={app} user={user} inline onRun={() => setApp(prev => ({ ...prev, total_runs: (prev.total_runs || 0) + 1 }))} />
+              {app.app_type === 'data'
+                ? <DataAppRunner app={app} user={user} inline onRun={() => setApp(prev => ({ ...prev, total_runs: (prev.total_runs || 0) + 1 }))} />
+                : app.app_type === 'api'
+                ? <ApiAppRunner app={app} user={user} inline onRun={() => setApp(prev => ({ ...prev, total_runs: (prev.total_runs || 0) + 1 }))} />
+                : (app.has_memory || app.app_type === 'chatbot')
+                ? <ConversationThread app={app} user={user} inline />
+                : <AppRunner app={app} user={user} inline onRun={() => setApp(prev => ({ ...prev, total_runs: (prev.total_runs || 0) + 1 }))} />}
             </Suspense>
           </div>
 

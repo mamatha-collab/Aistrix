@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react'
+import { useState, useEffect, useRef, useCallback, lazy, Suspense, startTransition } from 'react'
 import { supabase } from './supabase'
 import Sidebar from './components/SidebarClean'
 import TopBar from './components/TopBarClean'
@@ -457,51 +457,51 @@ export default function App() {
           {showTypeSelector && (
             <Suspense fallback={null}>
               <AppTypeSelector
-                onClose={() => setShowTypeSelector(false)}
+                onClose={closeBuildFlow}
                 onSelect={type => {
-                  // keep showTypeSelector true — it stays behind the popup
-                  setSelectedAppType(type)
-                  if (type === 'ai_builder') setShowAIBuilder(true)
-                  else setShowCreate(true)
+                  // In a transition: the picker stays visible until the
+                  // builder has loaded, then it takes over the same popup.
+                  startTransition(() => {
+                    setSelectedAppType(type)
+                    if (type === 'ai_builder') setShowAIBuilder(true)
+                    else setShowCreate(true)
+                  })
                 }}
-              />
-            </Suspense>
-          )}
-          {showCreate && (
-            <Suspense fallback={null}>
-              <CreateAppModal
-                user={session.user}
-                initialType={selectedAppType}
-                withGuide
-                onClose={closeBuildFlow}
-                onBack={() => setShowCreate(false)}
-                onCreated={newApp => {
-                  closeBuildFlow()
-                  setCreatedApp(newApp)
-                  if (activeView !== 'developer') {
-                    navigateToView('apps')
-                    setWorkspaceRecoApp(newApp)
-                  }
-                }}
-              />
-            </Suspense>
-          )}
-          {showAIBuilder && (
-            <Suspense fallback={null}>
-              <AIAppBuilder
-                user={session.user}
-                withGuide
-                onClose={closeBuildFlow}
-                onBack={() => setShowAIBuilder(false)}
-                onCreated={newApp => {
-                  closeBuildFlow()
-                  setCreatedApp(newApp)
-                  if (activeView !== 'developer') {
-                    navigateToView('apps')
-                    setSelectedApp(newApp)
-                    setWorkspaceRecoApp(newApp)
-                  }
-                }}
+                step={showAIBuilder ? (
+                  <AIAppBuilder
+                    embedded
+                    user={session.user}
+                    withGuide
+                    onClose={closeBuildFlow}
+                    onBack={() => setShowAIBuilder(false)}
+                    onCreated={newApp => {
+                      closeBuildFlow()
+                      setCreatedApp(newApp)
+                      if (activeView !== 'developer') {
+                        navigateToView('apps')
+                        setSelectedApp(newApp)
+                        setWorkspaceRecoApp(newApp)
+                      }
+                    }}
+                  />
+                ) : showCreate ? (
+                  <CreateAppModal
+                    embedded
+                    user={session.user}
+                    initialType={selectedAppType}
+                    withGuide
+                    onClose={closeBuildFlow}
+                    onBack={() => setShowCreate(false)}
+                    onCreated={newApp => {
+                      closeBuildFlow()
+                      setCreatedApp(newApp)
+                      if (activeView !== 'developer') {
+                        navigateToView('apps')
+                        setWorkspaceRecoApp(newApp)
+                      }
+                    }}
+                  />
+                ) : null}
               />
             </Suspense>
           )}

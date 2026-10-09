@@ -368,7 +368,7 @@ function QualityScore({ form, appType, formSchema }) {
 // ─── Main modal ───────────────────────────────────────────────────────────────
 // `withGuide`: start on the type guide ("Start building →" moves on to
 // step 1), so creating an app stays in this one popup.
-export default function CreateAppModal({ user, onClose, onBack, onCreated, onUpdated, existingApp, initialType = 'prompt', websitePrefilled, withGuide = false }) {
+export default function CreateAppModal({ user, onClose, onBack, onCreated, onUpdated, existingApp, initialType = 'prompt', websitePrefilled, withGuide = false, embedded = false }) {
   const modalRef = useRef(null)
   useFocusTrap(modalRef, { onEscape: onClose })
   const toast = useToast()
@@ -668,10 +668,8 @@ Return ONLY valid JSON with these fields:
       ? ['Info', 'AI & Prompt', isApi ? 'Parameters' : 'Form Fields', 'Tools']
       : ['Info', 'AI & Prompt', 'Tools']
 
-  return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-      <div ref={modalRef} role="dialog" aria-modal="true" aria-label={isEdit ? `Edit ${typeLabel}` : `New ${typeLabel}`}
-        className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-xl flex flex-col" style={{ maxHeight: '92vh' }}>
+  const content = (
+    <>
         {/* Header */}
         <div className="px-6 pt-6 pb-5 shrink-0 border-b border-white/5">
           <div className="flex items-start justify-between">
@@ -705,6 +703,8 @@ Return ONLY valid JSON with these fields:
           </div>
         </div>
 
+        {/* Embedded in the type picker: steps sit in a centred column */}
+        <div className={embedded ? 'flex-1 min-h-0 w-full max-w-2xl mx-auto flex flex-col' : 'contents'}>
         {intro ? (
           <TypeGuideSteps type={appType} onBack={onBack || onClose} onContinue={() => setIntro(false)} />
         ) : (<>
@@ -1149,6 +1149,15 @@ Return ONLY valid JSON with these fields:
           )}
         </div>
         </>)}
+        </div>
+    </>
+  )
+  if (embedded) return content
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+      <div ref={modalRef} role="dialog" aria-modal="true" aria-label={isEdit ? `Edit ${typeLabel}` : `New ${typeLabel}`}
+        className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-xl flex flex-col" style={{ maxHeight: '92vh' }}>
+        {content}
       </div>
     </div>
   )

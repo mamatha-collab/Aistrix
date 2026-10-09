@@ -308,7 +308,7 @@ function AppPreview({ config, onSaveDraft, onPublish, onBack, saving }) {
 
 // `withGuide`: start on the type guide ("Start building →" moves on to
 // Describe), so the whole Build with AI flow stays in this one popup.
-export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGuide = false }) {
+export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGuide = false, embedded = false }) {
   const panelRef = useRef(null)
   useFocusTrap(panelRef, { onEscape: onClose })
   const [phase, setPhase] = useState(withGuide ? 'intro' : 'describe')
@@ -432,11 +432,8 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGui
   const steps = ['describe', 'questions', 'preview']
   const stepIdx = steps.indexOf(phase)
 
-  return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-      <div ref={panelRef} role="dialog" aria-modal="true" aria-label="Build with AI"
-        className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-xl flex flex-col" style={{ maxHeight: '92vh' }}>
-
+  const content = (
+    <>
         {/* Header */}
         <div className="px-6 pt-6 pb-5 shrink-0 border-b border-white/5">
           <div className="flex items-start justify-between">
@@ -459,6 +456,8 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGui
           </div>
         </div>
 
+        {/* Embedded in the type picker: steps sit in a centred column */}
+        <div className={embedded ? 'flex-1 min-h-0 w-full max-w-2xl mx-auto flex flex-col' : 'contents'}>
         {phase === 'intro' ? (
           <TypeGuideSteps type="ai_builder" onBack={onBack || onClose} onContinue={() => setPhase('describe')} />
         ) : (<>
@@ -561,6 +560,16 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGui
           )}
         </div>
         </>)}
+        </div>
+    </>
+  )
+  if (embedded) return content
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+      <div ref={panelRef} role="dialog" aria-modal="true" aria-label="Build with AI"
+        className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-xl flex flex-col" style={{ maxHeight: '92vh' }}>
+
+        {content}
       </div>
     </div>
   )

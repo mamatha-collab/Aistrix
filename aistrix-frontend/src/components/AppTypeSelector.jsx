@@ -254,7 +254,9 @@ const TYPE_REASON = {
   chatbot:     'Best for persona-driven customer-facing chat experiences.',
 }
 
-export default function AppTypeSelector({ onSelect, onClose }) {
+// `step`: the chosen type's builder, shown inside this same popup (same
+// size) instead of the picker, so building is one popup start to finish.
+export default function AppTypeSelector({ onSelect, onClose, step = null }) {
   const panelRef = useRef(null)
   const [intent, setIntent] = useState('')
   const [suggestion, setSuggestion] = useState(null)
@@ -278,12 +280,13 @@ export default function AppTypeSelector({ onSelect, onClose }) {
   }
 
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={step ? undefined : onClose}>
       <div ref={panelRef} role="dialog" aria-modal="true" aria-label="What do you want to automate?"
         className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-6xl flex flex-col overflow-hidden"
         style={{ height: 'min(94vh, 840px)' }}
         onClick={e => e.stopPropagation()}>
 
+        {step || (<>
         {/* Header */}
         <div className="px-6 pt-5 pb-4 shrink-0 border-b border-white/8">
           <div className="flex items-start justify-between mb-1">
@@ -454,6 +457,7 @@ export default function AppTypeSelector({ onSelect, onClose }) {
             </div>
           </div>
         </div>
+        </>)}
       </div>
     </div>
   )

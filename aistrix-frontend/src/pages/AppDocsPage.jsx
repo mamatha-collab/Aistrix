@@ -4,6 +4,7 @@ import { useParams, useNavigate } from 'react-router-dom'
 import { fieldKeyFromLabel } from '../utils/schemaContracts'
 
 const API_BASE = `${(import.meta.env.VITE_API_URL || 'https://api.aistrix.com').replace(/\/$/, '')}/v1`
+const API_ROOT = API_BASE.replace(/\/v1$/, '')
 
 function CodeBlock({ code }) {
   const [copied, setCopied] = useState(false)
@@ -51,6 +52,16 @@ export default function AppDocsPage() {
 
   const isNative = ['native', 'api'].includes(app.app_type) && app.form_schema?.length > 0
   const outputFields = contract?.output_schema || []
+  const endpoint = `${API_BASE}/apps/${id}/run`
+  const requestBody = isNative
+    ? JSON.stringify({
+        fields: Object.fromEntries((app.form_schema || []).map(f => [
+          fieldKeyFromLabel(f.label),
+          f.type === 'number' ? 0 : f.type === 'select' ? (f.options?.split(',')[0]?.trim() || 'option') : 'string value'
+        ])),
+        stream: false,
+      }, null, 2)
+    : JSON.stringify({ input: 'Your prompt here', stream: false }, null, 2)
   const sdkArgs = isNative
     ? `fields={${(app.form_schema || []).map(f => `"${fieldKeyFromLabel(f.label)}": ${f.type === 'number' ? '0' : '"..."'}`).join(', ')}}`
     : '"Your prompt here"'
@@ -59,7 +70,7 @@ export AISTRIX_API_KEY=ak_live_your_key_here
 
 from aistrix import AistrixClient, ContractError, RateLimitError
 
-client = AistrixClient(api_url="${API_BASE.replace(/\/v1$/, '')}")
+client = AistrixClient(api_url="${API_ROOT}")
 result = client.run("${id}", ${sdkArgs})
 print(result.data or result.output)
 
@@ -69,6 +80,28 @@ for token in client.stream("${id}", ${sdkArgs}):
 
 # Send a file (PDF, XLSX, DOCX, CSV, TXT) — large files are split and combined for you
 client.run("${id}", "Summarise this", file="report.pdf")`
+  const jsExample = `const AISTRIX_API_KEY = process.env.AISTRIX_API_KEY
+
+async function runAistrixApp(payload) {
+  const res = await fetch("${endpoint}", {
+    method: "POST",
+    headers: {
+      "Authorization": \`Bearer \${AISTRIX_API_KEY}\`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ ...payload, stream: false }),
+  })
+
+  const body = await res.json()
+  if (!res.ok) {
+    const errors = body?.detail?.errors || body?.errors || []
+    throw new Error([body?.detail?.message || body?.detail || body?.error, ...errors].filter(Boolean).join("\\n"))
+  }
+  return body.data ?? body.output
+}
+
+const result = await runAistrixApp(${requestBody})
+console.log(result)`
   const batchExample = `# Queue up to 1,000 rows; they run on the server
 batch = client.create_batch("${id}", ${isNative ? `[{${(app.form_schema || []).slice(0, 2).map(f => `"${fieldKeyFromLabel(f.label)}": "..."`).join(', ')}}, ...]` : '["first input", "second input"]'})
 print(batch.warnings)                      # e.g. platform limits that will stop it early
@@ -82,18 +115,6 @@ GET  ${API_BASE}/batches/{batch_id}
 GET  ${API_BASE}/batches/{batch_id}/results?format=json|csv
 POST ${API_BASE}/batches/{batch_id}/cancel
 POST ${API_BASE}/batches/{batch_id}/retry   # resume rows that failed or hit a limit`
-  const endpoint = `${API_BASE}/apps/${id}/run`
-
-  const requestBody = isNative
-    ? JSON.stringify({
-        fields: Object.fromEntries((app.form_schema || []).map(f => [
-          fieldKeyFromLabel(f.label),
-          f.type === 'number' ? 0 : f.type === 'select' ? (f.options?.split(',')[0]?.trim() || 'option') : 'string value'
-        ])),
-        stream: false,
-      }, null, 2)
-    : JSON.stringify({ input: 'Your prompt here', stream: false }, null, 2)
-
   const curlExample = `curl -X POST ${endpoint} \\
   -H "Authorization: Bearer ak_live_your_key_here" \\
   -H "Content-Type: application/json" \\
@@ -156,6 +177,9 @@ POST ${API_BASE}/batches/{batch_id}/retry   # resume rows that failed or hit a l
             <span className="text-xs font-bold text-green-400 bg-green-400/10 px-2 py-0.5 rounded">POST</span>
             <code className="text-sm text-slate-200 font-mono break-all">{endpoint}</code>
           </div>
+          <p className="text-slate-400 text-sm">
+            Machine-readable API schema: <a className="text-[#6C5CE7] hover:underline" href={`${API_ROOT}/openapi.json`} target="_blank" rel="noreferrer">OpenAPI JSON</a>
+          </p>
         </Section>
 
         <Section title="Authentication">
@@ -229,6 +253,11 @@ POST ${API_BASE}/batches/{batch_id}/retry   # resume rows that failed or hit a l
         <Section title="Python SDK">
           <CodeBlock code={pythonExample} />
           <p className="text-slate-400 text-sm">Errors are typed: <code className="text-[#6C5CE7]">AuthenticationError</code>, <code className="text-[#6C5CE7]">PaymentRequiredError</code>, <code className="text-[#6C5CE7]">ContractError</code> (with <code className="text-[#6C5CE7]">.errors</code>), <code className="text-[#6C5CE7]">RateLimitError</code>, <code className="text-[#6C5CE7]">NotFoundError</code>, <code className="text-[#6C5CE7]">APIError</code>.</p>
+        </Section>
+
+        <Section title="JavaScript / TypeScript">
+          <p className="text-slate-400 text-sm">Use raw HTTP today, or generate a typed client from the OpenAPI schema. This snippet returns parsed <code className="text-[#6C5CE7]">data</code> for structured apps and raw <code className="text-[#6C5CE7]">output</code> for text apps.</p>
+          <CodeBlock code={jsExample} />
         </Section>
 
         <Section title="Batches">

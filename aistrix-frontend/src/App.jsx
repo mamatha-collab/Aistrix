@@ -313,7 +313,7 @@ export default function App() {
     reports:     <ReportsPage     user={session.user} />,
     settings:    <SettingsPage    user={session.user} />,
     alerts:      <AlertsPage      user={session.user} />,
-    developer:   <DevStudioPage user={session.user} onOpenCreate={() => setShowTypeSelector(true)} createdApp={createdApp} onCreatedAppConsumed={() => setCreatedApp(null)} />,
+    developer:   <DevStudioPage user={session.user} onOpenCreate={() => setShowTypeSelector(true)} onShowHistory={() => setShowHistory(true)} onShowSettings={() => setShowSettings(true)} onNavChange={changeView} search={search} onSearch={setSearch} searchRef={searchInputRef} createdApp={createdApp} onCreatedAppConsumed={() => setCreatedApp(null)} />,
     data_sources:<DataSourcesPage user={session.user} />,
     integrations:<IntegrationsPage user={session.user} />,
     admin:          isAdmin(userRole)     ? <AdminPage          user={session.user} /> : null,
@@ -371,24 +371,26 @@ export default function App() {
           )}
 
           <div className="flex flex-col flex-1 overflow-hidden min-w-0">
-            <TopBar
-              onShowHistory={() => setShowHistory(true)}
-              onShowSettings={() => setShowSettings(true)}
-              onToggleSidebar={() => setShowMobileSidebar(v => !v)}
-              onShowCreate={() => setShowTypeSelector(true)}
-              onShowWorkspace={() => navigateToView('flows')}
-              activeView={activeView}
-              search={search}
-              onSearch={setSearch}
-              searchRef={searchInputRef}
-              user={session.user}
-              onNavChange={changeView}
-              workspaces={workspaces.workspaces}
-              activeWorkspace={workspaces.active}
-              onSwitchWorkspace={switchWorkspace}
-              onCreateWorkspace={async name => { const id = await workspaces.createTeam(name); switchWorkspace(id) }}
-              onManageWorkspace={() => setShowWorkspaceSettings(true)}
-            />
+            {activeView !== 'developer' && (
+              <TopBar
+                onShowHistory={() => setShowHistory(true)}
+                onShowSettings={() => setShowSettings(true)}
+                onToggleSidebar={() => setShowMobileSidebar(v => !v)}
+                onShowCreate={() => setShowTypeSelector(true)}
+                onShowWorkspace={() => navigateToView('flows')}
+                activeView={activeView}
+                search={search}
+                onSearch={setSearch}
+                searchRef={searchInputRef}
+                user={session.user}
+                onNavChange={changeView}
+                workspaces={workspaces.workspaces}
+                activeWorkspace={workspaces.active}
+                onSwitchWorkspace={switchWorkspace}
+                onCreateWorkspace={async name => { const id = await workspaces.createTeam(name); switchWorkspace(id) }}
+                onManageWorkspace={() => setShowWorkspaceSettings(true)}
+              />
+            )}
             {showWorkspaceSettings && workspaces.active && !workspaces.active.is_personal && (
               <Suspense fallback={null}>
                 <WorkspaceSettingsModal

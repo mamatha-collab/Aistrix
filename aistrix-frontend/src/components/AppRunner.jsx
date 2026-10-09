@@ -143,8 +143,7 @@ async function findNextAppRecommendation(app, userId) {
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 const BATCH_MAX_ROWS = 500
-const BATCH_CONCURRENCY = 3
-const BATCH_ROW_TIMEOUT_MS = 95000
+const BATCH_DONE_STATUSES = new Set(['completed', 'completed_with_errors', 'stopped', 'cancelled', 'failed'])
 
 async function checkAlerts(userId, input, result, toast) {
   const { data: alerts } = await supabase
@@ -240,7 +239,11 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
   const [bulkProgress, setBulkProgress] = useState(0)
   const [batchCsv, setBatchCsv] = useState(false)
   const [batchTotal, setBatchTotal] = useState(0)
+  const [batchJobId, setBatchJobId] = useState(null)
+  const [batchJobStatus, setBatchJobStatus] = useState('')
   const batchAbortRef = useRef(null)
+  const batchResultsRef = useRef([])
+  const batchSourceRef = useRef([])   // rows as submitted (keeps CSV columns for the results file)
   const [lastRunId, setLastRunId] = useState(null)
   const [blueprint, setBlueprint] = useState(null)
   const [schemaErrors, setSchemaErrors] = useState([])
@@ -259,13 +262,8 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
   const toast = useToast()
   const batchRows = useMemo(() => (bulkMode ? buildBatchRows(input, batchCsv) : []), [bulkMode, input, batchCsv])
 
-  // Batch rows run in this tab — warn before the user closes it mid-batch.
-  useEffect(() => {
-    if (!(loading && bulkMode)) return
-    const warn = e => { e.preventDefault(); e.returnValue = '' }
-    window.addEventListener('beforeunload', warn)
-    return () => window.removeEventListener('beforeunload', warn)
-  }, [loading, bulkMode])
+  // Server-side batches keep running after refresh. The UI polls while open,
+  // but the job itself is durable in the backend.
 
   useEffect(() => {
     if (!user) return
@@ -428,84 +426,138 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
   }
 
   // ── Batch mode ──────────────────────────────────────────────────────────────
-  // Rows run BATCH_CONCURRENCY at a time with a per-row timeout. A failed row
-  // no longer aborts the whole batch; rate-limit errors stop it cleanly so the
-  // remaining rows can be retried later.
-  async function processBatch(results, indexes) {
-    const batchCtl = new AbortController()
-    batchAbortRef.current = batchCtl
-    let next = 0, completed = 0, stopReason = ''
-    setBatchTotal(indexes.length)
-    setBulkProgress(0)
-    setBulkResults([...results])
+  // Batches now run as backend jobs. The UI submits, polls, and can cancel/retry,
+  // while the server keeps processing if the browser tab closes.
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
-    async function worker() {
-      while (next < indexes.length && !batchCtl.signal.aborted) {
-        const idx = indexes[next++]
-        results[idx] = { ...results[idx], status: 'running', error: null }
-        setBulkResults([...results])
-        const rowCtl = new AbortController()
-        const forwardAbort = () => rowCtl.abort()
-        batchCtl.signal.addEventListener('abort', forwardAbort)
-        const timer = setTimeout(() => rowCtl.abort(), BATCH_ROW_TIMEOUT_MS)
-        try {
-          const { text, usage: u } = await runSingle(results[idx].input, rowCtl.signal, { live: false })
-          results[idx] = { ...results[idx], status: 'done', result: text, usage: u }
-          const { data: row, error } = await supabase.from('run_history').insert({
-            user_id: user.id, app_id: app.id, app_name: app.name, input: results[idx].input, output: text,
-            input_tokens: u?.input_tokens ?? null, output_tokens: u?.output_tokens ?? null,
-          }).select('id').single()
-          if (row) results[idx].runId = row.id
-          else if (error) results[idx].historyError = error.message
-          supabase.rpc('increment_app_runs', { p_app_id: app.id }).then(() => {}, () => {})
-        } catch (e) {
-          const msg = batchCtl.signal.aborted ? (stopReason || 'Stopped') : (rowCtl.signal.aborted ? 'Timed out' : friendlyErrorMessage(e))
-          results[idx] = { ...results[idx], status: batchCtl.signal.aborted ? 'stopped' : 'error', error: msg }
-          if (!batchCtl.signal.aborted && /rate limit|daily limit|used all|purchase access|sign in/i.test(String(e?.message))) {
-            stopReason = friendlyErrorMessage(e)
-            batchCtl.abort()
-          }
-        } finally {
-          clearTimeout(timer)
-          batchCtl.signal.removeEventListener('abort', forwardAbort)
-          completed++
-          setBulkProgress(completed)
-          setBulkResults([...results])
-        }
+  // When a job has finished (e.g. stopped on a rate limit), rows it never got
+  // to are still 'pending' on the server — show them as stopped so "Retry"
+  // offers to resume them.
+  function mapServerBatchRows(rows = [], job = null) {
+    const jobDone = job && BATCH_DONE_STATUSES.has(job.status)
+    return rows.map(r => {
+      const unfinished = jobDone && (r.status === 'pending' || r.status === 'running')
+      return {
+      input: r.input,
+      cols: batchSourceRef.current[r.idx]?.cols || null,
+      status: unfinished ? 'stopped' : r.status,
+      result: r.output || '',
+      error: r.error || (unfinished ? (job.stop_reason || `Not run — batch ${job.status}`) : ''),
+      data: r.data || null,
+      usage: (r.input_tokens || r.output_tokens) ? {
+        input_tokens: r.input_tokens,
+        output_tokens: r.output_tokens,
+      } : null,
       }
-    }
-
-    await Promise.all(Array.from({ length: Math.min(BATCH_CONCURRENCY, indexes.length) }, worker))
-    for (const idx of indexes) {
-      if (results[idx].status === 'pending' || results[idx].status === 'running') {
-        results[idx] = { ...results[idx], status: 'stopped', error: stopReason || 'Stopped' }
-      }
-    }
-    batchAbortRef.current = null
-    setBulkResults([...results])
-    return { stopReason, stopped: batchCtl.signal.aborted }
+    })
   }
 
-  async function finishBatch(results, { stopReason, stopped }) {
-    const ok = results.filter(r => r.status === 'done').length
-    const failed = results.length - ok
-    if (ok) await saveBatchOutputFile(results)
+  async function batchHeaders() {
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session) throw new Error('Not authenticated')
+    return {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${session.access_token}`,
+    }
+  }
+
+  async function readBatchResults(jobId, headers) {
+    const res = await fetch(`${API_URL}/v1/batches/${jobId}/results?limit=${BATCH_MAX_ROWS}`, { headers })
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.detail || 'Could not load batch results')
+    const body = await res.json()
+    const mapped = mapServerBatchRows(body.rows || [], body.batch)
+    batchResultsRef.current = mapped
+    setBulkResults(mapped)
+    const done = (body.rows || []).filter(r => r.status === 'done' || r.status === 'error').length
+    setBulkProgress(done)
+    setBatchTotal(body.batch?.total || body.rows?.length || 0)
+    return body
+  }
+
+  async function pollServerBatch(job, headers, cancelRef) {
+    let current = job
+    setBatchJobStatus(current.status)
+    setBatchTotal(current.total || 0)
+    setBulkProgress((current.completed || 0) + (current.failed || 0))
+
+    while (!BATCH_DONE_STATUSES.has(current.status)) {
+      if (cancelRef.cancelled) return { ...current, status: 'cancelled' }
+      await sleep(1600)
+      const res = await fetch(`${API_URL}/v1/batches/${current.id}`, { headers })
+      if (!res.ok) throw new Error((await res.json().catch(() => null))?.detail || 'Could not refresh batch status')
+      current = await res.json()
+      setBatchJobStatus(current.status)
+      setBulkProgress((current.completed || 0) + (current.failed || 0))
+      await readBatchResults(current.id, headers)
+    }
+    await readBatchResults(current.id, headers)
+    return current
+  }
+
+  async function startServerBatch() {
+    const headers = await batchHeaders()
+    const body = batchCsv
+      ? { csv: input }
+      : { rows: batchRows.map(r => ({ input: r.input })) }
+    const res = await fetch(`${API_URL}/v1/apps/${app.id}/batches`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    })
+    const payload = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(payload.detail || payload.error || 'Could not start the batch')
+
+    setBatchJobId(payload.id)
+    setBatchJobStatus(payload.status)
+    ;(payload.warnings || []).forEach(w => toast(w, 'info', 8000))
+
+    const cancelRef = { cancelled: false }
+    batchAbortRef.current = {
+      abort: async () => {
+        cancelRef.cancelled = true
+        try {
+          await fetch(`${API_URL}/v1/batches/${payload.id}/cancel`, { method: 'POST', headers })
+          setBatchJobStatus('cancelled')
+          toast('Batch cancelled. Completed rows stay saved.', 'info')
+        } catch {
+          toast('Could not cancel the batch. It may already be finished.', 'error')
+        }
+      },
+    }
+    return pollServerBatch(payload, headers, cancelRef)
+  }
+
+  async function finishServerBatch(job) {
+    const rows = batchResultsRef.current.length ? batchResultsRef.current : bulkResults
+    const ok = rows.filter(r => r.status === 'done').length
+    const failed = rows.filter(r => r.status === 'error').length
+    if (ok) await saveBatchOutputFile(rows)
     if (ok) { sendNotification(app.name); onRun?.() }
-    if (stopReason) toast(`Batch stopped: ${stopReason}`, 'error', 8000)
-    else if (stopped) toast(`Batch stopped — ${ok}/${results.length} rows done`, 'info')
-    else if (failed) toast(`${ok}/${results.length} rows succeeded — ${failed} failed. Use "Retry failed" to re-run them.`, 'error', 8000)
-    else toast(`${ok} runs completed`, 'success')
+    if (job.status === 'cancelled') toast(`Batch cancelled — ${ok}/${job.total || rows.length} rows completed`, 'info')
+    else if (job.status === 'stopped') toast(`Batch stopped: ${job.stop_reason || 'limit reached'} — retry later to resume`, 'error', 8000)
+    else if (job.status === 'failed') toast(job.stop_reason || 'Batch failed — retry it later', 'error', 8000)
+    else if (failed) toast(`${ok}/${job.total || rows.length} rows succeeded — ${failed} failed. Use "Retry failed" to re-run them.`, 'error', 8000)
+    else toast(`${ok} batch runs completed server-side`, 'success')
   }
 
   async function retryFailedRows() {
-    const results = [...bulkResults]
-    const indexes = results.map((r, i) => (r.status === 'error' || r.status === 'stopped' ? i : -1)).filter(i => i >= 0)
-    if (!indexes.length) return
-    indexes.forEach(i => { results[i] = { ...results[i], status: 'pending', error: null } })
     setLoading(true); setError('')
     try {
-      await finishBatch(results, await processBatch(results, indexes))
+      if (!batchJobId) {
+        toast('Start a server-side batch first, then retry incomplete rows from that job.', 'error')
+        return
+      }
+      const headers = await batchHeaders()
+      const res = await fetch(`${API_URL}/v1/batches/${batchJobId}/retry`, { method: 'POST', headers })
+      const payload = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(payload.detail || payload.error || 'Could not retry the batch')
+      setBatchJobStatus(payload.status)
+      await finishServerBatch(await pollServerBatch(payload, headers, { cancelled: false }))
+    } catch (e) {
+      const msg = friendlyErrorMessage(e)
+      setError(msg); toast(msg, 'error')
     } finally {
+      batchAbortRef.current = null
       setLoading(false)
     }
   }
@@ -546,8 +598,15 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
         clearTimeout(timeoutId) // batch rows have their own per-row timeout
         if (!batchRows.length) throw new Error(batchCsv ? 'The CSV needs a header row and at least one data row.' : 'Add at least one input line.')
         if (batchRows.length > BATCH_MAX_ROWS) throw new Error(`Batch Processor supports up to ${BATCH_MAX_ROWS} rows per run. Split larger jobs into smaller batches.`)
-        const results = batchRows.map(r => ({ input: r.input, cols: r.cols, status: 'pending', result: '' }))
-        await finishBatch(results, await processBatch(results, results.map((_, i) => i)))
+        setBatchJobId(null)
+        setBatchJobStatus('queued')
+        setBatchTotal(batchRows.length)
+        setBulkProgress(0)
+        const pendingRows = batchRows.map(r => ({ input: r.input, cols: r.cols, status: 'pending', result: '' }))
+        batchSourceRef.current = pendingRows
+        batchResultsRef.current = pendingRows
+        setBulkResults(pendingRows)
+        await finishServerBatch(await startServerBatch())
       } else {
         const { text, provider: p, model: m, usage: u } = await runSingle(runInput, controller.signal)
         if (!text) throw new Error('No response received')
@@ -606,6 +665,7 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
       setError(msg); toast(msg, 'error')
       track(EVENTS.APP_RUN_FAILED, { app_id: app.id, app_name: app.name, error: msg })
     } finally {
+      if (bulkMode) batchAbortRef.current = null
       setLoading(false)
     }
   }
@@ -827,12 +887,17 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
                 First row is a CSV header
               </label>
               <span className={batchRows.length > BATCH_MAX_ROWS ? 'text-red-400' : 'text-slate-500'}>
-                {batchRows.length} row{batchRows.length === 1 ? '' : 's'} · max {BATCH_MAX_ROWS} · keep this tab open while it runs
+                {batchRows.length} row{batchRows.length === 1 ? '' : 's'} · max {BATCH_MAX_ROWS} · runs server-side
               </span>
               {runStatus && !runStatus.hasKey && runStatus.remaining != null && batchRows.length > runStatus.remaining && (
                 <span className="basis-full text-amber-300">
                   ⚠ Platform limits allow {runStatus.remaining} more run{runStatus.remaining === 1 ? '' : 's'} right now — the batch will
                   stop after that. Add your own API key in Settings → Keys for unlimited batch runs, or use “Retry failed” later.
+                </span>
+              )}
+              {batchJobId && (
+                <span className="basis-full text-slate-500">
+                  Server batch {batchJobId.slice(0, 8)} · {batchJobStatus || 'queued'} · safe to leave this tab after it starts.
                 </span>
               )}
             </div>
@@ -927,10 +992,10 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
         >
           {loading ? (
             bulkMode
-              ? <><span className="animate-spin inline-block">⟳</span> {bulkProgress}/{batchTotal} running...</>
+              ? <><span className="animate-spin inline-block">⟳</span> {bulkProgress}/{batchTotal} {batchJobStatus || 'running'}...</>
               : <><span className="animate-spin inline-block">⟳</span> Running...</>
           ) : (
-            bulkMode ? `⊞ Run ${batchRows.length} input${batchRows.length === 1 ? '' : 's'}` : '▶ Run App'
+            bulkMode ? `⊞ Start server batch (${batchRows.length})` : '▶ Run App'
           )}
         </button>
         {bulkMode && loading && (

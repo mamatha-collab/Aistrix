@@ -8,6 +8,8 @@ import TestSuite from '../components/TestSuite'
 import VersionManager, { useVersions, VersionSetupCard } from '../components/VersionManager'
 import ApiKeysManager from '../components/ApiKeysManager'
 import { scopeToWorkspace } from '../lib/workspace'
+import NotificationsPanel from '../components/NotificationsPanel'
+import { Search, X } from 'lucide-react'
 
 const PromptStudio = lazy(() => import('../components/PromptStudio'))
 const DiffEditor   = lazy(() => import('@monaco-editor/react').then(m => ({ default: m.DiffEditor })))
@@ -6564,9 +6566,9 @@ const LIFECYCLE_TABS = [
   { id: 'design',   label: 'Design',      icon: '✏️',  desc: 'Blueprint', group: 'build' },
   { id: 'test',     label: 'Test',        icon: '🧪',  desc: 'Validate',  group: 'build' },
   { id: 'deploy',   label: 'Deploy',      icon: '🚀',  desc: 'Publish',   group: 'build' },
-  { id: 'sell',     label: 'Marketplace', icon: '🛒',  desc: 'List',      group: 'grow' },
+  { id: 'sell',     label: 'Marketplace', short: 'Market', icon: '🛒',  desc: 'List',      group: 'grow' },
   { id: 'monitor',  label: 'Monitor',     icon: '📡',  desc: 'Usage',     group: 'grow' },
-  { id: 'evaluate', label: 'Evaluate',    icon: '🎯',  desc: 'Quality',   group: 'grow' },
+  { id: 'evaluate', label: 'Evaluate',    short: 'Eval', icon: '🎯',  desc: 'Quality',   group: 'grow' },
   { id: 'improve',  label: 'Improve',     icon: '🔬',  desc: 'Iterate',   group: 'grow' },
   { id: 'version',  label: 'Version',     icon: '📦',  desc: 'History',   group: 'manage' },
   { id: 'monetize', label: 'Revenue',     icon: '💰',  desc: 'Profit',    group: 'manage' },
@@ -6579,7 +6581,18 @@ const LIFECYCLE_GROUPS = [
   { id: 'manage', label: 'Manage' },
 ]
 
-export default function DevStudioPage({ user, onOpenCreate, createdApp, onCreatedAppConsumed }) {
+export default function DevStudioPage({
+  user,
+  onOpenCreate,
+  onShowHistory,
+  onShowSettings,
+  onNavChange,
+  search = '',
+  onSearch,
+  searchRef,
+  createdApp,
+  onCreatedAppConsumed,
+}) {
   const [tab, setTab] = useState('design')
   const [activeAppId, setActiveAppId] = useState(null)
   const [deployFixReason, setDeployFixReason] = useState('')
@@ -6704,13 +6717,28 @@ export default function DevStudioPage({ user, onOpenCreate, createdApp, onCreate
   }
 
   const card = 'bg-[#171B33] border border-white/5 rounded-2xl'
+  const searchNeedle = (search || '').trim().toLowerCase()
+  const appMatchesSearch = (app) => {
+    if (!app) return false
+    if (!searchNeedle) return true
+    return [
+      app.name,
+      app.description,
+      app.type,
+      app.domain,
+      app.category,
+      app.status,
+      getDevPhase(app, phaseByAppId),
+    ].filter(Boolean).join(' ').toLowerCase().includes(searchNeedle)
+  }
+  const visibleApps = searchNeedle ? apps.filter(appMatchesSearch) : apps
   const activeApp = apps.find(a => a.id === activeAppId) || null
   const activeAppPhase = activeApp ? getDevPhase(activeApp, phaseByAppId) : null
   const activeTabMeta = LIFECYCLE_TABS.find(t => t.id === tab) || LIFECYCLE_TABS[0]
   const activePhaseApps = ['design','test','deploy'].includes(tab)
-    ? apps.filter(a => getDevPhase(a, phaseByAppId) === tab)
-    : apps
-  const phaseScopedActiveAppId = ['design','test','deploy'].includes(tab) && activeAppPhase !== tab
+    ? visibleApps.filter(a => getDevPhase(a, phaseByAppId) === tab)
+    : visibleApps
+  const phaseScopedActiveAppId = ['design','test','deploy'].includes(tab) && (activeAppPhase !== tab || !appMatchesSearch(activeApp))
     ? null
     : activeAppId
   const SECTION_TITLE = { design: 'Blueprint Studio', test: 'Test Lab', deploy: 'Deploy' }
@@ -6729,90 +6757,119 @@ export default function DevStudioPage({ user, onOpenCreate, createdApp, onCreate
 
         {(loading || apps.length > 0) && (
           <>
-            <div className="h-[68px] px-6 bg-[#111827] border-b border-white/5 grid grid-cols-[minmax(220px,1fr)_auto_auto] items-center gap-4">
-              <div className="min-w-0 w-[260px]">
+            <div className="h-[72px] px-6 bg-[#111827] border-b border-white/5 grid grid-cols-[260px_minmax(0,1fr)_auto] items-center gap-3">
+              <div className="min-w-0">
                 <div className="flex items-center gap-2">
                   <span className="w-8 h-8 rounded-xl bg-[#6C5CE7]/18 border border-[#6C5CE7]/30 flex items-center justify-center text-sm">{activeTabMeta.icon}</span>
                   <div className="min-w-0">
-                    <p className="text-white font-bold text-base leading-tight">Developer Studio</p>
-                    <p className="text-slate-400 text-xs truncate">{activeTabMeta.label}: {activeTabMeta.desc}</p>
+                    <div className="flex items-start gap-1.5 min-w-0">
+                      <p className="text-white font-bold text-lg leading-tight truncate">Aistrix</p>
+                      <span className="-mt-1.5 px-2 py-0.5 rounded-full bg-[#00D4AA]/10 border border-[#00D4AA]/20 text-[#00D4AA] text-[9px] font-bold uppercase tracking-wider shrink-0">Developer</span>
+                    </div>
+                    <p className="text-slate-400 text-xs truncate mt-0.5">{activeTabMeta.label} · {activeTabMeta.desc}</p>
                   </div>
                 </div>
               </div>
 
-              <div className="hidden lg:flex items-center gap-2 text-xs justify-self-center">
-                <span className="px-3 py-1.5 rounded-xl bg-[#0E1424] border border-white/8 text-slate-300"><b className="text-white">{apps.length}</b> apps</span>
-                <span className="px-3 py-1.5 rounded-xl bg-[#0E1424] border border-white/8 text-slate-300"><b className="text-white">{totalStats.runs}</b> runs</span>
-                <span className="px-3 py-1.5 rounded-xl bg-[#0E1424] border border-white/8 text-slate-300"><b className="text-white">{totalStats.satisfaction ?? '—'}{totalStats.satisfaction != null ? '%' : ''}</b> useful</span>
-              </div>
+              <div />
 
               <div className="flex items-center gap-2 shrink-0 justify-self-end">
+                <div className="hidden md:flex items-center gap-2 bg-[#0E1424] border border-white/8 rounded-xl px-3 h-10 text-sm text-slate-300 w-48 lg:w-56">
+                  <Search size={15} className="shrink-0 text-slate-500" />
+                  <input
+                    type="text"
+                    value={search}
+                    onChange={e => onSearch?.(e.target.value)}
+                    placeholder="Search"
+                    aria-label="Search developer apps, runs, and versions"
+                    ref={searchRef}
+                    className="flex-1 min-w-0 bg-transparent text-sm text-white placeholder-slate-500 focus:outline-none"
+                  />
+                  {search && (
+                    <button onClick={() => onSearch?.('')} aria-label="Clear search" className="text-slate-500 hover:text-white transition-colors shrink-0">
+                      <X size={14} />
+                    </button>
+                  )}
+                </div>
+                <div className="flex items-center gap-1 rounded-xl bg-[#0E1424] border border-white/8 p-1">
+                  <NotificationsPanel user={user} onNavChange={onNavChange} />
+                  <button
+                    onClick={onShowHistory}
+                    className="hover:bg-[#1A2038] text-slate-200 text-xs font-semibold px-2.5 py-2 rounded-lg transition-colors whitespace-nowrap"
+                  >
+                    History
+                  </button>
+                  <button
+                    onClick={onShowSettings}
+                    className="hover:bg-[#1A2038] text-slate-200 text-xs font-semibold px-2.5 py-2 rounded-lg transition-colors whitespace-nowrap"
+                  >
+                    Keys
+                  </button>
+                </div>
                 <button onClick={onOpenCreate}
-                  className="bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white text-xs font-bold px-4 py-2.5 rounded-xl transition-colors shadow-lg shadow-[#6C5CE7]/20">
-                  + New AI App
+                  className="bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white text-xs font-bold px-3 py-2.5 rounded-xl transition-colors shadow-lg shadow-[#6C5CE7]/20 whitespace-nowrap">
+                  + App
                 </button>
-                {TAB_NOTES[tab] && <TabNoteFolderTab id={tab} />}
-                <button
-                  onClick={() => setShowHelp(true)}
-                  title="Guide"
-                  aria-label="Guide"
-                  className="group w-10 h-10 rounded-xl bg-white/5 border border-white/8 flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/8 transition-colors duration-300"
-                >
-                  <span className="aistrix-guide-bulb relative w-7 h-7 rounded-full bg-[#6C5CE7]/25 text-[#A29BFE] text-xs font-bold flex items-center justify-center transition-all duration-300 group-hover:scale-110 group-hover:bg-[#6C5CE7]/35 group-hover:text-white group-active:scale-95">?</span>
-                </button>
+                <div className="flex items-center gap-1 rounded-xl bg-[#0E1424] border border-white/8 p-1">
+                  {TAB_NOTES[tab] && <TabNoteFolderTab id={tab} />}
+                  <button
+                    onClick={() => setShowHelp(true)}
+                    title="Guide"
+                    aria-label="Guide"
+                    className="group w-9 h-9 rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-[#1A2038] transition-colors duration-300"
+                  >
+                    <span className="aistrix-guide-bulb relative w-7 h-7 rounded-full bg-[#6C5CE7]/25 text-[#A29BFE] text-xs font-bold flex items-center justify-center transition-all duration-300 group-hover:scale-110 group-hover:bg-[#6C5CE7]/35 group-hover:text-white group-active:scale-95">?</span>
+                  </button>
+                </div>
               </div>
             </div>
 
-            <div className="h-[150px] bg-[#1A2038] grid grid-cols-[minmax(0,1fr)_340px] overflow-hidden">
-              <div className="min-w-0 px-4 py-3 space-y-2">
-                <div className="grid grid-cols-2 gap-2">
-                {LIFECYCLE_GROUPS.filter(group => group.id !== 'grow').map(group => (
-                  <div key={group.id} className="min-w-0 rounded-2xl bg-[#111827]/60 border border-white/8 p-2 h-[60px]">
-                    <p className="px-2 pb-1.5 text-[9px] text-slate-500 uppercase font-bold tracking-wider leading-none truncate">{group.label}</p>
-                    <div className="flex gap-1 min-w-0">
-                      {LIFECYCLE_TABS.filter(t => t.group === group.id).map(t => {
-                        const active = tab === t.id
-                        return (
-                          <button key={t.id} onClick={() => { setTab(t.id); if (['design','test','deploy'].includes(t.id)) setActiveAppId(null) }}
-                            className={`flex-1 min-w-0 h-[32px] px-2 py-1.5 rounded-xl transition-all text-left ${
-                              active
-                                ? 'bg-[#6C5CE7] text-white shadow-md shadow-[#6C5CE7]/25'
-                                : 'text-slate-400 hover:text-white hover:bg-white/5'
-                            }`}>
-                            <span className="flex items-center gap-1 min-w-0">
-                              <span className="text-sm leading-none">{t.icon}</span>
-                              <span className="text-[10px] font-bold leading-none whitespace-nowrap truncate">{t.label}</span>
-                            </span>
-                          </button>
-                        )
-                      })}
+            <div className="h-[92px] bg-[#1A2038] grid grid-cols-[minmax(0,1fr)_340px] overflow-hidden">
+              <div className="min-w-0 px-4 py-3">
+                <div className="grid grid-cols-[0.9fr_1.18fr_0.9fr] gap-2 h-full">
+                  {LIFECYCLE_GROUPS.map(group => (
+                    <div key={group.id} className="min-w-0 rounded-2xl bg-[#111827]/60 border border-white/8 p-2 h-[68px]">
+                      <p className="px-2 pb-1.5 text-[9px] text-slate-500 uppercase font-bold tracking-wider leading-none truncate">{group.label}</p>
+                      <div className="flex gap-1 min-w-0">
+                        {LIFECYCLE_TABS.filter(t => t.group === group.id).map(t => {
+                          const active = tab === t.id
+                          return (
+                            <button key={t.id} onClick={() => { setTab(t.id); if (['design','test','deploy'].includes(t.id)) setActiveAppId(null) }}
+                              title={`${t.label}: ${t.desc}`}
+                              className={`flex-1 min-w-0 h-[42px] px-1.5 py-1.5 rounded-xl transition-all text-left ${
+                                active
+                                  ? 'bg-[#6C5CE7] text-white shadow-md shadow-[#6C5CE7]/25'
+                                  : 'text-slate-400 hover:text-white hover:bg-white/5'
+                              }`}>
+                              <span className="flex items-center gap-1 min-w-0">
+                                <span className="text-sm leading-none shrink-0">{t.icon}</span>
+                                <span className="text-[10px] font-bold leading-none whitespace-nowrap truncate">{t.short || t.label}</span>
+                              </span>
+                              <span className={`block text-[9px] leading-none mt-1 whitespace-nowrap truncate ${active ? 'text-white/70' : 'text-slate-600'}`}>{t.desc || ' '}</span>
+                            </button>
+                          )
+                        })}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  ))}
                 </div>
-                <div className="rounded-2xl bg-[#111827]/60 border border-white/8 p-2 h-[62px]">
-                  <p className="px-2 pb-1.5 text-[9px] text-slate-500 uppercase font-bold tracking-wider leading-none truncate">Operate & Grow</p>
-                  <div className="flex gap-1 min-w-0">
-                    {LIFECYCLE_TABS.filter(t => t.group === 'grow').map(t => {
-                      const active = tab === t.id
-                      return (
-                        <button key={t.id} onClick={() => { setTab(t.id); if (['design','test','deploy'].includes(t.id)) setActiveAppId(null) }}
-                          className={`flex-1 min-w-0 h-[34px] px-2.5 py-1.5 rounded-xl transition-all text-left ${
-                            active
-                              ? 'bg-[#6C5CE7] text-white shadow-md shadow-[#6C5CE7]/25'
-                              : 'text-slate-400 hover:text-white hover:bg-white/5'
-                          }`}>
-                          <span className="flex items-center gap-1.5 min-w-0">
-                            <span className="text-sm leading-none">{t.icon}</span>
-                            <span className="text-[10px] font-bold leading-none whitespace-nowrap truncate">{t.label}</span>
-                          </span>
-                        </button>
-                      )
-                    })}
+              </div>
+              <div className="border-l border-white/5 px-4 py-3">
+                <div className="h-[68px] rounded-2xl bg-[#111827]/60 border border-white/8 p-2 grid grid-cols-3 gap-2">
+                  <div className="rounded-xl bg-[#0E1424] border border-white/5 px-2 py-2">
+                    <p className="text-[9px] text-slate-500 uppercase font-bold tracking-wider leading-none">Apps</p>
+                    <p className="text-white text-lg font-bold mt-1 leading-none">{apps.length}</p>
+                  </div>
+                  <div className="rounded-xl bg-[#0E1424] border border-white/5 px-2 py-2">
+                    <p className="text-[9px] text-slate-500 uppercase font-bold tracking-wider leading-none">Runs</p>
+                    <p className="text-white text-lg font-bold mt-1 leading-none">{totalStats.runs}</p>
+                  </div>
+                  <div className="rounded-xl bg-[#0E1424] border border-white/5 px-2 py-2">
+                    <p className="text-[9px] text-slate-500 uppercase font-bold tracking-wider leading-none">Useful</p>
+                    <p className="text-white text-lg font-bold mt-1 leading-none">{totalStats.satisfaction ?? '—'}{totalStats.satisfaction != null ? '%' : ''}</p>
                   </div>
                 </div>
               </div>
-              <div className="border-l border-white/5" />
             </div>
           </>
         )}
@@ -6834,7 +6891,7 @@ export default function DevStudioPage({ user, onOpenCreate, createdApp, onCreate
                 </>
               ) : (
                 (() => {
-                  const designApps = apps.filter(a => getDevPhase(a, phaseByAppId) === 'design')
+                  const designApps = visibleApps.filter(a => getDevPhase(a, phaseByAppId) === 'design')
                   const appRow = (a) => {
                     const phase = DEV_PHASES[getDevPhase(a, phaseByAppId)]
                     return (
@@ -6874,8 +6931,8 @@ export default function DevStudioPage({ user, onOpenCreate, createdApp, onCreate
                       ) : null}
                     </div>
                   )
-                  const testableApps = apps.filter(a => getDevPhase(a, phaseByAppId) === 'test')
-                  const deployableApps = apps.filter(a => getDevPhase(a, phaseByAppId) === 'deploy')
+                  const testableApps = visibleApps.filter(a => getDevPhase(a, phaseByAppId) === 'test')
+                  const deployableApps = visibleApps.filter(a => getDevPhase(a, phaseByAppId) === 'deploy')
                   if (tab === 'test') {
                     if (!testableApps.length && !designApps.length) return (
                       <div className="flex flex-col items-center justify-center py-24 gap-3 text-center">
@@ -6901,7 +6958,7 @@ export default function DevStudioPage({ user, onOpenCreate, createdApp, onCreate
                       </div>
                     )
                   }
-                  const testedApps = apps.filter(a => getDevPhase(a, phaseByAppId) === 'test')
+                  const testedApps = visibleApps.filter(a => getDevPhase(a, phaseByAppId) === 'test')
                   if (!deployableApps.length && !testedApps.length) return (
                     <div className="flex flex-col items-center justify-center py-24 gap-3 text-center">
                       <span className="text-4xl">🚀</span>
@@ -6941,7 +6998,7 @@ export default function DevStudioPage({ user, onOpenCreate, createdApp, onCreate
           {['design','test','deploy','improve','version','secrets'].includes(tab) && (
             <div className="shrink-0 overflow-y-auto border-l border-white/5 w-[340px]">
               <AppNavigator
-                apps={apps}
+                apps={visibleApps}
                 phaseByAppId={phaseByAppId}
                 activeAppId={activeAppId}
                 activeTab={tab}

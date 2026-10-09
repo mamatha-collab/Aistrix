@@ -15,7 +15,7 @@ const VIEW_META = {
   profiles:    { title: 'Profiles',        subtitle: 'User and team profiles' },
   integrations:{ title: 'Integrations',    subtitle: 'Connect external services' },
   settings:    { title: 'Settings',        subtitle: 'Account and preferences' },
-  developer:   { title: 'Developer',       subtitle: 'Build, test, publish, and monetize AI apps' },
+  developer:   { title: 'Dev Console', subtitle: 'Portfolio, runs, keys, and revenue', label: 'AISTRIX DEV' },
   data_sources:{ title: 'Data Sources',    subtitle: 'Manage your data connections' },
   admin:       { title: 'Admin',           subtitle: 'Platform administration' },
   moderator:   { title: 'Moderator',       subtitle: 'Content moderation tools' },
@@ -36,6 +36,9 @@ export default function TopBarClean({ onShowHistory, onShowSettings, onToggleSid
 
   const meta = VIEW_META[activeView] || VIEW_META.apps
   const HeaderIcon = meta.icon || Sparkles
+  const searchPlaceholder = activeView === 'developer'
+    ? 'Search apps, runs, versions…'
+    : 'Search apps, workflows, history…'
 
   return (
     <header className="app-topbar relative min-h-[72px] bg-[#121829] border-b border-white/18 flex items-center px-3 sm:px-4 md:px-6 py-3 gap-3 shrink-0">
@@ -67,7 +70,7 @@ export default function TopBarClean({ onShowHistory, onShowSettings, onToggleSid
             type="text"
             value={search}
             onChange={e => onSearch(e.target.value)}
-            placeholder="Search apps, workflows, history…"
+            placeholder={searchPlaceholder}
             aria-label="Global search"
             ref={searchRef}
             className="flex-1 min-w-0 w-full bg-transparent text-sm text-white placeholder-slate-500 focus:outline-none"
@@ -96,7 +99,7 @@ export default function TopBarClean({ onShowHistory, onShowSettings, onToggleSid
         >
           <KeyRound size={15} /> <span className="hidden md:inline">Keys</span>
         </button>
-        {activeView === 'apps' || activeView === 'flows' ? (
+        {activeView === 'developer' ? null : activeView === 'apps' || activeView === 'flows' ? (
           <button
             onClick={activeView === 'apps'
               ? onShowCreate

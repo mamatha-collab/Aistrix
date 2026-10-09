@@ -10,6 +10,8 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 // Must stay under the backend's MAX_INPUT_LENGTH (20k chars by default).
 const CHUNK_CHARS = 15000
 const MAX_CHUNKS = 12
+const MAX_ANALYSIS_CHARS = CHUNK_CHARS * MAX_CHUNKS
+const MAX_EXTRACT_CHARS = 400000
 const BINARY_EXTS = ['pdf', 'xlsx', 'xlsm', 'docx']
 
 function fileExt(name) {
@@ -137,10 +139,16 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
           body: JSON.stringify({ file_name: file.name, content_b64: await fileToBase64(file) }),
         })
         const body = await res.json().catch(() => ({}))
-        if (!res.ok) throw new Error(body.detail || `Could not read ${file.name}`)
+        if (!res.ok) {
+          const detail = body.detail || `Could not read ${file.name}`
+          if (/scanned pdf|no selectable text/i.test(detail)) {
+            throw new Error('This PDF looks scanned, so there is no selectable text to analyze yet. OCR is not enabled for Data apps; upload a text-based PDF or run OCR first.')
+          }
+          throw new Error(detail)
+        }
         setRawData(body.text || '')
         setDataType(body.kind === 'csv' ? 'csv' : 'text')
-        if (body.truncated) toast(`Only the first ${body.text.length.toLocaleString()} characters of ${file.name} were loaded`, 'info', 6000)
+        if (body.truncated) toast(`Only the first ${body.text.length.toLocaleString()} characters of ${file.name} were extracted. Split larger files for best results.`, 'info', 7000)
       } else {
         setRawData(await file.text())
         if (ext === 'csv') setDataType('csv')
@@ -211,7 +219,7 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
       } else {
         const chunks = chunkText(rawData, dataType === 'csv')
         if (chunks.length > MAX_CHUNKS) {
-          throw new Error(`This data is too large (${rawData.length.toLocaleString()} chars, ${chunks.length} parts). The limit is about ${(CHUNK_CHARS * MAX_CHUNKS).toLocaleString()} characters — trim it or split the file.`)
+          throw new Error(`This data is too large for an interactive run (${rawData.length.toLocaleString()} chars, ${chunks.length} parts). This runner analyzes about ${MAX_ANALYSIS_CHARS.toLocaleString()} characters at a time. Trim it or split the file.`)
         }
         if (chunks.length === 1) {
           final = await streamRun(`${header}\n\n${rawData}`, outputType, live)
@@ -317,6 +325,11 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
             {rawData.length.toLocaleString()} chars
             {dataType === 'csv' && ` · ~${rawData.split('\n').length} rows`}
             {rawData.length > CHUNK_CHARS && ` · large input: processed in ${chunkText(rawData, dataType === 'csv').length} parts`}
+          </p>
+        )}
+        {dataType !== 'url' && (
+          <p className="text-[10px] text-slate-600 mt-1 leading-relaxed">
+            Text-based PDF, Word and Excel files are extracted server-side and stored for 30 days. Scanned PDFs need OCR first. Extraction loads up to {MAX_EXTRACT_CHARS.toLocaleString()} characters; interactive analysis handles about {MAX_ANALYSIS_CHARS.toLocaleString()} characters per run.
           </p>
         )}
       </div>

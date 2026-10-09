@@ -1,5 +1,6 @@
-import { useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useFocusTrap } from '../hooks/useFocusTrap'
+import { supabase } from '../supabase'
 
 const TYPE_GUIDES = {
   ai_builder: {
@@ -244,10 +245,77 @@ const TYPE_GUIDES = {
   },
 }
 
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+
+const fmtTokens = ([lo, hi]) => (lo === hi ? lo.toLocaleString() : `${lo.toLocaleString()}–${hi.toLocaleString()}`)
+const fmtUsdOne = v => (v < 0.01 ? '<$0.01' : `$${v.toFixed(2)}`)
+const fmtUsd = ([lo, hi]) => (fmtUsdOne(lo) === fmtUsdOne(hi) ? fmtUsdOne(hi) : `${fmtUsdOne(lo)}–${fmtUsdOne(hi)}`)
+
+// What starting to build this type uses (tokens, ≈cost, who pays), from the
+// backend so prices and the user's key/allowance are always current.
+function useBuildEstimate(type) {
+  const [estimate, setEstimate] = useState(null)
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        const res = await fetch(`${API_URL}/v1/build-estimate?type=${encodeURIComponent(type)}`, {
+          headers: { Authorization: `Bearer ${session?.access_token}` },
+        })
+        if (res.ok && !cancelled) setEstimate(await res.json())
+      } catch { /* estimate is informational — hide it if unavailable */ }
+    })()
+    return () => { cancelled = true }
+  }, [type])
+  return estimate
+}
+
+function BuildEstimate({ estimate }) {
+  if (!estimate) return null
+  const { total, billing, steps } = estimate
+  const optional = steps.filter(st => st.optional)
+  const runs = `${total.runs} AI call${total.runs === 1 ? '' : 's'}`
+  return (
+    <div className="bg-white/4 border border-white/10 rounded-xl p-3">
+      <p className="text-[10px] text-slate-400 font-semibold uppercase tracking-wide mb-1">Estimated AI usage</p>
+      {estimate.uses_ai_to_create ? (
+        <>
+          <p className="text-sm text-white">≈ {fmtTokens(total.tokens)} tokens · ≈ {fmtUsd(total.usd)}</p>
+          {billing.billed_to === 'your_key' ? (
+            <p className="text-xs text-slate-400 mt-0.5">Billed to your Claude API key ({runs}).</p>
+          ) : billing.enough_runs ? (
+            <p className="text-xs text-slate-400 mt-0.5">
+              Free for you — uses {runs}{billing.runs_left != null ? ` of your ${billing.runs_left} platform runs left` : ' from your platform allowance'}.
+            </p>
+          ) : (
+            <p className="text-xs text-amber-300 mt-0.5">
+              You have {billing.runs_left} platform run{billing.runs_left === 1 ? '' : 's'} left; this needs {total.runs}. Add your own API key in Settings → Keys, or try again later.
+            </p>
+          )}
+        </>
+      ) : (
+        <p className="text-sm text-white">Creating this app uses no AI — no tokens, no cost.</p>
+      )}
+      {optional.length > 0 && (
+        <ul className="mt-2 space-y-0.5">
+          {optional.map(st => (
+            <li key={st.label} className="text-[11px] text-slate-500">
+              Optional · {st.label}: ≈ {fmtTokens(st.tokens)} tokens (≈ {fmtUsd(st.usd)})
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="text-[10px] text-slate-600 mt-2">Estimate — actual usage depends on what you enter. Runs on your own key are billed by your provider.</p>
+    </div>
+  )
+}
+
 export default function TypeBuilderGuide({ type, onContinue, onClose }) {
   const panelRef = useRef(null)
   useFocusTrap(panelRef, { onEscape: onClose })
   const guide = TYPE_GUIDES[type]
+  const estimate = useBuildEstimate(type)
   if (!guide) { onContinue(); return null }
 
   return (
@@ -315,7 +383,10 @@ export default function TypeBuilderGuide({ type, onContinue, onClose }) {
         </div>
 
         {/* Footer — matches AppTypeSelector style */}
-        <div className="px-6 py-4 border-t border-white/5 flex gap-3 shrink-0">
+        <div className="px-6 py-4 border-t border-white/5 shrink-0 space-y-3">
+          {/* Shown right above the button so the cost is visible before starting */}
+          <BuildEstimate estimate={estimate} />
+          <div className="flex gap-3">
           <button onClick={onClose}
             className="px-5 bg-white/5 hover:bg-white/10 text-slate-300 text-sm py-2.5 rounded-xl transition-colors border border-white/10">
             ← Back
@@ -325,6 +396,7 @@ export default function TypeBuilderGuide({ type, onContinue, onClose }) {
             style={{ background: `linear-gradient(135deg, ${guide.color}, ${guide.color}BB)` }}>
             Start building →
           </button>
+          </div>
         </div>
       </div>
     </div>

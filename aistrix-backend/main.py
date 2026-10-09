@@ -1896,6 +1896,89 @@ async def usage_snapshot(user_id: str) -> dict:
             "note": "Runs on apps whose provider you have your own key for are not limited."}
 
 
+# ─── Build cost estimates ────────────────────────────────────────────────────
+# USD per 1M tokens (input, output). Claude prices from Anthropic's price list;
+# OpenAI prices are approximate — update here if providers change pricing.
+MODEL_PRICES = {
+    "claude-opus-5-5": (4.00, 20.00), "claude-sonnet-5-5": (2.00, 10.00), "claude-haiku-5-5": (0.10, 0.50),
+    "claude-opus-4-8": (5.00, 25.00), "claude-sonnet-4-6": (3.00, 15.00), "claude-haiku-4-5-20251001": (1.00, 5.00),
+    "gpt-4o-mini": (0.15, 0.60), "gpt-4o": (2.50, 10.00),
+}
+MODEL_LABELS = {
+    "claude-opus-5-5": "Claude Opus 5.5", "claude-sonnet-5-5": "Claude Sonnet 5.5", "claude-haiku-5-5": "Claude Haiku 5.5",
+    "claude-opus-4-8": "Claude Opus 4.8", "claude-sonnet-4-6": "Claude Sonnet 4.6", "claude-haiku-4-5-20251001": "Claude Haiku 4.5",
+    "gpt-4o-mini": "GPT-4o mini", "gpt-4o": "GPT-4o",
+}
+BUILDER_MODEL = "claude-sonnet-5-5"     # what the Build with AI / website generators call
+DETAILS_MODEL = "claude-haiku-5-5"      # "AI-generate name & description"
+
+
+def estimate_usd(model: str, input_tokens: int, output_tokens: int) -> float:
+    pin, pout = MODEL_PRICES.get(model, MODEL_PRICES[BUILDER_MODEL])
+    return (input_tokens * pin + output_tokens * pout) / 1_000_000
+
+
+def _step(label: str, model: str, inp: tuple[int, int], out: tuple[int, int], *, optional=False, per=None) -> dict:
+    return {
+        "label": label, "model": model, "model_label": MODEL_LABELS.get(model, model),
+        "tokens": [inp[0] + out[0], inp[1] + out[1]],
+        "usd": [round(estimate_usd(model, inp[0], out[0]), 4), round(estimate_usd(model, inp[1], out[1]), 4)],
+        "optional": optional, "per": per,
+    }
+
+
+def build_estimate_steps(app_type: str) -> list[dict]:
+    """Typical token ranges per AI step (output ranges include the model's
+    thinking). Ranges, not quotes: real usage depends on what the user types."""
+    run = _step("Each preview / test run", BUILDER_MODEL, (400, 2500), (300, 1500), optional=True, per="run")
+    if app_type == "ai_builder":
+        return [
+            _step("Analyse your idea and ask questions", BUILDER_MODEL, (500, 1000), (400, 1500)),   # measured: 547 in / 481 out
+            _step("Generate the app", BUILDER_MODEL, (1200, 2200), (1200, 3500)),           # measured: 1,313 in / 1,447 out
+            run,
+        ]
+    if app_type == "website":
+        return [
+            _step("Read the website", BUILDER_MODEL, (0, 0), (0, 0)),
+            _step("Generate the app from the page", BUILDER_MODEL, (1500, 4000), (600, 2000)),
+            run,
+        ]
+    steps = [
+        _step("AI-generate name & description", DETAILS_MODEL, (200, 800), (100, 400), optional=True),
+        run,
+    ]
+    if app_type == "data":
+        steps.append(_step("Each scanned PDF page read with OCR", OCR_MODEL, (1500, 2500), (200, 800), optional=True, per="page"))
+    return steps
+
+
+@app.get("/v1/build-estimate")
+async def build_estimate(request: Request, type: str = "prompt"):
+    """What starting to build an app of this type will use: AI calls, tokens,
+    approximate cost, and who pays (the caller's own key or the platform)."""
+    caller = await resolve_api_caller(request, required=True)
+    steps = build_estimate_steps(type)
+    required = [st for st in steps if not st["optional"] and st["tokens"][1] > 0]
+    total = {
+        "tokens": [sum(st["tokens"][0] for st in required), sum(st["tokens"][1] for st in required)],
+        "usd": [round(sum(st["usd"][0] for st in required), 4), round(sum(st["usd"][1] for st in required), 4)],
+        "runs": len(required),
+    }
+    own_key = (await fetch_user_api_key(caller.user_jwt, "claude") if caller.user_jwt
+               else await fetch_user_api_key_by_id(caller.user_id, "claude"))
+    billing = {"billed_to": "your_key" if own_key else "platform", "provider": "claude",
+               "runs_left": None, "enough_runs": True}
+    if not own_key and SUPABASE_SERVICE_ROLE_KEY:
+        try:
+            usage = await usage_snapshot(caller.user_id)
+            left = min(usage["hourly"]["remaining"], usage["daily"]["remaining"])
+            billing.update(runs_left=left, enough_runs=left >= total["runs"])
+        except Exception as e:
+            print(f"build_estimate usage error: {e}")
+    return {"type": type, "uses_ai_to_create": total["runs"] > 0, "steps": steps, "total": total,
+            "billing": billing, "prices_per_million": {m: list(v) for m, v in MODEL_PRICES.items()}}
+
+
 @app.get("/v1/usage")
 async def get_usage(request: Request):
     caller = await resolve_api_caller(request, required=True)

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, lazy, Suspense } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../supabase'
 import AppCard, { AppTab } from './AppCard'
 import { useToast } from '../hooks/useToast'
@@ -8,7 +8,6 @@ import { scopeToWorkspace } from '../lib/workspace'
 // statically imported from App.jsx, so anything imported statically here
 // otherwise ends up in the main bundle even though it's never needed on
 // initial paint.
-const CreateAppModal = lazy(() => import('./CreateAppModal'))
 
 const SOLUTION_PACKS = [
   { id: 'job_search', emoji: '💼', color: '#6C5CE7', name: 'Job Search',      desc: 'Resume, cover letters, interview prep, and salary negotiation.',  tags: ['resume','career','interview','linkedin','cover letter','job','salary'] },
@@ -204,7 +203,7 @@ function DomainTemplateCard({ domain, domainApps, selectedApp, user, onSelectApp
   )
 }
 
-export default function AppGrid({ onSelectApp, selectedApp, user, search, runCounts = {}, showCreate, onCloseCreate, onOpenCreate, onBackToTypeSelector, onNavChange, deletedAppId, initialAppType = 'prompt', websitePrefilledApp, createdApp, onCreatedAppConsumed, onAppCreated }) {
+export default function AppGrid({ onSelectApp, selectedApp, user, search, runCounts = {}, onOpenCreate, onNavChange, deletedAppId, createdApp, onCreatedAppConsumed }) {
   const [domains, setDomains] = useState([])
   const [apps, setApps] = useState([])
   const [myApps, setMyApps] = useState([])
@@ -389,16 +388,6 @@ export default function AppGrid({ onSelectApp, selectedApp, user, search, runCou
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      {showCreate && (
-        <Suspense fallback={null}>
-          <CreateAppModal user={user} initialType={initialAppType}
-            websitePrefilled={websitePrefilledApp}
-            onClose={onCloseCreate}
-            onBack={onBackToTypeSelector}
-            onCreated={newApp => { setApps(prev => [...prev, newApp]); onCloseCreate?.(); onAppCreated?.(newApp) }} />
-        </Suspense>
-      )}
-
       {/* ── Fixed top area ── */}
       <div className="shrink-0 px-6 pt-6">
         {/* ── Tabs + actions ── */}

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react'
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, lazy, Suspense } from 'react'
 import { supabase } from './supabase'
 import Sidebar from './components/SidebarClean'
 import TopBar from './components/TopBarClean'
@@ -96,6 +96,15 @@ function shouldShowStarterOnboarding(pathname = window.location.pathname) {
   return currentMode !== 'developer' && !isDeveloperExperiencePath(pathname)
 }
 
+// Rendered next to a lazily loaded build step: runs once that step has
+// actually mounted, so the previous step can be removed without the popup
+// disappearing while the next one loads.
+function AfterMount({ run }) {
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount
+  useLayoutEffect(() => { run() }, [])
+  return null
+}
+
 export default function App() {
   const [selectedApp, setSelectedApp] = useState(null)
   const [session, setSession] = useState(null)
@@ -159,6 +168,14 @@ export default function App() {
     localStorage.setItem('aistrix:app_onboarding_done', '1')
     setShowAppOnboarding(false)
   }, [])
+
+  // The build flow (type picker → guide → build step) reads as one popup:
+  // each step opens over the previous one, and closing ends the whole flow.
+  function closeBuildFlow() {
+    setShowTypeSelector(false); setShowTypeGuide(false)
+    setShowCreate(false); setShowAIBuilder(false); setShowWebsiteBuilder(false)
+    setWebsitePrefilledApp(null)
+  }
 
   const handleEscape = useCallback(() => {
     if (showHistory)       { setShowHistory(false);       return }
@@ -425,16 +442,10 @@ export default function App() {
                       search={search}
                       runCounts={runCounts}
                       deletedAppId={deletedAppId}
-                      initialAppType={selectedAppType}
-                      showCreate={showCreate}
                       onOpenCreate={() => setShowTypeSelector(true)}
-                      onCloseCreate={() => setShowCreate(false)}
-                      onBackToTypeSelector={() => { setShowCreate(false); setShowTypeSelector(true) }}
                       onNavChange={navigateToView}
                       createdApp={createdApp}
                       onCreatedAppConsumed={() => setCreatedApp(null)}
-                      websitePrefilledApp={websitePrefilledApp}
-                      onAppCreated={newApp => { setWorkspaceRecoApp(newApp); setWebsitePrefilledApp(null) }}
                     />
                     {selectedApp && (
                       <DetailPanel
@@ -477,45 +488,43 @@ export default function App() {
                 type={selectedAppType}
                 onClose={() => setShowTypeGuide(false)}
                 onContinue={() => {
-                  setShowTypeGuide(false)
-                  setShowTypeSelector(false)
-                  if (selectedAppType === 'ai_builder') {
-                    setShowAIBuilder(true)
-                    return
-                  }
-                  if (selectedAppType === 'website') {
-                    setShowWebsiteBuilder(true)
-                    return
-                  }
-                  if (activeView !== 'developer') navigateToView('apps')
-                  setShowCreate(true)
+                  // The guide stays until the next step has mounted (AfterMount)
+                  if (selectedAppType === 'ai_builder') setShowAIBuilder(true)
+                  else if (selectedAppType === 'website') setShowWebsiteBuilder(true)
+                  else setShowCreate(true)
                 }}
               />
             </Suspense>
           )}
-          {showCreate && activeView === 'developer' && (
+          {showCreate && (
             <Suspense fallback={null}>
+              <AfterMount run={() => { setShowTypeGuide(false); setShowWebsiteBuilder(false) }} />
               <CreateAppModal
                 user={session.user}
                 initialType={selectedAppType}
-                onClose={() => setShowCreate(false)}
-                onBack={() => { setShowCreate(false); setShowTypeSelector(true) }}
+                websitePrefilled={websitePrefilledApp}
+                onClose={closeBuildFlow}
+                onBack={() => { setShowCreate(false); setWebsitePrefilledApp(null); setShowTypeGuide(true) }}
                 onCreated={newApp => {
-                  setShowCreate(false)
+                  closeBuildFlow()
                   setCreatedApp(newApp)
+                  if (activeView !== 'developer') {
+                    navigateToView('apps')
+                    setWorkspaceRecoApp(newApp)
+                  }
                 }}
               />
             </Suspense>
           )}
           {showWebsiteBuilder && (
             <Suspense fallback={null}>
+              <AfterMount run={() => setShowTypeGuide(false)} />
               <CreateFromWebsiteModal
                 user={session.user}
-                onClose={() => setShowWebsiteBuilder(false)}
+                onClose={closeBuildFlow}
                 onGenerated={prefilled => {
-                  setShowWebsiteBuilder(false)
+                  // Stays open until the details step has mounted over it
                   setWebsitePrefilledApp(prefilled)
-                  navigateToView('apps')
                   setSelectedAppType('website')
                   setShowCreate(true)
                 }}
@@ -524,12 +533,13 @@ export default function App() {
           )}
           {showAIBuilder && (
             <Suspense fallback={null}>
+              <AfterMount run={() => setShowTypeGuide(false)} />
               <AIAppBuilder
                 user={session.user}
-                onClose={() => setShowAIBuilder(false)}
-                onBack={() => { setShowAIBuilder(false); setShowTypeSelector(true) }}
+                onClose={closeBuildFlow}
+                onBack={() => { setShowAIBuilder(false); setShowTypeGuide(true) }}
                 onCreated={newApp => {
-                  setShowAIBuilder(false)
+                  closeBuildFlow()
                   navigateToView('apps')
                   setCreatedApp(newApp)
                   setSelectedApp(newApp)

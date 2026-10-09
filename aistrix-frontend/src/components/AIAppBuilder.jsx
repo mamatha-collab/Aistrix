@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
+import { useFocusTrap } from '../hooks/useFocusTrap'
 import { generateJSON, streamRun } from '../lib/runStream'
 import { TOOL_DEFAULT_SCHEMAS } from '../utils/toolTypes'
 import { fieldKeyFromLabel, outputFieldsErrors } from '../utils/schemaContracts'
@@ -305,6 +306,8 @@ function AppPreview({ config, onSaveDraft, onPublish, onBack, saving }) {
 }
 
 export default function AIAppBuilder({ user, onClose, onBack, onCreated }) {
+  const panelRef = useRef(null)
+  useFocusTrap(panelRef, { onEscape: onClose })
   const [phase, setPhase] = useState('describe')
   const [description, setDescription] = useState('')
   const [questions, setQuestions] = useState([])
@@ -428,7 +431,8 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated }) {
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-      <div className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-lg flex flex-col" style={{ maxHeight: '92vh' }}>
+      <div ref={panelRef} role="dialog" aria-modal="true" aria-label="Build with AI"
+        className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-xl flex flex-col" style={{ maxHeight: '92vh' }}>
 
         {/* Header */}
         <div className="px-6 pt-6 pb-5 shrink-0 border-b border-white/5">

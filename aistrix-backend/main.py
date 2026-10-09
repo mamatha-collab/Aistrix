@@ -849,14 +849,17 @@ async def execute_tool(tool: dict, tool_input: dict, ctx: Optional[dict] = None)
                     r = await fetch_safely("GET", url, timeout=15)
                 except ValueError as e:
                     return f"Invalid URL: {e}"
+                if len(r.content) > MAX_EXTRACT_BYTES:
+                    return f"PDF is larger than {MAX_EXTRACT_BYTES // (1024 * 1024)} MB."
+
+                async def run_key():
+                    # The run's own key (the caller's, when they saved one).
+                    return ctx.get("api_key") if ctx.get("provider") == "claude" else None
                 try:
-                    import io
-                    import pypdf
-                    reader = pypdf.PdfReader(io.BytesIO(r.content))
-                    text = "\n".join(page.extract_text() or "" for page in reader.pages)
-                    return text[:5000] or "No text found in PDF."
-                except ImportError:
-                    return "PDF parsing requires pypdf. Install with: pip install pypdf"
+                    text, _ = await extract_pdf_text(r.content, run_key)   # OCRs scanned pages
+                    return text[:8000]
+                except (OcrError, ValueError) as e:
+                    return f"Could not read the PDF: {e}"
             return "Provide a 'url' pointing to the PDF file."
 
         elif tool_type == "ocr":
@@ -1674,7 +1677,8 @@ def _chunk_text(text: str, limit: int, is_csv: bool = False) -> list[str]:
     return chunks
 
 
-async def _extract_api_file(f: ApiFileInput) -> tuple[str, bool]:
+async def _extract_api_file(f: ApiFileInput, request: Optional[Request] = None,
+                            caller: Optional["ApiCaller"] = None) -> tuple[str, bool]:
     """Decode + extract an inline API file → (text, is_csv)."""
     import base64
     try:
@@ -1693,7 +1697,13 @@ async def _extract_api_file(f: ApiFileInput) -> tuple[str, bool]:
     if not extractor:
         raise HTTPException(status_code=415, detail="Supported files: .pdf, .xlsx, .docx, .csv, .txt, .json, .md")
     try:
-        text = await asyncio.to_thread(extractor, data)
+        if ext == "pdf":
+            text, _ = await extract_pdf_text(
+                data, (lambda: ocr_key_for(request, caller.user_jwt, caller.user_id)) if request and caller else None)
+        else:
+            text = await asyncio.to_thread(extractor, data)
+    except OcrError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except Exception as e:
@@ -1780,7 +1790,7 @@ async def run_published_app_api(app_id: str, req: ApiRunRequest, request: Reques
         pieces.append(req.input.strip())
     file_text, is_csv = "", False
     if req.file is not None:
-        file_text, is_csv = await _extract_api_file(req.file)
+        file_text, is_csv = await _extract_api_file(req.file, request, caller)
         if not file_text.strip():
             raise HTTPException(status_code=422, detail="The file contains no readable text")
     if not pieces and not file_text:
@@ -2323,6 +2333,171 @@ def _extract_pdf(data: bytes) -> str:
     return text
 
 
+# ─── OCR for scanned PDF pages (Claude reads the page images) ──────────────
+# Pages with a text layer are read locally with pypdf; only image-only pages
+# are sent to Claude, OCR_PAGES_PER_REQUEST at a time, as PDF document
+# blocks (limits: 32 MB per request, up to 600 pages on 1M-context models).
+OCR_MODEL = os.getenv("OCR_MODEL", "claude-opus-5-5")
+OCR_PAGES_PER_REQUEST = int(os.getenv("OCR_PAGES_PER_REQUEST", "20"))
+OCR_MAX_PAGES = int(os.getenv("OCR_MAX_PAGES", "200"))
+OCR_CONCURRENCY = int(os.getenv("OCR_CONCURRENCY", "3"))
+_OCR_MAX_CHUNK_BYTES = 22 * 1024 * 1024     # base64 grows ~33%; stays under 32 MB
+_OCR_MIN_TEXT_CHARS = 25                     # fewer real characters → treat page as scanned
+_OCR_PAGE_MARK = re.compile(r"^\s*-{3}\s*Page\s+(\d+)\s*-{3}\s*$", re.MULTILINE)
+_OCR_INSTRUCTIONS = (
+    "Transcribe all text in this PDF exactly as written — this is OCR, not a summary.\n"
+    "- Keep the reading order, headings, lists and paragraph breaks.\n"
+    "- Render tables as Markdown tables; keep numbers, dates and currency exactly as printed.\n"
+    "- Include handwriting, stamps and form labels/values when legible.\n"
+    "- Write [illegible] for text you cannot read and [no text] for a blank page.\n"
+    "- Do not translate, correct, summarise or add any commentary.\n"
+)
+
+
+class OcrError(Exception):
+    def __init__(self, message: str, status: int = 502):
+        super().__init__(message)
+        self.status = status
+
+
+def _pdf_reader(data: bytes):
+    import io
+    import pypdf
+    reader = pypdf.PdfReader(io.BytesIO(data))
+    if reader.is_encrypted:
+        try:
+            reader.decrypt("")
+        except Exception:
+            raise ValueError("PDF is password-protected")
+    return reader
+
+
+def _pdf_subset(reader, indices: list[int]) -> bytes:
+    import io
+    import pypdf
+    writer = pypdf.PdfWriter()
+    for i in indices:
+        writer.add_page(reader.pages[i])
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+
+
+def _ocr_chunks(reader, indices: list[int]) -> list[tuple[list[int], bytes]]:
+    """Group pages into sub-PDFs of ≤ OCR_PAGES_PER_REQUEST pages and
+    ≤ _OCR_MAX_CHUNK_BYTES, halving any group that is too large."""
+    out: list[tuple[list[int], bytes]] = []
+    pending = [indices[i:i + OCR_PAGES_PER_REQUEST] for i in range(0, len(indices), OCR_PAGES_PER_REQUEST)]
+    while pending:
+        group = pending.pop(0)
+        data = _pdf_subset(reader, group)
+        if len(data) <= _OCR_MAX_CHUNK_BYTES:
+            out.append((group, data))
+        elif len(group) == 1:
+            raise ValueError(f"Page {group[0] + 1} is too large to read (over {_OCR_MAX_CHUNK_BYTES // (1024 * 1024)} MB)")
+        else:
+            mid = len(group) // 2
+            pending[:0] = [group[:mid], group[mid:]]
+    return out
+
+
+async def _ocr_chunk(client, pdf_bytes: bytes, page_numbers: list[int]) -> dict[int, str]:
+    import base64
+    numbers = ", ".join(str(n) for n in page_numbers)
+    prompt = (_OCR_INSTRUCTIONS +
+              f"\nThis file holds pages {numbers} of a larger document, in that order. "
+              "Start each page with a line '--- Page N ---' using those page numbers.")
+    async with client.beta.messages.stream(
+        model=OCR_MODEL,
+        max_tokens=64000,
+        betas=["server-side-fallback-2026-07-01"],
+        fallbacks="default",                     # retry on another model if declined
+        output_config={"effort": "low"},         # transcription, not reasoning
+        messages=[{"role": "user", "content": [
+            {"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
+                                            "data": base64.b64encode(pdf_bytes).decode()}},
+            {"type": "text", "text": prompt},
+        ]}],
+    ) as stream:
+        msg = await stream.get_final_message()
+    if msg.stop_reason == "refusal":
+        raise OcrError(f"The text on page(s) {numbers} could not be transcribed.", 422)
+    text = "".join(getattr(b, "text", "") for b in msg.content if getattr(b, "type", "") == "text")
+    if msg.stop_reason == "max_tokens":
+        text += "\n[transcription cut off: page text too long]"
+
+    pieces = _OCR_PAGE_MARK.split(text)
+    found: dict[int, str] = {}
+    for k in range(1, len(pieces) - 1, 2):
+        found[int(pieces[k])] = pieces[k + 1].strip()
+    if not found:                                  # model skipped the markers
+        found[page_numbers[0]] = text.strip()
+    return {n: found.get(n, "") for n in page_numbers}
+
+
+async def extract_pdf_text(data: bytes, get_ocr_key=None) -> tuple[str, int]:
+    """Text of a PDF as '--- Page N ---' sections. Scanned (image-only) pages
+    are OCR'd with Claude. Returns (text, number_of_pages_OCRd).
+    get_ocr_key: async () -> Optional[str] API key, called only if OCR is
+    needed (lets callers apply their own key / rate limits lazily)."""
+    reader = await asyncio.to_thread(_pdf_reader, data)
+    texts = await asyncio.to_thread(lambda: [(pg.extract_text() or "") for pg in reader.pages])
+    scanned = [i for i, t in enumerate(texts) if len(re.sub(r"\s", "", t)) < _OCR_MIN_TEXT_CHARS]
+
+    if scanned:
+        if len(scanned) > OCR_MAX_PAGES:
+            raise ValueError(f"This PDF has {len(scanned)} scanned pages; up to {OCR_MAX_PAGES} can be read per file. "
+                             "Split it into smaller files.")
+        key = await get_ocr_key() if get_ocr_key else None
+        if not (key or os.getenv("ANTHROPIC_API_KEY")):
+            raise OcrError("Reading scanned pages isn't configured on this server (no Claude API key).", 503)
+        chunks = await asyncio.to_thread(_ocr_chunks, reader, scanned)
+        client = anthropic.AsyncAnthropic(api_key=key or os.getenv("ANTHROPIC_API_KEY"))
+        sem = asyncio.Semaphore(max(1, OCR_CONCURRENCY))
+
+        async def run(group: list[int], pdf_bytes: bytes) -> dict[int, str]:
+            async with sem:
+                return await _ocr_chunk(client, pdf_bytes, [i + 1 for i in group])
+
+        try:
+            results = await asyncio.gather(*(run(g, b) for g, b in chunks))
+        except anthropic.AuthenticationError:
+            raise OcrError("Reading scanned pages failed: the Claude API key was rejected. Check Settings → Keys.", 502)
+        except anthropic.RateLimitError:
+            raise OcrError("Reading scanned pages is rate-limited right now. Try again in a minute.", 429)
+        except (anthropic.APIConnectionError, anthropic.InternalServerError):
+            raise OcrError("The OCR service is temporarily unavailable. Try again in a moment.", 502)
+        except anthropic.APIStatusError as e:
+            raise OcrError(f"Reading scanned pages failed ({e.status_code}).", 502)
+        for result in results:
+            for page_no, page_text in result.items():
+                texts[page_no - 1] = page_text
+
+    out = "\n\n".join(f"--- Page {i + 1} ---\n{t}" for i, t in enumerate(texts))
+    if not re.sub(r"--- Page \d+ ---|\[no text\]|\s", "", out):
+        raise ValueError("No readable text was found in this PDF.")
+    return out, len(scanned)
+
+
+async def ocr_key_for(request: Request, user_jwt: Optional[str], caller_id: Optional[str]) -> Optional[str]:
+    """API key for OCR: the caller's own Claude key when saved (not metered);
+    otherwise the platform key, counted against the caller's run limits."""
+    if user_jwt:
+        key = await fetch_user_api_key(user_jwt, "claude")
+    elif caller_id:
+        key = await fetch_user_api_key_by_id(caller_id, "claude")
+    else:
+        key = None
+    if key:
+        return key
+    allowed, msg = await check_rate_limit(request, user_jwt, caller_id)
+    if not allowed:
+        raise OcrError(msg, 429)
+    if caller_id:
+        await record_metered_run(caller_id, None, "ocr")
+    return None
+
+
 def _extract_xlsx(data: bytes) -> str:
     import csv
     import io
@@ -2364,8 +2539,10 @@ def _extract_docx(data: bytes) -> str:
 
 @app.post("/v1/files/extract")
 async def extract_file_text(req: ExtractRequest, request: Request):
-    """Turn an uploaded PDF / XLSX / DOCX into plain text (CSV for sheets)."""
-    await require_verified_user(request)
+    """Turn an uploaded PDF / XLSX / DOCX into plain text (CSV for sheets).
+    Scanned PDF pages are read with OCR."""
+    user_id = await require_verified_user(request)
+    user_jwt = request.headers.get("Authorization", "").removeprefix("Bearer ").strip() or None
     import base64
     try:
         data = base64.b64decode(req.content_b64, validate=True)
@@ -2377,8 +2554,14 @@ async def extract_file_text(req: ExtractRequest, request: Request):
     extractor = {"pdf": _extract_pdf, "xlsx": _extract_xlsx, "xlsm": _extract_xlsx, "docx": _extract_docx}.get(ext)
     if not extractor:
         raise HTTPException(status_code=415, detail="Supported types: .pdf, .xlsx, .docx")
+    ocr_pages = 0
     try:
-        text = await asyncio.to_thread(extractor, data)
+        if ext == "pdf":
+            text, ocr_pages = await extract_pdf_text(data, lambda: ocr_key_for(request, user_jwt, user_id))
+        else:
+            text = await asyncio.to_thread(extractor, data)
+    except OcrError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
     except ImportError as e:
         raise HTTPException(status_code=503, detail=f"Server is missing a parser: {e.name}")
     except ValueError as e:
@@ -2392,6 +2575,7 @@ async def extract_file_text(req: ExtractRequest, request: Request):
         "kind": "csv" if ext in ("xlsx", "xlsm") else "text",
         "chars": len(text),
         "truncated": truncated,
+        "ocr_pages": ocr_pages,
     }
 
 
@@ -3762,7 +3946,7 @@ async def scrape_website(body: ScrapeRequest, request: Request):
     # Real verification instead of a bare "Bearer " prefix check (see
     # require_verified_user) — this endpoint fetches arbitrary caller-supplied
     # URLs server-side, so it needs actual auth plus SSRF protection.
-    await require_verified_user(request)
+    scrape_user_id = await require_verified_user(request)
     url = body.url.strip()
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
@@ -3781,9 +3965,13 @@ async def scrape_website(body: ScrapeRequest, request: Request):
             raise HTTPException(status_code=413, detail=f"That file is larger than {MAX_EXTRACT_BYTES // (1024 * 1024)} MB")
 
         if ctype == "application/pdf" or path.endswith(".pdf"):
+            user_jwt = request.headers.get("Authorization", "").removeprefix("Bearer ").strip() or None
             try:
-                text, kind = await asyncio.to_thread(_extract_pdf, resp.content), "text"
-            except ValueError as e:      # scanned / password-protected PDF
+                text, _ = await extract_pdf_text(resp.content, lambda: ocr_key_for(request, user_jwt, scrape_user_id))
+                kind = "text"
+            except OcrError as e:
+                raise HTTPException(status_code=e.status, detail=str(e))
+            except ValueError as e:      # password-protected / unreadable PDF
                 raise HTTPException(status_code=422, detail=str(e))
         elif ctype in ("text/csv", "application/csv") or path.endswith(".csv"):
             text, kind = resp.text, "csv"

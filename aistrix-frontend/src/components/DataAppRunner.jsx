@@ -141,14 +141,11 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
         })
         const body = await res.json().catch(() => ({}))
         if (!res.ok) {
-          const detail = body.detail || `Could not read ${file.name}`
-          if (/scanned pdf|no selectable text/i.test(detail)) {
-            throw new Error('This PDF looks scanned, so there is no selectable text to analyze yet. OCR is not enabled for Data apps; upload a text-based PDF or run OCR first.')
-          }
-          throw new Error(detail)
+          throw new Error(body.error || (typeof body.detail === 'string' ? body.detail : '') || `Could not read ${file.name}`)
         }
         setRawData(body.text || '')
         setDataType(body.kind === 'csv' ? 'csv' : 'text')
+        if (body.ocr_pages) toast(`Read ${body.ocr_pages} scanned page${body.ocr_pages === 1 ? '' : 's'} of ${file.name} with OCR — check figures before relying on them.`, 'info', 7000)
         if (body.truncated) toast(`Only the first ${body.text.length.toLocaleString()} characters of ${file.name} were extracted. Split larger files for best results.`, 'info', 7000)
       } else {
         setRawData(await file.text())
@@ -338,7 +335,7 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
         )}
         {dataType !== 'url' && (
           <p className="text-[10px] text-slate-600 mt-1 leading-relaxed">
-            Text-based PDF, Word and Excel files are extracted server-side and stored for 30 days. Scanned PDFs need OCR first. Extraction loads up to {MAX_EXTRACT_CHARS.toLocaleString()} characters; interactive analysis handles about {MAX_ANALYSIS_CHARS.toLocaleString()} characters per run.
+            PDF, Word and Excel files are extracted server-side and stored for 30 days. Scanned PDF pages are read with OCR. Extraction loads up to {MAX_EXTRACT_CHARS.toLocaleString()} characters; interactive analysis handles about {MAX_ANALYSIS_CHARS.toLocaleString()} characters per run.
           </p>
         )}
       </div>

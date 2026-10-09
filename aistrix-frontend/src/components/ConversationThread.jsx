@@ -27,8 +27,17 @@ function buildConversationInput(greeting, history, userMsg) {
     : userMsg
 }
 
+// Signed-out website visitors (embed widget with visitor access) have no
+// account to save threads to, so their conversation lives in this tab only.
+const visitorKey = appId => `aistrix:chat:${appId}`
+
+function loadVisitorMessages(appId) {
+  try { return JSON.parse(sessionStorage.getItem(visitorKey(appId)) || '[]') } catch { return [] }
+}
+
 export default function ConversationThread({ app, user, threadId: initialThreadId, onClose, inline = false }) {
-  const [messages, setMessages] = useState([])
+  const visitor = !user
+  const [messages, setMessages] = useState(() => (visitor ? loadVisitorMessages(app.id) : []))
   const [threadId, setThreadId] = useState(initialThreadId || null)
   const [threads, setThreads] = useState([])
   const [input, setInput] = useState('')
@@ -39,10 +48,16 @@ export default function ConversationThread({ app, user, threadId: initialThreadI
   const toast = useToast()
 
   useEffect(() => {
+    if (visitor) return
     loadThreads()
     if (threadId) loadMessages(threadId)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when app.id or user.id changes
-  }, [app.id, user.id])
+  }, [app.id, user?.id])
+
+  useEffect(() => {
+    if (!visitor) return
+    try { sessionStorage.setItem(visitorKey(app.id), JSON.stringify(messages.map(({ id, role, content }) => ({ id, role, content })))) } catch { /* storage blocked — keep it in memory */ }
+  }, [visitor, app.id, messages])
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, streaming])
 
@@ -65,7 +80,7 @@ export default function ConversationThread({ app, user, threadId: initialThreadI
   }
 
   async function ensureThread(firstMessage) {
-    if (threadId) return threadId
+    if (visitor || threadId) return threadId
     const { data, error } = await supabase.from('conversation_threads').insert({
       app_id: app.id, user_id: user.id, title: firstMessage.slice(0, 50),
     }).select().single()
@@ -101,6 +116,7 @@ export default function ConversationThread({ app, user, threadId: initialThreadI
     }
 
     async function saveUserMessage() {
+      if (visitor) return
       const { data: row, error } = await supabase.from('thread_messages').insert({
         thread_id: tid, role: 'user', content: userMsg,
       }).select().single()
@@ -124,6 +140,7 @@ export default function ConversationThread({ app, user, threadId: initialThreadI
       // Save assistant message
       const asstLocalId = `local-${Date.now()}`
       async function saveAssistantMessage() {
+        if (visitor) return
         const { data: row, error } = await supabase.from('thread_messages').insert({
           thread_id: tid, role: 'assistant', content: full,
         }).select().single()

@@ -124,7 +124,10 @@ export default function AppEmbedPage() {
           </div>
         ) : visitorAccess ? (
           <Suspense fallback={null}>
-            <EmbedVisitorRunner app={app} />
+            {/* Chat apps keep the conversation (in this tab) so follow-ups work */}
+            {(app.has_memory || app.app_type === 'chatbot')
+              ? <ConversationThread app={app} user={null} inline />
+              : <EmbedVisitorRunner app={app} />}
           </Suspense>
         ) : !user ? (
           <div style={css.gate}>

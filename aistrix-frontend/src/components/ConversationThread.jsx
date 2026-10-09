@@ -218,9 +218,10 @@ export default function ConversationThread({ app, user, threadId: initialThreadI
                   <div className="prose-result text-sm">
                     <OutputRenderer result={msg.content} outputType="markdown" />
                   </div>
-                  {(msg.usage || !String(msg.id).startsWith('local-')) && (
+                  {/* Visitors don't see token counts (the widget owner pays) */}
+                  {((msg.usage && !visitor) || !String(msg.id).startsWith('local-')) && (
                     <div className="flex items-center gap-2 mt-1">
-                      {msg.usage && (
+                      {msg.usage && !visitor && (
                         <p className="text-[10px] text-slate-500" title="Tokens used for this reply">
                           ↑{msg.usage.input_tokens?.toLocaleString()} ↓{msg.usage.output_tokens?.toLocaleString()} tok
                         </p>

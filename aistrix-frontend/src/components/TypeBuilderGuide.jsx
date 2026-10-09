@@ -311,38 +311,14 @@ function BuildEstimate({ estimate }) {
   )
 }
 
-export default function TypeBuilderGuide({ type, onContinue, onClose }) {
-  const panelRef = useRef(null)
-  useFocusTrap(panelRef, { onEscape: onClose })
+// The guide's body and footer. Used by the guide popup below, and by
+// AIAppBuilder as its first screen so Build with AI stays one popup.
+export function TypeGuideSteps({ type, onBack, onContinue }) {
   const guide = TYPE_GUIDES[type]
   const estimate = useBuildEstimate(type)
-  if (!guide) { onContinue(); return null }
-
+  if (!guide) return null
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-60 p-4" onClick={onClose}>
-      <div ref={panelRef} role="dialog" aria-modal="true"
-        className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-xl flex flex-col overflow-hidden"
-        style={{ maxHeight: '92vh' }}
-        onClick={e => e.stopPropagation()}>
-
-        {/* Header — matches AppTypeSelector */}
-        <div className="px-6 pt-6 pb-5 shrink-0 border-b border-white/5">
-          <div className="flex items-start justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl font-bold shrink-0"
-                style={{ background: guide.color + '22', color: guide.color }}>
-                {guide.icon}
-              </div>
-              <div>
-                <p className="text-white font-bold text-xl leading-snug">{guide.label}</p>
-                <p className="text-slate-400 text-sm mt-0.5">{guide.tagline}</p>
-              </div>
-            </div>
-            <button aria-label="Close" onClick={onClose}
-              className="text-slate-500 hover:text-white transition-colors p-1 shrink-0 ml-4">✕</button>
-          </div>
-        </div>
-
+    <>
         <div className="overflow-y-auto flex-1 px-6 pb-6 pt-5 space-y-5">
           {/* What it is */}
           <p className="text-slate-300 text-sm leading-relaxed">{guide.what}</p>
@@ -387,7 +363,7 @@ export default function TypeBuilderGuide({ type, onContinue, onClose }) {
           {/* Shown right above the button so the cost is visible before starting */}
           <BuildEstimate estimate={estimate} />
           <div className="flex gap-3">
-          <button onClick={onClose}
+          <button onClick={onBack}
             className="px-5 bg-white/5 hover:bg-white/10 text-slate-300 text-sm py-2.5 rounded-xl transition-colors border border-white/10">
             ← Back
           </button>
@@ -398,6 +374,42 @@ export default function TypeBuilderGuide({ type, onContinue, onClose }) {
           </button>
           </div>
         </div>
+    </>
+  )
+}
+
+export default function TypeBuilderGuide({ type, onContinue, onClose }) {
+  const panelRef = useRef(null)
+  useFocusTrap(panelRef, { onEscape: onClose })
+  const guide = TYPE_GUIDES[type]
+  if (!guide) { onContinue(); return null }
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-60 p-4" onClick={onClose}>
+      <div ref={panelRef} role="dialog" aria-modal="true"
+        className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-xl flex flex-col overflow-hidden"
+        style={{ maxHeight: '92vh' }}
+        onClick={e => e.stopPropagation()}>
+
+        {/* Header — matches AppTypeSelector */}
+        <div className="px-6 pt-6 pb-5 shrink-0 border-b border-white/5">
+          <div className="flex items-start justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl font-bold shrink-0"
+                style={{ background: guide.color + '22', color: guide.color }}>
+                {guide.icon}
+              </div>
+              <div>
+                <p className="text-white font-bold text-xl leading-snug">{guide.label}</p>
+                <p className="text-slate-400 text-sm mt-0.5">{guide.tagline}</p>
+              </div>
+            </div>
+            <button aria-label="Close" onClick={onClose}
+              className="text-slate-500 hover:text-white transition-colors p-1 shrink-0 ml-4">✕</button>
+          </div>
+        </div>
+
+        <TypeGuideSteps type={type} onBack={onClose} onContinue={onContinue} />
       </div>
     </div>
   )

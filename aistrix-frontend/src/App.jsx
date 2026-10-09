@@ -476,6 +476,8 @@ export default function App() {
                 onClose={() => setShowTypeSelector(false)}
                 onSelect={type => {
                   setSelectedAppType(type)
+                  // Build with AI shows its guide inside the builder popup
+                  if (type === 'ai_builder') { setShowAIBuilder(true); return }
                   setShowTypeGuide(true)
                   // keep showTypeSelector true — selector stays behind the guide
                 }}
@@ -533,17 +535,19 @@ export default function App() {
           )}
           {showAIBuilder && (
             <Suspense fallback={null}>
-              <AfterMount run={() => setShowTypeGuide(false)} />
               <AIAppBuilder
                 user={session.user}
+                withGuide
                 onClose={closeBuildFlow}
-                onBack={() => { setShowAIBuilder(false); setShowTypeGuide(true) }}
+                onBack={() => setShowAIBuilder(false)}
                 onCreated={newApp => {
                   closeBuildFlow()
-                  navigateToView('apps')
                   setCreatedApp(newApp)
-                  setSelectedApp(newApp)
-                  setWorkspaceRecoApp(newApp)
+                  if (activeView !== 'developer') {
+                    navigateToView('apps')
+                    setSelectedApp(newApp)
+                    setWorkspaceRecoApp(newApp)
+                  }
                 }}
               />
             </Suspense>

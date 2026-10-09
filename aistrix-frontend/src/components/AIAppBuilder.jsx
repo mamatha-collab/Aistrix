@@ -6,6 +6,7 @@ import { generateJSON, streamRun } from '../lib/runStream'
 import { TOOL_DEFAULT_SCHEMAS } from '../utils/toolTypes'
 import { fieldKeyFromLabel, outputFieldsErrors } from '../utils/schemaContracts'
 import { saveAppContract } from '../utils/appContracts'
+import { TypeGuideSteps } from './TypeBuilderGuide'
 
 const QUESTIONS_SYSTEM_PROMPT = `You are an expert AI app architect on a platform called Aistrix.
 When a developer describes an app idea, generate exactly 6-8 precise clarifying questions.
@@ -305,10 +306,12 @@ function AppPreview({ config, onSaveDraft, onPublish, onBack, saving }) {
   )
 }
 
-export default function AIAppBuilder({ user, onClose, onBack, onCreated }) {
+// `withGuide`: start on the type guide ("Start building →" moves on to
+// Describe), so the whole Build with AI flow stays in this one popup.
+export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGuide = false }) {
   const panelRef = useRef(null)
   useFocusTrap(panelRef, { onEscape: onClose })
-  const [phase, setPhase] = useState('describe')
+  const [phase, setPhase] = useState(withGuide ? 'intro' : 'describe')
   const [description, setDescription] = useState('')
   const [questions, setQuestions] = useState([])
   const [answers, setAnswers] = useState({})
@@ -444,12 +447,21 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated }) {
                 <p className="text-slate-400 text-sm mt-0.5">Describe your app — AI configures everything</p>
               </div>
             </div>
-            <button aria-label="Close" onClick={onBack && phase === 'describe' ? onBack : onClose} className="text-slate-500 hover:text-white transition-colors p-1 shrink-0 ml-4">
-              {onBack && phase === 'describe' ? '← Back' : '✕'}
-            </button>
+            {(() => {
+              // Back from Describe returns to the guide when it's part of this popup
+              const back = phase === 'intro' ? onBack : phase === 'describe' ? (withGuide ? () => setPhase('intro') : onBack) : null
+              return (
+                <button aria-label={back ? 'Back' : 'Close'} onClick={back || onClose} className="text-slate-500 hover:text-white transition-colors p-1 shrink-0 ml-4">
+                  {back ? '← Back' : '✕'}
+                </button>
+              )
+            })()}
           </div>
         </div>
 
+        {phase === 'intro' ? (
+          <TypeGuideSteps type="ai_builder" onBack={onBack || onClose} onContinue={() => setPhase('describe')} />
+        ) : (<>
         {/* Progress bar */}
         <div className="flex gap-0 px-5 pt-4 pb-1">
           {['Describe', 'Configure', 'Preview & Save'].map((label, i) => (
@@ -548,6 +560,7 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated }) {
             <p className="text-red-400 text-xs text-center">{error}</p>
           )}
         </div>
+        </>)}
       </div>
     </div>
   )

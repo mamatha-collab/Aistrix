@@ -29,6 +29,20 @@ ANON_RPC_PROBES = {
 ANON_TABLE_PROBES = ["app_tools", "app_secrets", "developer_api_keys", "workspaces", "run_events", "user_api_keys"]
 
 
+# Older PostgREST reports Postgres type names (smallint, integer, bigint);
+# newer projects report generic OpenAPI formats (int32, int64). Fold them
+# together. Limitation: through the API a smallint<->integer change is
+# invisible on newer projects — compare the migration files for that.
+_EQUIVALENT_TYPES = {"smallint": "int", "integer": "int", "int32": "int", "int16": "int",
+                     "bigint": "bigint", "int64": "bigint",
+                     "real": "float", "double precision": "float", "float": "float", "double": "float"}
+
+
+def _type_name(prop: dict) -> str:
+    name = prop.get("format") or prop.get("type")
+    return _EQUIVALENT_TYPES.get(name, name)
+
+
 def snapshot(env_path: str) -> dict:
     env = dotenv_values(env_path)
     url, key, anon_key = env.get("SUPABASE_URL"), env.get("SUPABASE_SERVICE_ROLE_KEY"), env.get("SUPABASE_ANON_KEY")
@@ -36,7 +50,7 @@ def snapshot(env_path: str) -> dict:
         sys.exit(f"{env_path}: needs SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY and SUPABASE_ANON_KEY")
     spec = httpx.get(f"{url}/rest/v1/", headers={"apikey": key, "Authorization": f"Bearer {key}",
                                                   "Accept": "application/openapi+json"}, timeout=30).json()
-    tables = {t: {c: (p.get("format") or p.get("type")) for c, p in d.get("properties", {}).items()}
+    tables = {t: {c: _type_name(p) for c, p in d.get("properties", {}).items()}
               for t, d in spec.get("definitions", {}).items()}
     rpcs = sorted(p[5:] for p in spec.get("paths", {}) if p.startswith("/rpc/"))
     svc = create_client(url, key)

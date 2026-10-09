@@ -168,7 +168,7 @@ begin
     select id, name, public, file_size_limit, allowed_mime_types from storage.buckets order by id
   loop
     out := out || format(E'insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)\nvalues (%L, %L, %s, %s, %s)\non conflict (id) do update set public = excluded.public, file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types;\n',
-      r.id, r.name, r.public, coalesce(r.file_size_limit::text, 'null'),
+      r.id, r.name, case when r.public then 'true' else 'false' end, coalesce(r.file_size_limit::text, 'null'),
       coalesce(quote_literal(r.allowed_mime_types::text) || '::text[]', 'null'));
   end loop;
 

@@ -1717,8 +1717,8 @@ create policy aistrix_files_select_own on storage.objects as permissive for sele
 
 -- Storage buckets
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-values ('aistrix-input-files', 'aistrix-input-files', f, 10485760, null)
+values ('aistrix-input-files', 'aistrix-input-files', false, 10485760, null)
 on conflict (id) do update set public = excluded.public, file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types;
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
-values ('aistrix-output-files', 'aistrix-output-files', f, 52428800, null)
+values ('aistrix-output-files', 'aistrix-output-files', false, 52428800, null)
 on conflict (id) do update set public = excluded.public, file_size_limit = excluded.file_size_limit, allowed_mime_types = excluded.allowed_mime_types;

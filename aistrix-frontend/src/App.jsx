@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useRef, useCallback, lazy, Suspense } from 'react'
+import { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react'
 import { supabase } from './supabase'
 import Sidebar from './components/SidebarClean'
 import TopBar from './components/TopBarClean'
@@ -43,7 +43,7 @@ const InvitePage           = lazy(() => import('./pages/InvitePage'))
 
 // Lazy-load modal/panel components — all of these are gated behind a `show*`
 // toggle and never needed for the initial shell render, so there's no reason
-// for them (and, for RunHistory/CreateFromWebsiteModal, react-markdown along
+// for them (and, for RunHistory, react-markdown along
 // with them) to sit in the main bundle.
 const RunHistory             = lazy(() => import('./components/RunHistory'))
 const ApiKeySettings         = lazy(() => import('./components/ApiKeySettings'))
@@ -52,8 +52,6 @@ const OnboardingModal        = lazy(() => import('./components/OnboardingModal')
 const UserProfile            = lazy(() => import('./components/UserProfile'))
 const AppTypeSelector        = lazy(() => import('./components/AppTypeSelector'))
 const AIAppBuilder           = lazy(() => import('./components/AIAppBuilder'))
-const TypeBuilderGuide       = lazy(() => import('./components/TypeBuilderGuide'))
-const CreateFromWebsiteModal = lazy(() => import('./components/CreateFromWebsiteModal'))
 const WorkspaceRecommendations = lazy(() => import('./components/WorkspaceRecommendations'))
 const CreateAppModal           = lazy(() => import('./components/CreateAppModal'))
 const WorkspaceSettingsModal   = lazy(() => import('./components/WorkspaceSettingsModal'))
@@ -96,15 +94,6 @@ function shouldShowStarterOnboarding(pathname = window.location.pathname) {
   return currentMode !== 'developer' && !isDeveloperExperiencePath(pathname)
 }
 
-// Rendered next to a lazily loaded build step: runs once that step has
-// actually mounted, so the previous step can be removed without the popup
-// disappearing while the next one loads.
-function AfterMount({ run }) {
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount
-  useLayoutEffect(() => { run() }, [])
-  return null
-}
-
 export default function App() {
   const [selectedApp, setSelectedApp] = useState(null)
   const [session, setSession] = useState(null)
@@ -131,10 +120,7 @@ export default function App() {
   const [deletedAppId, setDeletedAppId] = useState(null)
   const [showTypeSelector, setShowTypeSelector] = useState(false)
   const [selectedAppType, setSelectedAppType] = useState('prompt')
-  const [showTypeGuide, setShowTypeGuide] = useState(false)
   const [showAIBuilder, setShowAIBuilder] = useState(false)
-  const [showWebsiteBuilder, setShowWebsiteBuilder] = useState(false)
-  const [websitePrefilledApp, setWebsitePrefilledApp] = useState(null)
   const [createdApp, setCreatedApp] = useState(null)
   const [workspaceRecoApp, setWorkspaceRecoApp] = useState(null)
   const [showAppOnboarding, setShowAppOnboarding] = useState(false)
@@ -169,12 +155,10 @@ export default function App() {
     setShowAppOnboarding(false)
   }, [])
 
-  // The build flow (type picker → guide → build step) reads as one popup:
-  // each step opens over the previous one, and closing ends the whole flow.
+  // Picking a type opens one popup (guide first, then the build steps) over
+  // the type picker; closing it ends the whole flow.
   function closeBuildFlow() {
-    setShowTypeSelector(false); setShowTypeGuide(false)
-    setShowCreate(false); setShowAIBuilder(false); setShowWebsiteBuilder(false)
-    setWebsitePrefilledApp(null)
+    setShowTypeSelector(false); setShowCreate(false); setShowAIBuilder(false)
   }
 
   const handleEscape = useCallback(() => {
@@ -475,24 +459,9 @@ export default function App() {
               <AppTypeSelector
                 onClose={() => setShowTypeSelector(false)}
                 onSelect={type => {
+                  // keep showTypeSelector true — it stays behind the popup
                   setSelectedAppType(type)
-                  // Build with AI shows its guide inside the builder popup
-                  if (type === 'ai_builder') { setShowAIBuilder(true); return }
-                  setShowTypeGuide(true)
-                  // keep showTypeSelector true — selector stays behind the guide
-                }}
-              />
-            </Suspense>
-          )}
-          {showTypeGuide && (
-            <Suspense fallback={null}>
-              <TypeBuilderGuide
-                type={selectedAppType}
-                onClose={() => setShowTypeGuide(false)}
-                onContinue={() => {
-                  // The guide stays until the next step has mounted (AfterMount)
-                  if (selectedAppType === 'ai_builder') setShowAIBuilder(true)
-                  else if (selectedAppType === 'website') setShowWebsiteBuilder(true)
+                  if (type === 'ai_builder') setShowAIBuilder(true)
                   else setShowCreate(true)
                 }}
               />
@@ -500,13 +469,12 @@ export default function App() {
           )}
           {showCreate && (
             <Suspense fallback={null}>
-              <AfterMount run={() => { setShowTypeGuide(false); setShowWebsiteBuilder(false) }} />
               <CreateAppModal
                 user={session.user}
                 initialType={selectedAppType}
-                websitePrefilled={websitePrefilledApp}
+                withGuide
                 onClose={closeBuildFlow}
-                onBack={() => { setShowCreate(false); setWebsitePrefilledApp(null); setShowTypeGuide(true) }}
+                onBack={() => setShowCreate(false)}
                 onCreated={newApp => {
                   closeBuildFlow()
                   setCreatedApp(newApp)
@@ -514,21 +482,6 @@ export default function App() {
                     navigateToView('apps')
                     setWorkspaceRecoApp(newApp)
                   }
-                }}
-              />
-            </Suspense>
-          )}
-          {showWebsiteBuilder && (
-            <Suspense fallback={null}>
-              <AfterMount run={() => setShowTypeGuide(false)} />
-              <CreateFromWebsiteModal
-                user={session.user}
-                onClose={closeBuildFlow}
-                onGenerated={prefilled => {
-                  // Stays open until the details step has mounted over it
-                  setWebsitePrefilledApp(prefilled)
-                  setSelectedAppType('website')
-                  setShowCreate(true)
                 }}
               />
             </Suspense>

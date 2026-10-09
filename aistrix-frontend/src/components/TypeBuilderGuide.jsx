@@ -1,5 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
-import { useFocusTrap } from '../hooks/useFocusTrap'
+import { useEffect, useState } from 'react'
 import { supabase } from '../supabase'
 
 const TYPE_GUIDES = {
@@ -375,42 +374,5 @@ export function TypeGuideSteps({ type, onBack, onContinue }) {
           </div>
         </div>
     </>
-  )
-}
-
-export default function TypeBuilderGuide({ type, onContinue, onClose }) {
-  const panelRef = useRef(null)
-  useFocusTrap(panelRef, { onEscape: onClose })
-  const guide = TYPE_GUIDES[type]
-  if (!guide) { onContinue(); return null }
-
-  return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-60 p-4" onClick={onClose}>
-      <div ref={panelRef} role="dialog" aria-modal="true"
-        className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-xl flex flex-col overflow-hidden"
-        style={{ maxHeight: '92vh' }}
-        onClick={e => e.stopPropagation()}>
-
-        {/* Header — matches AppTypeSelector */}
-        <div className="px-6 pt-6 pb-5 shrink-0 border-b border-white/5">
-          <div className="flex items-start justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl font-bold shrink-0"
-                style={{ background: guide.color + '22', color: guide.color }}>
-                {guide.icon}
-              </div>
-              <div>
-                <p className="text-white font-bold text-xl leading-snug">{guide.label}</p>
-                <p className="text-slate-400 text-sm mt-0.5">{guide.tagline}</p>
-              </div>
-            </div>
-            <button aria-label="Close" onClick={onClose}
-              className="text-slate-500 hover:text-white transition-colors p-1 shrink-0 ml-4">✕</button>
-          </div>
-        </div>
-
-        <TypeGuideSteps type={type} onBack={onClose} onContinue={onContinue} />
-      </div>
-    </div>
   )
 }

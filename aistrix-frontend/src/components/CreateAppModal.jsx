@@ -1,6 +1,7 @@
 import { useState, useEffect, useTransition, useRef } from 'react'
 import { supabase } from '../supabase'
 import { useFocusTrap } from '../hooks/useFocusTrap'
+import { TypeGuideSteps } from './TypeBuilderGuide'
 import { useToast } from '../hooks/useToast'
 import { generateJSON, normaliseUrl, readUrl, streamRun } from '../lib/runStream'
 import { TOOL_DEFAULT_SCHEMAS } from '../utils/toolTypes'
@@ -365,7 +366,9 @@ function QualityScore({ form, appType, formSchema }) {
 }
 
 // ─── Main modal ───────────────────────────────────────────────────────────────
-export default function CreateAppModal({ user, onClose, onBack, onCreated, onUpdated, existingApp, initialType = 'prompt', websitePrefilled }) {
+// `withGuide`: start on the type guide ("Start building →" moves on to
+// step 1), so creating an app stays in this one popup.
+export default function CreateAppModal({ user, onClose, onBack, onCreated, onUpdated, existingApp, initialType = 'prompt', websitePrefilled, withGuide = false }) {
   const modalRef = useRef(null)
   useFocusTrap(modalRef, { onEscape: onClose })
   const toast = useToast()
@@ -403,6 +406,7 @@ export default function CreateAppModal({ user, onClose, onBack, onCreated, onUpd
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [step, setStep] = useState(websitePrefilled ? 2 : 1)
+  const [intro, setIntro] = useState(withGuide && !existingApp && !websitePrefilled)
   const [showPreview, setShowPreview] = useState(false)
   const [previewInput, setPreviewInput] = useState('')
   const [previewResult, setPreviewResult] = useState('')
@@ -419,7 +423,7 @@ export default function CreateAppModal({ user, onClose, onBack, onCreated, onUpd
   const [generating, setGenerating] = useState(false)
   const [websiteUrl, setWebsiteUrl] = useState('')
   const [websiteScraping, setWebsiteScraping] = useState(false)
-  // If prefilled data came from CreateFromWebsiteModal, skip the URL step
+  // If the caller passed prefilled website data, skip the URL step
   const [websiteScraped, setWebsiteScraped] = useState(!!websitePrefilled)
   const [websiteSource, setWebsiteSource] = useState(null)   // { url, text } read on this form's URL step
 
@@ -678,23 +682,32 @@ Return ONLY valid JSON with these fields:
               </div>
               <div>
                 <p className="text-white font-bold text-xl leading-snug">{isEdit ? `Edit — ${typeLabel}` : `New ${typeLabel}`}</p>
-                <p className="text-slate-400 text-sm mt-0.5">Step {step} of {STEPS} — {stepLabels[step - 1]}</p>
+                <p className="text-slate-400 text-sm mt-0.5">{intro ? 'Overview' : `Step ${step} of ${STEPS} — ${stepLabels[step - 1]}`}</p>
               </div>
             </div>
             <div className="flex items-center gap-2 ml-4 shrink-0">
-              {form.system_prompt.trim() && (
+              {!intro && form.system_prompt.trim() && (
                 <button onClick={() => { setShowPreview(v => { if (!v && form.sample_input.trim()) setPreviewInput(form.sample_input); return !v }); setPreviewResult('') }}
                   className={`text-xs px-3 py-1.5 rounded-lg font-medium transition-colors ${showPreview ? 'bg-green-500/20 text-green-400' : 'bg-[#1F2444] text-slate-400 hover:text-white'}`}>
                   {showPreview ? '✕ Test' : '▶ Test'}
                 </button>
               )}
-              <button aria-label="Close" onClick={onBack && !existingApp && step === 1 ? onBack : onClose} className="text-slate-500 hover:text-white transition-colors p-1">
-                {onBack && !existingApp && step === 1 ? '← Back' : '✕'}
-              </button>
+              {(() => {
+                // Back from step 1 returns to the guide when it's part of this popup
+                const back = existingApp ? null : intro ? onBack : step === 1 ? (withGuide ? () => setIntro(true) : onBack) : null
+                return (
+                  <button aria-label={back ? 'Back' : 'Close'} onClick={back || onClose} className="text-slate-500 hover:text-white transition-colors p-1">
+                    {back ? '← Back' : '✕'}
+                  </button>
+                )
+              })()}
             </div>
           </div>
         </div>
 
+        {intro ? (
+          <TypeGuideSteps type={appType} onBack={onBack || onClose} onContinue={() => setIntro(false)} />
+        ) : (<>
         {/* Inline Preview Panel */}
         {showPreview && (
           <div className="border-b border-white/5 bg-[#0F1225] p-4 space-y-3">
@@ -1135,6 +1148,7 @@ Return ONLY valid JSON with these fields:
             </>
           )}
         </div>
+        </>)}
       </div>
     </div>
   )

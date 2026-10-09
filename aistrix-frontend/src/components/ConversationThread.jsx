@@ -2,14 +2,42 @@ import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import OutputRenderer from './OutputRenderer'
-import { parseSSELine } from '../lib/sse'
+import { streamRun } from '../lib/runStream'
 import RunRating from './RunRating'
 import { friendlyErrorMessage } from '../utils/appActions'
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+// The whole conversation is sent as the run input, which the backend caps at
+// 20k characters — keep the most recent turns that fit.
+const HISTORY_CHAR_BUDGET = 14000
+
+function buildConversationInput(greeting, history, userMsg) {
+  const turns = []
+  let used = userMsg.length
+  for (let i = history.length - 1; i >= 0; i--) {
+    const line = `${history[i].role === 'user' ? 'User' : 'Assistant'}: ${history[i].content}`
+    if (used + line.length > HISTORY_CHAR_BUDGET) break
+    turns.unshift(line)
+    used += line.length
+  }
+  if (greeting && turns.length === history.length && used + greeting.length < HISTORY_CHAR_BUDGET) {
+    turns.unshift(`Assistant: ${greeting}`)
+  }
+  return turns.length
+    ? `Conversation history:\n${turns.join('\n\n')}\n\nUser: ${userMsg}`
+    : userMsg
+}
+
+// Signed-out website visitors (embed widget with visitor access) have no
+// account to save threads to, so their conversation lives in this tab only.
+const visitorKey = appId => `aistrix:chat:${appId}`
+
+function loadVisitorMessages(appId) {
+  try { return JSON.parse(sessionStorage.getItem(visitorKey(appId)) || '[]') } catch { return [] }
+}
 
 export default function ConversationThread({ app, user, threadId: initialThreadId, onClose, inline = false }) {
-  const [messages, setMessages] = useState([])
+  const visitor = !user
+  const [messages, setMessages] = useState(() => (visitor ? loadVisitorMessages(app.id) : []))
   const [threadId, setThreadId] = useState(initialThreadId || null)
   const [threads, setThreads] = useState([])
   const [input, setInput] = useState('')
@@ -20,11 +48,16 @@ export default function ConversationThread({ app, user, threadId: initialThreadI
   const toast = useToast()
 
   useEffect(() => {
+    if (visitor) return
     loadThreads()
     if (threadId) loadMessages(threadId)
-    else startNewThread()
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when app.id or user.id changes
-  }, [app.id, user.id])
+  }, [app.id, user?.id])
+
+  useEffect(() => {
+    if (!visitor) return
+    try { sessionStorage.setItem(visitorKey(app.id), JSON.stringify(messages.map(({ id, role, content }) => ({ id, role, content })))) } catch { /* storage blocked — keep it in memory */ }
+  }, [visitor, app.id, messages])
 
   useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, streaming])
 
@@ -41,12 +74,20 @@ export default function ConversationThread({ app, user, threadId: initialThreadI
     setMessages(data || [])
   }
 
-  async function startNewThread() {
+  // "+ New" just clears the view; the thread is saved with the first message.
+  function startNewThread() {
+    setThreadId(null); setMessages([]); setStreaming(''); setShowThreads(false)
+  }
+
+  async function ensureThread(firstMessage) {
+    if (visitor || threadId) return threadId
     const { data, error } = await supabase.from('conversation_threads').insert({
-      app_id: app.id, user_id: user.id, title: 'New conversation',
+      app_id: app.id, user_id: user.id, title: firstMessage.slice(0, 50),
     }).select().single()
-    if (data) { setThreadId(data.id); setMessages([]); loadThreads() }
-    else if (error) toast(`Couldn't start a new conversation: ${error.message}`, 'error')
+    if (error) throw new Error(`Couldn't start the conversation: ${error.message}`)
+    setThreadId(data.id)
+    loadThreads()
+    return data.id
   }
 
   async function switchThread(tid) {
@@ -55,66 +96,53 @@ export default function ConversationThread({ app, user, threadId: initialThreadI
   }
 
   async function sendMessage() {
-    if (!input.trim() || !threadId) return
+    if (!input.trim() || loading) return
     const userMsg = input.trim(); setInput(''); setLoading(true); setStreaming('')
-
-    // Add user message to DB
+    const history = messages.filter(m => m.role === 'user' || m.role === 'assistant')
     const localId = `local-${Date.now()}`
+    // Show it locally right away so the conversation doesn't look like it ate
+    // the message while the save is in flight (or if it fails).
+    setMessages(prev => [...prev, { id: localId, role: 'user', content: userMsg }])
+
+    let tid
+    try {
+      tid = await ensureThread(userMsg)
+    } catch (e) {
+      toast(e.message, 'error')
+      setMessages(prev => prev.filter(m => m.id !== localId))
+      setInput(userMsg)
+      setLoading(false)
+      return
+    }
+
     async function saveUserMessage() {
+      if (visitor) return
       const { data: row, error } = await supabase.from('thread_messages').insert({
-        thread_id: threadId, role: 'user', content: userMsg,
+        thread_id: tid, role: 'user', content: userMsg,
       }).select().single()
       if (row) { setMessages(prev => prev.map(m => m.id === localId ? row : m)); return }
       if (error) toast(`Message sent, but wasn't saved: ${error.message}`, 'error', 8000, { label: 'Retry', onClick: saveUserMessage })
     }
-    // Show it locally right away so the conversation doesn't look like it ate
-    // the message while the save is in flight (or if it fails).
-    setMessages(prev => [...prev, { id: localId, role: 'user', content: userMsg }])
     await saveUserMessage()
 
-    // Build conversation history for context
-    const allMsgs = [...messages, { role: 'user', content: userMsg }]
-    const historyContext = allMsgs.slice(-10) // last 10 messages
-      .map(m => `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`)
-      .join('\n\n')
-
-    const conversationalInput = `Conversation history:\n${historyContext.slice(0, -userMsg.length - 7)}\n\nUser: ${userMsg}`
-
     try {
-      const { data: { session } } = await supabase.auth.getSession()
-      const res = await fetch(`${API_URL}/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
-        body: JSON.stringify({
-          app_id: app.id, input: conversationalInput,
-          system_prompt: (app.system_prompt || 'You are a helpful assistant.') +
-            '\n\nYou are in a conversation. Respond naturally to the latest message, maintaining context from the conversation history.',
-          ai_provider: app.ai_provider || 'claude',
-          ai_model: app.ai_model || null,
-          output_type: 'markdown',
-        }),
-      })
-
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let buf = '', full = '', finalUsage = null
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buf += decoder.decode(value, { stream: true })
-        const lines = buf.split('\n'); buf = lines.pop()
-        for (const line of lines) {
-          const d = parseSSELine(line)
-          if (d?.token) { full += d.token; setStreaming(full) }
-          if (d?.done) finalUsage = d.usage || null
-        }
-      }
+      const { text: full, usage: finalUsage } = await streamRun({
+        app_id: app.id,
+        input: buildConversationInput(app.greeting, history, userMsg),
+        system_prompt: app.system_prompt || 'You are a helpful assistant.',
+        run_mode: 'conversation',
+        ai_provider: app.ai_provider || 'claude',
+        ai_model: app.ai_model || null,
+        output_type: 'markdown',
+      }, { onToken: setStreaming })
+      if (!full.trim()) throw new Error('The assistant returned an empty reply. Please try again.')
 
       // Save assistant message
       const asstLocalId = `local-${Date.now()}`
       async function saveAssistantMessage() {
+        if (visitor) return
         const { data: row, error } = await supabase.from('thread_messages').insert({
-          thread_id: threadId, role: 'assistant', content: full,
+          thread_id: tid, role: 'assistant', content: full,
         }).select().single()
         // Usage isn't persisted (thread_messages has no token columns) — attach
         // it locally so the bubble can show it for this session either way.
@@ -124,16 +152,13 @@ export default function ConversationThread({ app, user, threadId: initialThreadI
       // Without this, the reply the user just watched stream in would vanish
       // the moment `streaming` clears below — show it locally right away.
       setMessages(prev => [...prev, { id: asstLocalId, role: 'assistant', content: full, usage: finalUsage }])
-      await saveAssistantMessage()
       setStreaming('')
-
-      // Update thread title if first exchange
-      if (messages.length === 0) {
-        await supabase.from('conversation_threads').update({ title: userMsg.slice(0, 50) }).eq('id', threadId)
-        loadThreads()
-      }
+      await saveAssistantMessage()
     } catch (e) {
-      toast(friendlyErrorMessage(e), 'error')
+      // A failed or cut-off reply is not saved; the user's message stays so
+      // they can simply send again.
+      setStreaming('')
+      toast(friendlyErrorMessage(e), 'error', 8000)
     } finally {
       setLoading(false)
     }
@@ -164,7 +189,16 @@ export default function ConversationThread({ app, user, threadId: initialThreadI
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-3 space-y-3">
-        {messages.length === 0 && !streaming && (
+        {messages.length === 0 && !streaming && app.greeting && (
+          <div className="flex justify-start">
+            <div className="max-w-[85%] rounded-2xl px-4 py-2.5 text-sm bg-[#1F2444] text-slate-200 rounded-bl-sm">
+              <div className="prose-result text-sm">
+                <OutputRenderer result={app.greeting} outputType="markdown" />
+              </div>
+            </div>
+          </div>
+        )}
+        {messages.length === 0 && !streaming && !app.greeting && (
           <div className="text-center py-8">
             <p className="text-slate-500 text-sm">Start a conversation</p>
             <p className="text-slate-600 text-xs mt-1">The AI will remember everything you say in this thread</p>
@@ -184,9 +218,10 @@ export default function ConversationThread({ app, user, threadId: initialThreadI
                   <div className="prose-result text-sm">
                     <OutputRenderer result={msg.content} outputType="markdown" />
                   </div>
-                  {(msg.usage || !String(msg.id).startsWith('local-')) && (
+                  {/* Visitors don't see token counts (the widget owner pays) */}
+                  {((msg.usage && !visitor) || !String(msg.id).startsWith('local-')) && (
                     <div className="flex items-center gap-2 mt-1">
-                      {msg.usage && (
+                      {msg.usage && !visitor && (
                         <p className="text-[10px] text-slate-500" title="Tokens used for this reply">
                           ↑{msg.usage.input_tokens?.toLocaleString()} ↓{msg.usage.output_tokens?.toLocaleString()} tok
                         </p>

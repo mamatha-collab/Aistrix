@@ -1,5 +1,9 @@
 import asyncio
 import ast
+import csv
+import html as html_lib
+import hashlib
+import io
 import ipaddress
 import json
 import math
@@ -9,9 +13,13 @@ import re
 import secrets
 import socket
 import time
+import uuid
 from collections import Counter, defaultdict, deque
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from types import SimpleNamespace
 from datetime import datetime, timedelta, timezone
-from typing import AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Optional
 from urllib.parse import urlsplit
 
 import anthropic
@@ -21,6 +29,7 @@ import sentry_sdk
 from cryptography.fernet import Fernet
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from jose import jwt as jose_jwt
@@ -42,15 +51,43 @@ if SENTRY_DSN:
         before_send=lambda event, hint: event,  # filter here if needed
     )
 
-app = FastAPI(title="Aistrix API", version="1.0.0")
+@asynccontextmanager
+async def lifespan(_app):
+    # Resume batch jobs left queued/interrupted by a restart, and keep sweeping
+    # so another worker picks up jobs whose worker died (stale heartbeat).
+    supervisor = asyncio.create_task(_batch_supervisor())
+    try:
+        yield
+    finally:
+        supervisor.cancel()
+
+
+app = FastAPI(title="Aistrix API", version="1.0.0", lifespan=lifespan)
+
+
+@app.exception_handler(RequestValidationError)
+async def readable_validation_error(request: Request, exc: RequestValidationError):
+    """422s used to reach the browser as a list of objects ("[object Object]").
+    Keep FastAPI's `detail` list and add one readable `error` sentence."""
+    errors = exc.errors()
+    first = errors[0] if errors else {}
+    msg = str(first.get("msg") or "Invalid request").removeprefix("Value error, ")
+    field = ".".join(str(x) for x in first.get("loc", []) if x != "body")
+    readable = msg if not field or field in msg.lower() else f"{field}: {msg}"
+    return JSONResponse(status_code=422, content={"detail": jsonable_errors(errors), "error": readable})
+
+
+def jsonable_errors(errors: list) -> list:
+    return [{k: (v if isinstance(v, (str, int, float, bool, list, type(None))) else str(v))
+             for k, v in e.items() if k != "ctx"} for e in errors]
 
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     # Narrowed from ["*"]/["*"] — only the methods/headers this API actually uses.
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Cron-Secret", "X-Schedule-Secret"],
+    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Cron-Secret", "X-Schedule-Secret", "X-Workspace-Id"],
 )
 
 SUPABASE_URL              = os.getenv("SUPABASE_URL")
@@ -242,9 +279,35 @@ ANON_HOURLY_LIMIT = int(os.getenv("ANON_RATE_LIMIT_PER_HOUR", "10"))
 _anon_hits: dict[str, deque] = defaultdict(deque)
 
 
-def check_anon_rate_limit(client_ip: str) -> tuple[bool, str]:
+TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "").lower() in ("1", "true", "yes")
+EMBED_VISITOR_HOURLY_LIMIT = int(os.getenv("EMBED_VISITOR_RATE_LIMIT_PER_HOUR", "20"))
+
+
+def client_ip(request: Request) -> str:
+    """Real client IP. Behind a load balancer request.client.host is the
+    proxy, which would put every anonymous user in one shared bucket — set
+    TRUST_PROXY_HEADERS=1 when the backend sits behind a trusted proxy."""
+    if TRUST_PROXY_HEADERS:
+        fwd = request.headers.get("X-Forwarded-For", "")
+        if fwd:
+            return fwd.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def check_embed_visitor_rate_limit(ip: str, app_id: str) -> tuple[bool, str]:
     now = time.monotonic()
-    hits = _anon_hits[client_ip]
+    hits = _anon_hits[f"embed:{app_id}:{ip}"]
+    while hits and now - hits[0] > 3600:
+        hits.popleft()
+    if len(hits) >= EMBED_VISITOR_HOURLY_LIMIT:
+        return False, "You've reached the hourly limit for this assistant. Please try again later."
+    hits.append(now)
+    return True, ""
+
+
+def check_anon_rate_limit(ip: str) -> tuple[bool, str]:
+    now = time.monotonic()
+    hits = _anon_hits[ip]
     while hits and now - hits[0] > 3600:
         hits.popleft()
     if len(hits) >= ANON_HOURLY_LIMIT:
@@ -271,7 +334,7 @@ async def fetch_user_api_key(user_jwt: str, provider: str, sb: Optional[Client] 
 
 async def fetch_app_knowledge(app_id: str) -> str:
     try:
-        query = get_anon_client().table("app_knowledge").select("title, content").eq("app_id", app_id)
+        query = (_service_client() or get_anon_client()).table("app_knowledge").select("title, content").eq("app_id", app_id)
         result = await db(query)
         if not result.data:
             return ""
@@ -282,37 +345,295 @@ async def fetch_app_knowledge(app_id: str) -> str:
 
 async def fetch_app_tools(app_id: str) -> list:
     try:
-        query = get_anon_client().table("app_tools").select("*").eq("app_id", app_id)
+        query = (_service_client() or get_anon_client()).table("app_tools").select("*").eq("app_id", app_id)
         result = await db(query)
         return result.data or []
     except Exception:
         return []
 
 
-async def fetch_app_webhook(app_id: str) -> Optional[str]:
+# ─── App access helpers (service role — server is the source of truth) ───────
+def _service_client() -> Optional[Client]:
+    return create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) if SUPABASE_SERVICE_ROLE_KEY else None
+
+
+async def load_app_row(app_id: Optional[str]) -> Optional[dict]:
+    sb = _service_client()
+    if not (app_id and sb):
+        return None
     try:
-        query = get_anon_client().table("apps").select("webhook_url").eq("id", app_id).maybe_single()
-        result = await db(query)
-        return result.data.get("webhook_url") if result and result.data else None
+        res = await db(sb.table("apps").select("*").eq("id", app_id).maybe_single())
+        return res.data if res and res.data else None
+    except Exception as e:
+        print(f"load_app_row error: {e}")
+        return None
+
+
+async def app_member_role(app_id: str, user_id: Optional[str]) -> Optional[str]:
+    sb = _service_client()
+    if not (sb and user_id):
+        return None
+    try:
+        res = await db(sb.table("app_members").select("role").eq("app_id", app_id).eq("user_id", user_id).limit(1))
+        return res.data[0]["role"] if res and res.data else None
+    except Exception:
+        return None   # table may not exist on older deployments
+
+
+BUILD_ROLES = ("owner", "admin", "developer")     # build/edit apps, tools, keys
+MANAGE_ROLES = ("owner", "admin")                 # people, settings, everyone's activity
+BILLING_ROLES = ("owner", "admin", "billing")     # purchases
+_UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+
+async def workspace_role(workspace_id: Optional[str], user_id: Optional[str]) -> Optional[str]:
+    sb = _service_client()
+    if not (sb and workspace_id and user_id):
+        return None
+    try:
+        res = await db(sb.table("workspace_members").select("role")
+                       .eq("workspace_id", workspace_id).eq("user_id", user_id).limit(1))
+        return res.data[0]["role"] if res and res.data else None
+    except Exception:
+        return None   # workspaces not migrated yet
+
+
+async def personal_workspace_id(user_id: Optional[str]) -> Optional[str]:
+    sb = _service_client()
+    if not (sb and user_id):
+        return None
+    try:
+        res = await db(sb.table("workspaces").select("id").eq("personal_owner_id", user_id).limit(1))
+        return res.data[0]["id"] if res and res.data else None
+    except Exception:
+        return None
+
+
+async def resolve_user_workspace(user_id: str, requested: Optional[str]) -> Optional[str]:
+    """The workspace a signed-in request acts in: X-Workspace-Id when the user
+    is a member of it, otherwise their Personal workspace."""
+    if requested:
+        if not _UUID_RE.fullmatch(requested):
+            raise HTTPException(status_code=400, detail="X-Workspace-Id is not a valid id")
+        if not await workspace_role(requested, user_id):
+            raise HTTPException(status_code=403, detail="You're not a member of that workspace")
+        return requested
+    return await personal_workspace_id(user_id)
+
+
+async def can_edit_app(app_row: Optional[dict], caller) -> bool:
+    """May run unsaved drafts, skip the paywall and see the prompt.
+
+    API keys act for their workspace only: any app in that workspace, nothing
+    else — even if the key's creator belongs to other workspaces too."""
+    if not (app_row and caller and caller.user_id):
+        return False
+    ws = app_row.get("workspace_id")
+    if caller.via_key:
+        return bool(ws) and ws == caller.workspace_id
+    if app_row.get("created_by") == caller.user_id:
+        return True
+    if ws and (await workspace_role(ws, caller.user_id)) in BUILD_ROLES:
+        return True
+    return (await app_member_role(app_row["id"], caller.user_id)) in ("editor", "owner")
+
+
+async def can_view_app(app_row: Optional[dict], caller) -> bool:
+    """May run this app even when it isn't published (any workspace member)."""
+    if await can_edit_app(app_row, caller):
+        return True
+    if not (app_row and caller and caller.user_id) or caller.via_key:
+        return False
+    ws = app_row.get("workspace_id")
+    if ws and await workspace_role(ws, caller.user_id):
+        return True
+    return bool(await app_member_role(app_row["id"], caller.user_id))
+
+
+async def find_active_entitlement(app_id: str, caller) -> Optional[dict]:
+    """A purchase covers the buying workspace: any member (or a key of that
+    workspace) can use it. Purchases made before workspaces match by user."""
+    sb = _service_client()
+    if not (sb and caller and caller.user_id):
+        return None
+    conds = []
+    if caller.workspace_id:
+        conds.append(f"workspace_id.eq.{caller.workspace_id}")
+    if not caller.via_key:
+        conds.append(f"user_id.eq.{caller.user_id}")
+    if not conds:
+        return None
+    try:
+        res = await db(sb.table("app_entitlements").select("*")
+                       .eq("app_id", app_id).eq("status", "active").or_(",".join(conds))
+                       .order("created_at", desc=True).limit(1))
+        return res.data[0] if res and res.data else None
+    except Exception as e:
+        print(f"find_active_entitlement error: {e}")
+        return None
+
+
+def entitlement_block_reason(ent: dict) -> Optional[str]:
+    end = ent.get("current_period_end")
+    if end:
+        try:
+            if datetime.fromisoformat(str(end).replace("Z", "+00:00")) < datetime.now(timezone.utc):
+                return "Your access period has ended — renew to keep running this app"
+        except ValueError:
+            pass
+    quota = ent.get("run_quota")
+    if quota is not None and (ent.get("runs_this_period") or 0) >= quota:
+        return f"You've used all {quota} runs in this period — top up to keep running this app"
+    return None
+
+
+async def consume_entitlement_run(ent: dict, app_name: str) -> None:
+    """Count a successful run against the buyer's quota. Server-side only:
+    RLS blocks client writes to app_entitlements, so the old browser-side
+    increment silently never happened and quotas were never enforced."""
+    sb = _service_client()
+    if not sb:
+        return
+    try:
+        res = await db(sb.rpc("consume_entitlement_run", {"p_entitlement_id": ent["id"]}))
+        used = res.data if isinstance(res.data, int) else (ent.get("runs_this_period") or 0) + 1
+    except Exception:
+        used = (ent.get("runs_this_period") or 0) + 1
+        try:
+            await db(sb.table("app_entitlements").update({"runs_this_period": used}).eq("id", ent["id"]))
+        except Exception as e:
+            print(f"consume_entitlement_run error: {e}")
+            return
+    quota = ent.get("run_quota")
+    if quota and used == math.floor(quota * 0.8) and used < quota:
+        email = await _lookup_email(ent["user_id"])
+        if email:
+            remaining = quota - used
+            await send_email(
+                to=email,
+                subject=f"You've used 80% of your runs for {app_name}",
+                html=_email_base(
+                    title=f"Running low on {app_name}",
+                    body=f"You've used <strong style='color:#fff'>{used} of {quota} runs</strong>. "
+                         f"You have <strong style='color:#fff'>{remaining} run{'s' if remaining != 1 else ''}</strong> left in this period.",
+                    cta_url=FRONTEND_URL, cta_label="Top up →",
+                ),
+            )
+
+
+def hash_api_key(raw: str) -> str:
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+async def resolve_developer_key(raw_key: str) -> Optional[dict]:
+    """ak_live_ key → {"user_id", "app_ids", "key_id"} (and bump usage counters).
+
+    Keys are looked up by their SHA-256 hash; the raw key is never stored."""
+    sb = _service_client()
+    if not (sb and raw_key.startswith("ak_live_")):
+        return None
+    try:
+        res = await db(sb.table("developer_api_keys").select("id, user_id, workspace_id, app_ids, total_calls")
+                       .eq("key_hash", hash_api_key(raw_key)).eq("is_active", True).limit(1))
+    except Exception as e:
+        print(f"resolve_developer_key error: {e}")
+        return None
+    row = res.data[0] if res and res.data else None
+    if row is None:
+        return None
+    asyncio.create_task(db(sb.table("developer_api_keys").update({
+        "last_used_at": datetime.now(timezone.utc).isoformat(),
+        "total_calls": (row.get("total_calls") or 0) + 1,
+    }).eq("id", row["id"])))
+    return {"user_id": row["user_id"], "workspace_id": row.get("workspace_id"),
+            "app_ids": row.get("app_ids") or [], "key_id": row["id"]}
+
+
+@dataclass
+class ApiCaller:
+    user_id: Optional[str] = None
+    user_jwt: Optional[str] = None
+    workspace_id: Optional[str] = None             # active workspace (key's, or X-Workspace-Id)
+    app_ids: list = field(default_factory=list)   # non-empty = key restricted to these apps
+    via_key: bool = False
+
+
+async def resolve_api_caller(request: Request, *, required: bool = False) -> ApiCaller:
+    """Authenticate a public-API request: `Bearer ak_live_…` or a Supabase JWT."""
+    token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    if token.startswith("ak_live_"):
+        info = await resolve_developer_key(token)
+        if not info:
+            raise HTTPException(status_code=401, detail="Invalid or revoked API key")
+        ws = info["workspace_id"] or await personal_workspace_id(info["user_id"])
+        return ApiCaller(user_id=info["user_id"], workspace_id=ws, app_ids=info["app_ids"], via_key=True)
+    if token:
+        uid = await verify_user_jwt(token)
+        if not uid:
+            raise HTTPException(status_code=401, detail="Invalid or expired session token")
+        ws = await resolve_user_workspace(uid, request.headers.get("X-Workspace-Id"))
+        return ApiCaller(user_id=uid, user_jwt=token, workspace_id=ws)
+    if required:
+        raise HTTPException(status_code=401, detail="Pass an API key: Authorization: Bearer ak_live_…")
+    return ApiCaller()
+
+
+def assert_key_scope(caller: ApiCaller, app_id: str) -> None:
+    if caller.app_ids and app_id not in caller.app_ids:
+        raise HTTPException(status_code=403, detail="This API key is restricted to other apps")
+
+
+async def fetch_user_api_key_by_id(user_id: str, provider: str) -> Optional[str]:
+    sb = _service_client()
+    if not sb:
+        return None
+    try:
+        res = await db(sb.table("user_api_keys").select("encrypted_key")
+                       .eq("user_id", user_id).eq("provider", provider).eq("is_active", True).limit(1))
+        return res.data[0]["encrypted_key"] if res and res.data else None
     except Exception:
         return None
 
 
 # ─── Rate limiting (Supabase-backed — works across all workers) ───────────────
 async def get_usage_counts(sb: Client, user_id: str) -> tuple[int, int]:
-    """Returns (hourly_count, daily_count), fetched concurrently instead of sequentially."""
+    """Returns (hourly_count, daily_count) of platform-metered runs.
+
+    Counts run_events, which only the backend writes. run_history used to be
+    the source, but browsers write (and users can delete) those rows, so
+    skipping the insert or clearing history reset the limit."""
     now = datetime.now(timezone.utc)
     one_hour_ago = (now - timedelta(hours=1)).isoformat()
     day_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    svc = _service_client() or sb
 
-    hourly_query = sb.table("run_history").select("id", count="exact", head=True).eq("user_id", user_id).gte("created_at", one_hour_ago)
-    daily_query = sb.table("run_history").select("id", count="exact", head=True).eq("user_id", user_id).gte("created_at", day_start)
+    async def counts(table: str) -> tuple[int, int]:
+        h, d = await asyncio.gather(
+            db(svc.table(table).select("id", count="exact", head=True).eq("user_id", user_id).gte("created_at", one_hour_ago)),
+            db(svc.table(table).select("id", count="exact", head=True).eq("user_id", user_id).gte("created_at", day_start)),
+        )
+        return h.count or 0, d.count or 0
 
-    hourly_res, daily_res = await asyncio.gather(db(hourly_query), db(daily_query))
-    return hourly_res.count or 0, daily_res.count or 0
+    try:
+        return await counts("run_events")
+    except Exception:
+        return await counts("run_history")   # run_events not migrated yet
 
 
-async def check_rate_limit(request: Request, user_jwt: Optional[str]) -> tuple[bool, str]:
+async def record_metered_run(user_id: str, app_id: Optional[str], source: str, workspace_id: Optional[str] = None) -> None:
+    sb = _service_client()
+    if not sb:
+        return
+    row = {"user_id": user_id, "app_id": app_id, "source": source}
+    if workspace_id:
+        row["workspace_id"] = workspace_id
+    try:
+        await db(sb.table("run_events").insert(row))
+    except Exception as e:
+        print(f"record_metered_run error: {e}")
+
+
+async def check_rate_limit(request: Request, user_jwt: Optional[str], user_id: Optional[str] = None) -> tuple[bool, str]:
     """Returns (is_allowed, error_message).
 
     Previously this trusted `extract_user_id`'s UNVERIFIED claim and, on any
@@ -322,10 +643,13 @@ async def check_rate_limit(request: Request, user_jwt: Optional[str]) -> tuple[b
     valid, current session falls back to the conservative per-IP anonymous
     limit instead of being let through unmetered.
     """
-    user_id = await verify_user_jwt(user_jwt) if user_jwt else None
+    if not user_id:
+        user_id = await verify_user_jwt(user_jwt) if user_jwt else None
     if user_id:
         try:
-            sb = get_supabase_for_user(user_jwt)
+            # Service role when available so API-key callers (no JWT) are
+            # metered the same way as signed-in browser sessions.
+            sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) if SUPABASE_SERVICE_ROLE_KEY else get_supabase_for_user(user_jwt)
             hourly_count, daily_count = await get_usage_counts(sb, user_id)
 
             if hourly_count >= HOURLY_LIMIT:
@@ -337,8 +661,7 @@ async def check_rate_limit(request: Request, user_jwt: Optional[str]) -> tuple[b
         except Exception:
             pass  # DB error on a verified user — fall through to the conservative IP limit below
 
-    client_ip = request.client.host if request.client else "unknown"
-    return check_anon_rate_limit(client_ip)
+    return check_anon_rate_limit(client_ip(request))
 
 
 # ─── Output format instructions ───────────────────────────────────────────────
@@ -424,9 +747,29 @@ def safe_calculate(expression: str) -> str:
         return f"Calculation error: {ex}"
 
 
-async def execute_tool(tool: dict, tool_input: dict) -> str:
+_SECRET_REF = re.compile(r"\{\{\s*secrets\.([A-Za-z0-9_]+)\s*\}\}")
+
+
+def resolve_secret_refs(value: Any, secrets_map: dict[str, str]) -> Any:
+    """Replace {{secrets.KEY}} placeholders in a tool config with decrypted
+    secret values. Secrets only ever reach outbound tool calls — never the
+    model's context, where a user could simply ask the model to print them."""
+    if isinstance(value, str):
+        return _SECRET_REF.sub(lambda m: secrets_map.get(m.group(1).upper(), ""), value)
+    if isinstance(value, dict):
+        return {k: resolve_secret_refs(v, secrets_map) for k, v in value.items()}
+    if isinstance(value, list):
+        return [resolve_secret_refs(v, secrets_map) for v in value]
+    return value
+
+
+async def execute_tool(tool: dict, tool_input: dict, ctx: Optional[dict] = None) -> str:
+    """ctx carries run-scoped server data: {"secrets", "caller_id", "api_key", "provider"}."""
+    ctx = ctx or {}
     tool_type = tool.get("type", "")
-    config = tool.get("config", {})
+    config = resolve_secret_refs(tool.get("config") or {}, ctx.get("secrets") or {})
+    if not isinstance(tool_input, dict):
+        tool_input = {}
     try:
         if tool_type == "calculator":
             return safe_calculate(tool_input.get("expression", ""))
@@ -448,12 +791,20 @@ async def execute_tool(tool: dict, tool_input: dict) -> str:
                     data = r.json()
                     results = data.get("organic_results", [])
                     return "\n".join(f"{i+1}. {r.get('title','')}: {r.get('snippet','')}" for i, r in enumerate(results[:5])) or "No results"
-            return f"Search for '{query}': No SerpAPI key. Add SERPAPI_KEY to use real web search."
+            return "Web search is not available on this server (SERPAPI_KEY not configured). Do not claim to have searched; tell the user search is unavailable."
 
         elif tool_type == "http":
             url = config.get("url") or tool_input.get("url", "")
-            method = config.get("method", "POST").upper()
-            headers = {**config.get("headers", {}), "Content-Type": "application/json"}
+            method = (config.get("method") or "POST").upper()
+            if method not in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+                return f"Unsupported HTTP method: {method}"
+            raw_headers = config.get("headers") or {}
+            if isinstance(raw_headers, str):
+                try:
+                    raw_headers = json.loads(raw_headers) if raw_headers.strip() else {}
+                except json.JSONDecodeError:
+                    return "Tool misconfigured: headers must be a JSON object."
+            headers = {**{str(k): str(v) for k, v in (raw_headers or {}).items()}, "Content-Type": "application/json"}
             body_fields = {k: v for k, v in tool_input.items() if k != "url"}
             try:
                 if method == "GET":
@@ -462,20 +813,32 @@ async def execute_tool(tool: dict, tool_input: dict) -> str:
                     r = await fetch_safely(method, url, timeout=15, json=body_fields, headers=headers)
             except ValueError as e:
                 return f"Invalid URL: {e}"
-            return r.text[:2000]
+            return f"HTTP {r.status_code}: {r.text[:2000]}"
 
         elif tool_type == "app":
             other_id = config.get("app_id", "")
             app_input = tool_input.get("input", "")
             if not other_id or not app_input:
                 return "Missing app_id or input"
-            res = await db(get_anon_client().table("apps").select("system_prompt, ai_provider, ai_model").eq("id", other_id).single())
-            if not res.data:
+            # Service-role load + the same publish/paid gates as /run. The old
+            # anon read let an agent chain into any paid app for free, on the
+            # platform's API key.
+            other = await load_app_row(other_id)
+            if not other:
                 return "Referenced app not found"
-            other = res.data
+            caller = ctx.get("caller")
+            if not (await can_edit_app(other, caller)):
+                if not (other.get("is_published") or await can_view_app(other, caller)):
+                    return "Referenced app is not published"
+                if other.get("is_paid"):
+                    if not (await find_active_entitlement(other_id, caller)):
+                        return "Referenced app requires a purchase the caller does not have"
+            other_provider = other.get("ai_provider") or "claude"
+            other_model = validate_model(other_provider, other.get("ai_model") or get_default_model(other_provider))
+            key = ctx.get("api_key") if ctx.get("provider") == other_provider else None
             collected = []
-            fn = stream_openai if other.get("ai_provider") == "openai" else stream_claude
-            async for token in fn(other.get("system_prompt", "You are helpful."), app_input, other.get("ai_model") or "claude-sonnet-4-6"):
+            fn = stream_openai if other_provider == "openai" else stream_claude
+            async for token in fn(other.get("system_prompt") or "You are helpful.", app_input, other_model, key):
                 collected.append(token)
             return "".join(collected)
 
@@ -486,14 +849,17 @@ async def execute_tool(tool: dict, tool_input: dict) -> str:
                     r = await fetch_safely("GET", url, timeout=15)
                 except ValueError as e:
                     return f"Invalid URL: {e}"
+                if len(r.content) > MAX_EXTRACT_BYTES:
+                    return f"PDF is larger than {MAX_EXTRACT_BYTES // (1024 * 1024)} MB."
+
+                async def run_key():
+                    # The run's own key (the caller's, when they saved one).
+                    return ctx.get("api_key") if ctx.get("provider") == "claude" else None
                 try:
-                    import io
-                    import pypdf
-                    reader = pypdf.PdfReader(io.BytesIO(r.content))
-                    text = "\n".join(page.extract_text() or "" for page in reader.pages)
-                    return text[:5000] or "No text found in PDF."
-                except ImportError:
-                    return "PDF parsing requires pypdf. Install with: pip install pypdf"
+                    text, _ = await extract_pdf_text(r.content, run_key)   # OCRs scanned pages
+                    return text[:8000]
+                except (OcrError, ValueError) as e:
+                    return f"Could not read the PDF: {e}"
             return "Provide a 'url' pointing to the PDF file."
 
         elif tool_type == "ocr":
@@ -534,14 +900,16 @@ async def execute_tool(tool: dict, tool_input: dict) -> str:
                               "from": {"email": config.get("from", "noreply@aistrix.ai")},
                               "subject": subject, "content": [{"type": "text/plain", "value": body}]},
                     )
-                return f"Email sent to {to} (status {r.status_code})"
-            return f"Email tool configured — would send to {to}: {subject}. Add SendGrid API key to config to enable real sending."
+                if r.status_code >= 400:
+                    return f"Email NOT sent (SendGrid status {r.status_code}): {r.text[:300]}"
+                return f"Email sent to {to}"
+            return "Email NOT sent: this tool has no SendGrid API key configured. Tell the user the email could not be sent."
 
         elif tool_type == "calendar":
             action = tool_input.get("action", "create")
             title = tool_input.get("title", "Event")
             start = tool_input.get("start", "")
-            return f"Calendar tool: would {action} event '{title}' at {start}. Connect Google Calendar OAuth to enable real calendar operations."
+            return f"Calendar is not connected, so the event '{title}' ({action} at {start}) was NOT created. Tell the user calendar actions are unavailable."
 
         elif tool_type == "storage":
             action = tool_input.get("action", "list")
@@ -564,12 +932,16 @@ async def execute_tool(tool: dict, tool_input: dict) -> str:
 
 
 # ─── Model streaming ──────────────────────────────────────────────────────────
-ALLOWED_CLAUDE_MODELS = {"claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-opus-4-8"}
+ALLOWED_CLAUDE_MODELS = {
+    "claude-sonnet-5-5", "claude-haiku-5-5", "claude-opus-5-5",
+    # Older ids kept so apps saved with them keep working.
+    "claude-sonnet-4-6", "claude-haiku-4-5-20251001", "claude-opus-4-8",
+}
 ALLOWED_OPENAI_MODELS = {"gpt-4o-mini", "gpt-4o"}
 
 
 def get_default_model(provider: str) -> str:
-    return {"claude": "claude-sonnet-4-6", "openai": "gpt-4o-mini"}.get(provider, "claude-sonnet-4-6")
+    return {"claude": "claude-sonnet-5-5", "openai": "gpt-4o-mini"}.get(provider, "claude-sonnet-5-5")
 
 
 def validate_model(provider: str, model: str) -> str:
@@ -619,7 +991,7 @@ def tools_to_openai_format(tools):
     return [{"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": t.get("input_schema", {"type": "object", "properties": {}, "required": []})}} for t in tools]
 
 
-async def run_claude_with_tools(system, user_input, model, tools, api_key=None):
+async def run_claude_with_tools(system, user_input, model, tools, api_key=None, max_steps: int = 10, ctx: Optional[dict] = None):
     client = anthropic.AsyncAnthropic(api_key=api_key or os.getenv("ANTHROPIC_API_KEY"))
     claude_tools = tools_to_claude_format(tools)
     messages = [{"role": "user", "content": user_input}]
@@ -628,27 +1000,35 @@ async def run_claude_with_tools(system, user_input, model, tools, api_key=None):
     # burns its own input/output tokens, so accumulate across the whole loop.
     input_tokens = output_tokens = 0
 
-    for _ in range(10):
+    for _ in range(max(1, min(max_steps, 20))):
         response = await client.messages.create(model=model, max_tokens=4096, system=system, tools=claude_tools, messages=messages)
         input_tokens += response.usage.input_tokens
         output_tokens += response.usage.output_tokens
-        if response.stop_reason == "end_turn":
-            yield ("token", "".join(b.text for b in response.content if hasattr(b, "text")))
+        if response.stop_reason != "tool_use":
+            # end_turn, max_tokens, stop_sequence, refusal… are all terminal.
+            # Previously only end_turn ended the loop, so e.g. a max_tokens
+            # stop re-sent the same messages until the step budget ran out.
+            text = "".join(b.text for b in response.content if hasattr(b, "text"))
+            if response.stop_reason == "max_tokens":
+                text += "\n\n_(Response truncated: model hit its output limit.)_"
+            yield ("token", text)
             yield ("usage", {"input_tokens": input_tokens, "output_tokens": output_tokens})
-            break
-        elif response.stop_reason == "tool_use":
+            return
+        else:
             messages.append({"role": "assistant", "content": response.content})
             results = []
             for block in response.content:
                 if block.type == "tool_use":
                     yield ("tool_call", {"name": block.name, "input": block.input})
-                    result = await execute_tool(tool_map.get(block.name, {"type": "unknown", "config": {}}), block.input)
+                    result = await execute_tool(tool_map.get(block.name, {"type": "unknown", "config": {}}), block.input, ctx)
                     yield ("tool_result", {"name": block.name, "result": result[:500]})
                     results.append({"type": "tool_result", "tool_use_id": block.id, "content": result})
             messages.append({"role": "user", "content": results})
+    yield ("token", "The agent reached its step limit before finishing. Increase max steps or narrow the goal.")
+    yield ("usage", {"input_tokens": input_tokens, "output_tokens": output_tokens})
 
 
-async def run_openai_with_tools(system, user_input, model, tools, api_key=None):
+async def run_openai_with_tools(system, user_input, model, tools, api_key=None, max_steps: int = 10, ctx: Optional[dict] = None):
     client = openai.AsyncOpenAI(api_key=api_key or os.getenv("OPENAI_API_KEY"))
     oai_tools = tools_to_openai_format(tools)
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user_input}]
@@ -657,7 +1037,7 @@ async def run_openai_with_tools(system, user_input, model, tools, api_key=None):
     # burns its own input/output tokens, so accumulate across the whole loop.
     input_tokens = output_tokens = 0
 
-    for _ in range(10):
+    for _ in range(max(1, min(max_steps, 20))):
         response = await client.chat.completions.create(model=model, max_tokens=4096, tools=oai_tools, tool_choice="auto", messages=messages)
         if response.usage:
             input_tokens += response.usage.prompt_tokens
@@ -666,15 +1046,20 @@ async def run_openai_with_tools(system, user_input, model, tools, api_key=None):
         if msg.tool_calls:
             messages.append(msg)
             for tc in msg.tool_calls:
-                tool_input = json.loads(tc.function.arguments or "{}")
+                try:
+                    tool_input = json.loads(tc.function.arguments or "{}")
+                except json.JSONDecodeError:
+                    tool_input = {}
                 yield ("tool_call", {"name": tc.function.name, "input": tool_input})
-                result = await execute_tool(tool_map.get(tc.function.name, {"type": "unknown", "config": {}}), tool_input)
+                result = await execute_tool(tool_map.get(tc.function.name, {"type": "unknown", "config": {}}), tool_input, ctx)
                 yield ("tool_result", {"name": tc.function.name, "result": result[:500]})
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": result})
         else:
             yield ("token", msg.content or "")
             yield ("usage", {"input_tokens": input_tokens, "output_tokens": output_tokens})
-            break
+            return
+    yield ("token", "The agent reached its step limit before finishing. Increase max steps or narrow the goal.")
+    yield ("usage", {"input_tokens": input_tokens, "output_tokens": output_tokens})
 
 
 # ─── Request model with validation ────────────────────────────────────────────
@@ -689,7 +1074,14 @@ class RunRequest(BaseModel):
     custom_model_url: Optional[str] = None
     custom_model_name: Optional[str] = None
     temperature: Optional[float] = None
+    max_tool_steps: Optional[int] = Field(default=10, ge=1, le=20)
     prior_responses: Optional[list[str]] = None   # recent answers to avoid repeating
+    # How the runner frames the app's prompt. The server appends the matching
+    # instruction itself, so non-owners never need (or get to send) a prompt.
+    run_mode: Optional[str] = Field(default=None, pattern="^(agent|conversation)$")
+    page_index: Optional[int] = Field(default=None, ge=0, le=50)   # multi-page apps
+    # Form apps: field values for {{Field Name}} placeholders in the prompt.
+    field_values: Optional[dict[str, Any]] = None
 
     @field_validator("input")
     @classmethod
@@ -716,28 +1108,323 @@ class RunRequest(BaseModel):
         return v
 
 
+class ApiFileInput(BaseModel):
+    file_name: str = Field(..., max_length=255)
+    content_b64: str
+
+
+class ApiRunRequest(BaseModel):
+    input: Optional[str] = None
+    fields: Optional[dict[str, Any]] = None
+    file: Optional[ApiFileInput] = None      # PDF / XLSX / DOCX / CSV / TXT / JSON / MD
+    stream: bool = True
+    user_context: Optional[str] = None
+    temperature: Optional[float] = None
+
+
+class BatchRowIn(BaseModel):
+    input: Optional[str] = None
+    fields: Optional[dict[str, Any]] = None
+
+
+class BatchCreateRequest(BaseModel):
+    rows: Optional[list[BatchRowIn]] = None
+    csv: Optional[str] = None                  # header row + data rows
+    webhook_url: Optional[str] = None          # POSTed a summary when the job finishes
+
+
+class ApiKeyCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80)
+    app_ids: list[str] = Field(default_factory=list, max_length=50)
+    workspace_id: Optional[str] = None     # default: the active workspace
+
+
+class WorkspaceInviteRequest(BaseModel):
+    email: str = Field(..., max_length=254)
+    role: str = Field(default="member", pattern="^(admin|developer|member|billing)$")
+
+
+class AppFileRegisterRequest(BaseModel):
+    app_id: str
+    run_id: Optional[str] = None
+    file_kind: str = Field(..., pattern="^(input|output)$")
+    bucket: str = Field(..., pattern="^(aistrix-input-files|aistrix-output-files)$")
+    storage_path: str
+    file_name: Optional[str] = None
+    mime_type: Optional[str] = None
+    size_bytes: Optional[int] = Field(default=None, ge=0)
+    retention_days: Optional[int] = Field(default=30, ge=1, le=365)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("storage_path")
+    @classmethod
+    def validate_storage_path(cls, v: str) -> str:
+        value = v.strip().lstrip("/")
+        if not value or ".." in value.split("/"):
+            raise ValueError("Invalid storage path")
+        return value
+
+
+def _strip_json_fences(raw: str) -> str:
+    text = (raw or "").strip()
+    text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*```$", "", text)
+    return text.strip()
+
+
+def _schema_fields(blueprint: dict[str, Any], key: str) -> list[dict[str, Any]]:
+    node = blueprint.get(key) or {}
+    if isinstance(node, dict) and isinstance(node.get("fields"), list):
+        return node["fields"]
+    if key == "output_schema":
+        contract = blueprint.get("output_contract") or {}
+        if isinstance(contract, dict):
+            return contract.get("fields") or contract.get("required_fields") or []
+    return []
+
+
+def _validate_schema_value(value: Any, fields: list[dict[str, Any]], path: str = "") -> list[str]:
+    errors: list[str] = []
+    if not isinstance(value, dict) or isinstance(value, list):
+        return [f"{path or 'value'} must be an object"]
+
+    for field in fields:
+        name = field.get("field")
+        if not name:
+            continue
+        label = f"{path}.{name}" if path else str(name)
+        present = name in value and value[name] not in (None, "")
+        if not present:
+            if field.get("required") is not False:
+                errors.append(f'"{label}" is required')
+            continue
+
+        val = value[name]
+        ftype = field.get("type") or "string"
+        if ftype in ("string", "enum"):
+            if not isinstance(val, str):
+                errors.append(f'"{label}" must be text')
+            elif ftype == "enum" and field.get("enum_values") and val not in field["enum_values"]:
+                errors.append(f'"{label}" must be one of: {", ".join(field["enum_values"])}')
+        elif ftype == "number":
+            if not isinstance(val, (int, float)) or isinstance(val, bool) or math.isnan(float(val)):
+                errors.append(f'"{label}" must be a number')
+        elif ftype == "boolean":
+            if not isinstance(val, bool):
+                errors.append(f'"{label}" must be true or false')
+        elif ftype == "string_array":
+            if not isinstance(val, list) or any(not isinstance(x, str) for x in val):
+                errors.append(f'"{label}" must be a list of text values')
+        elif ftype == "number_array":
+            if not isinstance(val, list) or any(not isinstance(x, (int, float)) or isinstance(x, bool) for x in val):
+                errors.append(f'"{label}" must be a list of numbers')
+        elif ftype == "object":
+            if not isinstance(val, dict) or isinstance(val, list):
+                errors.append(f'"{label}" must be an object')
+            elif field.get("nested_fields"):
+                errors.extend(_validate_schema_value(val, field["nested_fields"], label))
+    return errors
+
+
+def _parse_json_output(raw: str) -> tuple[Optional[Any], list[str]]:
+    cleaned = _strip_json_fences(raw)
+    try:
+        return json.loads(cleaned), []
+    except json.JSONDecodeError as exc:
+        return None, [f"Output is not valid JSON: {exc.msg}"]
+
+
+async def fetch_app_blueprint(app_id: str) -> dict[str, Any]:
+    if not (app_id and SUPABASE_SERVICE_ROLE_KEY):
+        return {}
+    try:
+        sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+        row = await asyncio.to_thread(
+            lambda: sb.table("app_blueprints").select("blueprint").eq("app_id", app_id).maybe_single().execute()
+        )
+        return row.data.get("blueprint") if row and row.data and isinstance(row.data.get("blueprint"), dict) else {}
+    except Exception as e:
+        print(f"fetch_app_blueprint error: {e}")
+        return {}
+
+
+def _fields_to_input(fields: dict[str, Any]) -> str:
+    lines = []
+    for key, value in fields.items():
+        if isinstance(value, (dict, list)):
+            rendered = json.dumps(value, ensure_ascii=False)
+        else:
+            rendered = "" if value is None else str(value)
+        lines.append(f"{key}: {rendered}")
+    return "\n".join(lines)
+
+
+_PLACEHOLDER = re.compile(r"\{\{\s*([^{}]{1,80}?)\s*\}\}")
+
+
+def _field_key(name: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(name).lower()).strip("_")
+
+
+def fill_field_placeholders(prompt: str, values: dict[str, Any]) -> str:
+    """Replace {{Field Name}} / {{field_name}} in a Form app's prompt with
+    the submitted values (labels and API keys both match). Unknown
+    placeholders are left as they are; empty fields read "(not provided)"."""
+    lookup = {_field_key(k): v for k, v in (values or {}).items()}
+
+    def sub(m):
+        key = _field_key(m.group(1))
+        if key not in lookup:
+            return m.group(0)
+        v = lookup[key]
+        if v is None or v == "":
+            return "(not provided)"
+        return json.dumps(v, ensure_ascii=False) if isinstance(v, (dict, list)) else str(v)[:5000]
+
+    return _PLACEHOLDER.sub(sub, prompt)
+
+
+TONE_INSTRUCTIONS = {
+    "friendly": "Tone: warm, friendly and approachable. Use plain language and a positive voice.",
+    "professional": "Tone: professional and precise. Courteous, clear, no slang or emoji.",
+    "concise": "Tone: concise. Short, direct answers; use bullet points when listing; no filler.",
+    "playful": "Tone: playful and upbeat, with light humour where it fits — but stay accurate and helpful.",
+    "empathetic": "Tone: empathetic and patient. Acknowledge the person's situation before answering.",
+}
+
+RUN_MODE_SUFFIX = {
+    "agent": ("\n\nYou are operating in autonomous agent mode. Think through the problem step by step. "
+              "Use available tools to gather information and take actions. Continue working until you have a "
+              "complete, accurate answer. When finished, provide a clear, comprehensive final response."),
+    "conversation": ("\n\nYou are in a conversation. Respond naturally to the latest message, "
+                     "maintaining context from the conversation history."),
+}
+
+
+def _describe_fields(fields: list[dict[str, Any]], indent: str = "") -> str:
+    lines = []
+    for f in fields:
+        if not f.get("field"):
+            continue
+        req = "required" if f.get("required") is not False else "optional"
+        extra = f" one of {f['enum_values']}" if f.get("enum_values") else ""
+        desc = f" — {f['description']}" if f.get("description") else ""
+        lines.append(f"{indent}- {f['field']} ({f.get('type') or 'string'}, {req}){extra}{desc}")
+        if f.get("nested_fields"):
+            lines.append(_describe_fields(f["nested_fields"], indent + "  "))
+    return "\n".join(lines)
+
+
+def _sse(payload: dict) -> str:
+    return f"data: {json.dumps(payload)}\n\n"
+
+
 # ─── Main /run endpoint ────────────────────────────────────────────────────────
 @app.post("/run")
 async def run_app(req: RunRequest, request: Request):
-    # Auth
-    auth_header = request.headers.get("Authorization", "")
-    user_jwt = auth_header.removeprefix("Bearer ").strip() or None
+    caller = await resolve_api_caller(request)
+    return await execute_run(req, request, caller=caller)
 
-    # Rate limit — applies to every request, authenticated or not (previously
-    # anonymous requests were never rate limited at all).
-    allowed, rate_msg = await check_rate_limit(request, user_jwt)
-    if not allowed:
-        return JSONResponse(status_code=429, content={"error": rate_msg})
 
-    # Build system prompt
-    base_system = req.system_prompt or "You are a helpful AI assistant."
+async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller", on_complete=None):
+    """Shared run pipeline for /run (browser) and /v1/apps/{id}/run (API).
+
+    `caller` is already authenticated and carries the active workspace. For
+    any app the caller can't edit, the prompt, model and provider come from
+    the database — never from the request — so paid/private prompts can't be
+    swapped or bypassed.
+    """
+    user_jwt, caller_id = caller.user_jwt, caller.user_id
+    # ── App resolution + access ──────────────────────────────────────────────
+    app_row = await load_app_row(req.app_id) if req.app_id else None
+    if req.app_id and SUPABASE_SERVICE_ROLE_KEY and not app_row:
+        return JSONResponse(status_code=404, content={"error": "App not found"})
+    is_editor = await can_edit_app(app_row, caller) if app_row else False
+
+    if app_row and not is_editor:
+        if not app_row.get("is_published") and not (await can_view_app(app_row, caller)):
+            return JSONResponse(status_code=404, content={"error": "App not found or not published"})
+        if app_row.get("visibility") == "private" and not caller_id:
+            return JSONResponse(status_code=401, content={"error": "Sign in to run this app"})
+        base_prompt = app_row.get("system_prompt")
+        pages = app_row.get("pages")
+        if req.page_index is not None and isinstance(pages, list) and req.page_index < len(pages):
+            page = pages[req.page_index] or {}
+            base_prompt = page.get("system_prompt") or base_prompt
+        req.system_prompt = base_prompt
+        req.ai_provider = app_row.get("ai_provider") or "claude"
+        req.ai_model = app_row.get("ai_model")
+        req.custom_model_url = None
+        req.custom_model_name = None
+    elif not caller_id:
+        # Anonymous callers with no app context can't pick custom endpoints.
+        req.custom_model_url = None
+        req.custom_model_name = None
+
+    if req.custom_model_url:
+        try:
+            assert_public_url(req.custom_model_url)
+        except ValueError as e:
+            return JSONResponse(status_code=400, content={"error": f"Custom model URL rejected: {e}"})
+
+    # ── Paid-app entitlement (verified caller only) ───────────────────────────
+    entitlement = None
+    if app_row and app_row.get("is_paid") and not is_editor:
+        if not caller_id:
+            return JSONResponse(status_code=401, content={"error": "Sign in to run this app"})
+        entitlement = await find_active_entitlement(app_row["id"], caller)
+        if not entitlement:
+            return JSONResponse(status_code=402, content={"error": "Purchase access to run this app"})
+        reason = entitlement_block_reason(entitlement)
+        if reason:
+            return JSONResponse(status_code=402, content={"error": reason})
+
+    # ── Provider + model ─────────────────────────────────────────────────────
+    if req.custom_model_url and req.custom_model_name:
+        provider = "custom"
+        model = req.custom_model_name
+    else:
+        provider = req.ai_provider if req.ai_provider in ("claude", "openai") else "claude"
+        model = validate_model(provider, req.ai_model or get_default_model(provider))
+
+    # ── Key + rate limit. Bring-your-own-key callers aren't metered against
+    # platform limits (that's what the 429 message has always promised).
+    # Anonymous website visitors of a widget with visitor access run on the
+    # owner's key when saved, with a per-visitor, per-app limit. ────────────
+    embed_visitor = bool(app_row and not caller_id and app_row.get("embed_public") and not app_row.get("is_paid"))
+    if caller_id and user_jwt:
+        user_api_key = await fetch_user_api_key(user_jwt, provider)
+    elif caller_id:
+        user_api_key = await fetch_user_api_key_by_id(caller_id, provider)
+    elif embed_visitor and app_row.get("created_by"):
+        user_api_key = await fetch_user_api_key_by_id(app_row["created_by"], provider)
+    else:
+        user_api_key = None
+    if embed_visitor:
+        allowed, rate_msg = check_embed_visitor_rate_limit(client_ip(request), app_row["id"])
+        if not allowed:
+            return JSONResponse(status_code=429, content={"error": rate_msg})
+    elif not user_api_key:
+        allowed, rate_msg = await check_rate_limit(request, user_jwt, caller_id)
+        if not allowed:
+            return JSONResponse(status_code=429, content={"error": rate_msg})
+        if caller_id:
+            # Counted when the run starts: failed runs still spend platform tokens.
+            await record_metered_run(caller_id, req.app_id, "api" if not user_jwt else "app", caller.workspace_id)
+
+    # ── System prompt ────────────────────────────────────────────────────────
+    base_system = (req.system_prompt or "You are a helpful AI assistant.") + RUN_MODE_SUFFIX.get(req.run_mode or "", "")
+    if req.field_values:
+        base_system = fill_field_placeholders(base_system, req.field_values)
+    tone = TONE_INSTRUCTIONS.get((app_row or {}).get("tone") or "")
+    if tone:
+        base_system += "\n\n" + tone
     fmt_instruction = OUTPUT_FORMAT_INSTRUCTIONS.get(req.output_type or "markdown", "")
 
-    # Inject prior responses so the model never repeats itself
     variation_block = ""
     if req.prior_responses:
-        recent = req.prior_responses[-3:]  # last 3 max
-        formatted = "\n---\n".join(f"Previous response {i+1}:\n{r}" for i, r in enumerate(recent))
+        recent = req.prior_responses[-3:]
+        formatted = "\n---\n".join(f"Previous response {i+1}:\n{r[:4000]}" for i, r in enumerate(recent))
         variation_block = (
             f"\n\n<prior_responses>\n{formatted}\n</prior_responses>\n"
             "IMPORTANT: You have answered this or a similar question before (shown above). "
@@ -751,68 +1438,49 @@ async def run_app(req: RunRequest, request: Request):
     else:
         system = (fmt_instruction + base_system if fmt_instruction else base_system) + variation_block
 
-    # Provider + model (pure logic — resolve before firing off any I/O)
-    if req.custom_model_url and req.custom_model_name:
-        provider = "custom"
-        model = req.custom_model_name
-    else:
-        provider = req.ai_provider or "claude"
-        model = validate_model(provider, req.ai_model or get_default_model(provider))
-
-    # Knowledge base + API key + tools + webhook are all independent Supabase
-    # lookups — run them concurrently instead of one after another, since each
-    # is a separate network round-trip.
-    # Resolve app owner + paid flag (single lookup covers secrets + entitlement gate)
-    _app_owner_id: str | None = None
-    _app_is_paid: bool = False
-    if req.app_id and SUPABASE_SERVICE_ROLE_KEY:
-        try:
-            _sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-            _owner_row = await asyncio.to_thread(
-                lambda: _sb.table("apps").select("created_by, is_paid").eq("id", req.app_id).maybe_single().execute()
-            )
-            if _owner_row and _owner_row.data:
-                _app_owner_id = _owner_row.data.get("created_by")
-                _app_is_paid = bool(_owner_row.data.get("is_paid"))
-        except Exception:
-            pass
-
-    # Entitlement gate — paid apps require an active entitlement row
-    if _app_is_paid and req.app_id:
-        caller_id = extract_user_id(user_jwt) if user_jwt else None
-        if not caller_id:
-            return JSONResponse(status_code=401, content={"error": "Sign in to run this app"})
-        try:
-            _sb2 = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
-            _ent = await asyncio.to_thread(
-                lambda: _sb2.table("app_entitlements")
-                    .select("id").eq("app_id", req.app_id).eq("user_id", caller_id)
-                    .eq("status", "active").maybe_single().execute()
-            )
-            if not (_ent and _ent.data):
-                return JSONResponse(status_code=402, content={"error": "Purchase access to run this app"})
-        except Exception as e:
-            print(f"Entitlement check error: {e}")
-            return JSONResponse(status_code=500, content={"error": "Could not verify access"})
-
-    knowledge, user_api_key, tools, webhook_url, app_secrets = await asyncio.gather(
+    owner_id = app_row.get("created_by") if app_row else None
+    knowledge, tools, app_secrets, blueprint = await asyncio.gather(
         fetch_app_knowledge(req.app_id) if req.app_id else _default(""),
-        fetch_user_api_key(user_jwt, provider) if user_jwt else _default(None),
         fetch_app_tools(req.app_id) if req.app_id else _default([]),
-        fetch_app_webhook(req.app_id) if req.app_id else _default(None),
-        _load_app_secrets(req.app_id, _app_owner_id) if (req.app_id and _app_owner_id) else _default({}),
+        _load_app_secrets(req.app_id, owner_id) if (req.app_id and owner_id) else _default({}),
+        fetch_app_blueprint(req.app_id) if req.app_id else _default({}),
     )
+    webhook_url = app_row.get("webhook_url") if app_row else None
 
     if knowledge:
         system = f"<knowledge_base>\n{knowledge}\n</knowledge_base>\n\n{system}"
 
-    # Inject secrets as env-like variables the model can reference
-    if app_secrets:
-        secrets_block = "\n".join(f"{k}={v}" for k, v in app_secrets.items())
-        system = f"<env_secrets>\n{secrets_block}\n</env_secrets>\n\n{system}"
+    output_fields = _schema_fields(blueprint or {}, "output_schema")
+    output_contract = (blueprint or {}).get("output_contract") or {}
+    expects_json_contract = (req.output_type == "json") or (isinstance(output_contract, dict) and output_contract.get("format") == "json")
+    contract_fields = output_fields if expects_json_contract else []
+    if contract_fields:
+        system += (
+            "\n\n<output_contract>\nReturn ONLY a JSON object (no markdown fences, no prose) with these fields:\n"
+            f"{_describe_fields(contract_fields)}\n</output_contract>"
+        )
+
+    # Secrets never enter the model context — tools resolve {{secrets.KEY}}.
+    tool_ctx = {"secrets": app_secrets, "caller": caller, "api_key": user_api_key, "provider": provider}
+    app_name = (app_row or {}).get("name") or "app"
 
     collected: list[str] = []
     usage: dict = {}
+
+    async def finish(full_result: str):
+        # Side effects first: consumers (stream=false, batches, clients that
+        # disconnect on "done") stop reading at the done event, so anything
+        # after that yield would never run.
+        _record_run_outcome(True)
+        if entitlement:
+            asyncio.create_task(consume_entitlement_run(entitlement, app_name))
+        if webhook_url:
+            asyncio.create_task(_fire_webhook(webhook_url, req.app_id, req.input, full_result, provider, model))
+        if on_complete:
+            # Awaited (not a task) so server-side history is written before the
+            # caller's next run is rate-limit checked against it.
+            await on_complete(full_result, usage, provider, model)
+        yield _sse({"done": True, "provider": provider, "model": model, "usage": usage or None})
 
     async def generate():
         try:
@@ -824,80 +1492,104 @@ async def run_app(req: RunRequest, request: Request):
                     messages=[{"role": "system", "content": system}, {"role": "user", "content": req.input}],
                     max_tokens=4096, stream=True)
                 async for chunk in stream:
-                    c = chunk.choices[0].delta.content
+                    c = chunk.choices[0].delta.content if chunk.choices else None
                     if c:
                         collected.append(c)
-                        yield f"data: {json.dumps({'token': c})}\n\n"
-                yield f"data: {json.dumps({'done': True, 'provider': 'custom', 'model': req.custom_model_name})}\n\n"
-                _record_run_outcome(True)
+                        yield _sse({"token": c})
+                async for ev in finish("".join(collected)):
+                    yield ev
                 return
+
+            raw_temp = req.temperature if req.temperature is not None else 1.0
+            temp = min(raw_temp, 1.0) if provider != "openai" else raw_temp
+            stream_fn = stream_openai if provider == "openai" else stream_claude
 
             # ── Tool-enabled agentic loop ──
             if tools:
                 run_fn = run_claude_with_tools if provider != "openai" else run_openai_with_tools
-                async for event_type, data in run_fn(system, req.input, model, tools, user_api_key):
+                async for event_type, data in run_fn(system, req.input, model, tools, user_api_key, req.max_tool_steps or 10, tool_ctx):
                     if event_type == "token":
-                        # run_claude_with_tools / run_openai_with_tools hand back the
-                        # whole final answer in one piece (they call the non-streaming
-                        # completion API under the hood). Splitting it into a separate
-                        # SSE frame per character used to multiply a ~1-2k char answer
-                        # into thousands of JSON-encoded network writes for no benefit —
-                        # the frontend already batches its re-renders via rAF, so it
-                        # can't tell the difference. Chunk it instead.
+                        # The tool loops return the final answer in one piece; chunk it
+                        # rather than emitting one SSE frame per character.
                         collected.append(data)
-                        chunk_size = 40
-                        for i in range(0, len(data), chunk_size):
-                            yield f"data: {json.dumps({'token': data[i:i + chunk_size]})}\n\n"
+                        for i in range(0, len(data), 40):
+                            yield _sse({"token": data[i:i + 40]})
                     elif event_type == "tool_call":
-                        yield f"data: {json.dumps({'tool_call': data})}\n\n"
+                        yield _sse({"tool_call": data})
                     elif event_type == "tool_result":
-                        yield f"data: {json.dumps({'tool_result': data})}\n\n"
+                        yield _sse({"tool_result": data})
                     elif event_type == "usage":
                         usage.update(data)
+                full_result = "".join(collected)
+                if contract_fields:
+                    parsed, errs = _parse_json_output(full_result)
+                    errs = errs or _validate_schema_value(parsed, contract_fields)
+                    if errs:
+                        yield _sse({"contract_error": errs})
+                        _record_run_outcome(False, "contract")
+                        return
+
+            # ── Structured output: buffer, validate, one self-repair retry ──
+            elif contract_fields:
+                attempt_input = req.input
+                text, errs = "", []
+                for attempt in range(2):
+                    attempt_usage: dict = {}
+                    parts = [t async for t in stream_fn(system, attempt_input, model, user_api_key,
+                                                        temperature=min(temp, 0.3), usage_holder=attempt_usage)]
+                    for k, v in attempt_usage.items():
+                        usage[k] = usage.get(k, 0) + v
+                    text = _strip_json_fences("".join(parts))
+                    parsed, errs = _parse_json_output(text)
+                    errs = errs or _validate_schema_value(parsed, contract_fields)
+                    if not errs:
+                        break
+                    yield _sse({"status": "repairing_output", "errors": errs})
+                    attempt_input = (
+                        f"{req.input}\n\n<previous_attempt>\n{text[:6000]}\n</previous_attempt>\n"
+                        f"That output failed validation: {'; '.join(errs)}. Return ONLY the corrected JSON object."
+                    )
+                if errs:
+                    yield _sse({"contract_error": errs})
+                    _record_run_outcome(False, "contract")
+                    return
+                collected.append(text)
+                for i in range(0, len(text), 200):
+                    yield _sse({"token": text[i:i + 200]})
+
+            # ── Standard streaming ──
             else:
-                # ── Standard streaming ──
-                raw_temp = req.temperature if req.temperature is not None else 1.0
-                # Claude max is 1.0; OpenAI allows up to 2.0
-                temp = min(raw_temp, 1.0) if provider != "openai" else raw_temp
-                stream_fn = stream_openai if provider == "openai" else stream_claude
                 async for token in stream_fn(system, req.input, model, user_api_key, temperature=temp, usage_holder=usage):
                     collected.append(token)
-                    yield f"data: {json.dumps({'token': token})}\n\n"
+                    yield _sse({"token": token})
 
-            full_result = "".join(collected)
-            yield f"data: {json.dumps({'done': True, 'provider': provider, 'model': model, 'usage': usage or None})}\n\n"
-            _record_run_outcome(True)
-
-            # Fire webhook
-            if webhook_url:
-                asyncio.create_task(_fire_webhook(webhook_url, req.app_id, req.input, full_result, provider, model))
+            async for ev in finish("".join(collected)):
+                yield ev
 
         except (anthropic.AuthenticationError, openai.AuthenticationError):
             _record_run_outcome(False, "auth")
-            yield f"data: {json.dumps({'error': f'Invalid {provider} API key — check Settings → Keys and make sure the key is active.'})}\n\n"
+            yield _sse({"error": f"Invalid {provider} API key — check Settings → Keys and make sure the key is active."})
         except (anthropic.PermissionDeniedError,):
             _record_run_outcome(False, "permission")
-            yield f"data: {json.dumps({'error': f'API key does not have permission for this model. Check your {provider} account.'})}\n\n"
+            yield _sse({"error": f"API key does not have permission for this model. Check your {provider} account."})
         except (anthropic.RateLimitError, openai.RateLimitError):
             _record_run_outcome(False, "rate_limit")
-            yield f"data: {json.dumps({'error': 'Rate limit reached. Add your own API key in Settings → Keys for unlimited runs, or wait a moment and try again.'})}\n\n"
+            yield _sse({"error": "Rate limit reached. Add your own API key in Settings → Keys for unlimited runs, or wait a moment and try again."})
         except (anthropic.BadRequestError, openai.BadRequestError) as e:
             _record_run_outcome(False, "bad_request")
-            yield f"data: {json.dumps({'error': f'Prompt config error: {str(e)[:200]}'})}\n\n"
+            yield _sse({"error": f"Prompt config error: {str(e)[:200]}"})
         except (anthropic.InternalServerError, openai.InternalServerError):
             _record_run_outcome(False, "provider_error")
-            yield f"data: {json.dumps({'error': f'{provider.capitalize()} service error — try again in a moment.'})}\n\n"
+            yield _sse({"error": f"{provider.capitalize()} service error — try again in a moment."})
         except asyncio.TimeoutError:
             _record_run_outcome(False, "timeout")
-            yield f"data: {json.dumps({'error': 'Request timed out after 90 seconds. Try a shorter input or switch to a faster model (e.g. Haiku).'})}\n\n"
+            yield _sse({"error": f"Request timed out after {REQUEST_TIMEOUT} seconds. Try a shorter input or switch to a faster model (e.g. Haiku)."})
         except Exception as e:
-            # Full detail goes to Sentry/logs only — the raw exception string
-            # (which can include internal paths, DB/service details, etc.)
-            # used to be sent straight to the client.
+            # Full detail goes to Sentry/logs only — never to the client.
             _record_run_outcome(False, "unexpected")
             sentry_sdk.capture_exception(e)
             print(f"Streaming error [{type(e).__name__}]: {e}")
-            yield f"data: {json.dumps({'error': 'Unexpected backend error. This has been logged — please try again.'})}\n\n"
+            yield _sse({"error": "Unexpected backend error. This has been logged — please try again."})
 
     async def generate_with_timeout():
         try:
@@ -906,13 +1598,1126 @@ async def run_app(req: RunRequest, request: Request):
                     yield chunk
         except asyncio.TimeoutError:
             _record_run_outcome(False, "timeout")
-            yield f"data: {json.dumps({'error': f'Request timed out after {REQUEST_TIMEOUT}s. Try a shorter input or faster model.'})}\n\n"
+            yield _sse({"error": f"Request timed out after {REQUEST_TIMEOUT}s. Try a shorter input or faster model."})
 
     return StreamingResponse(
         generate_with_timeout(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ─── Developer API (v1) ──────────────────────────────────────────────────────
+API_MAX_CHUNKS = int(os.getenv("API_MAX_CHUNKS", "12"))
+BATCH_MAX_ROWS = int(os.getenv("BATCH_MAX_ROWS", "1000"))
+BATCH_CONCURRENCY = int(os.getenv("BATCH_CONCURRENCY", "3"))
+BATCH_STALE_SECONDS = int(os.getenv("BATCH_STALE_SECONDS", "180"))
+_TEXT_EXTS = {"txt", "csv", "json", "md", "tsv"}
+
+
+async def _drain_run(response) -> dict:
+    """Consume an execute_run result into {"ok", "status", "output", "usage", ...}."""
+    if not isinstance(response, StreamingResponse):
+        try:
+            body = json.loads(response.body)
+        except Exception:
+            body = {}
+        return {"ok": False, "status": response.status_code, "error": body.get("error") or body.get("detail") or "Run failed"}
+    parts: list[str] = []
+    async for chunk in response.body_iterator:
+        text = chunk.decode() if isinstance(chunk, bytes) else chunk
+        for raw in text.split("\n"):
+            if not raw.startswith("data: "):
+                continue
+            ev = json.loads(raw[6:])
+            if "token" in ev:
+                parts.append(ev["token"])
+            elif ev.get("done"):
+                return {"ok": True, "status": 200, "output": "".join(parts), "usage": ev.get("usage"),
+                        "provider": ev.get("provider"), "model": ev.get("model")}
+            elif "contract_error" in ev:
+                return {"ok": False, "status": 422, "error": "Output contract failed", "errors": ev["contract_error"]}
+            elif "error" in ev:
+                status = 429 if "rate limit" in ev["error"].lower() else 504 if "timed out" in ev["error"].lower() else 502
+                return {"ok": False, "status": status, "error": ev["error"]}
+    return {"ok": False, "status": 502, "error": "Run ended without a result"}
+
+
+def _run_error_response(r: dict) -> JSONResponse:
+    content = {"error": r.get("error")}
+    if r.get("errors"):
+        content["errors"] = r["errors"]
+    return JSONResponse(status_code=r.get("status") or 502, content=content)
+
+
+def _parsed_output(app_data: dict, output: str):
+    if (app_data.get("output_type") or "markdown") == "markdown":
+        return None
+    parsed, _ = _parse_json_output(output)
+    return parsed
+
+
+def _chunk_text(text: str, limit: int, is_csv: bool = False) -> list[str]:
+    """Line-boundary chunks under `limit` chars; CSV chunks repeat the header."""
+    if len(text) <= limit:
+        return [text]
+    lines = text.split("\n")
+    header = lines.pop(0) + "\n" if is_csv and lines else ""
+    max_piece = max(1, limit - len(header) - 1)
+    chunks, cur = [], header
+    for line in lines:
+        for i in range(0, max(len(line), 1), max_piece):
+            piece = line[i:i + max_piece]
+            if len(cur) + len(piece) + 1 > limit and len(cur) > len(header):
+                chunks.append(cur)
+                cur = header
+            cur += piece + "\n"
+    if len(cur) > len(header):
+        chunks.append(cur)
+    return chunks
+
+
+async def _extract_api_file(f: ApiFileInput, request: Optional[Request] = None,
+                            caller: Optional["ApiCaller"] = None) -> tuple[str, bool]:
+    """Decode + extract an inline API file → (text, is_csv)."""
+    import base64
+    try:
+        data = base64.b64decode(f.content_b64, validate=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="file.content_b64 is not valid base64")
+    if len(data) > MAX_EXTRACT_BYTES:
+        raise HTTPException(status_code=413, detail=f"File too large (max {MAX_EXTRACT_BYTES // (1024 * 1024)} MB)")
+    ext = f.file_name.lower().rsplit(".", 1)[-1] if "." in f.file_name else ""
+    if ext in _TEXT_EXTS:
+        try:
+            return data.decode("utf-8-sig"), ext in ("csv", "tsv")
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=422, detail="Text files must be UTF-8")
+    extractor = {"pdf": _extract_pdf, "xlsx": _extract_xlsx, "xlsm": _extract_xlsx, "docx": _extract_docx}.get(ext)
+    if not extractor:
+        raise HTTPException(status_code=415, detail="Supported files: .pdf, .xlsx, .docx, .csv, .txt, .json, .md")
+    try:
+        if ext == "pdf":
+            text, _ = await extract_pdf_text(
+                data, (lambda: ocr_key_for(request, caller.user_jwt, caller.user_id)) if request and caller else None)
+        else:
+            text = await asyncio.to_thread(extractor, data)
+    except OcrError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+        raise HTTPException(status_code=422, detail="Could not read this file — it may be corrupted or in an older format")
+    return text[:MAX_EXTRACT_CHARS], ext in ("xlsx", "xlsm")
+
+
+async def _load_api_app(app_id: str, caller: ApiCaller) -> dict:
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        raise HTTPException(status_code=503, detail="API gateway is not configured")
+    assert_key_scope(caller, app_id)
+    app_data = await load_app_row(app_id)
+    if not app_data or not (app_data.get("is_published") or await can_view_app(app_data, caller)):
+        raise HTTPException(status_code=404, detail="App not found or not published")
+    if app_data.get("visibility") == "private" and not caller.user_id:
+        raise HTTPException(status_code=401, detail="This app requires an API key")
+    return app_data
+
+
+def _validated_fields_input(fields: dict, input_fields: list, where: str = "") -> str:
+    if input_fields:
+        errors = _validate_schema_value(fields, input_fields)
+        if errors:
+            raise HTTPException(status_code=422, detail={"message": f"Input contract failed{where}", "errors": errors})
+    return _fields_to_input(fields)
+
+
+def _api_run_request(app_id: str, app_data: dict, input_text: str, *, output_type: Optional[str] = None,
+                     user_context: Optional[str] = None, temperature: Optional[float] = None,
+                     field_values: Optional[dict] = None) -> RunRequest:
+    return RunRequest(
+        app_id=app_id, input=input_text, field_values=field_values,
+        system_prompt=app_data.get("system_prompt") or "You are a helpful AI assistant.",
+        ai_provider=app_data.get("ai_provider") or "claude",
+        ai_model=app_data.get("ai_model"),
+        output_type=output_type or app_data.get("output_type") or "markdown",
+        user_context=user_context, temperature=temperature,
+    )
+
+
+def _history_recorder(caller_id: Optional[str], app_id: str, app_name: Optional[str], input_text: str,
+                      workspace_id: Optional[str] = None):
+    async def record(output: str, usage: dict, provider: str, model: str):
+        # Server-side runs have no browser to write run_history, so the server
+        # does — this also makes them count toward the caller's rate limits.
+        if not caller_id:
+            return
+        try:
+            await db(_service_client().table("run_history").insert({
+                "user_id": caller_id, "app_id": app_id, "app_name": app_name, "workspace_id": workspace_id,
+                "input": input_text[:20000], "output": output[:50000],
+                "input_tokens": (usage or {}).get("input_tokens"), "output_tokens": (usage or {}).get("output_tokens"),
+            }))
+            await db(_service_client().rpc("increment_app_runs", {"p_app_id": app_id}))
+        except Exception as e:
+            print(f"record run error: {e}")
+    return record
+
+
+async def run_collect(run_req: RunRequest, request, caller: ApiCaller, record=None) -> dict:
+    response = await execute_run(run_req, request, caller=caller, on_complete=record)
+    return await _drain_run(response)
+
+
+@app.post("/v1/apps/{app_id}/run")
+async def run_published_app_api(app_id: str, req: ApiRunRequest, request: Request):
+    """Run a published app.
+
+    Auth: `Authorization: Bearer ak_live_…` (or a Supabase session JWT). Public
+    free apps also accept anonymous calls (IP rate-limited).
+    Body: {"input": "..."} and/or {"fields": {...}}, optionally {"file":
+    {"file_name", "content_b64"}}. Inputs larger than one model call are split
+    into parts, analysed, and combined. "stream": false returns one JSON body.
+    """
+    caller = await resolve_api_caller(request)
+    app_data = await _load_api_app(app_id, caller)
+    blueprint = await fetch_app_blueprint(app_id)
+
+    pieces = []
+    if req.fields is not None:
+        pieces.append(_validated_fields_input(req.fields, _schema_fields(blueprint, "input_schema")))
+    if (req.input or "").strip():
+        pieces.append(req.input.strip())
+    file_text, is_csv = "", False
+    if req.file is not None:
+        file_text, is_csv = await _extract_api_file(req.file, request, caller)
+        if not file_text.strip():
+            raise HTTPException(status_code=422, detail="The file contains no readable text")
+    if not pieces and not file_text:
+        raise HTTPException(status_code=422, detail="Pass 'input', 'fields' or 'file'")
+
+    instructions = "\n\n".join(pieces)
+    header = f"{instructions}\n\nFile: {req.file.file_name}\n\n" if req.file else ""
+    input_text = header + file_text if req.file else instructions
+    record = _history_recorder(caller.user_id, app_id, app_data.get("name"), input_text, caller.workspace_id)
+    kwargs = {"user_context": req.user_context, "temperature": req.temperature}
+
+    if len(input_text) > MAX_INPUT_LENGTH:
+        if not req.file:
+            raise HTTPException(status_code=413, detail=f"Input too long ({len(input_text):,} chars, max {MAX_INPUT_LENGTH:,}). Send large content as a file.")
+        budget = MAX_INPUT_LENGTH - len(header) - 400
+        chunks = _chunk_text(file_text, budget, is_csv)
+        if len(chunks) > API_MAX_CHUNKS:
+            raise HTTPException(status_code=413, detail=f"File too large: {len(chunks)} parts (max {API_MAX_CHUNKS}). Trim or split it.")
+        # Map: analyse each part. Reduce: merge with the app's own format.
+        notes = []
+        for i, chunk in enumerate(chunks):
+            part_input = (f"{header}This is part {i + 1} of {len(chunks)} of a larger file. Extract every finding, figure and "
+                          f"row-level detail relevant to the task as concise notes; a later step will merge all parts.\n\n{chunk}")
+            r = await run_collect(_api_run_request(app_id, app_data, part_input, output_type="markdown", **kwargs),
+                                  request, caller, _history_recorder(caller.user_id, app_id, app_data.get("name"), part_input, caller.workspace_id))
+            if not r["ok"]:
+                return _run_error_response(r)
+            notes.append(f"## Part {i + 1}\n{r['output']}")
+        combine = (f"{instructions}\n\nThe file '{req.file.file_name}' was too large for one pass, so it was analysed in "
+                   f"{len(chunks)} parts. Combine these partial results into one complete answer to the task above. "
+                   f"Totals and counts must cover ALL parts.\n\n")
+        input_text = combine + "\n\n".join(notes)[: MAX_INPUT_LENGTH - len(combine)]
+
+    try:
+        run_req = _api_run_request(app_id, app_data, input_text, field_values=req.fields, **kwargs)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    response = await execute_run(run_req, request, caller=caller, on_complete=record)
+    if req.stream or not isinstance(response, StreamingResponse):
+        return response
+    r = await _drain_run(response)
+    if not r["ok"]:
+        return _run_error_response(r)
+    return {"output": r["output"], "data": _parsed_output(app_data, r["output"]), "provider": r["provider"],
+            "model": r["model"], "usage": r["usage"]}
+
+
+# ── App discovery ────────────────────────────────────────────────────────────
+def _public_app_view(app_data: dict, blueprint: dict, include_prompt: bool) -> dict:
+    view = {k: app_data.get(k) for k in (
+        "id", "name", "description", "app_type", "output_type", "ai_provider", "ai_model",
+        "is_paid", "price_per_run", "visibility", "is_published", "created_at", "updated_at")}
+    view["input_schema"] = _schema_fields(blueprint, "input_schema")
+    view["output_schema"] = _schema_fields(blueprint, "output_schema")
+    view["parameters"] = [
+        {"name": re.sub(r"[^a-z0-9]+", "_", (f.get("label") or "").lower()).strip("_"), "label": f.get("label"),
+         "type": f.get("type"), "required": bool(f.get("required"))}
+        for f in (app_data.get("form_schema") or []) if f.get("label")
+    ]
+    if include_prompt:
+        view["system_prompt"] = app_data.get("system_prompt")
+    return view
+
+
+@app.get("/apps")
+@app.get("/v1/apps")
+async def list_apps(request: Request):
+    """Apps owned by the caller (API key or session)."""
+    caller = await resolve_api_caller(request, required=True)
+    sb = _service_client()
+    if not sb:
+        raise HTTPException(status_code=503, detail="Service not configured")
+    q = sb.table("apps").select("id, name, description, app_type, output_type, ai_model, ai_provider, is_paid, "
+                                "price_per_run, is_published, visibility, workspace_id, created_at, updated_at") \
+        .order("updated_at", desc=True)
+    q = q.eq("workspace_id", caller.workspace_id) if caller.workspace_id else q.eq("created_by", caller.user_id)
+    if caller.app_ids:
+        q = q.in_("id", caller.app_ids)
+    result = await db(q)
+    return {"apps": result.data or []}
+
+
+@app.get("/apps/{app_id}")
+@app.get("/v1/apps/{app_id}")
+async def get_app(app_id: str, request: Request):
+    """App metadata plus its input/output contract. The prompt is only
+    returned to the app's owner or editors."""
+    caller = await resolve_api_caller(request)
+    app_data = await _load_api_app(app_id, caller)
+    blueprint = await fetch_app_blueprint(app_id)
+    return _public_app_view(app_data, blueprint, await can_edit_app(app_data, caller))
+
+
+# ── Usage + keys ─────────────────────────────────────────────────────────────
+async def usage_snapshot(user_id: str) -> dict:
+    sb = _service_client()
+    hourly, daily = await get_usage_counts(sb, user_id)
+    keys = await db(sb.table("user_api_keys").select("provider").eq("user_id", user_id).eq("is_active", True))
+    own = sorted({r["provider"] for r in (keys.data or [])})
+    return {"own_provider_keys": own,
+            "hourly": {"used": hourly, "limit": HOURLY_LIMIT, "remaining": max(0, HOURLY_LIMIT - hourly)},
+            "daily": {"used": daily, "limit": DAILY_LIMIT, "remaining": max(0, DAILY_LIMIT - daily)},
+            "note": "Runs on apps whose provider you have your own key for are not limited."}
+
+
+# ─── Build cost estimates ────────────────────────────────────────────────────
+# USD per 1M tokens (input, output). Claude prices from Anthropic's price list;
+# OpenAI prices are approximate — update here if providers change pricing.
+MODEL_PRICES = {
+    "claude-opus-5-5": (4.00, 20.00), "claude-sonnet-5-5": (2.00, 10.00), "claude-haiku-5-5": (0.10, 0.50),
+    "claude-opus-4-8": (5.00, 25.00), "claude-sonnet-4-6": (3.00, 15.00), "claude-haiku-4-5-20251001": (1.00, 5.00),
+    "gpt-4o-mini": (0.15, 0.60), "gpt-4o": (2.50, 10.00),
+}
+MODEL_LABELS = {
+    "claude-opus-5-5": "Claude Opus 5.5", "claude-sonnet-5-5": "Claude Sonnet 5.5", "claude-haiku-5-5": "Claude Haiku 5.5",
+    "claude-opus-4-8": "Claude Opus 4.8", "claude-sonnet-4-6": "Claude Sonnet 4.6", "claude-haiku-4-5-20251001": "Claude Haiku 4.5",
+    "gpt-4o-mini": "GPT-4o mini", "gpt-4o": "GPT-4o",
+}
+BUILDER_MODEL = "claude-sonnet-5-5"     # what the Build with AI / website generators call
+DETAILS_MODEL = "claude-haiku-5-5"      # "AI-generate name & description"
+
+
+def estimate_usd(model: str, input_tokens: int, output_tokens: int) -> float:
+    pin, pout = MODEL_PRICES.get(model, MODEL_PRICES[BUILDER_MODEL])
+    return (input_tokens * pin + output_tokens * pout) / 1_000_000
+
+
+def _step(label: str, model: str, inp: tuple[int, int], out: tuple[int, int], *, optional=False, per=None) -> dict:
+    return {
+        "label": label, "model": model, "model_label": MODEL_LABELS.get(model, model),
+        "tokens": [inp[0] + out[0], inp[1] + out[1]],
+        "usd": [round(estimate_usd(model, inp[0], out[0]), 4), round(estimate_usd(model, inp[1], out[1]), 4)],
+        "optional": optional, "per": per,
+    }
+
+
+def build_estimate_steps(app_type: str) -> list[dict]:
+    """Typical token ranges per AI step (output ranges include the model's
+    thinking). Ranges, not quotes: real usage depends on what the user types."""
+    run = _step("Each preview / test run", BUILDER_MODEL, (400, 2500), (300, 1500), optional=True, per="run")
+    if app_type == "ai_builder":
+        return [
+            _step("Analyse your idea and ask questions", BUILDER_MODEL, (500, 1000), (400, 1500)),   # measured: 547 in / 481 out
+            _step("Generate the app", BUILDER_MODEL, (1200, 2200), (1200, 3500)),           # measured: 1,313 in / 1,447 out
+            run,
+        ]
+    if app_type == "website":
+        return [
+            _step("Read the website", BUILDER_MODEL, (0, 0), (0, 0)),
+            _step("Generate the app from the page", BUILDER_MODEL, (1500, 4000), (600, 2000)),
+            run,
+        ]
+    steps = [
+        _step("AI-generate name & description", DETAILS_MODEL, (200, 800), (100, 400), optional=True),
+        run,
+    ]
+    if app_type == "data":
+        steps.append(_step("Each scanned PDF page read with OCR", OCR_MODEL, (1500, 2500), (200, 800), optional=True, per="page"))
+    return steps
+
+
+@app.get("/v1/build-estimate")
+async def build_estimate(request: Request, type: str = "prompt"):
+    """What starting to build an app of this type will use: AI calls, tokens,
+    approximate cost, and who pays (the caller's own key or the platform)."""
+    caller = await resolve_api_caller(request, required=True)
+    steps = build_estimate_steps(type)
+    required = [st for st in steps if not st["optional"] and st["tokens"][1] > 0]
+    total = {
+        "tokens": [sum(st["tokens"][0] for st in required), sum(st["tokens"][1] for st in required)],
+        "usd": [round(sum(st["usd"][0] for st in required), 4), round(sum(st["usd"][1] for st in required), 4)],
+        "runs": len(required),
+    }
+    own_key = (await fetch_user_api_key(caller.user_jwt, "claude") if caller.user_jwt
+               else await fetch_user_api_key_by_id(caller.user_id, "claude"))
+    billing = {"billed_to": "your_key" if own_key else "platform", "provider": "claude",
+               "runs_left": None, "enough_runs": True}
+    if not own_key and SUPABASE_SERVICE_ROLE_KEY:
+        try:
+            usage = await usage_snapshot(caller.user_id)
+            left = min(usage["hourly"]["remaining"], usage["daily"]["remaining"])
+            billing.update(runs_left=left, enough_runs=left >= total["runs"])
+        except Exception as e:
+            print(f"build_estimate usage error: {e}")
+    return {"type": type, "uses_ai_to_create": total["runs"] > 0, "steps": steps, "total": total,
+            "billing": billing, "prices_per_million": {m: list(v) for m, v in MODEL_PRICES.items()}}
+
+
+@app.get("/v1/usage")
+async def get_usage(request: Request):
+    caller = await resolve_api_caller(request, required=True)
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        raise HTTPException(status_code=503, detail="Service not configured")
+    return await usage_snapshot(caller.user_id)
+
+
+@app.post("/v1/keys")
+async def create_api_key(body: ApiKeyCreateRequest, request: Request):
+    """Create a developer key. The raw key is returned ONCE; only its SHA-256
+    hash is stored. Optional app_ids restricts the key to those apps."""
+    caller = await resolve_api_caller(request, required=True)
+    if caller.via_key:
+        raise HTTPException(status_code=403, detail="Create keys from a signed-in session, not with another key")
+    ws = body.workspace_id or caller.workspace_id
+    if not ws or (await workspace_role(ws, caller.user_id)) not in BUILD_ROLES:
+        raise HTTPException(status_code=403, detail="Only workspace owners, admins and developers can create API keys")
+    for a in body.app_ids:
+        if not _UUID_RE.fullmatch(a):
+            raise HTTPException(status_code=422, detail=f"Invalid app id: {a}")
+    if body.app_ids:
+        found = await db(_service_client().table("apps").select("id").in_("id", body.app_ids).eq("workspace_id", ws))
+        outside = set(body.app_ids) - {r["id"] for r in (found.data or [])}
+        if outside:
+            raise HTTPException(status_code=422, detail=f"These apps aren't in this workspace: {', '.join(sorted(outside))}")
+    raw = "ak_live_" + secrets.token_hex(24)
+    try:
+        res = await db(_service_client().table("developer_api_keys").insert({
+            "user_id": caller.user_id, "workspace_id": ws, "name": body.name.strip(),
+            "key_hash": hash_api_key(raw), "key_prefix": raw[:14], "app_ids": body.app_ids or None,
+            "is_active": True,
+        }))
+    except Exception as e:
+        print(f"create_api_key error: {e}")
+        raise HTTPException(status_code=503, detail="Key storage isn't set up — apply the database migrations (npm run db:push)")
+    row = res.data[0]
+    return {"id": row["id"], "name": row["name"], "key": raw, "key_prefix": row["key_prefix"],
+            "workspace_id": ws, "app_ids": row.get("app_ids") or [], "created_at": row.get("created_at")}
+
+
+# ── Workspaces ───────────────────────────────────────────────────────────────
+@app.get("/v1/workspaces")
+async def list_workspaces(request: Request):
+    """Workspaces the caller belongs to (for an API key: its own workspace)."""
+    caller = await resolve_api_caller(request, required=True)
+    sb = _service_client()
+    if caller.via_key:
+        res = await db(sb.table("workspaces").select("id, name, slug, is_personal, plan").eq("id", caller.workspace_id))
+        return {"workspaces": [{**w, "role": None} for w in (res.data or [])], "active": caller.workspace_id}
+    mem = await db(sb.table("workspace_members").select("workspace_id, role").eq("user_id", caller.user_id))
+    roles = {m["workspace_id"]: m["role"] for m in (mem.data or [])}
+    if not roles:
+        return {"workspaces": [], "active": caller.workspace_id}
+    res = await db(sb.table("workspaces").select("id, name, slug, is_personal, plan")
+                   .in_("id", list(roles)).order("is_personal", desc=True).order("name"))
+    return {"workspaces": [{**w, "role": roles.get(w["id"])} for w in (res.data or [])], "active": caller.workspace_id}
+
+
+@app.post("/v1/workspaces/{workspace_id}/invites", status_code=201)
+async def invite_to_workspace(workspace_id: str, body: WorkspaceInviteRequest, request: Request):
+    """Invite someone by email (owners/admins). Sends the email when Resend is
+    configured; the invite link is returned either way."""
+    caller = await resolve_api_caller(request, required=True)
+    if caller.via_key:
+        raise HTTPException(status_code=403, detail="Invite people from a signed-in session")
+    if (await workspace_role(workspace_id, caller.user_id)) not in MANAGE_ROLES:
+        raise HTTPException(status_code=403, detail="Only workspace owners and admins can invite people")
+    email = body.email.strip().lower()
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+        raise HTTPException(status_code=422, detail="Enter a valid email address")
+    sb = _service_client()
+    ws = (await db(sb.table("workspaces").select("name, is_personal").eq("id", workspace_id).limit(1))).data
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    if ws[0]["is_personal"]:
+        raise HTTPException(status_code=422, detail="Personal workspaces can't have other members — create a team workspace")
+    # One open invite per email: replace any earlier one.
+    await db(sb.table("workspace_invites").delete().eq("workspace_id", workspace_id)
+             .ilike("email", email).is_("accepted_at", "null"))
+    inv = (await db(sb.table("workspace_invites").insert({
+        "workspace_id": workspace_id, "email": email, "role": body.role, "invited_by": caller.user_id,
+        "token": str(uuid.uuid4()),
+        "expires_at": (datetime.now(timezone.utc) + timedelta(days=7)).isoformat(),
+    }))).data[0]
+    invite_url = f"{FRONTEND_URL.rstrip('/')}/invite/{inv['token']}"
+    sent = await send_email(
+        to=email,
+        subject=f"You're invited to {ws[0]['name']} on Aistrix",
+        html=_email_base(
+            title=f"Join {ws[0]['name']}",
+            body=f"You've been invited to the <strong style='color:#fff'>{ws[0]['name']}</strong> workspace "
+                 f"as <strong style='color:#fff'>{body.role}</strong>. The invite expires in 7 days.",
+            cta_url=invite_url, cta_label="Accept invite →",
+        ),
+    )
+    return {"id": inv["id"], "email": email, "role": body.role, "invite_url": invite_url,
+            "expires_at": inv["expires_at"], "email_sent": bool(sent)}
+
+
+# ── Batch jobs ───────────────────────────────────────────────────────────────
+_batch_tasks: dict[str, asyncio.Task] = {}
+
+
+def _rows_from_csv(text: str) -> list[str]:
+    reader = list(csv.reader(io.StringIO(text.lstrip("\ufeff"))))
+    reader = [r for r in reader if any(c.strip() for c in r)]
+    if len(reader) < 2:
+        raise HTTPException(status_code=422, detail="csv needs a header row and at least one data row")
+    names = [h.strip() or f"column_{i + 1}" for i, h in enumerate(reader[0])]
+    return ["\n".join(f"{n}: {(r[i] if i < len(r) else '').strip()}" for i, n in enumerate(names)) for r in reader[1:]]
+
+
+async def _job_for_caller(job_id: str, caller: ApiCaller) -> dict:
+    res = await db(_service_client().table("batch_jobs").select("*").eq("id", job_id).limit(1))
+    job = res.data[0] if res and res.data else None
+    allowed = bool(job) and (
+        (caller.via_key and job.get("workspace_id") and job["workspace_id"] == caller.workspace_id)
+        or (not caller.via_key and (job["user_id"] == caller.user_id
+                                    or (await workspace_role(job.get("workspace_id"), caller.user_id)) in MANAGE_ROLES)))
+    if not allowed:
+        raise HTTPException(status_code=404, detail="Batch not found")
+    assert_key_scope(caller, job["app_id"])
+    return job
+
+
+def _job_view(job: dict) -> dict:
+    total = job.get("total") or 0
+    done = (job.get("completed") or 0) + (job.get("failed") or 0)
+    return {**{k: job.get(k) for k in ("id", "app_id", "status", "total", "completed", "failed", "stop_reason",
+                                         "created_at", "started_at", "finished_at")},
+            "progress": round(done / total, 4) if total else 0,
+            "results_url": f"/v1/batches/{job['id']}/results"}
+
+
+@app.post("/v1/apps/{app_id}/batches", status_code=202)
+async def create_batch(app_id: str, body: BatchCreateRequest, request: Request):
+    """Queue many inputs for one app; runs server-side (survives the caller
+    disconnecting). Poll GET /v1/batches/{id} or pass webhook_url."""
+    caller = await resolve_api_caller(request, required=True)
+    app_data = await _load_api_app(app_id, caller)
+    blueprint = await fetch_app_blueprint(app_id)
+    input_fields = _schema_fields(blueprint, "input_schema")
+
+    inputs: list[str] = []
+    if body.csv:
+        inputs.extend(_rows_from_csv(body.csv))
+    for i, row in enumerate(body.rows or []):
+        if row.fields is not None:
+            text = _validated_fields_input(row.fields, input_fields, f" in row {i}")
+            inputs.append(f"{text}\n\n{row.input.strip()}" if (row.input or "").strip() else text)
+        elif (row.input or "").strip():
+            inputs.append(row.input.strip())
+        else:
+            raise HTTPException(status_code=422, detail=f"Row {i} needs 'input' or 'fields'")
+    if not inputs:
+        raise HTTPException(status_code=422, detail="Pass 'rows' or 'csv'")
+    if len(inputs) > BATCH_MAX_ROWS:
+        raise HTTPException(status_code=413, detail=f"{len(inputs)} rows — max {BATCH_MAX_ROWS} per batch")
+    too_long = next((i for i, t in enumerate(inputs) if len(t) > MAX_INPUT_LENGTH), None)
+    if too_long is not None:
+        raise HTTPException(status_code=413, detail=f"Row {too_long} is longer than {MAX_INPUT_LENGTH:,} chars")
+    if body.webhook_url:
+        try:
+            assert_public_url(body.webhook_url)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=f"webhook_url rejected: {e}")
+
+    warnings: list[str] = []
+    if app_data.get("is_paid") and not await can_edit_app(app_data, caller):
+        ent = await find_active_entitlement(app_id, caller)
+        if not ent or entitlement_block_reason(ent):
+            raise HTTPException(status_code=402, detail=(entitlement_block_reason(ent) if ent else "Purchase access to run this app"))
+        if ent.get("run_quota") is not None:
+            left = ent["run_quota"] - (ent.get("runs_this_period") or 0)
+            if left < len(inputs):
+                warnings.append(f"Your plan has {left} runs left this period; the batch will stop after that.")
+    usage = await usage_snapshot(caller.user_id)
+    if (app_data.get("ai_provider") or "claude") not in usage["own_provider_keys"]:
+        left = min(usage["hourly"]["remaining"], usage["daily"]["remaining"])
+        if left < len(inputs):
+            warnings.append(f"Platform limits allow {left} more runs right now; the batch will stop after that "
+                            f"(resume later with POST /v1/batches/{{id}}/retry, or add your own API key for no limit).")
+
+    sb = _service_client()
+    try:
+        job = (await db(sb.table("batch_jobs").insert({
+            "app_id": app_id, "user_id": caller.user_id, "workspace_id": caller.workspace_id,
+            "status": "queued", "total": len(inputs),
+            "completed": 0, "failed": 0, "webhook_url": body.webhook_url,
+        }))).data[0]
+    except Exception as e:
+        print(f"create_batch error: {e}")
+        raise HTTPException(status_code=503, detail="Batch storage isn't set up — apply the database migrations (npm run db:push)")
+    rows = [{"job_id": job["id"], "idx": i, "input": t, "status": "pending"} for i, t in enumerate(inputs)]
+    for i in range(0, len(rows), 500):
+        await db(sb.table("batch_job_rows").insert(rows[i:i + 500]))
+    spawn_batch(job["id"])
+    return {**_job_view(job), "warnings": warnings}
+
+
+@app.get("/v1/batches")
+async def list_batches(request: Request, limit: int = 20):
+    caller = await resolve_api_caller(request, required=True)
+    q = _service_client().table("batch_jobs").select("*") \
+        .order("created_at", desc=True).limit(max(1, min(limit, 100)))
+    # keys and workspace admins see the workspace's batches; others their own
+    if caller.via_key or (await workspace_role(caller.workspace_id, caller.user_id)) in MANAGE_ROLES:
+        q = q.eq("workspace_id", caller.workspace_id)
+    else:
+        q = q.eq("user_id", caller.user_id)
+    if caller.app_ids:
+        q = q.in_("app_id", caller.app_ids)
+    res = await db(q)
+    return {"batches": [_job_view(j) for j in (res.data or [])]}
+
+
+@app.get("/v1/batches/{job_id}")
+async def get_batch(job_id: str, request: Request):
+    caller = await resolve_api_caller(request, required=True)
+    return _job_view(await _job_for_caller(job_id, caller))
+
+
+@app.get("/v1/batches/{job_id}/results")
+async def get_batch_results(job_id: str, request: Request, format: str = "json", offset: int = 0, limit: int = 200):
+    caller = await resolve_api_caller(request, required=True)
+    job = await _job_for_caller(job_id, caller)
+    q = _service_client().table("batch_job_rows") \
+        .select("idx, input, status, output, data, error, input_tokens, output_tokens").eq("job_id", job_id).order("idx")
+    if format == "csv":
+        res = await db(q.limit(BATCH_MAX_ROWS))
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(["idx", "input", "status", "output", "error", "input_tokens", "output_tokens"])
+        for r in res.data or []:
+            w.writerow([r["idx"], r["input"], r["status"], r.get("output") or "", r.get("error") or "",
+                        r.get("input_tokens") or "", r.get("output_tokens") or ""])
+        return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv",
+                                 headers={"Content-Disposition": f'attachment; filename="batch-{job_id}.csv"'})
+    limit = max(1, min(limit, 500))
+    res = await db(q.range(max(0, offset), max(0, offset) + limit - 1))
+    return {"batch": _job_view(job), "offset": offset, "rows": res.data or []}
+
+
+@app.post("/v1/batches/{job_id}/cancel")
+async def cancel_batch(job_id: str, request: Request):
+    caller = await resolve_api_caller(request, required=True)
+    job = await _job_for_caller(job_id, caller)
+    if job["status"] in ("queued", "running"):
+        await db(_service_client().table("batch_jobs").update({
+            "status": "cancelled", "finished_at": datetime.now(timezone.utc).isoformat()}).eq("id", job_id))
+        task = _batch_tasks.get(job_id)
+        if task and not task.done():
+            task.cancel()
+    return _job_view(await _job_for_caller(job_id, caller))
+
+
+@app.post("/v1/batches/{job_id}/retry", status_code=202)
+async def retry_batch(job_id: str, request: Request):
+    """Re-queue every row that failed or never ran (e.g. after a rate-limit stop)."""
+    caller = await resolve_api_caller(request, required=True)
+    job = await _job_for_caller(job_id, caller)
+    if job["status"] in ("queued", "running"):
+        raise HTTPException(status_code=409, detail="Batch is still running")
+    sb = _service_client()
+    await db(sb.table("batch_job_rows").update({"status": "pending", "error": None})
+             .eq("job_id", job_id).in_("status", ["error", "running", "pending"]))
+    await db(sb.table("batch_jobs").update({"status": "queued", "stop_reason": None, "finished_at": None}).eq("id", job_id))
+    spawn_batch(job_id)
+    return _job_view(await _job_for_caller(job_id, caller))
+
+
+def spawn_batch(job_id: str) -> None:
+    task = _batch_tasks.get(job_id)
+    if task and not task.done():
+        return
+    _batch_tasks[job_id] = asyncio.create_task(_run_batch_job(job_id))
+
+
+async def _claim_batch_job(sb, job_id: str) -> Optional[dict]:
+    now = datetime.now(timezone.utc)
+    res = await db(sb.table("batch_jobs").update({
+        "status": "running", "heartbeat_at": now.isoformat(), "started_at": now.isoformat(),
+    }).eq("id", job_id).eq("status", "queued"))
+    if res.data:
+        return res.data[0]
+    stale = (now - timedelta(seconds=BATCH_STALE_SECONDS)).isoformat()
+    res = await db(sb.table("batch_jobs").update({"heartbeat_at": now.isoformat()})
+                   .eq("id", job_id).eq("status", "running").lt("heartbeat_at", stale))
+    return res.data[0] if res.data else None
+
+
+async def _refresh_batch_counts(sb, job_id: str) -> tuple[int, int]:
+    done, failed = await asyncio.gather(
+        db(sb.table("batch_job_rows").select("idx", count="exact", head=True).eq("job_id", job_id).eq("status", "done")),
+        db(sb.table("batch_job_rows").select("idx", count="exact", head=True).eq("job_id", job_id).eq("status", "error")),
+    )
+    completed, n_failed = done.count or 0, failed.count or 0
+    await db(sb.table("batch_jobs").update({
+        "completed": completed, "failed": n_failed, "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+    }).eq("id", job_id))
+    return completed, n_failed
+
+
+async def _run_batch_job(job_id: str) -> None:
+    sb = _service_client()
+    if not sb:
+        return
+    job = None
+    try:
+        job = await _claim_batch_job(sb, job_id)
+        if not job:
+            return
+        # A batch acts for its workspace (like an API key), so it keeps
+        # running even if the person who started it leaves the team.
+        caller = ApiCaller(user_id=job["user_id"], workspace_id=job.get("workspace_id"),
+                           via_key=bool(job.get("workspace_id")))
+        app_data = await load_app_row(job["app_id"])
+        if not app_data:
+            raise RuntimeError("app deleted")
+        rows = (await db(sb.table("batch_job_rows").select("idx, input").eq("job_id", job_id)
+                         .in_("status", ["pending", "running"]).order("idx"))).data or []
+        shim = SimpleNamespace(headers={}, client=SimpleNamespace(host=f"batch:{job_id}"))
+        sem = asyncio.Semaphore(max(1, BATCH_CONCURRENCY))
+        stop: dict = {"reason": None, "cancelled": False}
+
+        async def process(row: dict):
+            if stop["reason"] or stop["cancelled"]:
+                return
+            async with sem:
+                if stop["reason"] or stop["cancelled"]:
+                    return
+                st = await db(sb.table("batch_jobs").select("status").eq("id", job_id).limit(1))
+                if st.data and st.data[0]["status"] == "cancelled":
+                    stop["cancelled"] = True
+                    return
+                await db(sb.table("batch_job_rows").update({"status": "running"}).eq("job_id", job_id).eq("idx", row["idx"]))
+                r = await run_collect(_api_run_request(job["app_id"], app_data, row["input"]), shim, caller,
+                                      _history_recorder(caller.user_id, job["app_id"], app_data.get("name"), row["input"],
+                                                        caller.workspace_id))
+                now = datetime.now(timezone.utc).isoformat()
+                if r["ok"]:
+                    usage = r.get("usage") or {}
+                    await db(sb.table("batch_job_rows").update({
+                        "status": "done", "output": r["output"], "data": _parsed_output(app_data, r["output"]),
+                        "error": None, "input_tokens": usage.get("input_tokens"), "output_tokens": usage.get("output_tokens"),
+                        "updated_at": now,
+                    }).eq("job_id", job_id).eq("idx", row["idx"]))
+                elif r["status"] in (401, 402, 403, 429):
+                    # Account-level problem: every remaining row would fail the
+                    # same way. Leave it pending so /retry can resume.
+                    stop["reason"] = r["error"]
+                    await db(sb.table("batch_job_rows").update({"status": "pending", "updated_at": now})
+                             .eq("job_id", job_id).eq("idx", row["idx"]))
+                else:
+                    err = r["error"] + (f": {'; '.join(r['errors'])}" if r.get("errors") else "")
+                    await db(sb.table("batch_job_rows").update({"status": "error", "error": err[:2000], "updated_at": now})
+                             .eq("job_id", job_id).eq("idx", row["idx"]))
+                await _refresh_batch_counts(sb, job_id)
+
+        await asyncio.gather(*(process(r) for r in rows))
+        completed, failed = await _refresh_batch_counts(sb, job_id)
+        if stop["cancelled"]:
+            return
+        status = "stopped" if stop["reason"] else ("completed_with_errors" if failed else "completed")
+        await db(sb.table("batch_jobs").update({
+            "status": status, "stop_reason": stop["reason"], "finished_at": datetime.now(timezone.utc).isoformat(),
+        }).eq("id", job_id).neq("status", "cancelled"))
+        if job.get("webhook_url"):
+            try:
+                await fetch_safely("POST", job["webhook_url"], timeout=10, json={
+                    "event": "batch.finished", "batch_id": job_id, "app_id": job["app_id"], "status": status,
+                    "total": job["total"], "completed": completed, "failed": failed, "stop_reason": stop["reason"],
+                    "results_url": f"/v1/batches/{job_id}/results",
+                })
+            except Exception as e:
+                print(f"batch webhook error: {e}")
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+        print(f"batch job {job_id} failed: {e}")
+        if job:
+            await db(sb.table("batch_jobs").update({
+                "status": "failed", "stop_reason": "Internal error — retry the batch",
+                "finished_at": datetime.now(timezone.utc).isoformat()}).eq("id", job_id))
+    finally:
+        _batch_tasks.pop(job_id, None)
+
+
+async def _batch_supervisor() -> None:
+    while True:
+        try:
+            sb = _service_client()
+            if sb:
+                stale = (datetime.now(timezone.utc) - timedelta(seconds=BATCH_STALE_SECONDS)).isoformat()
+                queued, dead = await asyncio.gather(
+                    db(sb.table("batch_jobs").select("id").eq("status", "queued").limit(50)),
+                    db(sb.table("batch_jobs").select("id").eq("status", "running").lt("heartbeat_at", stale).limit(50)),
+                )
+                for j in (queued.data or []) + (dead.data or []):
+                    spawn_batch(j["id"])
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"batch supervisor: {e}")   # e.g. tables not migrated yet
+        await asyncio.sleep(60)
+
+
+# ─── File text extraction (Data apps) ────────────────────────────────────────
+MAX_EXTRACT_BYTES = int(os.getenv("MAX_EXTRACT_BYTES", str(10 * 1024 * 1024)))
+MAX_EXTRACT_CHARS = int(os.getenv("MAX_EXTRACT_CHARS", "400000"))
+
+
+class ExtractRequest(BaseModel):
+    file_name: str = Field(..., max_length=255)
+    content_b64: str
+
+
+def _extract_pdf(data: bytes) -> str:
+    import io
+    import pypdf
+    reader = pypdf.PdfReader(io.BytesIO(data))
+    if reader.is_encrypted:
+        try:
+            reader.decrypt("")
+        except Exception:
+            raise ValueError("PDF is password-protected")
+    pages = []
+    for i, page in enumerate(reader.pages):
+        pages.append(f"--- Page {i + 1} ---\n{page.extract_text() or ''}")
+    text = "\n\n".join(pages)
+    if not re.sub(r"--- Page \d+ ---|\s", "", text):
+        raise ValueError("No selectable text found — this looks like a scanned PDF")
+    return text
+
+
+# ─── OCR for scanned PDF pages (Claude reads the page images) ──────────────
+# Pages with a text layer are read locally with pypdf; only image-only pages
+# are sent to Claude, OCR_PAGES_PER_REQUEST at a time, as PDF document
+# blocks (limits: 32 MB per request, up to 600 pages on 1M-context models).
+OCR_MODEL = os.getenv("OCR_MODEL", "claude-opus-5-5")
+OCR_PAGES_PER_REQUEST = int(os.getenv("OCR_PAGES_PER_REQUEST", "20"))
+OCR_MAX_PAGES = int(os.getenv("OCR_MAX_PAGES", "200"))
+OCR_CONCURRENCY = int(os.getenv("OCR_CONCURRENCY", "3"))
+_OCR_MAX_CHUNK_BYTES = 22 * 1024 * 1024     # base64 grows ~33%; stays under 32 MB
+_OCR_MIN_TEXT_CHARS = 25                     # fewer real characters → treat page as scanned
+_OCR_PAGE_MARK = re.compile(r"^\s*-{3}\s*Page\s+(\d+)\s*-{3}\s*$", re.MULTILINE)
+_OCR_INSTRUCTIONS = (
+    "Transcribe all text in this PDF exactly as written — this is OCR, not a summary.\n"
+    "- Keep the reading order, headings, lists and paragraph breaks.\n"
+    "- Render tables as Markdown tables; keep numbers, dates and currency exactly as printed.\n"
+    "- Include handwriting, stamps and form labels/values when legible.\n"
+    "- Write [illegible] for text you cannot read and [no text] for a blank page.\n"
+    "- Do not translate, correct, summarise or add any commentary.\n"
+)
+
+
+class OcrError(Exception):
+    def __init__(self, message: str, status: int = 502):
+        super().__init__(message)
+        self.status = status
+
+
+def _pdf_reader(data: bytes):
+    import io
+    import pypdf
+    reader = pypdf.PdfReader(io.BytesIO(data))
+    if reader.is_encrypted:
+        try:
+            reader.decrypt("")
+        except Exception:
+            raise ValueError("PDF is password-protected")
+    return reader
+
+
+def _pdf_subset(reader, indices: list[int]) -> bytes:
+    import io
+    import pypdf
+    writer = pypdf.PdfWriter()
+    for i in indices:
+        writer.add_page(reader.pages[i])
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
+
+
+def _ocr_chunks(reader, indices: list[int]) -> list[tuple[list[int], bytes]]:
+    """Group pages into sub-PDFs of ≤ OCR_PAGES_PER_REQUEST pages and
+    ≤ _OCR_MAX_CHUNK_BYTES, halving any group that is too large."""
+    out: list[tuple[list[int], bytes]] = []
+    pending = [indices[i:i + OCR_PAGES_PER_REQUEST] for i in range(0, len(indices), OCR_PAGES_PER_REQUEST)]
+    while pending:
+        group = pending.pop(0)
+        data = _pdf_subset(reader, group)
+        if len(data) <= _OCR_MAX_CHUNK_BYTES:
+            out.append((group, data))
+        elif len(group) == 1:
+            raise ValueError(f"Page {group[0] + 1} is too large to read (over {_OCR_MAX_CHUNK_BYTES // (1024 * 1024)} MB)")
+        else:
+            mid = len(group) // 2
+            pending[:0] = [group[:mid], group[mid:]]
+    return out
+
+
+async def _ocr_chunk(client, pdf_bytes: bytes, page_numbers: list[int]) -> dict[int, str]:
+    import base64
+    numbers = ", ".join(str(n) for n in page_numbers)
+    prompt = (_OCR_INSTRUCTIONS +
+              f"\nThis file holds pages {numbers} of a larger document, in that order. "
+              "Start each page with a line '--- Page N ---' using those page numbers.")
+    async with client.beta.messages.stream(
+        model=OCR_MODEL,
+        max_tokens=64000,
+        betas=["server-side-fallback-2026-07-01"],
+        fallbacks="default",                     # retry on another model if declined
+        output_config={"effort": "low"},         # transcription, not reasoning
+        messages=[{"role": "user", "content": [
+            {"type": "document", "source": {"type": "base64", "media_type": "application/pdf",
+                                            "data": base64.b64encode(pdf_bytes).decode()}},
+            {"type": "text", "text": prompt},
+        ]}],
+    ) as stream:
+        msg = await stream.get_final_message()
+    if msg.stop_reason == "refusal":
+        raise OcrError(f"The text on page(s) {numbers} could not be transcribed.", 422)
+    text = "".join(getattr(b, "text", "") for b in msg.content if getattr(b, "type", "") == "text")
+    if msg.stop_reason == "max_tokens":
+        text += "\n[transcription cut off: page text too long]"
+
+    pieces = _OCR_PAGE_MARK.split(text)
+    found: dict[int, str] = {}
+    for k in range(1, len(pieces) - 1, 2):
+        found[int(pieces[k])] = pieces[k + 1].strip()
+    if not found:                                  # model skipped the markers
+        found[page_numbers[0]] = text.strip()
+    return {n: found.get(n, "") for n in page_numbers}
+
+
+async def extract_pdf_text(data: bytes, get_ocr_key=None) -> tuple[str, int]:
+    """Text of a PDF as '--- Page N ---' sections. Scanned (image-only) pages
+    are OCR'd with Claude. Returns (text, number_of_pages_OCRd).
+    get_ocr_key: async () -> Optional[str] API key, called only if OCR is
+    needed (lets callers apply their own key / rate limits lazily)."""
+    reader = await asyncio.to_thread(_pdf_reader, data)
+    texts = await asyncio.to_thread(lambda: [(pg.extract_text() or "") for pg in reader.pages])
+    scanned = [i for i, t in enumerate(texts) if len(re.sub(r"\s", "", t)) < _OCR_MIN_TEXT_CHARS]
+
+    if scanned:
+        if len(scanned) > OCR_MAX_PAGES:
+            raise ValueError(f"This PDF has {len(scanned)} scanned pages; up to {OCR_MAX_PAGES} can be read per file. "
+                             "Split it into smaller files.")
+        key = await get_ocr_key() if get_ocr_key else None
+        if not (key or os.getenv("ANTHROPIC_API_KEY")):
+            raise OcrError("Reading scanned pages isn't configured on this server (no Claude API key).", 503)
+        chunks = await asyncio.to_thread(_ocr_chunks, reader, scanned)
+        client = anthropic.AsyncAnthropic(api_key=key or os.getenv("ANTHROPIC_API_KEY"))
+        sem = asyncio.Semaphore(max(1, OCR_CONCURRENCY))
+
+        async def run(group: list[int], pdf_bytes: bytes) -> dict[int, str]:
+            async with sem:
+                return await _ocr_chunk(client, pdf_bytes, [i + 1 for i in group])
+
+        try:
+            results = await asyncio.gather(*(run(g, b) for g, b in chunks))
+        except anthropic.AuthenticationError:
+            raise OcrError("Reading scanned pages failed: the Claude API key was rejected. Check Settings → Keys.", 502)
+        except anthropic.RateLimitError:
+            raise OcrError("Reading scanned pages is rate-limited right now. Try again in a minute.", 429)
+        except (anthropic.APIConnectionError, anthropic.InternalServerError):
+            raise OcrError("The OCR service is temporarily unavailable. Try again in a moment.", 502)
+        except anthropic.APIStatusError as e:
+            raise OcrError(f"Reading scanned pages failed ({e.status_code}).", 502)
+        for result in results:
+            for page_no, page_text in result.items():
+                texts[page_no - 1] = page_text
+
+    out = "\n\n".join(f"--- Page {i + 1} ---\n{t}" for i, t in enumerate(texts))
+    if not re.sub(r"--- Page \d+ ---|\[no text\]|\s", "", out):
+        raise ValueError("No readable text was found in this PDF.")
+    return out, len(scanned)
+
+
+async def ocr_key_for(request: Request, user_jwt: Optional[str], caller_id: Optional[str]) -> Optional[str]:
+    """API key for OCR: the caller's own Claude key when saved (not metered);
+    otherwise the platform key, counted against the caller's run limits."""
+    if user_jwt:
+        key = await fetch_user_api_key(user_jwt, "claude")
+    elif caller_id:
+        key = await fetch_user_api_key_by_id(caller_id, "claude")
+    else:
+        key = None
+    if key:
+        return key
+    allowed, msg = await check_rate_limit(request, user_jwt, caller_id)
+    if not allowed:
+        raise OcrError(msg, 429)
+    if caller_id:
+        await record_metered_run(caller_id, None, "ocr")
+    return None
+
+
+def _extract_xlsx(data: bytes) -> str:
+    import csv
+    import io
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    out = []
+    for ws in wb.worksheets:
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        rows = 0
+        for row in ws.iter_rows(values_only=True):
+            if row is None or all(v is None for v in row):
+                continue
+            writer.writerow(["" if v is None else v for v in row])
+            rows += 1
+        if rows:
+            out.append(f"# Sheet: {ws.title}\n{buf.getvalue()}" if len(wb.worksheets) > 1 else buf.getvalue())
+    wb.close()
+    return "\n\n".join(out)
+
+
+def _extract_docx(data: bytes) -> str:
+    import io
+    import zipfile
+    from xml.etree import ElementTree
+    ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        info = z.getinfo("word/document.xml")
+        if info.file_size > 50 * 1024 * 1024:
+            raise ValueError("Document is too large to extract")
+        root = ElementTree.fromstring(z.read(info))
+    paras = []
+    for p in root.iter(f"{ns}p"):
+        text = "".join(t.text or "" for t in p.iter(f"{ns}t"))
+        if text.strip():
+            paras.append(text)
+    return "\n".join(paras)
+
+
+@app.post("/v1/files/extract")
+async def extract_file_text(req: ExtractRequest, request: Request):
+    """Turn an uploaded PDF / XLSX / DOCX into plain text (CSV for sheets).
+    Scanned PDF pages are read with OCR."""
+    user_id = await require_verified_user(request)
+    user_jwt = request.headers.get("Authorization", "").removeprefix("Bearer ").strip() or None
+    import base64
+    try:
+        data = base64.b64decode(req.content_b64, validate=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="content_b64 is not valid base64")
+    if len(data) > MAX_EXTRACT_BYTES:
+        raise HTTPException(status_code=413, detail=f"File too large (max {MAX_EXTRACT_BYTES // (1024 * 1024)} MB)")
+    ext = req.file_name.lower().rsplit(".", 1)[-1] if "." in req.file_name else ""
+    extractor = {"pdf": _extract_pdf, "xlsx": _extract_xlsx, "xlsm": _extract_xlsx, "docx": _extract_docx}.get(ext)
+    if not extractor:
+        raise HTTPException(status_code=415, detail="Supported types: .pdf, .xlsx, .docx")
+    ocr_pages = 0
+    try:
+        if ext == "pdf":
+            text, ocr_pages = await extract_pdf_text(data, lambda: ocr_key_for(request, user_jwt, user_id))
+        else:
+            text = await asyncio.to_thread(extractor, data)
+    except OcrError as e:
+        raise HTTPException(status_code=e.status, detail=str(e))
+    except ImportError as e:
+        raise HTTPException(status_code=503, detail=f"Server is missing a parser: {e.name}")
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+        raise HTTPException(status_code=422, detail="Could not read this file — it may be corrupted or in an older format")
+    truncated = len(text) > MAX_EXTRACT_CHARS
+    return {
+        "text": text[:MAX_EXTRACT_CHARS],
+        "kind": "csv" if ext in ("xlsx", "xlsm") else "text",
+        "chars": len(text),
+        "truncated": truncated,
+        "ocr_pages": ocr_pages,
+    }
+
+
+@app.post("/v1/files/register")
+async def register_app_file(req: AppFileRegisterRequest, request: Request):
+    user_id = await require_verified_user(request)
+    auth_header = request.headers.get("Authorization", "")
+    user_jwt = auth_header.removeprefix("Bearer ").strip()
+    sb = get_supabase_for_user(user_jwt)
+    expires_at = None
+    if req.retention_days:
+        expires_at = (datetime.now(timezone.utc) + timedelta(days=req.retention_days)).isoformat()
+
+    row = {
+        "app_id": req.app_id,
+        "run_id": req.run_id,
+        "owner_id": user_id,
+        "file_kind": req.file_kind,
+        "bucket": req.bucket,
+        "storage_path": req.storage_path,
+        "file_name": req.file_name,
+        "mime_type": req.mime_type,
+        "size_bytes": req.size_bytes,
+        "metadata": req.metadata,
+        "expires_at": expires_at,
+    }
+    # insert() already returns the inserted row; supabase-py's insert builder
+    # has no .single(), so the old chained call raised on every request.
+    result = await db(sb.table("app_files").insert(row))
+    if not result.data:
+        raise HTTPException(status_code=500, detail="File was uploaded but could not be registered")
+    return result.data[0]
+
+
+@app.get("/v1/files/{file_id}/download-url")
+async def get_file_download_url(file_id: str, request: Request, expires_in: int = 600):
+    await require_verified_user(request)
+    auth_header = request.headers.get("Authorization", "")
+    user_jwt = auth_header.removeprefix("Bearer ").strip()
+    sb_user = get_supabase_for_user(user_jwt)
+    visible = await db(sb_user.table("app_files").select("bucket, storage_path").eq("id", file_id).maybe_single())
+    if not visible or not visible.data:
+        raise HTTPException(status_code=404, detail="File not found")
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        raise HTTPException(status_code=503, detail="Storage signer is not configured")
+    sb_service = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    signed = await asyncio.to_thread(
+        lambda: sb_service.storage.from_(visible.data["bucket"]).create_signed_url(
+            visible.data["storage_path"],
+            min(max(expires_in, 60), 3600),
+        )
+    )
+    if isinstance(signed, dict):
+        url = signed.get("signedURL") or signed.get("signed_url") or signed.get("signedUrl")
+    else:
+        url = getattr(signed, "signed_url", None) or getattr(signed, "signedURL", None)
+    if not url:
+        raise HTTPException(status_code=500, detail="Could not create signed URL")
+    return {"url": url, "expires_in": min(max(expires_in, 60), 3600)}
 
 
 @app.get("/credits")
@@ -1131,7 +2936,7 @@ async def run_scheduled_workspace(sb_service: Client, schedule: dict):
 
         await db(sb_service.table("run_history").insert({
             "user_id": schedule["user_id"], "app_id": step["app_id"], "app_name": step["app_name"],
-            "input": current_input, "result": full,
+            "input": current_input, "output": full,
         }))
 
         facts = await extract_facts_headless(full)
@@ -1280,6 +3085,9 @@ async def create_checkout_session(req: CheckoutSessionRequest, request: Request)
     user_id = await verify_user_jwt(user_jwt) if user_jwt else None
     if not user_id:
         raise HTTPException(status_code=401, detail="Authentication required")
+    workspace_id = await resolve_user_workspace(user_id, request.headers.get("X-Workspace-Id"))
+    if workspace_id and (await workspace_role(workspace_id, user_id)) not in BILLING_ROLES:
+        raise HTTPException(status_code=403, detail="Only workspace owners, admins and billing members can buy apps")
 
     stripe.api_key = secret_key
 
@@ -1315,7 +3123,8 @@ async def create_checkout_session(req: CheckoutSessionRequest, request: Request)
                 line_items=[{"price": price.id, "quantity": 1}],
                 success_url=req.success_url,
                 cancel_url=req.cancel_url,
-                metadata={"app_id": req.app_id, "user_id": user_id, "plan": "subscription", "run_quota": str(req.run_quota or "")},
+                metadata={"app_id": req.app_id, "user_id": user_id, "workspace_id": workspace_id or "",
+                          "plan": "subscription", "run_quota": str(req.run_quota or "")},
             )
         else:
             # One-time pay-per-run checkout
@@ -1332,7 +3141,8 @@ async def create_checkout_session(req: CheckoutSessionRequest, request: Request)
                 }],
                 success_url=req.success_url,
                 cancel_url=req.cancel_url,
-                metadata={"app_id": req.app_id, "user_id": user_id, "plan": "pay_per_run"},
+                metadata={"app_id": req.app_id, "user_id": user_id, "workspace_id": workspace_id or "",
+                          "plan": "pay_per_run"},
             )
         return {"checkout_url": session.url, "session_id": session.id}
     except stripe.error.StripeError as e:
@@ -1468,6 +3278,7 @@ async def _upsert_entitlement(
     run_quota: Optional[int] = None,
     period_start: Optional[str] = None,
     period_end: Optional[str] = None,
+    workspace_id: Optional[str] = None,
 ):
     """Upsert app_entitlements row using the service-role client (bypasses RLS)."""
     if not SUPABASE_SERVICE_ROLE_KEY:
@@ -1488,6 +3299,7 @@ async def _upsert_entitlement(
     if run_quota is not None: row["run_quota"] = run_quota
     if period_start:       row["current_period_start"] = period_start
     if period_end:         row["current_period_end"]   = period_end
+    if workspace_id:       row["workspace_id"]         = workspace_id   # else: buyer's personal workspace
 
     result = await asyncio.to_thread(
         lambda: sb.table("app_entitlements")
@@ -1591,7 +3403,7 @@ async def stripe_webhook(request: Request):
             await _upsert_entitlement(
                 app_id=app_id, user_id=user_id, plan=plan,
                 stripe_customer_id=customer_id, stripe_sub_id=sub_id,
-                run_quota=run_quota,
+                run_quota=run_quota, workspace_id=meta.get("workspace_id") or None,
             )
 
     # ── PaymentIntent (Elements flow) ───────────────────────────────────────
@@ -1848,7 +3660,7 @@ async def github_oauth_start(request: Request, token: Optional[str] = None):
         raise HTTPException(status_code=503, detail="GitHub OAuth not configured")
     # Accept token as query param (browser redirect can't set headers)
     if token:
-        user_id = extract_user_id(token)
+        user_id = await verify_user_jwt(token)
         if not user_id:
             raise HTTPException(status_code=401, detail="Invalid token")
     else:
@@ -2139,7 +3951,9 @@ async def proxy_request(body: ProxyRequest, request: Request):
 
 
 class ScrapeRequest(BaseModel):
-    url: str
+    url: str = Field(..., max_length=2048)
+    # Website apps read one page (~8k chars); Data apps fetch whole documents.
+    max_chars: int = Field(default=8000, ge=500, le=400_000)
 
 
 class SheetsRequest(BaseModel):
@@ -2188,13 +4002,34 @@ async def fetch_google_sheet(body: SheetsRequest, request: Request):
         raise HTTPException(status_code=502, detail="Could not fetch the sheet.")
 
 
+_HTML_DROP = re.compile(r"<(script|style|noscript|svg|template|iframe|nav|footer|header|form)\b[^>]*>.*?</\1\s*>",
+                        re.DOTALL | re.IGNORECASE)
+_HTML_BLOCK = re.compile(r"</?(p|div|section|article|li|ul|ol|h[1-6]|br|tr|table|blockquote|main)\b[^>]*>", re.IGNORECASE)
+
+
+def _html_to_text(page: str) -> str:
+    """Readable page text: title + meta description, then the body without
+    menus/footers/scripts, with entities decoded and paragraph breaks kept."""
+    title = re.search(r"<title[^>]*>(.*?)</title>", page, re.DOTALL | re.IGNORECASE)
+    desc = re.search(r'<meta[^>]+name=["\']description["\'][^>]+content=["\']([^"\']*)', page, re.IGNORECASE)
+    body = _HTML_DROP.sub(" ", page)
+    body = re.sub(r"<!--.*?-->", " ", body, flags=re.DOTALL)
+    body = _HTML_BLOCK.sub("\n", body)
+    body = re.sub(r"<[^>]+>", " ", body)
+    body = html_lib.unescape(body)
+    lines = [re.sub(r"[ \t\xa0]+", " ", ln).strip() for ln in body.splitlines()]
+    body = "\n".join(ln for ln in lines if ln)
+    head = [html_lib.unescape(m.group(1)).strip() for m in (title, desc) if m and m.group(1).strip()]
+    return "\n".join(head + [body]).strip()
+
+
 @app.post("/scrape")
 async def scrape_website(body: ScrapeRequest, request: Request):
     """Fetch a URL server-side and return its visible text content."""
     # Real verification instead of a bare "Bearer " prefix check (see
     # require_verified_user) — this endpoint fetches arbitrary caller-supplied
     # URLs server-side, so it needs actual auth plus SSRF protection.
-    await require_verified_user(request)
+    scrape_user_id = await require_verified_user(request)
     url = body.url.strip()
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
@@ -2204,19 +4039,40 @@ async def scrape_website(body: ScrapeRequest, request: Request):
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5",
         }
-        resp = await fetch_safely("GET", url, timeout=15, headers=headers)
+        resp = await fetch_safely("GET", url, timeout=20, headers=headers)
         resp.raise_for_status()
-        html = resp.text
+        ctype = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+        final_url = str(resp.url)
+        path = urlsplit(final_url).path.lower()
+        if len(resp.content) > MAX_EXTRACT_BYTES:
+            raise HTTPException(status_code=413, detail=f"That file is larger than {MAX_EXTRACT_BYTES // (1024 * 1024)} MB")
 
-        # Strip tags and collapse whitespace to get clean readable text
-        # (re is already imported at module level — no need to re-import per request)
-        text = re.sub(r"<script[^>]*>.*?</script>", " ", html, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r"<style[^>]*>.*?</style>", " ", text, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r"<[^>]+>", " ", text)
-        text = re.sub(r"&[a-z]+;", " ", text)
-        text = re.sub(r"\s{2,}", " ", text).strip()
+        if ctype == "application/pdf" or path.endswith(".pdf"):
+            user_jwt = request.headers.get("Authorization", "").removeprefix("Bearer ").strip() or None
+            try:
+                text, _ = await extract_pdf_text(resp.content, lambda: ocr_key_for(request, user_jwt, scrape_user_id))
+                kind = "text"
+            except OcrError as e:
+                raise HTTPException(status_code=e.status, detail=str(e))
+            except ValueError as e:      # password-protected / unreadable PDF
+                raise HTTPException(status_code=422, detail=str(e))
+        elif ctype in ("text/csv", "application/csv") or path.endswith(".csv"):
+            text, kind = resp.text, "csv"
+        elif ctype in ("application/json", "text/plain", "text/markdown") or path.endswith((".json", ".txt", ".md")):
+            text, kind = resp.text, "json" if "json" in ctype or path.endswith(".json") else "text"
+        elif "html" in ctype or not ctype:
+            text, kind = _html_to_text(resp.text), "text"
+        else:
+            raise HTTPException(status_code=415, detail=f"Can't read {ctype or 'this kind of'} content — use a web page, PDF, CSV or text URL")
 
-        return {"text": text[:8000], "url": str(resp.url)}
+        if not text.strip():
+            raise HTTPException(status_code=422, detail="The page has no readable text (it may need JavaScript to load). Try a different page.")
+        return {"text": text[: body.max_chars], "url": final_url, "kind": kind,
+                "truncated": len(text) > body.max_chars, "chars": len(text)}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except httpx.HTTPStatusError as e:
         raise HTTPException(status_code=502, detail=f"Site returned {e.response.status_code}")
     except ValueError as e:
@@ -2285,37 +4141,6 @@ async def trigger_via_webhook(token: str, request: Request):
         "steps_run": len(runnable_steps),
         "message": "Workflow triggered successfully. Results saved to run history.",
     }
-
-
-@app.get("/apps")
-async def list_apps(request: Request):
-    """Return the authenticated user's apps."""
-    user_id = await require_verified_user(request)
-    result = await asyncio.to_thread(
-        lambda: get_anon_client().table("apps")
-            .select("id, name, description, ai_model, ai_provider, is_paid, price_per_run, created_at, updated_at")
-            .eq("created_by", user_id)
-            .order("updated_at", desc=True)
-            .execute()
-    )
-    return {"apps": result.data or []}
-
-
-@app.get("/apps/{app_id}")
-async def get_app(app_id: str, request: Request):
-    """Return a single app by ID (must belong to the authenticated user)."""
-    user_id = await require_verified_user(request)
-    result = await asyncio.to_thread(
-        lambda: get_anon_client().table("apps")
-            .select("id, name, description, system_prompt, ai_model, ai_provider, is_paid, price_per_run, created_at, updated_at")
-            .eq("id", app_id)
-            .eq("created_by", user_id)
-            .maybe_single()
-            .execute()
-    )
-    if not result or not result.data:
-        raise HTTPException(status_code=404, detail="App not found")
-    return result.data
 
 
 @app.post("/apps/{app_id}/publish")

@@ -14,6 +14,8 @@ if (import.meta.env.VITE_SENTRY_DSN) {
 }
 import { initTheme } from './utils/theme.js'
 initTheme()
+import { installApiWorkspaceHeader } from './lib/workspace.js'
+installApiWorkspaceHeader()
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import './index.css'

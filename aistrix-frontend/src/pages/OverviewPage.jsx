@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../supabase'
 import { timeAgo } from '../utils'
+import { scopeToWorkspace } from '../lib/workspace'
 
 // ~$0.002 per run is a rough blended estimate across Claude/GPT-4o usage
 const COST_PER_RUN = 0.002
@@ -65,12 +66,12 @@ export default function OverviewPage({ user, onSelectApp }) {
     ] = await Promise.all([
       supabase.from('run_history').select('id', { count: 'exact', head: true }).eq('user_id', user.id),
       supabase.from('run_history').select('id', { count: 'exact', head: true }).eq('user_id', user.id).gte('created_at', startOfDay.toISOString()),
-      supabase.from('run_history').select('id, app_name, flow_name, input, created_at, rating').eq('user_id', user.id).order('created_at', { ascending: false }).limit(5),
+      supabase.from('run_history').select('id, app_name, flow_name, input, created_at, rating_value').eq('user_id', user.id).order('created_at', { ascending: false }).limit(5),
       supabase.from('apps').select('id, name, emoji, color, total_runs').eq('is_published', true).order('total_runs', { ascending: false }).limit(5),
       supabase.from('run_history').select('created_at').eq('user_id', user.id).gte('created_at', day14ago.toISOString()),
-      supabase.from('run_history').select('id', { count: 'exact', head: true }).eq('user_id', user.id).like('result', 'Backend error%'),
-      supabase.from('flows').select('id', { count: 'exact', head: true }).eq('user_id', user.id),
-      supabase.from('flows').select('id, name, emoji, steps').eq('user_id', user.id).limit(20),
+      supabase.from('run_history').select('id', { count: 'exact', head: true }).eq('user_id', user.id).like('output', 'Backend error%'),
+      scopeToWorkspace(supabase.from('flows').select('id', { count: 'exact', head: true }), user),
+      scopeToWorkspace(supabase.from('flows').select('id, name, emoji, steps'), user).limit(20),
     ])
 
     // Build 14-day chart
@@ -386,8 +387,8 @@ export default function OverviewPage({ user, onSelectApp }) {
                     <div className="flex items-center gap-2 mb-0.5">
                       <span className="text-xs font-medium text-[#6C5CE7]">{run.flow_name || run.app_name}</span>
                       <span className="text-[10px] text-slate-500">{timeAgo(run.created_at)}</span>
-                      {run.rating === 1 && <span className="text-[10px]">👍</span>}
-                      {run.rating === -1 && <span className="text-[10px]">👎</span>}
+                      {run.rating_value === 1 && <span className="text-[10px]">👍</span>}
+                      {run.rating_value === -1 && <span className="text-[10px]">👎</span>}
                     </div>
                     <p className="text-xs text-slate-400 truncate">{run.input}</p>
                   </div>

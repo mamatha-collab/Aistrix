@@ -31,7 +31,7 @@ function AnalyticsView({ app, user, onClose }) {
     async function load() {
       const { data: runs } = await supabase
         .from('run_history')
-        .select('created_at, rating, result')
+        .select('created_at, rating_value, output')
         .eq('app_id', app.id)
         .eq('user_id', user.id)
         .order('created_at', { ascending: false })
@@ -49,9 +49,9 @@ function AnalyticsView({ app, user, onClose }) {
         if (key in dayCounts) dayCounts[key]++
       })
 
-      const rated    = runs.filter(r => r.rating !== null && r.rating !== undefined)
-      const thumbsUp = rated.filter(r => r.rating === 1).length
-      const failed   = runs.filter(r => !r.result || r.result.startsWith('Error')).length
+      const rated    = runs.filter(r => r.rating_value !== null && r.rating_value !== undefined)
+      const thumbsUp = rated.filter(r => r.rating_value === 1).length
+      const failed   = runs.filter(r => !r.output || r.output.startsWith('Error')).length
 
       setData({ runs, dayCounts, rated, thumbsUp, failed })
     }
@@ -234,7 +234,7 @@ export default function DetailPanel({ app, user, onClose, onRun, onDeleted }) {
         ? <ApiAppRunner   app={currentApp} user={user} onClose={handleRunnerClose} onRun={() => { fetchStats(); setLocalTotalRuns(p => (p ?? currentApp.total_runs ?? 0) + 1); onRun?.(currentApp.id) }} />
         : currentApp.app_type === 'data'
         ? <DataAppRunner  app={currentApp} user={user} onClose={handleRunnerClose} onRun={() => { fetchStats(); setLocalTotalRuns(p => (p ?? currentApp.total_runs ?? 0) + 1); onRun?.(currentApp.id) }} />
-        : currentApp.has_memory
+        : (currentApp.has_memory || currentApp.app_type === 'chatbot')
         ? <ConversationThread app={currentApp} user={user} onClose={handleRunnerClose} />
         : currentApp.pages?.length > 0
         ? <MultiPageRunner app={currentApp} user={user} onClose={handleRunnerClose} onRun={() => { fetchStats(); setLocalTotalRuns(prev => (prev ?? currentApp.total_runs ?? 0) + 1); onRun?.(currentApp.id) }} />
@@ -367,7 +367,7 @@ export default function DetailPanel({ app, user, onClose, onRun, onDeleted }) {
           ["Favorited", stats ? (stats.favorited ? 'Yes ★' : 'No') : '...'],
           ["Last used", stats ? stats.lastUsed : '...'],
           ["AI provider", currentApp.ai_provider === 'openai' ? '🟢 OpenAI' : '🟣 Claude'],
-          ["Model", currentApp.ai_model || (currentApp.ai_provider === 'openai' ? 'gpt-4o-mini' : 'claude-sonnet-4-6')],
+          ["Model", currentApp.ai_model || (currentApp.ai_provider === 'openai' ? 'gpt-4o-mini' : 'claude-sonnet-5-5')],
         ].map(([k, v]) => (
           <div key={k} className="flex justify-between text-xs py-1.5 border-b border-white/5">
             <span className="text-slate-400">{k}</span>

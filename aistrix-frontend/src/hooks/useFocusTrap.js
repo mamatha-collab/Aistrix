@@ -42,7 +42,10 @@ export function useFocusTrap(ref, { onEscape } = {}) {
     el.addEventListener('keydown', onKeyDown)
     return () => {
       el.removeEventListener('keydown', onKeyDown)
-      prevFocus?.focus?.()
+      // Give focus back only if it's still ours (or was dropped when this
+      // closed) — not when the next popup in a flow has already taken it.
+      const active = document.activeElement
+      if (!active || active === document.body || el.contains(active)) prevFocus?.focus?.()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally mount-once; ref is stable and onEscape is read via closure
   }, [])

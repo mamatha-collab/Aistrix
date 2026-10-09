@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react'
 import { Box, Clock, KeyRound, LayoutGrid, Menu, Search, Sparkles, Workflow, X } from 'lucide-react'
 import NotificationsPanel from './NotificationsPanel'
+import WorkspaceSwitcher from './WorkspaceSwitcher'
 
 const VIEW_META = {
   apps:        { title: 'AI Apps',        subtitle: 'Build and run AI-powered apps', icon: LayoutGrid, label: 'AI APPS', buildView: true },
@@ -14,14 +15,15 @@ const VIEW_META = {
   profiles:    { title: 'Profiles',        subtitle: 'User and team profiles' },
   integrations:{ title: 'Integrations',    subtitle: 'Connect external services' },
   settings:    { title: 'Settings',        subtitle: 'Account and preferences' },
-  developer:   { title: 'Developer',       subtitle: 'API keys and developer tools' },
+  developer:   { title: 'Dev Console', subtitle: 'Portfolio, runs, keys, and revenue', label: 'AISTRIX DEV' },
   data_sources:{ title: 'Data Sources',    subtitle: 'Manage your data connections' },
   admin:       { title: 'Admin',           subtitle: 'Platform administration' },
   moderator:   { title: 'Moderator',       subtitle: 'Content moderation tools' },
   marketplace: { title: 'Marketplace',     subtitle: 'Discover AI apps built on Aistrix' },
 }
 
-export default function TopBarClean({ onShowHistory, onShowSettings, onToggleSidebar, onShowCreate, onShowWorkspace, search, onSearch, searchRef, user, onNavChange, activeView }) {
+export default function TopBarClean({ onShowHistory, onShowSettings, onToggleSidebar, onShowCreate, onShowWorkspace, search, onSearch, searchRef, user, onNavChange, activeView,
+  workspaces = [], activeWorkspace, onSwitchWorkspace, onCreateWorkspace, onManageWorkspace }) {
   const [buildOpen, setBuildOpen] = useState(false)
   const buildRef = useRef(null)
 
@@ -34,6 +36,9 @@ export default function TopBarClean({ onShowHistory, onShowSettings, onToggleSid
 
   const meta = VIEW_META[activeView] || VIEW_META.apps
   const HeaderIcon = meta.icon || Sparkles
+  const searchPlaceholder = activeView === 'developer'
+    ? 'Search apps, runs, versions…'
+    : 'Search apps, workflows, history…'
 
   return (
     <header className="app-topbar relative min-h-[72px] bg-[#121829] border-b border-white/18 flex items-center px-3 sm:px-4 md:px-6 py-3 gap-3 shrink-0">
@@ -65,7 +70,7 @@ export default function TopBarClean({ onShowHistory, onShowSettings, onToggleSid
             type="text"
             value={search}
             onChange={e => onSearch(e.target.value)}
-            placeholder="Search apps, workflows, history…"
+            placeholder={searchPlaceholder}
             aria-label="Global search"
             ref={searchRef}
             className="flex-1 min-w-0 w-full bg-transparent text-sm text-white placeholder-slate-500 focus:outline-none"
@@ -77,6 +82,8 @@ export default function TopBarClean({ onShowHistory, onShowSettings, onToggleSid
           )}
         </div>
 
+        <WorkspaceSwitcher workspaces={workspaces} active={activeWorkspace}
+          onSwitch={onSwitchWorkspace} onCreate={onCreateWorkspace} onManage={onManageWorkspace} />
         {user && <NotificationsPanel user={user} onNavChange={onNavChange} />}
         <button
           onClick={onShowHistory}
@@ -92,7 +99,7 @@ export default function TopBarClean({ onShowHistory, onShowSettings, onToggleSid
         >
           <KeyRound size={15} /> <span className="hidden md:inline">Keys</span>
         </button>
-        {activeView === 'apps' || activeView === 'flows' ? (
+        {activeView === 'developer' ? null : activeView === 'apps' || activeView === 'flows' ? (
           <button
             onClick={activeView === 'apps'
               ? onShowCreate

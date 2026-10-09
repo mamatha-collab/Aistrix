@@ -8,6 +8,7 @@ import { duplicateApp } from '../utils/appActions'
 import RunRating from '../components/RunRating'
 import { API_URL, APP_DEFAULT_FIELDS } from './flowConstants'
 import { shortModelName, mergeMemory, streamRun, sendToIntegration, extractFacts } from './flowUtils'
+import { scopeToWorkspace } from '../lib/workspace'
 
 function NativeStepForm({ schema, values, onChange }) {
   const cls = 'w-full bg-[#09101F] border border-white/18 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-400 focus:outline-none focus:border-[#6C5CE7] transition-colors'
@@ -310,22 +311,21 @@ export default function FlowRunner({ flow, user, onClose, onShowHistory, onRunCo
       if (current.app_id) {
         const { data: history } = await supabase
           .from('run_history')
-          .select('result')
+          .select('output')
           .eq('app_id', current.app_id)
           .eq('user_id', user.id)
           .order('created_at', { ascending: false })
           .limit(3)
-        if (history) priorResponses = history.map(h => h.result).filter(Boolean).reverse()
+        if (history) priorResponses = history.map(h => h.output).filter(Boolean).reverse()
       }
       const historyContext = buildHistoryContext()
       const memoryContext = buildMemoryContext()
 
       let knowledgeContext = ''
       if (flow.use_knowledge_vault) {
-        const { data: kvEntries } = await supabase
+        const { data: kvEntries } = await scopeToWorkspace(supabase
           .from('knowledge_vault')
-          .select('title, content')
-          .eq('user_id', user.id)
+          .select('title, content'), user)
           .limit(12)
         if (kvEntries?.length) {
           knowledgeContext = kvEntries.map(e => `### ${e.title}\n${e.content}`).join('\n\n')

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useTransition, Suspense, lazy } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo, useTransition, Suspense, lazy } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { supabase } from '../supabase'
@@ -11,6 +11,9 @@ import { parseSSELine } from '../lib/sse'
 import { duplicateApp, emailResult, friendlyErrorMessage } from '../utils/appActions'
 import RunRating from './RunRating'
 import { track, EVENTS } from '../lib/analytics'
+import { buildBatchRows, csvEscape, looksLikeCSV } from '../utils/csv'
+import { getInputSchemaFields, getOutputSchemaFields, parseSchemaValue, validateJsonOutput, validateSchemaObject } from '../utils/schemaContracts'
+import { scopeToWorkspace } from '../lib/workspace'
 
 // Lazy-loaded — keeps the Stripe SDK out of the main bundle until a paid app is actually run
 const PaymentModal = lazy(() => import('./PaymentModal'))
@@ -139,6 +142,8 @@ async function findNextAppRecommendation(app, userId) {
 }
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const BATCH_MAX_ROWS = 500
+const BATCH_DONE_STATUSES = new Set(['completed', 'completed_with_errors', 'stopped', 'cancelled', 'failed'])
 
 async function checkAlerts(userId, input, result, toast) {
   const { data: alerts } = await supabase
@@ -164,9 +169,9 @@ async function checkAlerts(userId, input, result, toast) {
     }
     if (alert.type === 'rating_streak') {
       const streak = Number(alert.condition.streak)
-      const { data: recent } = await supabase.from('run_history').select('rating, rating_value')
-        .eq('user_id', userId).not('rating', 'is', null).order('created_at', { ascending: false }).limit(streak)
-      if (recent?.length >= streak && recent.every(r => (r.rating_value ?? r.rating) === -1)) {
+      const { data: recent } = await supabase.from('run_history').select('rating_value')
+        .eq('user_id', userId).not('rating_value', 'is', null).order('created_at', { ascending: false }).limit(streak)
+      if (recent?.length >= streak && recent.every(r => r.rating_value === -1)) {
         triggered = true; message = `${alert.name}: ${streak} consecutive thumbs down`
       }
     }
@@ -224,7 +229,7 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
   const [model, setModel] = useState('')
   const [usage, setUsage] = useState(null) // { input_tokens, output_tokens } | null
   const [nextApp, setNextApp] = useState(null)
-  const [bulkMode, setBulkMode] = useState(false)
+  const [bulkMode, setBulkMode] = useState(app.app_type === 'batch')
   const [showPayment, setShowPayment] = useState(false)
   const [entitlement, setEntitlement] = useState(undefined) // undefined=loading, null=none, obj=found
   const [toolCalls, setToolCalls] = useState([])
@@ -232,7 +237,17 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
   const [, startTransition] = useTransition()
   const [bulkResults, setBulkResults] = useState([])
   const [bulkProgress, setBulkProgress] = useState(0)
+  const [batchCsv, setBatchCsv] = useState(false)
+  const [batchTotal, setBatchTotal] = useState(0)
+  const [batchJobId, setBatchJobId] = useState(null)
+  const [batchJobStatus, setBatchJobStatus] = useState('')
+  const batchAbortRef = useRef(null)
+  const batchResultsRef = useRef([])
+  const batchSourceRef = useRef([])   // rows as submitted (keeps CSV columns for the results file)
   const [lastRunId, setLastRunId] = useState(null)
+  const [blueprint, setBlueprint] = useState(null)
+  const [schemaErrors, setSchemaErrors] = useState([])
+  const [outputSchemaErrors, setOutputSchemaErrors] = useState([])
   const [profiles, setProfiles] = useState({ career: null, business: null, memory: [], dataSources: [] })
   const [activeContext, setActiveContext] = useState({
     career:   (app.required_context || []).includes('career_profile'),
@@ -245,6 +260,10 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
   const resultRef = useRef('')
   const rafRef = useRef(null)
   const toast = useToast()
+  const batchRows = useMemo(() => (bulkMode ? buildBatchRows(input, batchCsv) : []), [bulkMode, input, batchCsv])
+
+  // Server-side batches keep running after refresh. The UI polls while open,
+  // but the job itself is durable in the backend.
 
   useEffect(() => {
     if (!user) return
@@ -253,12 +272,26 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
         supabase.from('user_career_profiles').select('*').eq('user_id', user.id).maybeSingle(),
         supabase.from('user_business_profiles').select('*').eq('user_id', user.id).maybeSingle(),
         supabase.from('user_memory').select('key, value').eq('user_id', user.id),
-        supabase.from('user_data_sources').select('id, name, type').eq('user_id', user.id).order('created_at', { ascending: false }),
+        scopeToWorkspace(supabase.from('user_data_sources').select('id, name, type'), user).order('created_at', { ascending: false }),
       ])
       startTransition(() => setProfiles({ career: career || null, business: business || null, memory: memory || [], dataSources: dataSources || [] }))
     }
     async function loadRunStatus() {
       const appProvider = app.ai_provider || 'claude'
+      // The backend's real limits (hourly + daily) when reachable.
+      try {
+        const { data: { session } } = await supabase.auth.getSession()
+        const res = await fetch(`${API_URL}/v1/usage`, { headers: { Authorization: `Bearer ${session?.access_token}` } })
+        if (res.ok) {
+          const u = await res.json()
+          setRunStatus({
+            hasKey: u.own_provider_keys.includes(appProvider), provider: appProvider,
+            runsToday: u.daily.used, limit: u.daily.limit,
+            remaining: Math.min(u.hourly.remaining, u.daily.remaining),
+          })
+          return
+        }
+      } catch { /* fall back to the client-side estimate below */ }
       const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0)
       const [{ data: keys }, { count: runsToday }] = await Promise.all([
         supabase.from('user_api_keys').select('id').eq('user_id', user.id).eq('provider', appProvider).eq('is_active', true).limit(1),
@@ -277,9 +310,14 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
         .maybeSingle()
       setEntitlement(data ?? null)
     }
+    async function loadBlueprint() {
+      const { data } = await supabase.from('app_blueprints').select('blueprint').eq('app_id', app.id).maybeSingle()
+      setBlueprint(data?.blueprint || null)
+    }
     loadContext()
     loadRunStatus()
     loadEntitlement()
+    loadBlueprint()
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when user changes
   }, [user])
 
@@ -305,10 +343,9 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
       }
     }
     // Company Knowledge Vault — shared context across all apps
-    const { data: vaultItems } = await supabase
+    const { data: vaultItems } = await scopeToWorkspace(supabase
       .from('knowledge_vault')
-      .select('title, content')
-      .eq('user_id', user.id)
+      .select('title, content'), user)
       .eq('is_active', true)
       .order('created_at')
     if (vaultItems?.length) {
@@ -325,7 +362,9 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
     })
   }
 
-  async function runSingle(inputText, signal) {
+  // live=false is used by Batch mode: several rows run concurrently, so they
+  // must not stream into the shared single-result view.
+  async function runSingle(inputText, signal, { live = true } = {}) {
     const { data: { session } } = await supabase.auth.getSession()
     if (!session) throw new Error('Not authenticated')
 
@@ -340,20 +379,23 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
         ai_model: app.ai_model || null,
         user_context: (await buildUserContext()) || undefined,
         output_type: app.output_type || 'markdown',
+        // Form apps: lets {{Field Name}} placeholders in the prompt be filled.
+        ...(isNative ? { field_values: Object.fromEntries((app.form_schema || []).map(f => [f.label, formValues[f.id] ?? ''])) } : {}),
       }),
     })
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: 'Backend error' }))
       if (res.status === 429) throw new Error(err.error || 'Rate limit reached')
-      throw new Error(err.detail || err.error || 'Backend error')
+      throw new Error(err.error || (typeof err.detail === 'string' ? err.detail : err.detail?.message) || 'Backend error')
     }
 
     const reader = res.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
-    let finalProvider = '', finalModel = '', finalUsage = null
-    resultRef.current = ''
+    let finalProvider = '', finalModel = '', finalUsage = null, finished = false
+    let text = ''
+    if (live) resultRef.current = ''
 
     while (true) {
       const { done, value } = await reader.read()
@@ -364,24 +406,183 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
       for (const line of lines) {
         const data = parseSSELine(line)
         if (!data) continue
-        if (data.token !== undefined) { resultRef.current += data.token; scheduleFlush() }
-        if (data.tool_call) setToolCalls(prev => [...prev, { ...data.tool_call, status: 'running' }])
-        if (data.tool_result) setToolCalls(prev => prev.map(tc => tc.name === data.tool_result.name && tc.status === 'running' ? { ...tc, status: 'done', result: data.tool_result.result } : tc))
-        if (data.done) { finalProvider = data.provider; finalModel = data.model; finalUsage = data.usage || null }
+        if (data.token !== undefined) {
+          text += data.token
+          if (live) { resultRef.current = text; scheduleFlush() }
+        }
+        if (live && data.tool_call) { setHasTools(true); setToolCalls(prev => [...prev, { ...data.tool_call, status: 'running' }]) }
+        if (live && data.tool_result) setToolCalls(prev => prev.map(tc => tc.name === data.tool_result.name && tc.status === 'running' ? { ...tc, status: 'done', result: data.tool_result.result } : tc))
+        if (data.done) { finished = true; finalProvider = data.provider; finalModel = data.model; finalUsage = data.usage || null }
+        if (data.contract_error) throw new Error(`Output contract failed: ${data.contract_error.join('; ')}`)
         if (data.error) throw new Error(data.error)
       }
     }
+    if (!finished) throw new Error('The connection closed before the run finished. Please try again.')
 
-    if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
-    setResult(resultRef.current)
+    if (live) {
+      if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
+      setResult(text)
+    }
 
-    return { text: resultRef.current, provider: finalProvider, model: finalModel, usage: finalUsage }
+    return { text, provider: finalProvider, model: finalModel, usage: finalUsage }
+  }
+
+  // ── Batch mode ──────────────────────────────────────────────────────────────
+  // Batches now run as backend jobs. The UI submits, polls, and can cancel/retry,
+  // while the server keeps processing if the browser tab closes.
+  const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+  // When a job has finished (e.g. stopped on a rate limit), rows it never got
+  // to are still 'pending' on the server — show them as stopped so "Retry"
+  // offers to resume them.
+  function mapServerBatchRows(rows = [], job = null) {
+    const jobDone = job && BATCH_DONE_STATUSES.has(job.status)
+    return rows.map(r => {
+      const unfinished = jobDone && (r.status === 'pending' || r.status === 'running')
+      return {
+      input: r.input,
+      cols: batchSourceRef.current[r.idx]?.cols || null,
+      status: unfinished ? 'stopped' : r.status,
+      result: r.output || '',
+      error: r.error || (unfinished ? (job.stop_reason || `Not run — batch ${job.status}`) : ''),
+      data: r.data || null,
+      usage: (r.input_tokens || r.output_tokens) ? {
+        input_tokens: r.input_tokens,
+        output_tokens: r.output_tokens,
+      } : null,
+      }
+    })
+  }
+
+  async function batchHeaders() {
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session) throw new Error('Not authenticated')
+    return {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${session.access_token}`,
+    }
+  }
+
+  async function readBatchResults(jobId, headers) {
+    const res = await fetch(`${API_URL}/v1/batches/${jobId}/results?limit=${BATCH_MAX_ROWS}`, { headers })
+    if (!res.ok) throw new Error((await res.json().catch(() => null))?.detail || 'Could not load batch results')
+    const body = await res.json()
+    const mapped = mapServerBatchRows(body.rows || [], body.batch)
+    batchResultsRef.current = mapped
+    setBulkResults(mapped)
+    const done = (body.rows || []).filter(r => r.status === 'done' || r.status === 'error').length
+    setBulkProgress(done)
+    setBatchTotal(body.batch?.total || body.rows?.length || 0)
+    return body
+  }
+
+  async function pollServerBatch(job, headers, cancelRef) {
+    let current = job
+    setBatchJobStatus(current.status)
+    setBatchTotal(current.total || 0)
+    setBulkProgress((current.completed || 0) + (current.failed || 0))
+
+    while (!BATCH_DONE_STATUSES.has(current.status)) {
+      if (cancelRef.cancelled) return { ...current, status: 'cancelled' }
+      await sleep(1600)
+      const res = await fetch(`${API_URL}/v1/batches/${current.id}`, { headers })
+      if (!res.ok) throw new Error((await res.json().catch(() => null))?.detail || 'Could not refresh batch status')
+      current = await res.json()
+      setBatchJobStatus(current.status)
+      setBulkProgress((current.completed || 0) + (current.failed || 0))
+      await readBatchResults(current.id, headers)
+    }
+    await readBatchResults(current.id, headers)
+    return current
+  }
+
+  async function startServerBatch() {
+    const headers = await batchHeaders()
+    const body = batchCsv
+      ? { csv: input }
+      : { rows: batchRows.map(r => ({ input: r.input })) }
+    const res = await fetch(`${API_URL}/v1/apps/${app.id}/batches`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    })
+    const payload = await res.json().catch(() => ({}))
+    if (!res.ok) throw new Error(payload.error || (typeof payload.detail === 'string' ? payload.detail : [payload.detail?.message, ...(payload.detail?.errors || [])].filter(Boolean).join(' — ')) || 'Could not start the batch')
+
+    setBatchJobId(payload.id)
+    setBatchJobStatus(payload.status)
+    ;(payload.warnings || []).forEach(w => toast(w, 'info', 8000))
+
+    const cancelRef = { cancelled: false }
+    batchAbortRef.current = {
+      abort: async () => {
+        cancelRef.cancelled = true
+        try {
+          await fetch(`${API_URL}/v1/batches/${payload.id}/cancel`, { method: 'POST', headers })
+          setBatchJobStatus('cancelled')
+          toast('Batch cancelled. Completed rows stay saved.', 'info')
+        } catch {
+          toast('Could not cancel the batch. It may already be finished.', 'error')
+        }
+      },
+    }
+    return pollServerBatch(payload, headers, cancelRef)
+  }
+
+  async function finishServerBatch(job) {
+    const rows = batchResultsRef.current.length ? batchResultsRef.current : bulkResults
+    const ok = rows.filter(r => r.status === 'done').length
+    const failed = rows.filter(r => r.status === 'error').length
+    if (ok) await saveBatchOutputFile(rows)
+    if (ok) { sendNotification(app.name); onRun?.() }
+    if (job.status === 'cancelled') toast(`Batch cancelled — ${ok}/${job.total || rows.length} rows completed`, 'info')
+    else if (job.status === 'stopped') toast(`Batch stopped: ${job.stop_reason || 'limit reached'} — retry later to resume`, 'error', 8000)
+    else if (job.status === 'failed') toast(job.stop_reason || 'Batch failed — retry it later', 'error', 8000)
+    else if (failed) toast(`${ok}/${job.total || rows.length} rows succeeded — ${failed} failed. Use "Retry failed" to re-run them.`, 'error', 8000)
+    else toast(`${ok} batch runs completed server-side`, 'success')
+  }
+
+  async function retryFailedRows() {
+    setLoading(true); setError('')
+    try {
+      if (!batchJobId) {
+        toast('Start a server-side batch first, then retry incomplete rows from that job.', 'error')
+        return
+      }
+      const headers = await batchHeaders()
+      const res = await fetch(`${API_URL}/v1/batches/${batchJobId}/retry`, { method: 'POST', headers })
+      const payload = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(payload.error || (typeof payload.detail === 'string' ? payload.detail : payload.detail?.message) || 'Could not retry the batch')
+      setBatchJobStatus(payload.status)
+      await finishServerBatch(await pollServerBatch(payload, headers, { cancelled: false }))
+    } catch (e) {
+      const msg = friendlyErrorMessage(e)
+      setError(msg); toast(msg, 'error')
+    } finally {
+      batchAbortRef.current = null
+      setLoading(false)
+    }
+  }
+
+  async function loadBatchFile(file) {
+    if (!file) return
+    if (file.size > 5 * 1024 * 1024) { toast('File too large — max 5 MB for batch input', 'error'); return }
+    const text = await file.text()
+    setInput(text)
+    setBatchCsv(file.name.toLowerCase().endsWith('.csv') || looksLikeCSV(text))
+    setBulkResults([])
   }
 
   async function handleRun(overrideInput) {
     const runInput = overrideInput ?? input
     if (!runInput.trim()) return
-    setLoading(true); setResult(''); setError('')
+    const inputErrors = validateRunInput(runInput)
+    if (inputErrors.length) {
+      setSchemaErrors(inputErrors)
+      toast('Fix the input contract issues before running', 'error')
+      return
+    }
+    setLoading(true); setResult(''); setError(''); setSchemaErrors([]); setOutputSchemaErrors([])
     setProvider(''); setModel(''); setUsage(null); setBulkResults([]); setToolCalls([])
     track(EVENTS.APP_RUN_STARTED, { app_id: app.id, app_name: app.name, app_type: app.app_type, is_paid: !!app.is_paid })
 
@@ -396,34 +597,23 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
 
     try {
       if (bulkMode) {
-        const lines = input.split('\n').map(l => l.trim()).filter(Boolean)
+        clearTimeout(timeoutId) // batch rows have their own per-row timeout
+        if (!batchRows.length) throw new Error(batchCsv ? 'The CSV needs a header row and at least one data row.' : 'Add at least one input line.')
+        if (batchRows.length > BATCH_MAX_ROWS) throw new Error(`Batch Processor supports up to ${BATCH_MAX_ROWS} rows per run. Split larger jobs into smaller batches.`)
+        setBatchJobId(null)
+        setBatchJobStatus('queued')
+        setBatchTotal(batchRows.length)
         setBulkProgress(0)
-        const results = []
-        for (let i = 0; i < lines.length; i++) {
-          const { text, provider: p, model: m, usage: u } = await runSingle(lines[i], controller.signal)
-          results.push({ input: lines[i], result: text, usage: u })
-          setBulkResults([...results])
-          setBulkProgress(i + 1)
-          const runIndex = i
-          async function saveBulkHistory() {
-            const { data: row, error } = await supabase.from('run_history').insert({
-              user_id: user.id, app_id: app.id, app_name: app.name, input: lines[runIndex], output: text,
-              input_tokens: u?.input_tokens ?? null, output_tokens: u?.output_tokens ?? null,
-            }).select('id').single()
-            if (error) { toast(`Run ${runIndex + 1} completed but wasn't saved to history: ${error.message}`, 'error', 8000, { label: 'Retry', onClick: saveBulkHistory }); return }
-            results[runIndex] = { ...results[runIndex], runId: row.id }; setBulkResults([...results])
-          }
-          await saveBulkHistory()
-          await supabase.rpc('increment_app_runs', { p_app_id: app.id })
-          setProvider(p); setModel(m); setUsage(u)
-        }
-        sendNotification(app.name)
-        onRun?.()
-        toast(`${lines.length} runs completed`, 'success')
+        const pendingRows = batchRows.map(r => ({ input: r.input, cols: r.cols, status: 'pending', result: '' }))
+        batchSourceRef.current = pendingRows
+        batchResultsRef.current = pendingRows
+        setBulkResults(pendingRows)
+        await finishServerBatch(await startServerBatch())
       } else {
         const { text, provider: p, model: m, usage: u } = await runSingle(runInput, controller.signal)
         if (!text) throw new Error('No response received')
         setProvider(p); setModel(m); setUsage(u)
+        validateRunOutput(text)
 
         async function saveHistory() {
           const { data: row, error } = await supabase.from('run_history')
@@ -464,23 +654,10 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
         onRun?.()
         toast('Result saved to history', 'success')
         track(EVENTS.APP_RUN_COMPLETED, { app_id: app.id, app_name: app.name, provider: p, model: m, input_tokens: u?.input_tokens, output_tokens: u?.output_tokens, is_paid: !!app.is_paid, entitled: !!entitlement })
-        // Increment entitlement run count if entitled
+        // The server counts the run against the entitlement quota (and sends
+        // the 80% warning email); mirror it locally so the UI stays current.
         if (entitlement?.id) {
-          const newCount = (entitlement.runs_this_period ?? 0) + 1
-          await supabase.from('app_entitlements').update({ runs_this_period: newCount }).eq('id', entitlement.id)
-          setEntitlement(prev => prev ? { ...prev, runs_this_period: newCount } : prev)
-          // Fire quota-warning email at 80% usage (fire-and-forget, once per threshold cross)
-          const quota = entitlement.run_quota
-          if (quota != null && newCount === Math.floor(quota * 0.8) && newCount < quota) {
-            const { data: { session } } = await supabase.auth.getSession()
-            fetch(`${API_URL}/notify/quota-warning`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
-              body: JSON.stringify({ app_id: app.id, app_name: app.name, runs_used: newCount, run_quota: quota }),
-            }).catch(() => {})
-          }
-        } else if (app.is_paid && app.price_per_run > 0) {
-          await createNotification(user.id, { type: 'payment', title: 'Run completed', message: `${app.name} — $${app.price_per_run} charged`, link_view: 'apps' })
+          setEntitlement(prev => prev ? { ...prev, runs_this_period: (prev.runs_this_period ?? 0) + 1 } : prev)
         }
       }
     } catch (err) {
@@ -490,8 +667,56 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
       setError(msg); toast(msg, 'error')
       track(EVENTS.APP_RUN_FAILED, { app_id: app.id, app_name: app.name, error: msg })
     } finally {
+      if (bulkMode) batchAbortRef.current = null
       setLoading(false)
     }
+  }
+
+  async function saveBatchOutputFile(results) {
+    if (!results.length) return
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session) return
+    const colNames = results.find(r => r.cols)?.cols ? Object.keys(results.find(r => r.cols).cols) : null
+    const header = (colNames ? colNames.map(csvEscape) : ['input']).concat(['result', 'status', 'error', 'input_tokens', 'output_tokens', 'run_id'])
+    const csv = [header.join(',')]
+      .concat(results.map(r => [
+        ...(colNames ? colNames.map(n => csvEscape(r.cols?.[n])) : [csvEscape(r.input)]),
+        csvEscape(r.result),
+        r.status || '',
+        csvEscape(r.error || ''),
+        r.usage?.input_tokens ?? '',
+        r.usage?.output_tokens ?? '',
+        r.runId || '',
+      ].join(',')))
+      .join('\n')
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+    const path = `apps/${app.id}/users/${user.id}/outputs/batch-${Date.now()}.csv`
+    const { error: uploadError } = await supabase.storage.from('aistrix-output-files').upload(path, blob, {
+      cacheControl: '3600',
+      upsert: false,
+      contentType: 'text/csv',
+    })
+    if (uploadError) {
+      toast(`Batch completed, but output file was not stored: ${uploadError.message}`, 'error', 8000)
+      return
+    }
+    const res = await fetch(`${API_URL}/v1/files/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` },
+      body: JSON.stringify({
+        app_id: app.id,
+        file_kind: 'output',
+        bucket: 'aistrix-output-files',
+        storage_path: path,
+        file_name: `${app.name || 'batch'} results.csv`,
+        mime_type: 'text/csv',
+        size_bytes: blob.size,
+        retention_days: 30,
+        metadata: { app_type: app.app_type || 'batch', row_count: results.length, failed: results.filter(r => r.status !== 'done').length },
+      }),
+    })
+    if (!res.ok) toast('Batch completed, but output file registration failed', 'error', 8000)
+    else toast('Batch output CSV stored for 30 days', 'success')
   }
 
   const enableNotifications = useCallback(async () => {
@@ -501,6 +726,40 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
 
   const isNative = app.app_type === 'native' && Array.isArray(app.form_schema) && app.form_schema.length > 0
   const [formValues, setFormValues] = useState({})
+
+  function nativeValuesAsSchemaObject() {
+    const fields = getInputSchemaFields(blueprint || {})
+    return fields.reduce((acc, f) => {
+      const formField = (app.form_schema || []).find(x => x.id === f.field || x.label === f.description)
+      const raw = formField ? formValues[formField.id] : formValues[f.field]
+      acc[f.field] = parseSchemaValue(raw, f)
+      return acc
+    }, {})
+  }
+
+  function validateRunInput(runInput) {
+    const fields = getInputSchemaFields(blueprint || {})
+    if (!fields.length) return []
+    if (isNative) return validateSchemaObject(nativeValuesAsSchemaObject(), fields)
+    if (fields.length === 1) {
+      const f = fields[0]
+      return validateSchemaObject({ [f.field]: parseSchemaValue(runInput, f) }, fields)
+    }
+    try {
+      const parsed = JSON.parse(runInput)
+      return validateSchemaObject(parsed, fields)
+    } catch {
+      return ['This app expects structured JSON input that matches the input schema.']
+    }
+  }
+
+  function validateRunOutput(output) {
+    const fields = getOutputSchemaFields(blueprint || {})
+    const expectsJson = blueprint?.output_contract?.format === 'json' || fields.length > 0
+    if (!expectsJson || !fields.length) return
+    const result = validateJsonOutput(output, fields)
+    setOutputSchemaErrors(result.ok ? [] : result.errors)
+  }
 
   // For native apps, build the input string from form values
   function buildNativeInput() {
@@ -604,10 +863,10 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
           {/* Prompt App — standard textarea with bulk mode toggle */}
           <div className="flex items-center justify-between">
             <label className="text-xs text-slate-400">
-              {bulkMode ? 'Bulk inputs (one per line)' : 'Your input'}
+              {bulkMode ? (batchCsv ? 'Batch rows (CSV — first row is the header)' : 'Bulk inputs (one per line)') : 'Your input'}
             </label>
             <button
-              onClick={() => { setBulkMode(v => !v); setInput(''); setBulkResults([]) }}
+              onClick={() => { setBulkMode(v => !v); setInput(''); setBulkResults([]); setBatchCsv(false) }}
               className={`text-[10px] px-2 py-1 rounded-lg transition-colors ${bulkMode ? 'bg-[#6C5CE7]/20 text-[#6C5CE7]' : 'bg-[#1F2444] text-slate-400 hover:text-white'}`}>
               {bulkMode ? '⊞ Bulk ON' : '⊞ Bulk mode'}
             </button>
@@ -615,9 +874,36 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
           <textarea
             className="w-full bg-[#1F2444] border border-white/10 rounded-xl p-3 text-sm text-white placeholder-slate-500 resize-none focus:outline-none focus:border-purple-500 transition-colors"
             rows={bulkMode ? 6 : 4}
-            placeholder={bulkMode ? 'Enter one input per line...' : app.input_placeholder || PLACEHOLDERS[app.id] || 'Describe what you need...'}
+            placeholder={bulkMode ? (batchCsv ? 'name,company,notes\nAda,Acme,Wants a demo' : 'Enter one input per line...') : app.input_placeholder || PLACEHOLDERS[app.id] || 'Describe what you need...'}
             value={input}
             onChange={e => setInput(e.target.value)} />
+          {bulkMode && (
+            <div className="flex items-center gap-3 flex-wrap text-[11px] text-slate-400">
+              <label className="cursor-pointer text-[#A29BFE] hover:underline">
+                Upload CSV / TXT
+                <input type="file" accept=".csv,.txt,text/csv,text/plain" className="hidden"
+                  onChange={e => { loadBatchFile(e.target.files?.[0]); e.target.value = '' }} />
+              </label>
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input type="checkbox" checked={batchCsv} onChange={e => setBatchCsv(e.target.checked)} />
+                First row is a CSV header
+              </label>
+              <span className={batchRows.length > BATCH_MAX_ROWS ? 'text-red-400' : 'text-slate-500'}>
+                {batchRows.length} row{batchRows.length === 1 ? '' : 's'} · max {BATCH_MAX_ROWS} · runs server-side
+              </span>
+              {runStatus && !runStatus.hasKey && runStatus.remaining != null && batchRows.length > runStatus.remaining && (
+                <span className="basis-full text-amber-300">
+                  ⚠ Platform limits allow {runStatus.remaining} more run{runStatus.remaining === 1 ? '' : 's'} right now — the batch will
+                  stop after that. Add your own API key in Settings → Keys for unlimited batch runs, or use “Retry failed” later.
+                </span>
+              )}
+              {batchJobId && (
+                <span className="basis-full text-slate-500">
+                  Server batch {batchJobId.slice(0, 8)} · {batchJobStatus || 'queued'} · safe to leave this tab after it starts.
+                </span>
+              )}
+            </div>
+          )}
         </>
       )}
 
@@ -708,12 +994,18 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
         >
           {loading ? (
             bulkMode
-              ? <><span className="animate-spin inline-block">⟳</span> {bulkProgress}/{input.split('\n').filter(l=>l.trim()).length} running...</>
+              ? <><span className="animate-spin inline-block">⟳</span> {bulkProgress}/{batchTotal} {batchJobStatus || 'running'}...</>
               : <><span className="animate-spin inline-block">⟳</span> Running...</>
           ) : (
-            bulkMode ? `⊞ Run ${input.split('\n').filter(l=>l.trim()).length || 0} inputs` : '▶ Run App'
+            bulkMode ? `⊞ Start server batch (${batchRows.length})` : '▶ Run App'
           )}
         </button>
+        {bulkMode && loading && (
+          <button onClick={() => batchAbortRef.current?.abort()}
+            className="bg-[#1F2444] hover:bg-red-500/20 text-slate-300 hover:text-red-300 text-sm px-4 py-2.5 rounded-xl transition-colors">
+            Stop
+          </button>
+        )}
         {'Notification' in window && Notification.permission !== 'granted' && (
           <button onClick={enableNotifications} title="Enable notifications when run completes"
             className="bg-[#1F2444] hover:bg-[#272C52] text-slate-400 hover:text-white text-sm px-3 py-2.5 rounded-xl transition-colors">
@@ -721,6 +1013,20 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
           </button>
         )}
       </div>
+
+      {schemaErrors.length > 0 && (
+        <div className="bg-amber-500/8 border border-amber-500/20 rounded-xl p-3 space-y-1">
+          <p className="text-xs font-semibold text-amber-300">Input does not match this app's schema</p>
+          {schemaErrors.map((msg, i) => <p key={i} className="text-[11px] text-slate-300">• {msg}</p>)}
+        </div>
+      )}
+
+      {outputSchemaErrors.length > 0 && (
+        <div className="bg-red-500/8 border border-red-500/20 rounded-xl p-3 space-y-1">
+          <p className="text-xs font-semibold text-red-300">Output contract failed</p>
+          {outputSchemaErrors.map((msg, i) => <p key={i} className="text-[11px] text-slate-300">• {msg}</p>)}
+        </div>
+      )}
 
       {/* Entitlement status */}
       {app.is_paid && entitlement && (
@@ -806,10 +1112,27 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
       {/* Bulk results */}
       {bulkResults.length > 0 && (
         <div className="space-y-3">
+          {!loading && bulkResults.some(r => r.status === 'error' || r.status === 'stopped') && (
+            <div className="flex items-center justify-between gap-3 bg-red-500/10 border border-red-500/20 rounded-xl px-3 py-2">
+              <span className="text-xs text-red-300">
+                {bulkResults.filter(r => r.status === 'error' || r.status === 'stopped').length} of {bulkResults.length} rows did not complete
+              </span>
+              <button onClick={retryFailedRows} className="text-xs text-white bg-[#6C5CE7] hover:bg-[#7D6FF0] px-3 py-1 rounded-lg">
+                Retry failed
+              </button>
+            </div>
+          )}
           {bulkResults.map((r, i) => (
             <div key={i} className="bg-[#1F2444] border border-white/10 rounded-xl overflow-hidden">
               <div className="px-3 py-2 border-b border-white/5 flex items-center justify-between">
-                <span className="text-[10px] text-[#6C5CE7] font-medium">Input {i + 1}</span>
+                <span className="text-[10px] text-[#6C5CE7] font-medium">
+                  Input {i + 1}
+                  {r.status && r.status !== 'done' && (
+                    <span className={`ml-2 ${r.status === 'error' || r.status === 'stopped' ? 'text-red-400' : 'text-slate-500'}`}>
+                      {r.status === 'running' ? 'running…' : r.status}
+                    </span>
+                  )}
+                </span>
                 <div className="flex items-center gap-2">
                   {r.usage && (
                     <span className="text-[10px] text-slate-500" title="Tokens used for this run">
@@ -821,10 +1144,13 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
                 </div>
               </div>
               <div className="px-3 py-2">
-                <p className="text-[11px] text-slate-500 mb-1">{r.input}</p>
-                <div className="text-xs text-slate-200 prose-result">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{r.result}</ReactMarkdown>
-                </div>
+                <p className="text-[11px] text-slate-500 mb-1 whitespace-pre-line line-clamp-3">{r.input}</p>
+                {r.error && <p className="text-xs text-red-300">{r.error}</p>}
+                {r.result && (
+                  <div className="text-xs text-slate-200 prose-result">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{r.result}</ReactMarkdown>
+                  </div>
+                )}
               </div>
             </div>
           ))}

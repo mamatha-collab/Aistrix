@@ -7,6 +7,27 @@ import { applyTheme } from '../utils/theme'
 // imported from DetailPanel.jsx, so a static import here would make that
 // dynamic import ineffective.
 const AppRunner = lazy(() => import('../components/AppRunner'))
+const DataAppRunner = lazy(() => import('../components/DataAppRunner'))
+const ApiAppRunner = lazy(() => import('../components/ApiAppRunner'))
+const AgentRunner = lazy(() => import('../components/AgentRunner'))
+const ConversationThread = lazy(() => import('../components/ConversationThread'))
+const EmbedVisitorRunner = lazy(() => import('../components/EmbedVisitorRunner'))
+
+// Host page the widget is framed into ('' when opened directly).
+function embeddingHost() {
+  if (window.self === window.top) return ''
+  const origin = window.location.ancestorOrigins?.[0] || document.referrer || ''
+  try { return new URL(origin).hostname.toLowerCase() } catch { return 'unknown' }
+}
+
+// "example.com" also allows its subdomains (www.example.com, app.example.com).
+function hostAllowed(host, allowlist) {
+  if (!host || !Array.isArray(allowlist) || allowlist.length === 0) return true
+  return allowlist.some(raw => {
+    const d = String(raw).trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '').replace(/^\*\./, '')
+    return d && (host === d || host.endsWith(`.${d}`))
+  })
+}
 
 export default function AppEmbedPage() {
   const { id } = useParams()
@@ -42,7 +63,7 @@ export default function AppEmbedPage() {
   useEffect(() => {
     if (typeof window === 'undefined') return
     const resize = () => {
-      window.parent.postMessage({ type: 'aistrix:resize', height: document.body.scrollHeight }, '*')
+      window.parent.postMessage({ type: 'aistrix:resize', appId: id, height: document.body.scrollHeight }, '*')
     }
     const obs = new ResizeObserver(resize)
     obs.observe(document.body)
@@ -66,10 +87,14 @@ export default function AppEmbedPage() {
 
   if (loading) return <div style={css.loader}><span style={css.loaderText}>Loading...</span></div>
 
-  if (!app) return (
+  const host = embeddingHost()
+  const blockedHost = app && !hostAllowed(host, app.embed_allowed_domains)
+  const visitorAccess = app && !user && app.embed_public && !app.is_paid && app.visibility !== 'private'
+
+  if (!app || blockedHost) return (
     <div style={css.loader}>
       <div style={{ textAlign: 'center' }}>
-        <p style={css.loaderText}>App not found</p>
+        <p style={css.loaderText}>{blockedHost ? 'This widget is not enabled for this website' : 'App not found'}</p>
         <a href="https://aistrix.com" style={{ ...css.brand, opacity: 1, fontSize: 12, marginLeft: 0 }}>← Aistrix</a>
       </div>
     </div>
@@ -97,6 +122,13 @@ export default function AppEmbedPage() {
           <div style={css.gate}>
             <p style={css.gateText}>This app is private</p>
           </div>
+        ) : visitorAccess ? (
+          <Suspense fallback={null}>
+            {/* Chat apps keep the conversation (in this tab) so follow-ups work */}
+            {(app.has_memory || app.app_type === 'chatbot')
+              ? <ConversationThread app={app} user={null} inline />
+              : <EmbedVisitorRunner app={app} />}
+          </Suspense>
         ) : !user ? (
           <div style={css.gate}>
             <p style={css.gateText}>Sign in to use this app</p>
@@ -106,7 +138,15 @@ export default function AppEmbedPage() {
           </div>
         ) : (
           <Suspense fallback={null}>
-            <AppRunner app={app} user={user} inline />
+            {app.app_type === 'data'
+              ? <DataAppRunner app={app} user={user} inline />
+              : app.app_type === 'api'
+              ? <ApiAppRunner app={app} user={user} inline />
+              : app.app_type === 'agent'
+              ? <AgentRunner app={app} user={user} inline />
+              : (app.has_memory || app.app_type === 'chatbot')
+              ? <ConversationThread app={app} user={user} inline />
+              : <AppRunner app={app} user={user} inline />}
           </Suspense>
         )}
       </div>

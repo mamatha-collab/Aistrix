@@ -5,8 +5,54 @@ import OutputRenderer, { ThinkingIndicator } from './OutputRenderer'
 import { parseSSELine } from '../lib/sse'
 import RunRating from './RunRating'
 import { friendlyErrorMessage } from '../utils/appActions'
+import { normaliseUrl, readUrl } from '../lib/runStream'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+// Must stay under the backend's MAX_INPUT_LENGTH (20k chars by default).
+const CHUNK_CHARS = 15000
+const MAX_CHUNKS = 12
+const MAX_ANALYSIS_CHARS = CHUNK_CHARS * MAX_CHUNKS
+const MAX_EXTRACT_CHARS = 400000
+const BINARY_EXTS = ['pdf', 'xlsx', 'xlsm', 'docx']
+
+function fileExt(name) {
+  return name.toLowerCase().split('.').pop()
+}
+
+// Split on line boundaries; CSV chunks repeat the header so every part is
+// self-describing.
+function chunkText(text, isCsv) {
+  if (text.length <= CHUNK_CHARS) return [text]
+  const lines = text.split('\n')
+  const header = isCsv ? lines.shift() + '\n' : ''
+  const chunks = []
+  let cur = header
+  const maxPiece = CHUNK_CHARS - header.length - 1
+  for (const line of lines) {
+    // A single enormous line still has to be split somewhere.
+    const pieces = line.length > maxPiece
+      ? Array.from({ length: Math.ceil(line.length / maxPiece) }, (_, i) => line.slice(i * maxPiece, (i + 1) * maxPiece))
+      : [line]
+    for (const piece of pieces) {
+      if (cur.length + piece.length + 1 > CHUNK_CHARS && cur.length > header.length) {
+        chunks.push(cur)
+        cur = header
+      }
+      cur += piece + '\n'
+    }
+  }
+  if (cur.length > header.length) chunks.push(cur)
+  return chunks
+}
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result).split(',')[1] || '')
+    reader.onerror = () => reject(new Error('Could not read the file'))
+    reader.readAsDataURL(file)
+  })
+}
 
 const DATA_TYPES = [
   { id: 'csv',  icon: '📊', label: 'CSV / Table',  placeholder: 'Paste CSV data here:\nName,Email,Amount\nJohn,john@co.com,$500\nJane,jane@co.com,$750' },
@@ -24,6 +70,9 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
   const [fileName, setFileName] = useState('')
+  const [fileMeta, setFileMeta] = useState(null)
+  const [uploadingFile, setUploadingFile] = useState(false)
+  const [progressLabel, setProgressLabel] = useState('')
   const resultRef = useRef('')
   const rafRef = useRef(null)
   const fileInputRef = useRef(null)
@@ -36,63 +85,175 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
     rafRef.current = requestAnimationFrame(() => { setResult(resultRef.current); rafRef.current = null })
   }
 
-  function handleFile(e) {
-    const file = e.target.files?.[0]
-    if (!file) return
-    setFileName(file.name)
-    const reader = new FileReader()
-    reader.onload = ev => {
-      setRawData(ev.target?.result || '')
-      // Auto-detect type
-      if (file.name.endsWith('.csv')) setDataType('csv')
-      else if (file.name.endsWith('.json')) setDataType('json')
-      else setDataType('text')
+  async function registerStoredFile(file, path, session) {
+    const res = await fetch(`${API_URL}/v1/files/register`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
+      body: JSON.stringify({
+        app_id: app.id,
+        file_kind: 'input',
+        bucket: 'aistrix-input-files',
+        storage_path: path,
+        file_name: file.name,
+        mime_type: file.type || 'text/plain',
+        size_bytes: file.size,
+        retention_days: 30,
+        metadata: { app_type: 'data', data_type: dataType },
+      }),
+    })
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}))
+      throw new Error(body.detail || 'File uploaded, but could not be registered')
     }
-    reader.readAsText(file)
+    return res.json()
+  }
+
+  async function handleFile(e) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    const ext = fileExt(file.name)
+    const isBinary = BINARY_EXTS.includes(ext)
+    if (file.size > (isBinary ? 10 : 5) * 1024 * 1024) {
+      setError(`File is too large. Use ${isBinary ? 'PDF/Excel/Word files under 10 MB' : 'text files under 5 MB'}.`)
+      return
+    }
+    setUploadingFile(true); setError(''); setFileMeta(null)
+    setFileName(file.name)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) throw new Error('Sign in again before uploading files')
+      const safeName = file.name.replace(/[^\w.\-]+/g, '_')
+      const path = `apps/${app.id}/users/${user.id}/inputs/${Date.now()}-${safeName}`
+      const { error: uploadError } = await supabase.storage.from('aistrix-input-files').upload(path, file, {
+        cacheControl: '3600',
+        upsert: false,
+      })
+      if (uploadError) throw uploadError
+      const registered = await registerStoredFile(file, path, session)
+      setFileMeta(registered)
+
+      if (isBinary) {
+        const res = await fetch(`${API_URL}/v1/files/extract`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` },
+          body: JSON.stringify({ file_name: file.name, content_b64: await fileToBase64(file) }),
+        })
+        const body = await res.json().catch(() => ({}))
+        if (!res.ok) {
+          throw new Error(body.error || (typeof body.detail === 'string' ? body.detail : '') || `Could not read ${file.name}`)
+        }
+        setRawData(body.text || '')
+        setDataType(body.kind === 'csv' ? 'csv' : 'text')
+        if (body.ocr_pages) toast(`Read ${body.ocr_pages} scanned page${body.ocr_pages === 1 ? '' : 's'} of ${file.name} with OCR — check figures before relying on them.`, 'info', 7000)
+        if (body.truncated) toast(`Only the first ${body.text.length.toLocaleString()} characters of ${file.name} were extracted. Split larger files for best results.`, 'info', 7000)
+      } else {
+        setRawData(await file.text())
+        if (ext === 'csv') setDataType('csv')
+        else if (ext === 'json') setDataType('json')
+        else setDataType('text')
+      }
+    } catch (e) {
+      setError(friendlyErrorMessage(e))
+    } finally {
+      setUploadingFile(false)
+    }
+  }
+
+  async function streamRun(inputText, outputType, onToken) {
+    const { data: { session } } = await supabase.auth.getSession()
+    const res = await fetch(`${API_URL}/run`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
+      body: JSON.stringify({
+        app_id: app.id, input: inputText,
+        system_prompt: app.system_prompt,
+        ai_provider: app.ai_provider || 'claude',
+        ai_model: app.ai_model || null,
+        output_type: outputType,
+      }),
+    })
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}))
+      throw new Error(err.error || err.detail || `Run failed (${res.status})`)
+    }
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = '', text = '', usage = null, finished = false
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n'); buffer = lines.pop()
+      for (const line of lines) {
+        const d = parseSSELine(line)
+        if (!d) continue
+        if (d.token) { text += d.token; onToken?.(text) }
+        if (d.done) { finished = true; usage = d.usage || null }
+        if (d.contract_error) throw new Error(`Output contract failed: ${d.contract_error.join('; ')}`)
+        if (d.error) throw new Error(d.error)
+      }
+    }
+    if (!finished) throw new Error('The connection closed before the run finished. Please try again.')
+    return { text, usage }
   }
 
   async function processData() {
     if (!rawData.trim()) return
-    setLoading(true); setResult(''); setError(''); setUsage(null); setLastRunId(null)
+    setLoading(true); setResult(''); setError(''); setUsage(null); setLastRunId(null); setProgressLabel('')
     resultRef.current = ''
-    let finalUsage = null
-
-    const inputText = dataType === 'url'
-      ? `Please fetch and analyze this URL: ${rawData}`
-      : `Data type: ${currentType.label}\n\n${rawData}`
+    const outputType = app.output_type || (dataType === 'csv' ? 'table' : 'markdown')
+    const header = `Data type: ${currentType.label}${fileMeta ? `\nStored file id: ${fileMeta.id}` : ''}`
+    const live = text => { resultRef.current = text; scheduleFlush() }
 
     try {
-      const { data: { session } } = await supabase.auth.getSession()
-      const res = await fetch(`${API_URL}/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
-        body: JSON.stringify({
-          app_id: app.id, input: inputText,
-          system_prompt: app.system_prompt,
-          ai_provider: app.ai_provider || 'claude',
-          ai_model: app.ai_model || null,
-          output_type: app.output_type || (dataType === 'csv' ? 'table' : 'markdown'),
-        }),
-      })
+      let final
+      const totalUsage = { input_tokens: 0, output_tokens: 0 }
+      const addUsage = u => { if (u) { totalUsage.input_tokens += u.input_tokens || 0; totalUsage.output_tokens += u.output_tokens || 0 } }
 
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n'); buffer = lines.pop()
-        for (const line of lines) {
-          const d = parseSSELine(line)
-          if (!d) continue
-          if (d.token) { resultRef.current += d.token; scheduleFlush() }
-          if (d.done) finalUsage = d.usage || null
-          if (d.error) throw new Error(d.error)
+      // URL: read the page/document server-side, then analyse its real text
+      // (the model has no web access — asking it to "fetch" made it guess).
+      let source = rawData, sourceIsCsv = dataType === 'csv', sourceHeader = header
+      if (dataType === 'url') {
+        setProgressLabel('Reading the URL…')
+        const page = await readUrl(normaliseUrl(rawData), { maxChars: MAX_ANALYSIS_CHARS })
+        source = page.text
+        sourceIsCsv = page.kind === 'csv'
+        sourceHeader = `Data source: ${page.url}${page.truncated ? ` (first ${page.text.length.toLocaleString()} of ${page.chars.toLocaleString()} characters)` : ''}`
+        setProgressLabel('')
+      }
+      {
+        const chunks = chunkText(source, sourceIsCsv)
+        if (chunks.length > MAX_CHUNKS) {
+          throw new Error(`This data is too large for an interactive run (${source.length.toLocaleString()} chars, ${chunks.length} parts). This runner analyzes about ${MAX_ANALYSIS_CHARS.toLocaleString()} characters at a time. Trim it or split the file.`)
+        }
+        if (chunks.length === 1) {
+          final = await streamRun(`${sourceHeader}\n\n${source}`, outputType, live)
+          addUsage(final.usage)
+        } else {
+          // Map: analyse each part. Reduce: merge the partial findings using
+          // the app's own instructions and output format.
+          const notes = []
+          for (let i = 0; i < chunks.length; i++) {
+            setProgressLabel(`Analysing part ${i + 1} of ${chunks.length}…`)
+            const part = await streamRun(
+              `${sourceHeader}\nThis is part ${i + 1} of ${chunks.length} of a larger dataset. Extract every finding, figure and row-level detail relevant to the task as concise notes; a later step will merge all parts.\n\n${chunks[i]}`,
+              'markdown')
+            addUsage(part.usage)
+            notes.push(`## Part ${i + 1}\n${part.text}`)
+          }
+          setProgressLabel(`Combining ${chunks.length} parts…`)
+          final = await streamRun(
+            `${sourceHeader}\nThe data was too large for one pass, so it was analysed in ${chunks.length} parts. Combine these partial results into one complete answer to the original task. Totals and counts must cover ALL parts.\n\n${notes.join('\n\n').slice(0, CHUNK_CHARS)}`,
+            outputType, live)
+          addUsage(final.usage)
         }
       }
+
       if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
-      setResult(resultRef.current)
+      resultRef.current = final.text
+      setResult(final.text)
+      const finalUsage = totalUsage.input_tokens || totalUsage.output_tokens ? totalUsage : null
       setUsage(finalUsage)
 
       async function saveHistory() {
@@ -114,6 +275,7 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
       setError(friendlyErrorMessage(e))
     } finally {
       setLoading(false)
+      setProgressLabel('')
     }
   }
 
@@ -141,17 +303,19 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
           </label>
           {dataType !== 'url' && (
             <>
-              <button onClick={() => fileInputRef.current?.click()}
+              <button onClick={() => fileInputRef.current?.click()} disabled={uploadingFile}
                 className="text-[10px] text-slate-400 hover:text-white bg-[#1F2444] px-2.5 py-1 rounded-lg transition-colors flex items-center gap-1">
-                📁 Upload file
+                {uploadingFile ? '⟳ Uploading…' : '📁 Upload file'}
               </button>
               <input ref={fileInputRef} type="file" className="hidden"
-                accept=".csv,.txt,.json,.md,.pdf" onChange={handleFile} />
+                accept=".csv,.txt,.json,.md,.pdf,.xlsx,.xlsm,.docx" onChange={handleFile} />
             </>
           )}
         </div>
         {fileName && (
-          <p className="text-[10px] text-[#6C5CE7] mb-1.5">📎 {fileName}</p>
+          <p className="text-[10px] text-[#6C5CE7] mb-1.5">
+            📎 {fileName}{fileMeta && <span className="text-emerald-400 ml-1">· stored for 30 days</span>}
+          </p>
         )}
         {dataType === 'url' ? (
           <input className="w-full bg-[#1F2444] border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-[#6C5CE7] transition-colors font-mono"
@@ -166,6 +330,12 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
           <p className="text-[10px] text-slate-600 mt-1 text-right">
             {rawData.length.toLocaleString()} chars
             {dataType === 'csv' && ` · ~${rawData.split('\n').length} rows`}
+            {rawData.length > CHUNK_CHARS && ` · large input: processed in ${chunkText(rawData, dataType === 'csv').length} parts`}
+          </p>
+        )}
+        {dataType !== 'url' && (
+          <p className="text-[10px] text-slate-600 mt-1 leading-relaxed">
+            PDF, Word and Excel files are extracted server-side and stored for 30 days. Scanned PDF pages are read with OCR. Extraction loads up to {MAX_EXTRACT_CHARS.toLocaleString()} characters; interactive analysis handles about {MAX_ANALYSIS_CHARS.toLocaleString()} characters per run.
           </p>
         )}
       </div>
@@ -177,7 +347,7 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
 
       {error && <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-3 text-red-400 text-sm">{error}</div>}
 
-      {loading && !result && <ThinkingIndicator label="Processing data..." />}
+      {loading && !result && <ThinkingIndicator label={progressLabel || 'Processing data...'} />}
 
       {result && (
         <div className="space-y-2">

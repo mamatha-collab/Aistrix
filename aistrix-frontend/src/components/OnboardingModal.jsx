@@ -18,7 +18,7 @@ const PERSONAL_APPS = [
   { id: 'journal',  emoji: '✍️',  name: 'Daily Journal',             desc: 'Guided prompts and reflections for a meaningful journaling habit.' },
 ]
 
-export default function OnboardingModal({ onComplete }) {
+export default function OnboardingModal({ onComplete, onClose }) {
   const [step, setStep] = useState(1)
   const [useCase, setUseCase] = useState(null)      // 'work' | 'personal'
   const [selected, setSelected] = useState(new Set())
@@ -38,9 +38,22 @@ export default function OnboardingModal({ onComplete }) {
     onComplete?.(picks)
   }
 
+  function handleClose() {
+    if (onClose) onClose()
+    else onComplete?.([])
+  }
+
   return (
     <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden">
+      <div className="relative bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden">
+        <button
+          type="button"
+          onClick={handleClose}
+          aria-label="Close onboarding"
+          className="absolute top-4 right-4 z-10 text-slate-500 hover:text-white transition-colors"
+        >
+          ✕
+        </button>
 
         {/* Progress dots */}
         <div className="flex items-center gap-2 px-8 pt-6">

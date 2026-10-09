@@ -2,9 +2,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { timeAgo } from '../utils'
-import { parseSSELine } from '../lib/sse'
-
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+import { normaliseUrl, readUrl } from '../lib/runStream'
 
 export default function KnowledgeBaseEditor({ appId }) {
   const [items, setItems] = useState([])
@@ -28,38 +26,21 @@ export default function KnowledgeBaseEditor({ appId }) {
     setLoading(false)
   }
 
+  // Read the page server-side (/scrape). The model has no web access, so
+  // asking it to "fetch" a URL made it invent the content.
   async function fetchFromUrl() {
-    if (!url.trim()) return
+    const target = normaliseUrl(url)
+    if (!target) return
     setFetching(true)
     try {
-      const { data: { session } } = await supabase.auth.getSession()
-      const res = await fetch(`${API_URL}/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
-        body: JSON.stringify({
-          input: url,
-          system_prompt: 'Fetch and return the main text content of this URL. Return only the clean text content, no HTML, no navigation, no ads. If you cannot fetch it, return an error message.',
-          ai_provider: 'claude',
-          ai_model: 'claude-haiku-4-5-20251001',
-        }),
-      })
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let buf = '', full = ''
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buf += decoder.decode(value, { stream: true })
-        const lines = buf.split('\n'); buf = lines.pop()
-        for (const line of lines) {
-          const d = parseSSELine(line)
-          if (d?.token) full += d.token
-        }
-      }
-      setContent(full)
-      if (!title) setTitle(url.replace(/^https?:\/\//, '').split('/')[0])
-    } catch {
-      toast('Could not fetch URL content', 'error')
+      const page = await readUrl(target, { maxChars: 50_000 })
+      if (!page.text.trim()) throw new Error('That page has no readable text. Paste the content manually instead.')
+      setContent(page.text)
+      setUrl(page.url || target)
+      if (!title) setTitle((page.url || target).replace(/^https?:\/\//, '').split('/')[0])
+      if (page.truncated) toast(`Page is long — kept the first ${page.text.length.toLocaleString()} of ${page.chars.toLocaleString()} characters`, 'info')
+    } catch (e) {
+      toast(e.message || 'Could not fetch URL content', 'error', 6000)
     } finally {
       setFetching(false)
     }

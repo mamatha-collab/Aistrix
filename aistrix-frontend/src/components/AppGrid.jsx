@@ -1,13 +1,13 @@
-import { useState, useEffect, useMemo, lazy, Suspense } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { supabase } from '../supabase'
 import AppCard, { AppTab } from './AppCard'
 import { useToast } from '../hooks/useToast'
+import { scopeToWorkspace } from '../lib/workspace'
 
 // Lazy-loaded — both are modals only rendered behind a toggle, and AppGrid is
 // statically imported from App.jsx, so anything imported statically here
 // otherwise ends up in the main bundle even though it's never needed on
 // initial paint.
-const CreateAppModal = lazy(() => import('./CreateAppModal'))
 
 const SOLUTION_PACKS = [
   { id: 'job_search', emoji: '💼', color: '#6C5CE7', name: 'Job Search',      desc: 'Resume, cover letters, interview prep, and salary negotiation.',  tags: ['resume','career','interview','linkedin','cover letter','job','salary'] },
@@ -136,8 +136,8 @@ function DomainTemplateCard({ domain, domainApps, selectedApp, user, onSelectApp
   async function useTemplate() {
     if (!user) return
     setInstalling(true)
-    const { data: existing } = await supabase.from('flows')
-      .select('id').eq('user_id', user.id).ilike('name', `%${domain.name}%`).maybeSingle()
+    const { data: existing } = await scopeToWorkspace(supabase.from('flows').select('id'), user)
+      .ilike('name', `%${domain.name}%`).limit(1).maybeSingle()
     if (existing) {
       setInstalled(true); setInstalling(false)
       onNavChange?.('flows'); return
@@ -203,7 +203,7 @@ function DomainTemplateCard({ domain, domainApps, selectedApp, user, onSelectApp
   )
 }
 
-export default function AppGrid({ onSelectApp, selectedApp, user, search, runCounts = {}, showCreate, onCloseCreate, onOpenCreate, onBackToTypeSelector, onNavChange, deletedAppId, initialAppType = 'prompt', websitePrefilledApp, createdApp, onCreatedAppConsumed, onAppCreated }) {
+export default function AppGrid({ onSelectApp, selectedApp, user, search, runCounts = {}, onOpenCreate, onNavChange, deletedAppId, createdApp, onCreatedAppConsumed }) {
   const [domains, setDomains] = useState([])
   const [apps, setApps] = useState([])
   const [myApps, setMyApps] = useState([])
@@ -294,10 +294,9 @@ export default function AppGrid({ onSelectApp, selectedApp, user, search, runCou
 
   async function fetchMyApps() {
     if (!user) return
-    const { data } = await supabase
+    const { data } = await scopeToWorkspace(supabase
       .from('apps')
-      .select('*, domains(name, emoji, color, slug)')
-      .eq('created_by', user.id)
+      .select('*, domains(name, emoji, color, slug)'), user, 'created_by')
       .order('created_at', { ascending: false })
     if (data) setMyApps(data)
   }
@@ -318,15 +317,19 @@ export default function AppGrid({ onSelectApp, selectedApp, user, search, runCou
   }
 
   async function togglePublish(app) {
-    const { data } = await supabase
-      .from('apps')
-      .update({ is_published: !app.is_published })
-      .eq('id', app.id)
-      .select()
-      .single()
-    if (data) {
-      setMyApps(prev => prev.map(a => a.id === app.id ? { ...a, is_published: data.is_published } : a))
+    const next = !app.is_published
+    const { data, error } = await supabase.rpc('set_app_published_with_gate', { p_app_id: app.id, p_publish: next })
+    if (error) {
+      toast(error.message.includes('set_app_published_with_gate') ? 'Publish gate SQL is not installed yet' : error.message, 'error')
+      return
     }
+    const result = Array.isArray(data) ? data[0] : data
+    if (!result?.ok) {
+      toast(`Publish blocked: ${(result?.errors || ['complete the schema checklist']).join('; ')}`, 'error', 8000)
+      return
+    }
+    setMyApps(prev => prev.map(a => a.id === app.id ? { ...a, is_published: next } : a))
+    toast(next ? 'App published' : 'App set to draft', next ? 'success' : 'info', 2500)
   }
 
   async function fetchFavorites() {
@@ -385,16 +388,6 @@ export default function AppGrid({ onSelectApp, selectedApp, user, search, runCou
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      {showCreate && (
-        <Suspense fallback={null}>
-          <CreateAppModal user={user} initialType={initialAppType}
-            websitePrefilled={websitePrefilledApp}
-            onClose={onCloseCreate}
-            onBack={onBackToTypeSelector}
-            onCreated={newApp => { setApps(prev => [...prev, newApp]); onCloseCreate?.(); onAppCreated?.(newApp) }} />
-        </Suspense>
-      )}
-
       {/* ── Fixed top area ── */}
       <div className="shrink-0 px-6 pt-6">
         {/* ── Tabs + actions ── */}

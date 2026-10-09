@@ -1,9 +1,12 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
-import { parseSSELine } from '../lib/sse'
-
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+import { useFocusTrap } from '../hooks/useFocusTrap'
+import { generateJSON, streamRun } from '../lib/runStream'
+import { TOOL_DEFAULT_SCHEMAS } from '../utils/toolTypes'
+import { fieldKeyFromLabel, outputFieldsErrors } from '../utils/schemaContracts'
+import { saveAppContract } from '../utils/appContracts'
+import { TypeGuideSteps } from './TypeBuilderGuide'
 
 const QUESTIONS_SYSTEM_PROMPT = `You are an expert AI app architect on a platform called Aistrix.
 When a developer describes an app idea, generate exactly 6-8 precise clarifying questions.
@@ -11,14 +14,15 @@ When a developer describes an app idea, generate exactly 6-8 precise clarifying 
 Return ONLY valid JSON — no markdown, no explanation, just the JSON object:
 {
   "questions": [
-    { "id": "input_type", "question": "How do users provide input?", "options": ["Text / Prompt", "Structured Form", "File Upload", "API Call"] },
-    { "id": "ai_provider", "question": "Which AI provider?", "options": ["Claude (Anthropic)", "GPT (OpenAI)", "Either"] },
-    { "id": "output_format", "question": "Output format?", "options": ["Plain Text", "Markdown", "JSON", "Table"] },
+    { "id": "input_type", "question": "How do users provide input?", "options": ["Type a request", "Fill in a form", "Paste data or upload a document", "Chat back and forth"] },
+    { "id": "output_format", "question": "What should the result look like?", "options": ["Written answer", "Table", "Structured data fields"] },
+    { "id": "tone", "question": "Tone?", "options": ["Friendly", "Professional", "Concise"] },
     ... more questions tailored to the specific app described
   ]
 }
 
-Always include questions about: input method, AI provider, output format, authentication needed, pricing model, deployment.
+Always include questions about: who uses it, how they provide input (typed text, a form with fields, pasted data or a document, or a back-and-forth chat), the output format (written answer, table, structured data fields), and the tone.
+Do not ask about deployment, hosting, authentication, pricing or APIs — Aistrix handles those.
 Keep questions short. Keep options to 2-4 choices. Tailor questions to the specific app idea.`
 
 const GENERATE_SYSTEM_PROMPT = `You are an expert AI app architect for Aistrix — a no-code AI app platform.
@@ -29,15 +33,23 @@ Return ONLY valid JSON — no markdown, no explanation:
   "name": "Short memorable app name",
   "emoji": "single relevant emoji",
   "description": "One sentence describing what this app does for users",
-  "app_type": "prompt OR native",
+  "app_type": "prompt OR native OR structured OR data OR chatbot",
+  "output_type": "markdown OR table OR cards OR key_value OR json",
+  "input_placeholder": "Short example of what a user would type",
   "system_prompt": "Detailed, well-crafted system prompt that makes the AI behave correctly for this use case. Include output format instructions based on the chosen output format.",
   "ai_provider": "claude OR openai",
-  "ai_model": "claude-sonnet-4-6 OR gpt-4o-mini OR gpt-4o",
+  "ai_model": "claude-sonnet-5-5 OR gpt-4o-mini OR gpt-4o",
   "tags": ["tag1", "tag2", "tag3"],
   "form_schema": [
     // Only include if app_type is native. Array of field objects:
     // { "id": "uuid", "type": "text|textarea|number|select|date", "label": "Field label", "placeholder": "Hint", "required": true, "options": "A,B,C" }
   ],
+  "output_fields": [
+    // Only for app_type structured: the JSON fields every answer must contain.
+    // { "field": "snake_case_name", "type": "string|number|boolean|enum|string_array|number_array|object", "required": true, "description": "what it holds", "enum_values": ["only", "for", "enum"] }
+  ],
+  "greeting": "Only for app_type chatbot: the first message users see",
+  "tone": "Only for app_type chatbot: friendly OR professional OR concise OR playful OR empathetic",
   "tools": [
     // Only include if tools are genuinely needed. Each tool:
     // { "type": "search|calculator|fetch|http", "name": "fn_name", "description": "When to use this" }
@@ -46,44 +58,87 @@ Return ONLY valid JSON — no markdown, no explanation:
 }
 
 Rules:
-- Use app_type "native" if the developer wants structured form inputs (multiple distinct fields)
-- Use app_type "prompt" for single text input
-- Recommend claude-sonnet-4-6 by default unless GPT was specifically chosen
+- Use app_type "native" if users fill in several distinct fields (a form)
+- Use app_type "prompt" for a single typed request
+- Use app_type "structured" when the result must be machine-readable data fields (then output_type is "json" and output_fields is required)
+- Use app_type "data" when users paste CSV/text or upload a document to analyse
+- Use app_type "chatbot" for a back-and-forth assistant (include greeting and tone)
+- Match output_type to the requested result: "table" for tables, "markdown" for written answers
+- Recommend claude-sonnet-5-5 by default unless GPT was specifically chosen
 - Only add tools if genuinely needed (search for real-time data, calculator for math)
 - Make the system_prompt professional and detailed — this is the heart of the app`
 
-async function callAI(systemPrompt, userMessage) {
-  const { data: { session } } = await supabase.auth.getSession()
-  const res = await fetch(`${API_URL}/run`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
-    body: JSON.stringify({
-      input: userMessage,
-      system_prompt: systemPrompt,
-      ai_provider: 'claude',
-      ai_model: 'claude-sonnet-4-6',
-    }),
-  })
+const APP_TYPES = ['prompt', 'native', 'structured', 'data', 'chatbot']
+const OUTPUT_TYPES = { json: 'json', table: 'table', cards: 'cards', chart: 'chart', key_value: 'key_value', 'key-value': 'key_value', markdown: 'markdown' }
+const FIELD_TYPES = ['text', 'textarea', 'number', 'select', 'date']
+const OUTPUT_FIELD_TYPES = ['string', 'number', 'boolean', 'enum', 'string_array', 'number_array', 'object']
+const TONES = ['friendly', 'professional', 'concise', 'playful', 'empathetic']
+const MODELS = { claude: ['claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-opus-5-5'], openai: ['gpt-4o-mini', 'gpt-4o'] }
 
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = '', full = ''
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n'); buffer = lines.pop()
-    for (const line of lines) {
-      const d = parseSSELine(line)
-      if (d?.token) full += d.token
-    }
+// The model's JSON is a suggestion: coerce it into a config the app can run.
+function normaliseConfig(raw) {
+  const c = raw && typeof raw === 'object' ? raw : {}
+  if (!String(c.name || '').trim() || !String(c.system_prompt || '').trim()) {
+    throw new Error('the AI response was missing the app name or instructions. Try again.')
   }
-  return full.trim()
-}
+  let appType = APP_TYPES.includes(c.app_type) ? c.app_type : 'prompt'
+  const formSchema = (Array.isArray(c.form_schema) ? c.form_schema : [])
+    .filter(f => f && String(f.label || '').trim())
+    .map(f => ({
+      id: f.id && String(f.id).length > 8 ? f.id : crypto.randomUUID(),
+      type: FIELD_TYPES.includes(f.type) ? f.type : 'text',
+      label: String(f.label).trim().slice(0, 80),
+      placeholder: f.placeholder || '',
+      required: f.required !== false,
+      options: Array.isArray(f.options) ? f.options.join(',') : String(f.options || ''),
+    }))
+  if (appType === 'native' && !formSchema.length) appType = 'prompt'
 
-function parseJSON(raw) {
-  const cleaned = raw.replace(/^```json?\n?/i, '').replace(/\n?```$/i, '').trim()
-  return JSON.parse(cleaned)
+  const seen = new Set()
+  let outputFields = (Array.isArray(c.output_fields) ? c.output_fields : [])
+    .map(f => ({
+      field: fieldKeyFromLabel(f?.field || f?.name || ''),
+      type: OUTPUT_FIELD_TYPES.includes(f?.type) ? f.type : 'string',
+      required: f?.required !== false,
+      description: String(f?.description || '').slice(0, 200),
+      ...(f?.type === 'enum' && Array.isArray(f.enum_values) ? { enum_values: f.enum_values.map(String).filter(Boolean) } : {}),
+    }))
+    .filter(f => f.field && !seen.has(f.field) && seen.add(f.field))
+    .map(f => (f.type === 'enum' && !f.enum_values?.length ? { ...f, type: 'string' } : f))
+  if (outputFieldsErrors(outputFields)) outputFields = []
+  if (appType === 'structured' && !outputFields.length) appType = 'prompt'
+
+  const provider = c.ai_provider === 'openai' ? 'openai' : 'claude'
+  const model = MODELS[provider].includes(c.ai_model) ? c.ai_model : MODELS[provider][0]
+  let outputType = OUTPUT_TYPES[String(c.output_type || '').toLowerCase()] || 'markdown'
+  if (appType === 'structured') outputType = 'json'
+  if (appType === 'chatbot') outputType = 'markdown'
+  const tools = (Array.isArray(c.tools) ? c.tools : [])
+    .filter(t => t && TOOL_DEFAULT_SCHEMAS[t.type])
+    .map(t => ({
+      type: t.type,
+      name: fieldKeyFromLabel(t.name || t.type) || t.type,
+      description: String(t.description || `${t.type} tool`).slice(0, 300),
+    }))
+
+  return {
+    name: String(c.name).trim().slice(0, 80),
+    emoji: String(c.emoji || '🤖').slice(0, 8),
+    description: String(c.description || '').trim().slice(0, 300),
+    app_type: appType,
+    output_type: outputType,
+    system_prompt: String(c.system_prompt).trim(),
+    input_placeholder: String(c.input_placeholder || '').slice(0, 200),
+    ai_provider: provider,
+    ai_model: model,
+    tags: (Array.isArray(c.tags) ? c.tags : String(c.tags || '').split(',')).map(t => String(t).trim()).filter(Boolean).slice(0, 6),
+    form_schema: appType === 'native' ? formSchema : [],
+    output_fields: appType === 'structured' ? outputFields : [],
+    greeting: appType === 'chatbot' ? String(c.greeting || '').trim().slice(0, 1000) : '',
+    tone: appType === 'chatbot' && TONES.includes(c.tone) ? c.tone : null,
+    tools,
+    notes: c.notes || '',
+  }
 }
 
 function QuestionCard({ q, answer, onAnswer }) {
@@ -115,30 +170,14 @@ function TestRunPanel({ config }) {
     if (!input.trim()) return
     setRunning(true); setResult('')
     try {
-      const { data: { session } } = await supabase.auth.getSession()
-      const res = await fetch(`${API_URL}/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
-        body: JSON.stringify({
-          input,
-          system_prompt: config.system_prompt,
-          ai_provider: config.ai_provider || 'claude',
-          ai_model: config.ai_model || 'claude-sonnet-4-6',
-        }),
-      })
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buffer += decoder.decode(value, { stream: true })
-        const lines = buffer.split('\n'); buffer = lines.pop()
-        for (const line of lines) {
-          const d = parseSSELine(line)
-          if (d?.token) setResult(p => p + d.token)
-        }
-      }
+      await streamRun({
+        input,
+        system_prompt: config.system_prompt,
+        ai_provider: config.ai_provider || 'claude',
+        ai_model: config.ai_model || 'claude-sonnet-5-5',
+        output_type: config.output_type || 'markdown',
+        run_mode: config.app_type === 'chatbot' ? 'conversation' : undefined,
+      }, { onToken: setResult })
     } catch (e) {
       setResult('Test run failed: ' + e.message)
     } finally {
@@ -267,8 +306,12 @@ function AppPreview({ config, onSaveDraft, onPublish, onBack, saving }) {
   )
 }
 
-export default function AIAppBuilder({ user, onClose, onBack, onCreated }) {
-  const [phase, setPhase] = useState('describe')
+// `withGuide`: start on the type guide ("Start building →" moves on to
+// Describe), so the whole Build with AI flow stays in this one popup.
+export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGuide = false, embedded = false }) {
+  const panelRef = useRef(null)
+  useFocusTrap(panelRef, { onEscape: onClose })
+  const [phase, setPhase] = useState(withGuide ? 'intro' : 'describe')
   const [description, setDescription] = useState('')
   const [questions, setQuestions] = useState([])
   const [answers, setAnswers] = useState({})
@@ -284,13 +327,13 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated }) {
     setLoading(true); setError('')
     setLoadingMsg('Analyzing your idea...')
     try {
-      const raw = await callAI(QUESTIONS_SYSTEM_PROMPT, `App idea: ${description}`)
-      const parsed = parseJSON(raw)
-      setQuestions(parsed.questions || [])
+      const parsed = await generateJSON(QUESTIONS_SYSTEM_PROMPT, `App idea: ${description}`)
+      const qs = (parsed.questions || []).filter(q => q?.id && q?.question && Array.isArray(q.options) && q.options.length)
+      if (!qs.length) throw new Error('The AI did not return any questions. Try describing the app in a bit more detail.')
+      setQuestions(qs)
       setPhase('questions')
     } catch (e) {
-      setError('Could not generate questions. Please try again.')
-      console.error(e)
+      setError(`Could not generate questions: ${e.message}`)
     } finally {
       setLoading(false)
     }
@@ -307,16 +350,11 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated }) {
     try {
       const answerSummary = questions.map(q => `${q.question} → ${answers[q.id]}`).join('\n')
       const prompt = `App idea: ${description}\n\nRequirements:\n${answerSummary}`
-      const raw = await callAI(GENERATE_SYSTEM_PROMPT, prompt)
-      const config = parseJSON(raw)
-      if (config.form_schema) {
-        config.form_schema = config.form_schema.map(f => ({ ...f, id: f.id || crypto.randomUUID() }))
-      }
+      const config = normaliseConfig(await generateJSON(GENERATE_SYSTEM_PROMPT, prompt))
       setGeneratedConfig(config)
       setPhase('preview')
     } catch (e) {
-      setError('Could not generate app config. Try rephrasing your description.')
-      console.error(e)
+      setError(`Could not generate the app: ${e.message}`)
     } finally {
       setLoading(false)
     }
@@ -327,23 +365,21 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated }) {
     setSaving(publish ? 'publish' : 'draft')
     try {
       const cfg = generatedConfig
-      const outputMap = {
-        'json': 'json', 'table': 'table', 'cards': 'cards',
-        'chart': 'chart', 'key-value': 'key_value', 'key_value': 'key_value',
-      }
-      const outputType = outputMap[cfg.output_type?.toLowerCase()] || 'markdown'
-
+      const chatbot = cfg.app_type === 'chatbot'
       const { data, error: err } = await supabase.from('apps').insert({
         name: cfg.name,
         emoji: cfg.emoji || '🤖',
         description: cfg.description,
         system_prompt: cfg.system_prompt,
-        app_type: cfg.app_type || 'prompt',
-        form_schema: cfg.form_schema || [],
-        output_type: outputType,
-        ai_provider: cfg.ai_provider || 'claude',
-        ai_model: cfg.ai_model || 'claude-sonnet-4-6',
-        tags: cfg.tags || [],
+        app_type: cfg.app_type,
+        form_schema: cfg.app_type === 'native' ? cfg.form_schema : [],
+        output_type: cfg.output_type,
+        input_placeholder: cfg.input_placeholder || null,
+        ai_provider: cfg.ai_provider,
+        ai_model: cfg.ai_model,
+        tags: cfg.tags,
+        has_memory: chatbot,
+        ...(chatbot ? { greeting: cfg.greeting || null, tone: cfg.tone || null } : {}),
         is_published: publish,
         created_by: user.id,
         workflow_order: 999,
@@ -352,26 +388,31 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated }) {
 
       if (err) throw err
 
-      let toolsError = null
-      if (cfg.tools?.length > 0) {
+      const problems = []
+      if (cfg.tools.length > 0) {
         const { error } = await supabase.from('app_tools').insert(
           cfg.tools.map(t => ({
             app_id: data.id,
-            name: t.name || t.type,
-            description: t.description || `${t.type} tool`,
+            name: t.name,
+            description: t.description,
             type: t.type,
-            config: t.config || {},
-            input_schema: { type: 'object', properties: {}, required: [] },
+            config: {},
+            // The parameters the model sees — without them a search tool is
+            // called with no query and fails.
+            input_schema: TOOL_DEFAULT_SCHEMAS[t.type],
           }))
         )
-        toolsError = error
+        if (error) problems.push(`tools: ${error.message}`)
+      }
+      if (cfg.app_type === 'native' || cfg.app_type === 'structured') {
+        const error = await saveAppContract(data.id, user.id, { formSchema: data.form_schema, outputFields: cfg.output_fields })
+        if (error) problems.push(`input/output contract: ${error.message}`)
       }
 
-      // The app itself saved fine even if the tools insert below failed — don't
-      // mask that with a plain success toast (the app would silently run with
-      // no tools and no indication why).
-      if (toolsError) {
-        toast(`"${data.name}" saved, but its tools weren't: ${toolsError.message}`, 'error', 6000)
+      // The app itself saved even if a follow-up insert failed — say so
+      // instead of a plain success toast.
+      if (problems.length) {
+        toast(`"${data.name}" saved, but not its ${problems.join('; ')}`, 'error', 7000)
       } else {
         toast(publish ? `🌐 "${data.name}" published` : `⚫ "${data.name}" saved as draft`, 'success', 4000)
       }
@@ -391,24 +432,35 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated }) {
   const steps = ['describe', 'questions', 'preview']
   const stepIdx = steps.indexOf(phase)
 
-  return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-      <div className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-lg flex flex-col max-h-[90vh]">
-
+  const content = (
+    <>
         {/* Header */}
-        <div className="flex items-center justify-between p-5 border-b border-white/5">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-[#6C5CE7] to-[#E84393] flex items-center justify-center text-white font-bold text-sm">✦</div>
-            <div>
-              <p className="text-white font-semibold">Build with AI</p>
-              <p className="text-xs text-slate-400">Describe your app — AI configures everything</p>
+        <div className="px-6 pt-6 pb-5 shrink-0 border-b border-white/5">
+          <div className="flex items-start justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-[#6C5CE7] to-[#E84393] flex items-center justify-center text-white font-bold shrink-0">✦</div>
+              <div>
+                <p className="text-white font-bold text-xl leading-snug">Build with AI</p>
+                <p className="text-slate-400 text-sm mt-0.5">Describe your app — AI configures everything</p>
+              </div>
             </div>
+            {(() => {
+              // Back from Describe returns to the guide when it's part of this popup
+              const back = phase === 'intro' ? onBack : phase === 'describe' ? (withGuide ? () => setPhase('intro') : onBack) : null
+              return (
+                <button aria-label={back ? 'Back' : 'Close'} onClick={back || onClose} className="text-slate-500 hover:text-white transition-colors p-1 shrink-0 ml-4">
+                  {back ? '← Back' : '✕'}
+                </button>
+              )
+            })()}
           </div>
-          <button onClick={onBack && phase === 'describe' ? onBack : onClose} className="text-slate-500 hover:text-white transition-colors text-sm">
-            {onBack && phase === 'describe' ? '← Back' : '✕'}
-          </button>
         </div>
 
+        {/* Embedded in the type picker: steps sit in a centred column */}
+        <div className={embedded ? 'flex-1 min-h-0 w-full max-w-2xl mx-auto flex flex-col' : 'contents'}>
+        {phase === 'intro' ? (
+          <TypeGuideSteps type="ai_builder" onBack={onBack || onClose} onContinue={() => setPhase('describe')} />
+        ) : (<>
         {/* Progress bar */}
         <div className="flex gap-0 px-5 pt-4 pb-1">
           {['Describe', 'Configure', 'Preview & Save'].map((label, i) => (
@@ -507,6 +559,17 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated }) {
             <p className="text-red-400 text-xs text-center">{error}</p>
           )}
         </div>
+        </>)}
+        </div>
+    </>
+  )
+  if (embedded) return content
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+      <div ref={panelRef} role="dialog" aria-modal="true" aria-label="Build with AI"
+        className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-xl flex flex-col" style={{ maxHeight: '92vh' }}>
+
+        {content}
       </div>
     </div>
   )

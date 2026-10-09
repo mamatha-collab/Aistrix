@@ -8,6 +8,7 @@ import WorkspaceCard, { WorkflowTab } from '../flows/WorkspaceCard'
 import QuickStartTemplates, { PACK_COLORS, PACK_ICONS } from '../flows/QuickStartTemplates'
 import { GoalLauncher, WorkflowSuggestionsPanel } from '../flows/GoalLauncher'
 import { TEMPLATE_PACKS } from '../flows/flowConstants'
+import { scopeToWorkspace } from '../lib/workspace'
 
 export default function FlowsPage({ user, onShowHistory }) {
   const [flows, setFlows] = useState([])
@@ -60,7 +61,7 @@ export default function FlowsPage({ user, onShowHistory }) {
 
   useEffect(() => {
     Promise.all([
-      supabase.from('flows').select('*').eq('user_id', user.id).order('created_at', { ascending: false }),
+      scopeToWorkspace(supabase.from('flows').select('*'), user).order('created_at', { ascending: false }),
       supabase.from('apps').select('id, name, emoji, color, domain_id, domains(id, name, emoji)').order('name'),
       supabase.from('domains').select('id, name, emoji, color').order('name'),
     ]).then(async ([{ data: f }, { data: a }, { data: d }]) => {
@@ -135,7 +136,7 @@ export default function FlowsPage({ user, onShowHistory }) {
     if (error) { toast(`Couldn't install "${flow.name}": ${error.message}`, 'error'); return }
     await supabase.from('flows').update({ install_count: (flow.install_count || 0) + 1 }).eq('id', flow.id)
     toast(`"${flow.name}" installed`, 'success')
-    const { data } = await supabase.from('flows').select('*').eq('user_id', user.id).order('created_at', { ascending: false })
+    const { data } = await scopeToWorkspace(supabase.from('flows').select('*'), user).order('created_at', { ascending: false })
     if (data) setFlows(data)
     setTab('mine')
   }

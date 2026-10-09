@@ -2,8 +2,8 @@ import { useState } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 
-// Writes rating_type/rating_value/feedback_text (new schema) plus legacy `rating`
-// for backward compatibility. table defaults to run_history.
+// run_history stores rating_type/rating_value/feedback_text; thread_messages
+// only has a `rating` column. table defaults to run_history.
 export default function RunRating({ runId, table = 'run_history' }) {
   const [value, setValue] = useState(null)   // 1 | -1 | null
   const [showFeedback, setShowFeedback] = useState(false)
@@ -15,12 +15,9 @@ export default function RunRating({ runId, table = 'run_history' }) {
 
   async function submit(v, text = '') {
     setSaving(true)
-    const patch = {
-      rating: v,                   // legacy column
-      rating_type: 'thumb',
-      rating_value: v,
-      feedback_text: text || null,
-    }
+    const patch = table === 'thread_messages'
+      ? { rating: v }
+      : { rating_type: 'thumb', rating_value: v, feedback_text: text || null }
     const { error } = await supabase.from(table).update(patch).eq('id', runId)
     setSaving(false)
     if (error) { toast(error.message, 'error'); return }

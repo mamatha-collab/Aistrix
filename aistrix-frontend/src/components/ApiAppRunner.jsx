@@ -5,17 +5,18 @@ import OutputRenderer, { ThinkingIndicator } from './OutputRenderer'
 import { parseSSELine } from '../lib/sse'
 import RunRating from './RunRating'
 import { friendlyErrorMessage } from '../utils/appActions'
+import { fieldKeyFromLabel } from '../utils/schemaContracts'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
-function buildCurl(app, fieldValues, origin) {
+function buildCurl(app, fieldValues, apiUrl) {
   const body = Object.fromEntries(
     (app.form_schema || []).map(f => [
-      f.label.toLowerCase().replace(/\s+/g, '_'),
+      fieldKeyFromLabel(f.label),
       fieldValues[f.id] || (f.type === 'number' ? 0 : ''),
     ])
   )
-  return `curl -X POST ${origin}/v1/apps/${app.id}/run \\
+  return `curl -X POST ${apiUrl}/v1/apps/${app.id}/run \\
   -H "Authorization: Bearer ak_live_your_key" \\
   -H "Content-Type: application/json" \\
   -d '${JSON.stringify({ fields: body }, null, 2).replace(/\n/g, '\n  ')}'`
@@ -36,7 +37,7 @@ export default function ApiAppRunner({ app, user, onClose, onRun, inline = false
 
   const fields = app.form_schema || []
   const allFilled = fields.filter(f => f.required).every(f => fieldValues[f.id]?.trim?.() || fieldValues[f.id])
-  const curl = buildCurl(app, fieldValues, window.location.origin)
+  const curl = buildCurl(app, fieldValues, API_URL)
 
   function scheduleFlush() {
     if (rafRef.current) return
@@ -81,6 +82,7 @@ export default function ApiAppRunner({ app, user, onClose, onRun, inline = false
           if (!d) continue
           if (d.token) { resultRef.current += d.token; scheduleFlush() }
           if (d.done) finalUsage = d.usage || null
+          if (d.contract_error) throw new Error(`Output contract failed: ${d.contract_error.join('; ')}`)
           if (d.error) throw new Error(d.error)
         }
       }
@@ -116,7 +118,7 @@ export default function ApiAppRunner({ app, user, onClose, onRun, inline = false
       {/* Endpoint info */}
       <div className="bg-[#0F1225] border border-white/5 rounded-xl px-4 py-3 flex items-center gap-3">
         <span className="text-[10px] font-bold text-green-400 bg-green-400/10 px-2 py-1 rounded shrink-0">POST</span>
-        <code className="text-xs text-slate-300 font-mono truncate">{window.location.origin}/v1/apps/{app.id}/run</code>
+        <code className="text-xs text-slate-300 font-mono truncate">{API_URL}/v1/apps/{app.id}/run</code>
         <button onClick={() => window.open(`/app/${app.id}/docs`, '_blank')}
           className="text-[10px] text-[#6C5CE7] hover:underline shrink-0">docs ↗</button>
       </div>
@@ -128,7 +130,7 @@ export default function ApiAppRunner({ app, user, onClose, onRun, inline = false
           {fields.map(f => (
             <div key={f.id} className="flex items-start gap-3">
               <div className="w-32 shrink-0 pt-2.5">
-                <p className="text-xs text-white font-mono">{f.label.toLowerCase().replace(/\s+/g, '_')}</p>
+                <p className="text-xs text-white font-mono">{fieldKeyFromLabel(f.label)}</p>
                 <p className="text-[10px] text-slate-500">{f.type}{f.required ? ' · required' : ''}</p>
               </div>
               {f.type === 'select' ? (

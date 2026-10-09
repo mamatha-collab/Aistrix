@@ -1,4 +1,6 @@
 import { useState, useMemo } from 'react'
+import { supabase } from '../supabase'
+import { useToast } from '../hooks/useToast'
 
 const SIZES = [
   { id: 'compact',  label: 'Compact',   height: 400 },
@@ -34,6 +36,31 @@ export default function EmbedCodeModal({ app, onClose }) {
   const [hideHeader, setHideHeader] = useState(false)
   const [tab, setTab] = useState('iframe') // 'iframe' | 'js' | 'link'
   const [previewKey, setPreviewKey] = useState(0)
+  const [visitorAccess, setVisitorAccess] = useState(!!app.embed_public)
+  const [domainsText, setDomainsText] = useState((app.embed_allowed_domains || []).join('\n'))
+  const [savingAccess, setSavingAccess] = useState(false)
+  const toast = useToast()
+
+  async function saveAccess() {
+    const domains = domainsText.split(/[\s,]+/).map(d => d.trim().toLowerCase()
+      .replace(/^https?:\/\//, '').replace(/\/.*$/, '')).filter(Boolean)
+    const bad = domains.find(d => !/^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(d) && d !== 'localhost')
+    if (bad) { toast(`"${bad}" is not a valid domain`, 'error'); return }
+    if (visitorAccess && !domains.length) {
+      toast('Add at least one allowed domain before enabling visitor access', 'error'); return
+    }
+    setSavingAccess(true)
+    const { error } = await supabase.from('apps')
+      .update({ embed_public: visitorAccess && !app.is_paid, embed_allowed_domains: domains })
+      .eq('id', app.id)
+    setSavingAccess(false)
+    if (error) { toast(`Could not save: ${error.message}`, 'error'); return }
+    app.embed_public = visitorAccess && !app.is_paid
+    app.embed_allowed_domains = domains
+    setDomainsText(domains.join('\n'))
+    setPreviewKey(k => k + 1)
+    toast('Widget access saved', 'success')
+  }
 
   const selectedSize = SIZES.find(s => s.id === size)
   const origin = window.location.origin
@@ -70,7 +97,10 @@ export default function EmbedCodeModal({ app, onClose }) {
 
     // Auto-resize
     window.addEventListener('message', function(e) {
-      if (e.data.type === 'aistrix:resize') iframe.height = e.data.height;
+      if (e.origin !== '${origin}') return;
+      if (e.data && e.data.type === 'aistrix:resize' && e.data.appId === '${app.id}') {
+        iframe.height = Math.max(320, Number(e.data.height || ${selectedSize.height || 600}));
+      }
     });
   })();
 </script>`
@@ -150,6 +180,32 @@ export default function EmbedCodeModal({ app, onClose }) {
                   </label>
                 ))}
               </div>
+            </div>
+
+            {/* Access */}
+            <div>
+              <label className="text-xs text-slate-400 uppercase block mb-2">Access</label>
+              <label className="text-[10px] text-slate-500 block mb-1">Allowed websites (one per line)</label>
+              <textarea rows={3} value={domainsText} onChange={e => setDomainsText(e.target.value)}
+                placeholder={'example.com\nshop.example.com'}
+                className="w-full bg-[#0F1225] border border-white/10 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-600 font-mono resize-none focus:outline-none focus:border-[#6C5CE7]" />
+              <p className="text-[10px] text-slate-600 mt-1">Empty = any site can embed. A domain also covers its subdomains.</p>
+              <label className={`flex items-start gap-2 mt-3 ${app.is_paid ? 'opacity-50' : 'cursor-pointer'}`}>
+                <input type="checkbox" className="mt-0.5" disabled={app.is_paid}
+                  checked={visitorAccess && !app.is_paid} onChange={e => setVisitorAccess(e.target.checked)} />
+                <span className="text-xs text-slate-400">
+                  Let website visitors use it without an Aistrix account
+                  <span className="block text-[10px] text-slate-600 mt-0.5">
+                    {app.is_paid
+                      ? 'Not available for paid apps.'
+                      : 'Requires allowed websites. Runs are rate-limited per visitor and use your saved API key when you have one.'}
+                  </span>
+                </span>
+              </label>
+              <button onClick={saveAccess} disabled={savingAccess}
+                className="w-full mt-3 text-xs bg-[#6C5CE7] hover:bg-[#7D6FF0] disabled:opacity-40 text-white py-2 rounded-xl transition-colors">
+                {savingAccess ? 'Saving…' : 'Save access settings'}
+              </button>
             </div>
 
             {/* Preview button */}

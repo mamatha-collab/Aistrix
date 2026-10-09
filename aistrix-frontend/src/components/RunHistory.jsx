@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import { createPortal } from 'react-dom'
 import { supabase } from '../supabase'
+import { getActiveWorkspaceId } from '../lib/workspace'
 import { timeAgo } from '../utils'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -23,7 +24,7 @@ export default function RunHistory({ user, onClose, inline = false }) {
       app: e.app_name,
       date: new Date(e.created_at).toISOString(),
       input: e.input,
-      result: e.result,
+      result: e.output,
     }))
     let blob, filename
     if (fmt === 'json') {
@@ -45,10 +46,11 @@ export default function RunHistory({ user, onClose, inline = false }) {
   useEffect(() => { fetchHistory() }, [])
 
   async function fetchHistory() {
-    const { data } = await supabase
-      .from('run_history')
-      .select('*')
-      .eq('user_id', user.id)
+    // Your own runs, in the active workspace.
+    let query = supabase.from('run_history').select('*').eq('user_id', user.id)
+    const workspaceId = getActiveWorkspaceId()
+    if (workspaceId) query = query.eq('workspace_id', workspaceId)
+    const { data } = await query
       .order('created_at', { ascending: false })
       .limit(200)
     if (data) setHistory(data)
@@ -82,7 +84,7 @@ export default function RunHistory({ user, onClose, inline = false }) {
     const q = search.toLowerCase()
     const matchesSearch = !q
       || entry.input?.toLowerCase().includes(q)
-      || entry.result?.toLowerCase().includes(q)
+      || entry.output?.toLowerCase().includes(q)
       || entry.app_name?.toLowerCase().includes(q)
     return matchesApp && matchesSearch
   }), [history, search, filterApp])
@@ -181,8 +183,8 @@ export default function RunHistory({ user, onClose, inline = false }) {
                   <p className="text-xs text-slate-300 truncate">{entry.input}</p>
                 </div>
                 <div className="flex items-center gap-2 ml-3 shrink-0">
-                  {entry.rating === 1 && <span className="text-xs opacity-60">👍</span>}
-                  {entry.rating === -1 && <span className="text-xs opacity-60">👎</span>}
+                  {entry.rating_value === 1 && <span className="text-xs opacity-60">👍</span>}
+                  {entry.rating_value === -1 && <span className="text-xs opacity-60">👎</span>}
                   <button
                     onClick={e => { e.stopPropagation(); toggleCompare(entry.id) }}
                     title="Select for comparison"
@@ -212,13 +214,13 @@ export default function RunHistory({ user, onClose, inline = false }) {
                           </span>
                         )}
                         <button
-                          onClick={() => navigator.clipboard.writeText(entry.result)}
+                          onClick={() => navigator.clipboard.writeText(entry.output || '')}
                           className="text-[10px] text-slate-500 hover:text-slate-300"
                         >📋 Copy</button>
                       </div>
                     </div>
                     <div className="text-xs text-slate-200 leading-relaxed prose-result">
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.result}</ReactMarkdown>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{entry.output || ''}</ReactMarkdown>
                     </div>
                   </div>
                 </div>

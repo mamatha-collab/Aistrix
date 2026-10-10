@@ -310,7 +310,6 @@ function AppPreview({ config, onSaveDraft, onPublish, onBack, saving }) {
 // Describe), so the whole Build with AI flow stays in this one popup.
 export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGuide = false, embedded = false }) {
   const panelRef = useRef(null)
-  useFocusTrap(panelRef, { onEscape: onClose })
   const [phase, setPhase] = useState(withGuide ? 'intro' : 'describe')
   const [description, setDescription] = useState('')
   const [questions, setQuestions] = useState([])
@@ -321,6 +320,27 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGui
   const [error, setError] = useState('')
   const [saving, setSaving] = useState(null) // null | 'draft' | 'publish'
   const toast = useToast()
+
+  function closeWithWarning() {
+    const hasProgress = description.trim() || questions.length > 0 || generatedConfig
+    if (!hasProgress || window.confirm('Close Build with AI? Your unsaved app setup will be lost.')) {
+      onClose()
+    }
+  }
+
+  function goBack() {
+    if (phase === 'intro') { onBack?.(); return }
+    if (phase === 'describe') {
+      if (withGuide) setPhase('intro')
+      else onBack?.()
+      return
+    }
+    if (phase === 'questions') { setPhase('describe'); return }
+    if (phase === 'preview') setPhase('questions')
+  }
+
+  const canGoBack = phase !== 'intro' && (phase !== 'describe' || withGuide || !!onBack)
+  useFocusTrap(panelRef, { onEscape: closeWithWarning })
 
   async function handleDescribe() {
     if (!description.trim()) return
@@ -444,22 +464,25 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGui
                 <p className="text-slate-400 text-sm mt-0.5">Describe your app — AI configures everything</p>
               </div>
             </div>
-            {(() => {
-              // Back from Describe returns to the guide when it's part of this popup
-              const back = phase === 'intro' ? onBack : phase === 'describe' ? (withGuide ? () => setPhase('intro') : onBack) : null
-              return (
-                <button aria-label={back ? 'Back' : 'Close'} onClick={back || onClose} className="text-slate-500 hover:text-white transition-colors p-1 shrink-0 ml-4">
-                  {back ? '← Back' : '✕'}
-                </button>
-              )
-            })()}
+            <button aria-label="Close" onClick={closeWithWarning} className="text-slate-500 hover:text-white transition-colors p-1 shrink-0 ml-4">
+              ✕
+            </button>
           </div>
         </div>
+
+        {canGoBack && (
+          <div className="px-6 py-2 border-b border-white/5 bg-[#0F1225]/45">
+            <button onClick={goBack}
+              className="text-xs text-slate-400 hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 px-3 py-1.5 rounded-lg transition-colors">
+              ← Back
+            </button>
+          </div>
+        )}
 
         {/* Embedded in the type picker: steps sit in a centred column */}
         <div className={embedded ? 'flex-1 min-h-0 w-full max-w-2xl mx-auto flex flex-col' : 'contents'}>
         {phase === 'intro' ? (
-          <TypeGuideSteps type="ai_builder" onBack={onBack || onClose} onContinue={() => setPhase('describe')} />
+          <TypeGuideSteps type="ai_builder" onBack={goBack} onContinue={() => setPhase('describe')} />
         ) : (<>
         {/* Progress bar */}
         <div className="flex gap-0 px-5 pt-4 pb-1">
@@ -567,7 +590,8 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGui
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
       <div ref={panelRef} role="dialog" aria-modal="true" aria-label="Build with AI"
-        className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-xl flex flex-col" style={{ maxHeight: '92vh' }}>
+        className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-6xl flex flex-col overflow-hidden"
+        style={{ height: 'min(94vh, 840px)' }}>
 
         {content}
       </div>

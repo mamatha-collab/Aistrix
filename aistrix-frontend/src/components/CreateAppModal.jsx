@@ -370,7 +370,6 @@ function QualityScore({ form, appType, formSchema }) {
 // step 1), so creating an app stays in this one popup.
 export default function CreateAppModal({ user, onClose, onBack, onCreated, onUpdated, existingApp, initialType = 'prompt', websitePrefilled, withGuide = false, embedded = false }) {
   const modalRef = useRef(null)
-  useFocusTrap(modalRef, { onEscape: onClose })
   const toast = useToast()
   const isEdit = !!existingApp
   const [appType] = useState(existingApp?.app_type || initialType)
@@ -426,6 +425,27 @@ export default function CreateAppModal({ user, onClose, onBack, onCreated, onUpd
   // If the caller passed prefilled website data, skip the URL step
   const [websiteScraped, setWebsiteScraped] = useState(!!websitePrefilled)
   const [websiteSource, setWebsiteSource] = useState(null)   // { url, text } read on this form's URL step
+
+  function closeWithWarning() {
+    const hasProgress = isEdit || !intro || form.name.trim() || form.description.trim() || form.system_prompt.trim() || formSchema.length || outputFields.length || pendingTools.length
+    if (!hasProgress || window.confirm('Close app builder? Your unsaved app setup will be lost.')) {
+      onClose()
+    }
+  }
+
+  function goBack() {
+    if (intro) { onBack?.(); return }
+    if (step === 1) {
+      if (withGuide) setIntro(true)
+      else onBack?.()
+      return
+    }
+    setError('')
+    setStep(s => s - 1)
+  }
+
+  const showTopBack = !existingApp && !intro && step === 1 && (withGuide || !!onBack)
+  useFocusTrap(modalRef, { onEscape: closeWithWarning })
 
   async function scrapeWebsite() {
     const url = normaliseUrl(websiteUrl)
@@ -690,23 +710,26 @@ Return ONLY valid JSON with these fields:
                   {showPreview ? '✕ Test' : '▶ Test'}
                 </button>
               )}
-              {(() => {
-                // Back from step 1 returns to the guide when it's part of this popup
-                const back = existingApp ? null : intro ? onBack : step === 1 ? (withGuide ? () => setIntro(true) : onBack) : null
-                return (
-                  <button aria-label={back ? 'Back' : 'Close'} onClick={back || onClose} className="text-slate-500 hover:text-white transition-colors p-1">
-                    {back ? '← Back' : '✕'}
-                  </button>
-                )
-              })()}
+              <button aria-label="Close" onClick={closeWithWarning} className="text-slate-500 hover:text-white transition-colors p-1">
+                ✕
+              </button>
             </div>
           </div>
         </div>
 
+        {showTopBack && (
+          <div className="px-6 py-2 border-b border-white/5 bg-[#0F1225]/45">
+            <button onClick={goBack}
+              className="text-xs text-slate-400 hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 px-3 py-1.5 rounded-lg transition-colors">
+              ← Back
+            </button>
+          </div>
+        )}
+
         {/* Embedded in the type picker: steps sit in a centred column */}
         <div className={embedded ? 'flex-1 min-h-0 w-full max-w-2xl mx-auto flex flex-col' : 'contents'}>
         {intro ? (
-          <TypeGuideSteps type={appType} onBack={onBack || onClose} onContinue={() => setIntro(false)} />
+          <TypeGuideSteps type={appType} onBack={goBack} onContinue={() => setIntro(false)} />
         ) : (<>
         {/* Inline Preview Panel */}
         {showPreview && (
@@ -1156,7 +1179,8 @@ Return ONLY valid JSON with these fields:
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
       <div ref={modalRef} role="dialog" aria-modal="true" aria-label={isEdit ? `Edit ${typeLabel}` : `New ${typeLabel}`}
-        className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-xl flex flex-col" style={{ maxHeight: '92vh' }}>
+        className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-6xl flex flex-col overflow-hidden"
+        style={{ height: 'min(94vh, 840px)' }}>
         {content}
       </div>
     </div>

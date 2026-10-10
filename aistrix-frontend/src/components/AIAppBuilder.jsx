@@ -2,6 +2,7 @@ import { useRef, useState } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { useFocusTrap } from '../hooks/useFocusTrap'
+import { useEscapeKey } from '../hooks/useEscapeKey'
 import { generateJSON, streamRun } from '../lib/runStream'
 import { TOOL_DEFAULT_SCHEMAS } from '../utils/toolTypes'
 import { fieldKeyFromLabel, outputFieldsErrors } from '../utils/schemaContracts'
@@ -341,6 +342,8 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGui
 
   const canGoBack = phase !== 'intro' && (phase !== 'describe' || withGuide || !!onBack)
   useFocusTrap(panelRef, { onEscape: closeWithWarning })
+  // Embedded in the type picker there's no trap of our own: catch Escape first
+  useEscapeKey(closeWithWarning, embedded)
 
   async function handleDescribe() {
     if (!description.trim()) return

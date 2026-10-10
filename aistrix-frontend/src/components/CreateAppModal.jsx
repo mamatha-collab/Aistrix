@@ -1,6 +1,7 @@
 import { useState, useEffect, useTransition, useRef } from 'react'
 import { supabase } from '../supabase'
 import { useFocusTrap } from '../hooks/useFocusTrap'
+import { useEscapeKey } from '../hooks/useEscapeKey'
 import { TypeGuideSteps } from './TypeBuilderGuide'
 import { useToast } from '../hooks/useToast'
 import { generateJSON, normaliseUrl, readUrl, streamRun } from '../lib/runStream'
@@ -446,6 +447,8 @@ export default function CreateAppModal({ user, onClose, onBack, onCreated, onUpd
 
   const showTopBack = !existingApp && !intro && step === 1 && (withGuide || !!onBack)
   useFocusTrap(modalRef, { onEscape: closeWithWarning })
+  // Embedded in the type picker there's no trap of our own: catch Escape first
+  useEscapeKey(closeWithWarning, embedded)
 
   async function scrapeWebsite() {
     const url = normaliseUrl(websiteUrl)

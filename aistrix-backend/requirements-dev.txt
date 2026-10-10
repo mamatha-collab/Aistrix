@@ -1,0 +1,4 @@
+-r requirements.txt
+
+# Tests: pytest tests/  (from aistrix-backend/)
+pytest==9.1.1

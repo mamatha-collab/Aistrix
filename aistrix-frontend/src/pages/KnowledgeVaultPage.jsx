@@ -33,6 +33,7 @@ export default function KnowledgeVaultPage({ user }) {
   const fileRef = useRef(null)
   const toast = useToast()
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when user.id changes
   useEffect(() => { load() }, [user.id])
 
   async function load() {

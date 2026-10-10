@@ -68,7 +68,7 @@ export default function AppEmbedPage() {
     const obs = new ResizeObserver(resize)
     obs.observe(document.body)
     return () => obs.disconnect()
-  }, [])
+  }, [id])
 
   const css = {
     root: { minHeight: '100vh', background: bgColor, color: textColor, fontFamily: 'Inter, system-ui, sans-serif', padding: 0, margin: 0 },

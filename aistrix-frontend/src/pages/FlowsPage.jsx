@@ -82,6 +82,7 @@ export default function FlowsPage({ user, onShowHistory }) {
         }
       }
     })
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when user.id changes
   }, [user.id])
 
   async function loadShared() {

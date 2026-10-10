@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../supabase'
-import { useToast } from '../hooks/useToast'
 import { streamRun } from './flowUtils'
 import { APP_DEFAULT_FIELDS, EMOJIS, GPT_PROVIDERS } from './flowConstants'
 

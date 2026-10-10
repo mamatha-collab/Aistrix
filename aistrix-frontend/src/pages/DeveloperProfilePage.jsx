@@ -303,7 +303,7 @@ function Field({ label, value, onChange, placeholder, textarea }) {
   )
 }
 
-function SetupCard({ sql, onRetry, label }) {
+function SetupCard({ onRetry, label }) {
   return (
     <div className="bg-[#171B33] border border-[#6C5CE7]/20 rounded-2xl p-5 space-y-3 text-center">
       <div className="text-3xl">👤</div>

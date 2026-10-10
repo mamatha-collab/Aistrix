@@ -136,7 +136,6 @@ export default function PaymentModal({ app, user, onSuccess, onClose }) {
   const [plan, setPlan] = useState('pay_per_run')   // pay_per_run | subscription
   const [checkoutLoading, setCheckoutLoading] = useState(false)
   const [checkoutError, setCheckoutError] = useState('')
-  const toast = useToast()
 
   // Track modal open
   useState(() => { track(EVENTS.PAYMENT_MODAL_OPENED, { app_id: app.id, app_name: app.name, price: app.price_per_run }) })

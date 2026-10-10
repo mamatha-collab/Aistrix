@@ -20,7 +20,7 @@ const CATEGORY_ICONS = {
 export function MarketplacePage() {
   const [listings, setListings]     = useState(null)
   const [category, setCategory]     = useState('All')
-  const [search, setSearch]         = useState('')
+  const [search]                    = useState('')
   const navigate = useNavigate()
 
   useEffect(() => {
@@ -232,7 +232,7 @@ export function MarketplaceAppPage({ appId }) {
       const { data: revData, error: revErr } = await supabase.from('app_reviews')
         .select('rating, review_text, created_at, user_id').eq('app_id', id).order('created_at', { ascending: false }).limit(10)
       if (!revErr) setReviews(revData || [])
-    } catch (_) {}
+    } catch {}
   }
 
   async function startCheckout(plan = 'pay_per_run') {

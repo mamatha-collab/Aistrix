@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { createPortal } from 'react-dom'
-import Editor, { loader } from '@monaco-editor/react'
+import Editor from '@monaco-editor/react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 
@@ -98,7 +98,7 @@ function registerAistrixLang(monaco) {
       root: [
         [/\{\{[^}]+\}\}/, 'aistrix-variable'],
         [/#.*$/, 'comment'],
-        [/[^\{#]+/, 'text'],
+        [/[^{#]+/, 'text'],
         [/\{/, 'text'],
       ],
     },
@@ -168,7 +168,7 @@ function parseSSELine(line) {
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
-export default function PromptStudio({ app: initialApp, user, onClose, onSaved, mode = 'modal' }) {
+export default function PromptStudio({ app: initialApp, onClose, onSaved, mode = 'modal' }) {
   const [prompt, setPrompt]       = useState(initialApp.system_prompt || '')
   const [saving, setSaving]       = useState(false)
   const [dirty, setDirty]         = useState(false)

@@ -5,7 +5,8 @@ import { track, EVENTS } from '../lib/analytics'
 import { timeAgo } from '../utils'
 import ToolsEditor from '../components/ToolsEditor'
 import TestSuite from '../components/TestSuite'
-import VersionManager, { useVersions, VersionSetupCard } from '../components/VersionManager'
+import VersionManager, { VersionSetupCard } from '../components/VersionManager'
+import { useVersions } from '../hooks/useVersions'
 import ApiKeysManager from '../components/ApiKeysManager'
 import { scopeToWorkspace } from '../lib/workspace'
 import NotificationsPanel from '../components/NotificationsPanel'
@@ -75,38 +76,10 @@ const APP_TYPE_META = {
   website:   { label: 'Website',   icon: '🌐', color: '#00CEC9', bg: 'rgba(0,206,201,0.12)',   border: 'rgba(0,206,201,0.3)'   },
   multipage: { label: 'Multi-page',icon: '📄', color: '#6C5CE7', bg: 'rgba(108,92,231,0.12)',  border: 'rgba(108,92,231,0.25)' },
 }
-const APP_TYPE_LABELS = Object.fromEntries(Object.entries(APP_TYPE_META).map(([k,v]) => [k, v.label + ' app']))
 
 function getAppTypeLabel(app) {
   const key = app?.app_type || app?.type
   return APP_TYPE_META[key]?.label ? APP_TYPE_META[key].label + ' app' : 'AI app'
-}
-
-function AppTypeBadge({ app, size = 'sm' }) {
-  const key = app?.app_type || app?.type
-  const meta = APP_TYPE_META[key] || { label: 'AI', icon: '✨', color: '#A29BFE', bg: 'rgba(108,92,231,0.15)', border: 'rgba(108,92,231,0.3)' }
-  if (size === 'xs') return (
-    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-semibold whitespace-nowrap"
-      style={{ color: meta.color, background: meta.bg, border: `1px solid ${meta.border}` }}>
-      <span className="leading-none" style={{ fontSize: 10 }}>{meta.icon}</span>
-      {meta.label}
-    </span>
-  )
-  return (
-    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg text-xs font-semibold whitespace-nowrap"
-      style={{ color: meta.color, background: meta.bg, border: `1px solid ${meta.border}` }}>
-      <span className="leading-none">{meta.icon}</span>
-      {meta.label}
-    </span>
-  )
-}
-
-function AppTypeSup({ app }) {
-  const key = app?.app_type || app?.type
-  const meta = APP_TYPE_META[key] || { icon: '✨', color: '#A29BFE' }
-  return (
-    <sup className="mr-0.5 text-[9px] leading-none align-super" style={{ color: meta.color }}>{meta.icon}</sup>
-  )
 }
 
 function AppEmojiWithType({ app, size = 'sm' }) {
@@ -123,11 +96,6 @@ function AppEmojiWithType({ app, size = 'sm' }) {
       </span>
     </span>
   )
-}
-
-function compactModelName(model = '') {
-  if (!model) return 'No model selected'
-  return model.split('-').slice(0, 4).join('-')
 }
 
 const DEV_PHASES = {
@@ -548,93 +516,6 @@ const TAB_NOTES = {
       'Apps should fail with a friendly missing-secret message instead of exposing raw provider errors or secret names to end users.',
     ],
   },
-}
-
-function TabNote({ id }) {
-  const [open, setOpen] = useState(false)
-  const note = TAB_NOTES[id]
-  if (!note) return null
-  const shortLabel = note.title.replace('How ', '').replace(' works technically', '').replace(' works', '')
-
-  return (
-    <div className="flex items-start gap-0 h-full">
-      {/* Vertical tile — click to toggle */}
-      <button
-        onClick={() => setOpen(v => !v)}
-        className={`flex flex-col items-center justify-start gap-3 pt-5 w-9 shrink-0 h-full transition-colors rounded-l-xl ${open ? 'bg-white/5' : 'hover:bg-white/4'}`}
-        title={open ? 'Close' : note.title}
-      >
-        {/* Accent bar */}
-        <div className="w-[3px] rounded-full transition-all duration-200" style={{ background: note.color, height: open ? 48 : 28, opacity: open ? 1 : 0.7 }} />
-        {/* Rotated label */}
-        <span
-          className="text-[11px] font-semibold whitespace-nowrap select-none"
-          style={{ writingMode: 'vertical-rl', color: open ? note.color : 'rgb(148 163 184)', letterSpacing: '0.06em' }}
-        >
-          {shortLabel}
-        </span>
-        {/* Chevron hint */}
-        <span className="text-[9px] transition-colors" style={{ color: open ? note.color : 'rgb(100 116 139)' }}>
-          {open ? '›' : '‹'}
-        </span>
-      </button>
-
-      {/* Panel — only visible when open */}
-      {open && (
-        <div
-          className="w-64 rounded-r-2xl rounded-bl-2xl border p-4 space-y-3"
-          style={{ background: note.color + '0D', borderColor: note.color + '30' }}
-        >
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <div className="w-2 h-2 rounded-full shrink-0" style={{ background: note.color }} />
-              <p className="text-xs font-bold text-white">{note.title}</p>
-            </div>
-            <button onClick={() => setOpen(false)} className="text-slate-400 hover:text-white text-sm leading-none transition-colors">✕</button>
-          </div>
-          <ul className="space-y-2">
-            {note.points.map((pt, i) => (
-              <li key={i} className="flex gap-2 text-xs text-slate-300 leading-relaxed">
-                <span className="shrink-0 mt-0.5 font-bold" style={{ color: note.color }}>›</span>
-                {/* Safe: pt is a developer-authored constant, never user input */}
-                <span dangerouslySetInnerHTML={{ __html: pt.replace(/\*\*(.+?)\*\*/g, `<strong class="text-white font-semibold">$1</strong>`) }} />
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function TabNoteBar({ id }) {
-  const [open, setOpen] = useState(false)
-  const note = TAB_NOTES[id]
-  if (!note) return null
-  return (
-    <div className="border-b border-white/5">
-      <button
-        onClick={() => setOpen(v => !v)}
-        className="w-full flex items-center gap-2 px-4 py-3 hover:bg-white/4 transition-colors text-left"
-      >
-        <div className="w-2 h-2 rounded-full shrink-0" style={{ background: note.color }} />
-        <span className="text-xs font-semibold flex-1 truncate" style={{ color: note.color }}>{note.title}</span>
-        <span className="text-slate-500 text-[10px]">{open ? '▲' : '▼'}</span>
-      </button>
-      {open && (
-        <div className="px-4 pb-4 space-y-2">
-          <ul className="space-y-2">
-            {note.points.map((pt, i) => (
-              <li key={i} className="flex gap-2 text-[11px] text-slate-300 leading-relaxed">
-                <span className="shrink-0 mt-0.5 font-bold" style={{ color: note.color }}>›</span>
-                <span dangerouslySetInnerHTML={{ __html: pt.replace(/\*\*(.+?)\*\*/g, `<strong class="text-white font-semibold">$1</strong>`) }} />
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </div>
-  )
 }
 
 function TabNoteFolderTab({ id }) {
@@ -1706,7 +1587,7 @@ function DeploymentBlueprintPanel({ app, bp, setBp }) {
       await navigator.clipboard.writeText(manifestText)
       setCopied(true)
       setTimeout(() => setCopied(false), 1800)
-    } catch (_) {}
+    } catch {}
   }
   function downloadManifest() {
     const ext = manifestTab === 'json' ? 'json' : 'yaml'
@@ -2057,7 +1938,7 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
   const toast   = useToast()
   const [bp, setBp]           = useState(null)   // null = loading
   const [savedBp, setSavedBp] = useState(null)
-  const [bpProd, setBpProd]   = useState(null)   // last promoted snapshot
+  const [, setBpProd]         = useState(null)   // last promoted snapshot
   const [tableNeeded, setTableNeeded] = useState(false)
   const [saving, setSaving]   = useState(false)
   const [savingModel, setSavingModel] = useState(false)
@@ -2196,7 +2077,7 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
         const lines = buf.split('\n'); buf = lines.pop()
         for (const line of lines) {
           if (!line.startsWith('data: ')) continue
-          try { const d = JSON.parse(line.slice(6)); if (d.token) { raw += d.token; setCopilotOutput(raw) } } catch (_) {}
+          try { const d = JSON.parse(line.slice(6)); if (d.token) { raw += d.token; setCopilotOutput(raw) } } catch {}
         }
       }
       // Try to parse and apply
@@ -2219,7 +2100,7 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
         if (parsed.marketplace_tagline) extras.marketplace_tagline = parsed.marketplace_tagline
         if (Object.keys(extras).length) setCopilotSuggestions(extras)
         toast('Blueprint generated — review and save', 'success', 4000)
-      } catch (_) {
+      } catch {
         toast('Generated — copy from preview below', 'info', 3000)
       }
     } catch (e) {
@@ -2811,7 +2692,7 @@ function SchemaExportPanel({ inputFields, outputFields }) {
       : buildJsonSchemaExport(inputFields, outputFields)
 
   async function copy() {
-    try { await navigator.clipboard.writeText(code); setCopied(true); setTimeout(() => setCopied(false), 2000) } catch (_) {}
+    try { await navigator.clipboard.writeText(code); setCopied(true); setTimeout(() => setCopied(false), 2000) } catch {}
   }
 
   function download() {
@@ -2956,7 +2837,7 @@ function DesignTab({ apps, allApps = apps, loading, onOpenCreate, user, onAppUpd
 
 // ─── Blueprint-driven test panel ─────────────────────────────────────────────
 
-function BlueprintTestPanel({ apps, user, selectedAppId, onSelectApp }) {
+function BlueprintTestPanel({ apps, user, selectedAppId }) {
   const selectedApp_id = selectedAppId ?? apps[0]?.id ?? null
   const [bp, setBp]               = useState(undefined)  // undefined=loading, null=no saved blueprint, object=loaded
   const [cases, setCases]         = useState([])
@@ -3023,7 +2904,6 @@ function BlueprintTestPanel({ apps, user, selectedAppId, onSelectApp }) {
   }
 
   function sampleValue(type, label) {
-    const lbl = label.toLowerCase()
     if (type === 'long_text') return `Sample ${label} text for testing purposes. This is a realistic-length input to validate the app handles normal content correctly.`
     if (type === 'short_text') return `Sample ${label}`
     if (type === 'number') return 42
@@ -3141,7 +3021,7 @@ function BlueprintTestPanel({ apps, user, selectedAppId, onSelectApp }) {
         const lines = buf.split('\n'); buf = lines.pop()
         for (const line of lines) {
           if (!line.startsWith('data: ')) continue
-          try { const d = JSON.parse(line.slice(6)); if (d.token) output += d.token; if (d.input_tokens) tc._inTok = d.input_tokens; if (d.output_tokens) tc._outTok = d.output_tokens } catch (_) {}
+          try { const d = JSON.parse(line.slice(6)); if (d.token) output += d.token; if (d.input_tokens) tc._inTok = d.input_tokens; if (d.output_tokens) tc._outTok = d.output_tokens } catch {}
         }
       }
       if (!tc._inTok) tc._inTok = Math.round(((app.system_prompt||'').length + tc.input.length) / 4)
@@ -3340,7 +3220,6 @@ function BlueprintTestPanel({ apps, user, selectedAppId, onSelectApp }) {
 
 function TestTab({ apps, allApps = apps, user, selectedAppId, onSelectApp, phaseByAppId = {} }) {
   const activeAppId = apps.some(a => a.id === selectedAppId) ? selectedAppId : apps[0]?.id || null
-  const activeApp = apps.find(a => a.id === activeAppId)
 
   if (!allApps.length) return (
     <div className="bg-[#171B33] border border-white/5 rounded-2xl p-10 text-center">
@@ -3400,7 +3279,7 @@ function TestTab({ apps, allApps = apps, user, selectedAppId, onSelectApp, phase
 
 // ─── Promote Modal ───────────────────────────────────────────────────────────
 
-function PromoteModal({ app, onClose, onPromoted, user }) {
+function PromoteModal({ app, onClose, onPromoted }) {
   const toast = useToast()
   const [step, setStep] = useState('diff')   // 'diff' | 'confirm'
   const [promoting, setPromoting] = useState(false)
@@ -4099,7 +3978,7 @@ curl -X POST https://api.aistrix.com/v1/webhooks/${token} \\
   )
 }
 
-function DeployTab({ apps, user, onAppUpdated, onFixInDesign, selectedAppId, onSelectApp, phaseByAppId = {} }) {
+function DeployTab({ apps, user, onAppUpdated, onFixInDesign, selectedAppId }) {
   const activeAppId = apps.some(a => a.id === selectedAppId) ? selectedAppId : apps[0]?.id ?? null
   const selectedApp = apps.find(a => a.id === activeAppId)
 
@@ -4124,24 +4003,6 @@ function DeployTab({ apps, user, onAppUpdated, onFixInDesign, selectedAppId, onS
 }
 
 // ─── Marketplace listing helpers ─────────────────────────────────────────────
-
-const LISTING_SETUP_SQL = `create table marketplace_listings (
-  id          uuid primary key default gen_random_uuid(),
-  app_id      uuid references apps(id) on delete cascade unique,
-  user_id     uuid references auth.users(id) on delete cascade,
-  title       text not null,
-  tagline     text,
-  description text,
-  category    text,
-  tags        text[],
-  status      text not null default 'draft',
-  created_at  timestamptz default now(),
-  updated_at  timestamptz default now()
-);
-alter table marketplace_listings enable row level security;
-create policy "owner" on marketplace_listings
-  using  (auth.uid() = user_id)
-  with check (auth.uid() = user_id);`
 
 const LISTING_CATEGORIES = [
   'Productivity', 'Writing & Content', 'Data & Analysis',
@@ -4711,11 +4572,6 @@ function MonitorTab({ apps, appStats, loading, totalStats, runs, entitlements, u
     })
     runs.forEach(r => {
       const d = new Date(r.created_at); d.setHours(0,0,0,0)
-      const idx = buckets.findIndex(b => {
-        const bd = new Date(b.label + ' ' + new Date().getFullYear()); bd.setHours(0,0,0,0)
-        return bd.getTime() === d.getTime()
-      })
-      // simpler: diff from today
       const today = new Date(); today.setHours(0,0,0,0)
       const diff = Math.round((today - d) / 86400000)
       if (diff >= 0 && diff < days) buckets[days - 1 - diff].count++
@@ -5305,7 +5161,7 @@ function EvaluateTab({ apps, appStats, runs, user }) {
 
 const API_URL = import.meta.env.VITE_API_URL || ''
 
-function ImproveTab({ apps, user, runs, selectedAppId, onSelectApp }) {
+function ImproveTab({ apps, user, runs, selectedAppId }) {
   const [selectedApp, setSelectedApp] = useState(selectedAppId || null)
   useEffect(() => { if (selectedAppId) { setSelectedApp(selectedAppId); setVA(null); setVB(null); setOutputA(''); setOutputB('') } }, [selectedAppId])
   const [vA, setVA] = useState(null)   // version left
@@ -5321,7 +5177,6 @@ function ImproveTab({ apps, user, runs, selectedAppId, onSelectApp }) {
   // GitHub feedback tracker state
   const [ghToken, setGhToken]         = useState('')
   const [ghRepo, setGhRepo]           = useState('')
-  const [ghSaving, setGhSaving]       = useState(false)
   const [ghConnected, setGhConnected] = useState(false)
   const [creatingIssue, setCreatingIssue] = useState(null)   // run id
   // Integrations (for deep-links)
@@ -5335,19 +5190,6 @@ function ImproveTab({ apps, user, runs, selectedAppId, onSelectApp }) {
     const s = data?.settings || {}
     setIntegrations(s)
     if (s.github?.token) { setGhToken(s.github.token); setGhRepo(s.github.repo || ''); setGhConnected(true) }
-  }
-
-  async function saveGitHub() {
-    if (!ghToken.trim()) { toast('Enter a GitHub token', 'error', 2000); return }
-    setGhSaving(true)
-    const merged = { ...(integrations || {}), github: { token: ghToken.trim(), repo: ghRepo.trim() } }
-    const { error } = await supabase.from('developer_settings')
-      .upsert({ user_id: user.id, settings: merged }, { onConflict: 'user_id' })
-    setGhSaving(false)
-    if (error) { toast(error.message, 'error'); return }
-    setIntegrations(merged)
-    setGhConnected(true)
-    toast('GitHub connected', 'success', 2000)
   }
 
   const appObj = apps.find(a => a.id === selectedApp) || null
@@ -5724,7 +5566,7 @@ function ImproveTab({ apps, user, runs, selectedAppId, onSelectApp }) {
 
 // ─── Tab: Version ─────────────────────────────────────────────────────────────
 
-function VersionTab({ apps, user, onAppUpdated, selectedAppId, onSelectApp }) {
+function VersionTab({ apps, user, onAppUpdated, selectedAppId }) {
   const [selectedApp, setSelectedApp] = useState(selectedAppId || apps[0]?.id || null)
   const [integrations, setIntegrations] = useState(null)
   const appObj = apps.find(a => a.id === selectedApp) || null
@@ -5833,27 +5675,6 @@ function VersionTab({ apps, user, onAppUpdated, selectedAppId, onSelectApp }) {
 }
 
 // ─── Monetize helpers ─────────────────────────────────────────────────────────
-
-const ENTITLEMENTS_SETUP_SQL = `create table app_entitlements (
-  id            uuid primary key default gen_random_uuid(),
-  app_id        uuid references apps(id) on delete cascade,
-  user_id       uuid references auth.users(id),
-  plan          text not null default 'pay_per_run',
-  status        text not null default 'active',
-  stripe_customer_id  text,
-  stripe_sub_id       text,
-  current_period_start timestamptz,
-  current_period_end   timestamptz,
-  runs_this_period     int not null default 0,
-  run_quota            int,
-  created_at    timestamptz default now()
-);
-alter table app_entitlements enable row level security;
-create policy "owner" on app_entitlements
-  using (
-    app_id in (select id from apps where created_by = auth.uid())
-    or user_id = auth.uid()
-  );`
 
 const ENTITLEMENT_STATUS = {
   active:   'bg-emerald-500/10 text-emerald-400',
@@ -5965,10 +5786,9 @@ function StripeCard({ user }) {
   )
 }
 
-function EntitlementsSection({ apps, user }) {
+function EntitlementsSection({ apps }) {
   const [entitlements, setEntitlements] = useState(null)
   const [needsSetup, setNeedsSetup]     = useState(false)
-  const [copied, setCopied]             = useState(false)
   const toast = useToast()
 
   useEffect(() => { load() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
@@ -5986,11 +5806,6 @@ function EntitlementsSection({ apps, user }) {
       toast(error.message, 'error'); return
     }
     setEntitlements(data || [])
-  }
-
-  function copy() {
-    navigator.clipboard.writeText(ENTITLEMENTS_SETUP_SQL)
-    setCopied(true); setTimeout(() => setCopied(false), 2000)
   }
 
   if (needsSetup) return (
@@ -6088,7 +5903,7 @@ function EntitlementsSection({ apps, user }) {
 
 // ─── Tab: Revenue (Cost & Profit Meter + Connect Payout) ─────────────────────
 
-function ConnectPayoutPanel({ user }) {
+function ConnectPayoutPanel() {
   const [status, setStatus] = useState(null)  // null | object
   const [loading, setLoading] = useState(true)
   const [onboarding, setOnboarding] = useState(false)
@@ -6108,7 +5923,7 @@ function ConnectPayoutPanel({ user }) {
       ])
       if (sRes.ok) setStatus(await sRes.json())
       if (eRes.ok) setEarnings(await eRes.json())
-    } catch (_) {}
+    } catch {}
     setLoading(false)
   }
 
@@ -6124,7 +5939,7 @@ function ConnectPayoutPanel({ user }) {
         const { url } = await r.json()
         window.location.href = url
       }
-    } catch (_) {}
+    } catch {}
     setOnboarding(false)
   }
 
@@ -6265,10 +6080,9 @@ function MonetizeTab({ apps, runs, loading, user }) {
               </tr>
             </thead>
             <tbody className="divide-y divide-white/5">
-              {profitData.map(({ app, appRuns, withTokens, avgIn, avgOut, costPerRun, pricePerRun, margin, marginPct }) => {
+              {profitData.map(({ app, appRuns, avgIn, avgOut, costPerRun, pricePerRun, margin, marginPct }) => {
                 const hasCost = costPerRun != null
                 const isProfit  = hasCost && margin > 0
-                const isLoss    = hasCost && margin < 0
                 const isFree    = !pricePerRun
                 return (
                   <tr key={app.id} className="hover:bg-white/[0.02]">
@@ -6389,7 +6203,7 @@ function ApiKeySection({ user }) {
 
 // ─── Secrets Tab ─────────────────────────────────────────────────────────────
 
-function SecretsTab({ apps, user, selectedAppId, onSelectApp }) {
+function SecretsTab({ apps, selectedAppId }) {
   const [selectedApp, setSelectedApp] = useState(selectedAppId || apps[0]?.id || null)
   useEffect(() => { if (selectedAppId) setSelectedApp(selectedAppId) }, [selectedAppId])
   const [secrets, setSecrets]         = useState([])
@@ -6618,7 +6432,6 @@ export default function DevStudioPage({
     // Handle OAuth / Connect return redirects
     const params = new URLSearchParams(window.location.search)
     if (params.get('github_connected') === '1') {
-      const login = params.get('login') || 'GitHub'
       // toast shown by next render; clean up URL
       window.history.replaceState({}, '', window.location.pathname)
     }
@@ -6716,7 +6529,6 @@ export default function DevStudioPage({
     moveAppPhase(appId, 'design')
   }
 
-  const card = 'bg-[#171B33] border border-white/5 rounded-2xl'
   const searchNeedle = (search || '').trim().toLowerCase()
   const appMatchesSearch = (app) => {
     if (!app) return false
@@ -6741,7 +6553,6 @@ export default function DevStudioPage({
   const phaseScopedActiveAppId = ['design','test','deploy'].includes(tab) && (activeAppPhase !== tab || !appMatchesSearch(activeApp))
     ? null
     : activeAppId
-  const SECTION_TITLE = { design: 'Blueprint Studio', test: 'Test Lab', deploy: 'Deploy' }
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">

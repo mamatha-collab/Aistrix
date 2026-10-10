@@ -123,7 +123,7 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
     try {
       const { data: { session } } = await supabase.auth.getSession()
       if (!session) throw new Error('Sign in again before uploading files')
-      const safeName = file.name.replace(/[^\w.\-]+/g, '_')
+      const safeName = file.name.replace(/[^\w.-]+/g, '_')
       const path = `apps/${app.id}/users/${user.id}/inputs/${Date.now()}-${safeName}`
       const { error: uploadError } = await supabase.storage.from('aistrix-input-files').upload(path, file, {
         cacheControl: '3600',

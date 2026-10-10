@@ -692,7 +692,7 @@ export default function FlowRunner({ flow, user, onClose, onShowHistory, onRunCo
               <div className="space-y-3">
                 {(effectiveStepFields || []).map(f => {
                   const suggestions = (f.placeholder || '').includes('e.g.')
-                    ? (f.placeholder || '').replace(/^.*e\.g\.\s*/i, '').split(/\s*[\/,]\s*/).map(s => s.trim()).filter(Boolean)
+                    ? (f.placeholder || '').replace(/^.*e\.g\.\s*/i, '').split(/\s*[/,]\s*/).map(s => s.trim()).filter(Boolean)
                     : []
                   const listId = `dl-${stepIndex}-${f.id}`
                   return (
@@ -829,7 +829,7 @@ export default function FlowRunner({ flow, user, onClose, onShowHistory, onRunCo
                   ✕ Reject
                 </button>
               )}
-              <button onClick={() => { approveStep(); isLast ? setStepIndex(steps.length) : setStepIndex(i => i + 1) }}
+              <button onClick={() => { approveStep(); setStepIndex(isLast ? steps.length : i => i + 1) }}
                 className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-white text-sm px-6 py-2 rounded-xl font-medium transition-colors">
                 ✓ {current.approval_type === 'edit' ? 'Confirm & Continue' : 'Approve & Continue'}
               </button>

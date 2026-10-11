@@ -29,6 +29,7 @@ export const DEFAULT_PROVIDERS = [
 ]
 
 let cache = null
+let cacheUserId = null   // whose keys the cache describes
 let inflight = null
 const listeners = new Set()
 
@@ -38,14 +39,15 @@ async function authHeaders() {
 }
 
 export async function loadProviders({ refresh = false } = {}) {
-  if (cache && !refresh) return cache
+  const { data: { session } } = await supabase.auth.getSession()
+  if (!session?.access_token) return DEFAULT_PROVIDERS
+  if (cache && !refresh && cacheUserId === session.user?.id) return cache
   if (inflight && !refresh) return inflight
   inflight = (async () => {
-    const headers = await authHeaders()
-    if (!headers) return DEFAULT_PROVIDERS
-    const res = await fetch(`${API_URL}/v1/providers`, { headers })
+    const res = await fetch(`${API_URL}/v1/providers`, { headers: { Authorization: `Bearer ${session.access_token}` } })
     if (!res.ok) throw await errorFromResponse(res, 'Could not load AI providers')
     cache = (await res.json()).providers
+    cacheUserId = session.user?.id ?? null
     listeners.forEach(fn => fn(cache))
     return cache
   })()
@@ -60,6 +62,21 @@ export function useProviders() {
     return () => { listeners.delete(setProviders) }
   }, [])
   return providers
+}
+
+// { providers, loaded, hasKey } for the signed-in user. `loaded` is true only
+// once the server answered, so "no key" is never shown by mistake while
+// loading or when signed out. Updates live when keys are saved or removed.
+export function useProviderStatus(userId) {
+  const [state, setState] = useState(() => ({ providers: cache || DEFAULT_PROVIDERS, loaded: !!cache && cacheUserId === userId }))
+  useEffect(() => {
+    const onUpdate = list => setState({ providers: list, loaded: true })
+    listeners.add(onUpdate)
+    if (userId) loadProviders().then(list => { if (cacheUserId === userId) onUpdate(list) }).catch(() => {})
+    else setState({ providers: DEFAULT_PROVIDERS, loaded: false })
+    return () => { listeners.delete(onUpdate) }
+  }, [userId])
+  return { ...state, hasKey: state.providers.some(p => p.connected) }
 }
 
 export function providerById(providers, id) {

@@ -6437,6 +6437,7 @@ export default function DevStudioPage({
   onOpenCreate,
   onShowHistory,
   onShowSettings,
+  noKeys = false,
   onNavChange,
   search = '',
   onSearch,
@@ -6649,9 +6650,12 @@ export default function DevStudioPage({
                   </button>
                   <button
                     onClick={onShowSettings}
-                    className="hover:bg-[#1A2038] text-slate-200 text-xs font-semibold px-2.5 py-2 rounded-lg transition-colors whitespace-nowrap"
+                    aria-label={noKeys ? 'Keys — no AI key added yet' : undefined}
+                    title={noKeys ? 'No AI key added — add one to build apps' : undefined}
+                    className="relative hover:bg-[#1A2038] text-slate-200 text-xs font-semibold px-2.5 py-2 rounded-lg transition-colors whitespace-nowrap"
                   >
                     Keys
+                    {noKeys && <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-amber-500 text-[#0F1225] text-[10px] font-bold flex items-center justify-center" aria-hidden="true">!</span>}
                   </button>
                 </div>
                 <button onClick={onOpenCreate}

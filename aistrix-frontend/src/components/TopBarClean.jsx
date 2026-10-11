@@ -22,7 +22,7 @@ const VIEW_META = {
   marketplace: { title: 'Marketplace',     subtitle: 'Discover AI apps built on Aistrix' },
 }
 
-export default function TopBarClean({ onShowHistory, onShowSettings, onToggleSidebar, onShowCreate, onShowWorkspace, search, onSearch, searchRef, user, onNavChange, activeView,
+export default function TopBarClean({ onShowHistory, onShowSettings, noKeys = false, onToggleSidebar, onShowCreate, onShowWorkspace, search, onSearch, searchRef, user, onNavChange, activeView,
   workspaces = [], activeWorkspace, onSwitchWorkspace, onCreateWorkspace, onManageWorkspace }) {
   const [buildOpen, setBuildOpen] = useState(false)
   const buildRef = useRef(null)
@@ -94,10 +94,12 @@ export default function TopBarClean({ onShowHistory, onShowSettings, onToggleSid
         </button>
         <button
           onClick={onShowSettings}
-          aria-label="API key settings"
-          className="app-chrome-button flex items-center justify-center gap-1 bg-[#1A2038] hover:bg-[#222840] text-slate-200 text-sm h-9 w-9 md:w-[70px] rounded-lg border border-transparent transition-colors shrink-0"
+          aria-label={noKeys ? 'API key settings — no AI key added yet' : 'API key settings'}
+          title={noKeys ? 'No AI key added — add one to build apps' : undefined}
+          className="app-chrome-button relative flex items-center justify-center gap-1 bg-[#1A2038] hover:bg-[#222840] text-slate-200 text-sm h-9 w-9 md:w-[70px] rounded-lg border border-transparent transition-colors shrink-0"
         >
           <KeyRound size={15} /> <span className="hidden md:inline">Keys</span>
+          {noKeys && <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-amber-500 text-[#0F1225] text-[10px] font-bold flex items-center justify-center" aria-hidden="true">!</span>}
         </button>
         {activeView === 'developer' ? null : activeView === 'apps' || activeView === 'flows' ? (
           <button

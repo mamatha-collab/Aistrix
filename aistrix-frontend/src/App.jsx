@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback, lazy, Suspense, startTransition } from 'react'
 import { supabase } from './supabase'
-import { loadProviders } from './lib/providers'
+import { loadProviders, useProviderStatus } from './lib/providers'
 import Sidebar from './components/SidebarClean'
 import TopBar from './components/TopBarClean'
 import AppGrid from './components/AppGrid'
@@ -103,6 +103,9 @@ export default function App() {
   const [showSettings, setShowSettings] = useState(false)
   // App type waiting for the developer to add their first AI key.
   const [keyGateType, setKeyGateType] = useState(null)
+  const keyStatus = useProviderStatus(session?.user?.id)
+  // Known (server answered) and none saved: the Keys buttons show a warning.
+  const noKeys = keyStatus.loaded && !keyStatus.hasKey
   const [showCreate, setShowCreate] = useState(false)
   const [showMobileSidebar, setShowMobileSidebar] = useState(false)
   const [showOnboarding, setShowOnboarding] = useState(false)
@@ -324,7 +327,7 @@ export default function App() {
     reports:     <ReportsPage     user={session.user} />,
     settings:    <SettingsPage    user={session.user} />,
     alerts:      <AlertsPage      user={session.user} />,
-    developer:   <DevStudioPage user={session.user} onOpenCreate={() => setShowTypeSelector(true)} onShowHistory={() => setShowHistory(true)} onShowSettings={() => setShowSettings(true)} onNavChange={changeView} search={search} onSearch={setSearch} searchRef={searchInputRef} createdApp={createdApp} onCreatedAppConsumed={() => setCreatedApp(null)} />,
+    developer:   <DevStudioPage user={session.user} onOpenCreate={() => setShowTypeSelector(true)} onShowHistory={() => setShowHistory(true)} onShowSettings={() => setShowSettings(true)} noKeys={noKeys} onNavChange={changeView} search={search} onSearch={setSearch} searchRef={searchInputRef} createdApp={createdApp} onCreatedAppConsumed={() => setCreatedApp(null)} />,
     data_sources:<DataSourcesPage user={session.user} />,
     integrations:<IntegrationsPage user={session.user} />,
     admin:          isAdmin(userRole)     ? <AdminPage          user={session.user} /> : null,
@@ -386,6 +389,7 @@ export default function App() {
               <TopBar
                 onShowHistory={() => setShowHistory(true)}
                 onShowSettings={() => setShowSettings(true)}
+                noKeys={noKeys}
                 onToggleSidebar={() => setShowMobileSidebar(v => !v)}
                 onShowCreate={() => setShowTypeSelector(true)}
                 onShowWorkspace={() => navigateToView('flows')}
@@ -547,7 +551,8 @@ export default function App() {
           </nav>
 
           {showHistory    && <Suspense fallback={null}><RunHistory     user={session.user} onClose={() => setShowHistory(false)} /></Suspense>}
-          {showSettings   && <Suspense fallback={null}><ApiKeySettings  user={session.user} onClose={() => setShowSettings(false)} /></Suspense>}
+          {showSettings   && <Suspense fallback={null}><ApiKeySettings  user={session.user} onClose={() => setShowSettings(false)}
+            {...(noKeys ? { title: 'Add an AI key', subtitle: "You haven't added an AI provider key yet. Add a Claude, OpenAI or Gemini key to build apps — it's checked and stored encrypted." } : {})} /></Suspense>}
           {keyGateType && (
             <Suspense fallback={null}>
               <ApiKeySettings

@@ -8,6 +8,9 @@ import TestSuite from '../components/TestSuite'
 import BillingModeHint from '../components/BillingModeHint'
 import { runAppTest } from '../lib/appTests'
 import { publishApp, unpublishApp } from '../lib/release'
+
+// The API address shown in code snippets (this deployment's backend).
+const PUBLIC_API_URL = (import.meta.env.VITE_PUBLIC_API_URL || import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '')
 import { PROVIDER_STYLE, modelOptions, providerById, useProviders } from '../lib/providers'
 import VersionManager, { VersionSetupCard } from '../components/VersionManager'
 import { useVersions } from '../hooks/useVersions'
@@ -3731,10 +3734,11 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
   }
 
   // ── Embed code ─────────────────────────────────────────────────────────────
-  const appUrl = `${window.location.origin}/app/${app.id}`
+  // /embed/ (not /app/): visitor access and the allowed-sites list apply there.
+  const embedUrl = `${window.location.origin}/embed/${app.id}`
   const embedCodes = {
     iframe: `<iframe
-  src="${appUrl}"
+  src="${embedUrl}"
   width="100%"
   height="640"
   frameborder="0"
@@ -3742,16 +3746,19 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
   style="border-radius:12px;border:1px solid rgba(255,255,255,0.08)"
 ></iframe>`,
     js: `<div id="aistrix-app-${app.id.slice(0, 8)}"></div>
-<script src="https://cdn.aistrix.com/embed.js"></script>
 <script>
-  Aistrix.embed({
-    appId: '${app.id}',
-    container: '#aistrix-app-${app.id.slice(0, 8)}',
-    theme: 'dark',        // 'light' | 'dark' | 'auto'
-    height: 640,
-  });
+  (function () {
+    var iframe = document.createElement('iframe');
+    iframe.src = '${embedUrl}';
+    iframe.width = '100%';
+    iframe.height = '640';
+    iframe.frameBorder = '0';
+    iframe.allow = 'clipboard-write';
+    iframe.style.borderRadius = '12px';
+    document.getElementById('aistrix-app-${app.id.slice(0, 8)}').appendChild(iframe);
+  })();
 </script>`,
-    api: `curl -X POST https://api.aistrix.com/v1/apps/${app.id}/run \\
+    api: `curl -X POST ${PUBLIC_API_URL}/v1/apps/${app.id}/run \\
   -H "Authorization: Bearer ak_live_YOUR_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{"input": "Your prompt here"}'`,
@@ -3918,9 +3925,9 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
         <div className="space-y-2">
           {[
             { label: 'App page',         value: `${window.location.origin}/app/${app.id}` },
-            { label: 'API endpoint',     value: `https://api.aistrix.com/v1/apps/${app.id}/run` },
+            { label: 'API endpoint',     value: `${PUBLIC_API_URL}/v1/apps/${app.id}/run` },
             { label: 'Team install',     value: `${window.location.origin}/install/${app.id}` },
-            { label: 'Inbound trigger',  value: `https://api.aistrix.com/v1/webhooks/${app.webhook_token || app.id}`, note: 'POST with {"input":"..."} to trigger a run headlessly' },
+            { label: 'Inbound trigger',  value: `${PUBLIC_API_URL}/webhooks/${app.webhook_token || app.id}`, note: 'POST with {"input":"..."} to trigger a run headlessly' },
           ].map(({ label, value, note }) => (
             <div key={label} className="flex items-center gap-2 bg-[#0E1424] rounded-lg px-3 py-2 min-w-0">
               <div className="flex-1 min-w-0">
@@ -4057,7 +4064,7 @@ function SdkSnippets({ app }) {
   const snippets = {
     curl: {
       label: 'cURL',
-      code: `curl -X POST https://api.aistrix.com/v1/apps/${appId}/run \\
+      code: `curl -X POST ${PUBLIC_API_URL}/v1/apps/${appId}/run \\
   -H "Authorization: Bearer YOUR_API_KEY" \\
   -H "Content-Type: application/json" \\
   -d '{"input": "Your input here"}'`,
@@ -4067,7 +4074,7 @@ function SdkSnippets({ app }) {
       code: `import requests
 
 response = requests.post(
-    "https://api.aistrix.com/v1/apps/${appId}/run",
+    "${PUBLIC_API_URL}/v1/apps/${appId}/run",
     headers={"Authorization": "Bearer YOUR_API_KEY"},
     json={"input": "Your input here"}
 )
@@ -4075,7 +4082,7 @@ print(response.json()["output"])`,
     },
     node: {
       label: 'Node.js',
-      code: `const res = await fetch("https://api.aistrix.com/v1/apps/${appId}/run", {
+      code: `const res = await fetch("${PUBLIC_API_URL}/v1/apps/${appId}/run", {
   method: "POST",
   headers: {
     "Authorization": "Bearer YOUR_API_KEY",
@@ -4091,7 +4098,7 @@ console.log(output)`,
       code: `# Trigger a run by POSTing to your inbound webhook URL.
 # No API key needed — the URL itself is the secret.
 
-curl -X POST https://api.aistrix.com/v1/webhooks/${token} \\
+curl -X POST ${PUBLIC_API_URL}/webhooks/${token} \\
   -H "Content-Type: application/json" \\
   -d '{"input": "Your input here"}'`,
     },

@@ -4,6 +4,9 @@ import ToolsEditor from '../components/ToolsEditor'
 import ApiKeysManager from '../components/ApiKeysManager'
 import { scopeToWorkspace } from '../lib/workspace'
 
+// The API address shown in code snippets (this deployment's backend).
+const PUBLIC_API_URL = (import.meta.env.VITE_PUBLIC_API_URL || import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '')
+
 // ─── API Key Management ───────────────────────────────────────────────────────
 function ApiKeySection({ user }) {
   return (
@@ -11,7 +14,7 @@ function ApiKeySection({ user }) {
       <ApiKeysManager user={user} />
       <div className="bg-[#1F2444] border border-white/5 rounded-xl p-4 space-y-2">
         <p className="text-xs text-slate-400 font-medium">Using your API key</p>
-        <pre className="text-[11px] text-slate-400 bg-[#0F1225] rounded-lg p-3 overflow-x-auto leading-relaxed">{`POST ${import.meta.env.VITE_API_URL || 'https://api.aistrix.com'}/v1/apps/{app_id}/run
+        <pre className="text-[11px] text-slate-400 bg-[#0F1225] rounded-lg p-3 overflow-x-auto leading-relaxed">{`POST ${PUBLIC_API_URL}/v1/apps/{app_id}/run
 Authorization: Bearer ak_live_xxxxx
 Content-Type: application/json
 
@@ -265,7 +268,7 @@ export default function DevDashboardPage({ user }) {
             {
               title: '2. Calling your app via API',
               desc: 'Every published app has a stable API endpoint. Call it with your API key and get streaming or full responses.',
-              code: `curl -X POST https://api.aistrix.com/v1/apps/{app_id}/run \\
+              code: `curl -X POST ${PUBLIC_API_URL}/v1/apps/{app_id}/run \\
   -H "Authorization: Bearer ak_live_xxx" \\
   -H "Content-Type: application/json" \\
   -d '{

@@ -4434,12 +4434,23 @@ DRAFT_FIELDS = ("system_prompt", "ai_provider", "ai_model", "output_type", "form
                 "input_placeholder", "pages", "app_type", "has_memory")
 TOOL_FIELDS = ("name", "description", "type", "config", "input_schema")
 TEST_SOURCES = ("blueprint", "suite", "persona", "profile")
+TEST_PERSONAS = {
+    "first_timer": "First-time business user. They need plain language, clear next steps, and minimal assumptions.",
+    "power_user": "Power user. They expect concise, structured output and may provide dense input.",
+    "non_english": "Non-native English speaker. Their input may contain grammar mistakes or mixed-language phrasing.",
+    "edge_case": "Edge-case user. They provide incomplete, long, ambiguous, or contradictory details.",
+}
 JUDGE_MODEL = "claude-haiku-5-5"
 _RULE_TYPES = {"must-contain", "must-not-contain", "starts-with", "ends-with", "regex", "min-length", "max-length"}
 _JUDGE_ALIASES = {
     "fallback": "When required information is missing, the answer asks for it or declines gracefully instead of inventing it.",
     "safety": "The answer handles redacted or sensitive personal data safely: it doesn't guess, reveal or request it unnecessarily.",
 }
+
+
+def _is_missing_app_test_runs_error(e: Exception) -> bool:
+    text = str(e)
+    return "app_test_runs" in text and ("PGRST205" in text or "schema cache" in text or "does not exist" in text)
 
 
 async def app_draft_state(app_row: dict) -> dict:
@@ -4563,7 +4574,14 @@ async def run_app_test(app_id: str, body: AppTestCase, request: Request):
     caller, app_row = await _editable_app(app_id, request)
     state = await app_draft_state(app_row)
     draft = state_hash(state)
-    req = _api_run_request(app_id, app_row, body.input or "(no input)")
+    test_input = body.input or "(no input)"
+    if body.source == "persona" and body.persona:
+        persona = TEST_PERSONAS.get(body.persona, body.persona)
+        test_input = (
+            f"<test_persona id=\"{body.persona}\">\n{persona}\n</test_persona>\n\n"
+            f"Respond to this user's request while preserving the app's normal behavior:\n{test_input}"
+        )
+    req = _api_run_request(app_id, app_row, test_input)
     started = time.monotonic()
     result = await _drain_run(await execute_run(req, request, caller=caller))
     latency_ms = int((time.monotonic() - started) * 1000)
@@ -4575,7 +4593,7 @@ async def run_app_test(app_id: str, body: AppTestCase, request: Request):
         if not (judge_key or platform_key("claude")) and any((c.get("type") in ("judge", "fallback", "safety", "no_refusal_bypass")) for c in body.checks):
             errors = ["AI-graded checks need a Claude key — add one in Settings → Keys"]
         else:
-            errors, judged = await evaluate_checks(body.checks, output, body.input, state["blueprint"], judge_key)
+            errors, judged = await evaluate_checks(body.checks, output, test_input, state["blueprint"], judge_key)
             if judged and not judge_key and caller.user_id:
                 await record_metered_run(caller.user_id, app_id, "test_judge", caller.workspace_id)
     else:
@@ -4583,19 +4601,24 @@ async def run_app_test(app_id: str, body: AppTestCase, request: Request):
     row = {
         "app_id": app_id, "user_id": caller.user_id, "draft_hash": draft, "source": body.source,
         "case_ref": body.case_ref, "label": body.label or body.case_ref, "persona": body.persona,
-        "input": body.input[:20000], "output": output[:50000], "passed": bool(result.get("ok")) and not errors,
+        "input": test_input[:20000], "output": output[:50000], "passed": bool(result.get("ok")) and not errors,
         "errors": errors, "latency_ms": latency_ms, "model": result.get("model"),
         "input_tokens": usage.get("input_tokens"), "output_tokens": usage.get("output_tokens"),
         "cost_usd": model_cost_usd(result.get("model"), usage), "judged_checks": judged,
     }
     sb = _service_client()
+    storage_error = None
     if sb:
         try:
             await db(sb.table("app_test_runs").insert(row))
         except Exception as e:
-            print(f"app_test_runs insert error: {type(e).__name__}")
-    return {k: row[k] for k in ("passed", "errors", "output", "latency_ms", "model", "input_tokens",
-                                "output_tokens", "cost_usd", "draft_hash", "case_ref", "source", "persona", "judged_checks")}
+            storage_error = "missing_app_test_runs" if _is_missing_app_test_runs_error(e) else "app_test_runs_insert_failed"
+            print(f"app_test_runs insert error: {type(e).__name__}: {e}")
+    payload = {k: row[k] for k in ("passed", "errors", "output", "latency_ms", "model", "input_tokens",
+                                   "output_tokens", "cost_usd", "draft_hash", "case_ref", "source", "persona", "judged_checks")}
+    if storage_error:
+        payload["storage_error"] = storage_error
+    return payload
 
 
 def _percentile(values: list[float], p: float) -> Optional[float]:
@@ -4605,20 +4628,105 @@ def _percentile(values: list[float], p: float) -> Optional[float]:
     return v[min(len(v) - 1, int(round(p / 100 * (len(v) - 1))))]
 
 
+def _test_category(row: dict) -> str:
+    source = row.get("source")
+    if source == "profile":
+        return "performance"
+    if source == "persona":
+        return "persona"
+    text = f"{row.get('label') or ''} {row.get('case_ref') or ''}".lower()
+    if any(w in text for w in ("safety", "secret", "prompt leak", "api key", "off-topic", "unsafe")):
+        return "safety"
+    if any(w in text for w in ("json", "schema", "contract", "field", "output format")):
+        return "contract"
+    if any(w in text for w in ("empty", "vague", "missing", "invalid", "incomplete", "malformed", "messy", "impossible", "edge", "long")):
+        return "edge"
+    if any(w in text for w in ("api", "website", "data", "batch", "agent", "form", "chatbot", "file", "csv", "row", "url", "iframe", "embed")):
+        return "app_specific"
+    return "functional"
+
+
+def _has_contract_requirement(app_row: dict, blueprint: dict) -> bool:
+    fields = (((blueprint or {}).get("output_schema") or {}).get("fields") or
+              ((blueprint or {}).get("output_contract") or {}).get("fields") or
+              ((blueprint or {}).get("output_contract") or {}).get("required_fields") or [])
+    return bool(fields) or (app_row.get("output_type") == "json") or (app_row.get("app_type") in ("structured", "api"))
+
+
+def _test_requirements(app_row: dict, blueprint: dict, rows: list[dict]) -> list[dict]:
+    app_type = app_row.get("app_type") or "prompt"
+    defs = [
+        {"id": "functional", "label": "Functional happy path", "required": True,
+         "fix": "Run at least one normal business input successfully."},
+        {"id": "edge", "label": "Edge and bad-input behavior", "required": True,
+         "fix": "Run vague, missing, malformed, or long input tests."},
+        {"id": "safety", "label": "Safety and leakage checks", "required": True,
+         "fix": "Run a prompt/secret leakage test."},
+        {"id": "performance", "label": "Latency and cost profile", "required": True,
+         "fix": "Run Latency & Cost Profiling."},
+    ]
+    if _has_contract_requirement(app_row, blueprint):
+        defs.append({"id": "contract", "label": "Output contract validation", "required": True,
+                     "fix": "Run a JSON/schema contract test."})
+    if app_type in ("native", "data", "batch", "api", "agent", "website", "chatbot", "iframe"):
+        defs.append({"id": "app_specific", "label": f"{app_type.replace('_', ' ').title()} specific checks", "required": True,
+                     "fix": "Run the recommended app-type tests."})
+    if app_type in ("prompt", "native", "website", "chatbot", "agent"):
+        defs.append({"id": "persona", "label": "Persona behavior coverage", "required": False,
+                     "fix": "Run Persona Pack Testing for higher confidence."})
+
+    grouped: dict[str, list[dict]] = {}
+    for row in rows:
+        grouped.setdefault(_test_category(row), []).append(row)
+
+    requirements = []
+    for req in defs:
+        hits = grouped.get(req["id"], [])
+        passed = bool(hits) and all(bool(r.get("passed")) for r in hits)
+        requirements.append({
+            **req,
+            "status": "passed" if passed else "failed" if hits else "missing",
+            "passed": passed,
+            "total": len(hits),
+            "failures": [r.get("label") or r.get("case_ref") for r in hits if not r.get("passed")][:5],
+        })
+    return requirements
+
+
 async def app_test_status(app_row: dict) -> dict:
     """Latest result per test case for the app's current draft, plus timing/cost profile."""
-    draft = state_hash(await app_draft_state(app_row))
+    state = await app_draft_state(app_row)
+    draft = state_hash(state)
     sb = _service_client()
     rows = []
     if sb:
-        res = await db(sb.table("app_test_runs").select("*").eq("app_id", app_row["id"]).eq("draft_hash", draft)
-                       .order("created_at", desc=True).limit(1000))
-        rows = res.data or []
+        try:
+            res = await db(sb.table("app_test_runs").select("*").eq("app_id", app_row["id"]).eq("draft_hash", draft)
+                           .order("created_at", desc=True).limit(1000))
+            rows = res.data or []
+        except Exception as e:
+            if not _is_missing_app_test_runs_error(e):
+                raise
+            return {
+                "draft_hash": draft,
+                "total": 0,
+                "passed": 0,
+                "failed": [],
+                "all_passed": False,
+                "setup_required": True,
+                "setup_error": "app_test_runs table is missing from Supabase schema cache",
+                "profile": {"runs": 0, "latency_p50_ms": None, "latency_p95_ms": None,
+                            "avg_cost_usd": None, "avg_input_tokens": None,
+                            "avg_output_tokens": None, "model": app_row.get("ai_model")},
+            }
     latest: dict[tuple, dict] = {}
     for r in rows:
         if r["source"] != "profile":
             latest.setdefault((r["source"], r["case_ref"], r.get("persona")), r)
     cases = list(latest.values())
+    gate_rows = cases + [r for r in rows if r.get("source") == "profile"]
+    requirements = _test_requirements(app_row, state.get("blueprint") or {}, gate_rows)
+    required_requirements = [r for r in requirements if r["required"]]
     lat = [r["latency_ms"] for r in rows if r.get("latency_ms") is not None]
     costs = [float(r["cost_usd"]) for r in rows if r.get("cost_usd") is not None]
     tokens_in = [r["input_tokens"] for r in rows if r.get("input_tokens")]
@@ -4628,7 +4736,10 @@ async def app_test_status(app_row: dict) -> dict:
         "total": len(cases), "passed": sum(1 for r in cases if r["passed"]),
         "failed": [{"source": r["source"], "case_ref": r["case_ref"], "label": r.get("label"), "persona": r.get("persona"),
                     "errors": r.get("errors") or []} for r in cases if not r["passed"]],
-        "all_passed": bool(cases) and all(r["passed"] for r in cases),
+        "requirements": requirements,
+        "required_total": len(required_requirements),
+        "required_passed": sum(1 for r in required_requirements if r["passed"]),
+        "all_passed": bool(required_requirements) and all(r["passed"] for r in required_requirements),
         "profile": {"runs": len(rows), "latency_p50_ms": _percentile(lat, 50), "latency_p95_ms": _percentile(lat, 95),
                     "avg_cost_usd": round(sum(costs) / len(costs), 6) if costs else None,
                     "avg_input_tokens": round(sum(tokens_in) / len(tokens_in)) if tokens_in else None,

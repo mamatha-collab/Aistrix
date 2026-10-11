@@ -364,6 +364,7 @@ body {
   top: 50%;
   transform: translateY(-50%);
   animation: flow-dot 2.4s ease-in-out infinite;
+  animation-delay: var(--flow-delay, 0s);
 }
 @keyframes flow-dot {
   0%   { left: 0;                opacity: 0; }

@@ -119,7 +119,11 @@ ok("status: latest result per case for the current draft", st["total"] == 2 and 
    and st["failed"][0]["case_ref"] == "tc-2")
 c.post("/v1/apps/app-1/tests/run", headers=auth, json={"case_ref": "tc-2", "input": "x"})
 st = c.get("/v1/apps/app-1/tests/status", headers=auth).json()
-ok("status: re-running a case replaces its result", st["total"] == 2 and st["all_passed"])
+ok("status: re-running a case replaces its result", st["total"] == 2 and st["passed"] == 2 and st["failed"] == [])
+req = {r["id"]: r for r in st["requirements"]}
+ok("status: publishing needs every required test category, not just passing cases",
+   not st["all_passed"] and req["functional"]["status"] == "passed"
+   and all(req[k]["status"] == "missing" for k in ("edge", "safety", "performance")))
 APP["system_prompt"] = "Score the lead, briefly"
 st = c.get("/v1/apps/app-1/tests/status", headers=auth).json()
 ok("status: editing the draft makes old results not count", st["total"] == 0 and not st["all_passed"])

@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, lazy, Suspense } from 'react'
+import { Fragment, useState, useEffect, useMemo, useRef, lazy, Suspense } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { track, EVENTS } from '../lib/analytics'
@@ -2885,6 +2885,30 @@ function BlueprintTestPanel({ apps, user, selectedAppId }) {
 
   const app = apps.find(a => a.id === selectedApp_id)
 
+  function getEffectiveInputs() {
+    if (bp && bp !== null) {
+      const schemaInputs = getInputSchemaFields(bp)
+      if (schemaInputs.length) return schemaToInputFields(schemaInputs)
+      if (bp.inputs?.length) return bp.inputs
+    }
+    if (app?.form_schema?.length) {
+      return app.form_schema.map((f, i) => ({
+        key: f.key || f.field || f.name || `field_${i + 1}`,
+        label: f.label || f.field || f.name || `Field ${i + 1}`,
+        type: f.type || 'short_text',
+        required: f.required !== false,
+        pii: !!f.pii,
+      }))
+    }
+    return [{
+      key: 'user_request',
+      label: app?.input_placeholder || app?.sample_input || 'User request',
+      type: 'long_text',
+      required: true,
+      pii: false,
+    }]
+  }
+
   useEffect(() => {
     if (!selectedApp_id) return
     setBp(undefined); setCases([]); setRunResult({})
@@ -2912,28 +2936,29 @@ function BlueprintTestPanel({ apps, user, selectedAppId }) {
   }
 
   function generateCasesFromBlueprint() {
-    if (!bp?.inputs?.length) return
+    if (!bp || bp === undefined) return
+    const inputFields = getEffectiveInputs()
     const generated = []
 
     // One happy-path case per required input combination
-    const happyInputs = bp.inputs.reduce((acc, f) => {
+    const happyInputs = inputFields.reduce((acc, f) => {
       acc[f.key] = sampleValue(f.type, f.label)
       return acc
     }, {})
-    generated.push({ label: 'Happy path', input: formatInputs(happyInputs, bp), expected_checks: buildChecks(bp), status: null, output: '' })
+    generated.push({ label: 'Functional: blueprint happy path', input: formatInputs(happyInputs, inputFields), expected_checks: buildChecks(bp), status: null, output: '' })
 
     // One missing-required-field case
-    const missingRequired = bp.inputs.find(f => f.required)
+    const missingRequired = inputFields.find(f => f.required)
     if (missingRequired) {
       const partial = { ...happyInputs }
       delete partial[missingRequired.key]
-      generated.push({ label: `Missing: ${missingRequired.label}`, input: formatInputs(partial, bp), expected_checks: [{ type: 'fallback', desc: 'Should ask for missing data or refuse gracefully' }], status: null, output: '' })
+      generated.push({ label: `Edge: missing ${missingRequired.label}`, input: formatInputs(partial, inputFields), expected_checks: [{ type: 'fallback', desc: 'Should ask for missing data or refuse gracefully' }], status: null, output: '' })
     }
 
     // One PII field edge case
-    const piiField = bp.inputs.find(f => f.pii)
+    const piiField = inputFields.find(f => f.pii)
     if (piiField) {
-      generated.push({ label: `PII field: ${piiField.label}`, input: formatInputs({ ...happyInputs, [piiField.key]: '[REDACTED]' }, bp), expected_checks: [{ type: 'safety', desc: 'Should handle redacted PII gracefully' }], status: null, output: '' })
+      generated.push({ label: `Safety: PII field ${piiField.label}`, input: formatInputs({ ...happyInputs, [piiField.key]: '[REDACTED]' }, inputFields), expected_checks: [{ type: 'safety', desc: 'Should handle redacted PII gracefully' }], status: null, output: '' })
     }
 
     setCases(generated)
@@ -2954,9 +2979,9 @@ function BlueprintTestPanel({ apps, user, selectedAppId }) {
     return `Sample ${label}`
   }
 
-  function formatInputs(inputs, bp) {
+  function formatInputs(inputs, inputFields = getEffectiveInputs()) {
     return Object.entries(inputs).map(([k, v]) => {
-      const field = bp.inputs.find(f => f.key === k)
+      const field = inputFields.find(f => f.key === k)
       return `${field?.label || k}:\n${v}`
     }).join('\n\n')
   }
@@ -3106,6 +3131,7 @@ function BlueprintTestPanel({ apps, user, selectedAppId }) {
     .filter(([, r]) => r.status === 'fail')
     .flatMap(([idx, r]) => r.errors.map(e => ({ case: cases[Number(idx)]?.label, error: e })))
     .slice(0, 5)
+  const effectiveInputs = bp && bp !== undefined ? getEffectiveInputs() : []
 
   return (
     <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5 space-y-4">
@@ -3135,17 +3161,20 @@ function BlueprintTestPanel({ apps, user, selectedAppId }) {
         </div>
       )}
 
-      {bp !== null && bp !== undefined && !bp.inputs?.length && (
-        <div className="bg-[#0E1424] border border-amber-500/20 rounded-xl px-4 py-3">
-          <p className="text-amber-300 text-xs">No input schema defined. Add fields in the Design tab and save the blueprint to generate test cases.</p>
+      {bp !== null && bp !== undefined && !getInputSchemaFields(bp).length && !bp.inputs?.length && (
+        <div className="bg-[#0E1424] border border-[#6C5CE7]/20 rounded-xl px-4 py-3">
+          <p className="text-[#A29BFE] text-xs font-semibold">Using fallback input</p>
+          <p className="text-slate-500 text-xs mt-1">
+            No formal input schema is saved yet, so Aistrix will generate tests from the app form fields, placeholder, or a generic user request.
+          </p>
         </div>
       )}
 
-      {bp?.inputs?.length > 0 && (
+      {bp !== null && bp !== undefined && (
         <div className="flex items-center gap-2">
           <button onClick={generateCasesFromBlueprint}
             className="text-xs font-semibold px-4 py-2 rounded-xl bg-[#6C5CE7]/15 hover:bg-[#6C5CE7]/25 text-[#A29BFE] border border-[#6C5CE7]/25 transition-colors">
-            ↺ Generate from blueprint
+            ↺ Generate from {effectiveInputs.length ? 'available inputs' : 'app defaults'}
           </button>
           {cases.length > 0 && (
             <button onClick={runAll} disabled={running !== null}
@@ -3253,10 +3282,123 @@ function BlueprintTestPanel({ apps, user, selectedAppId }) {
   )
 }
 
+// ─── Test / Deploy command headers ───────────────────────────────────────────
+
+function StageCommandHeader({ stage, app, phaseByAppId = {}, onMovePhase }) {
+  if (!app) return null
+  const phase = getDevPhase(app, phaseByAppId)
+  const typeLabel = getAppTypeLabel(app)
+  const isTest = stage === 'test'
+  const meta = isTest
+    ? {
+        eyebrow: 'Validation command center',
+        title: 'Prove this app works before users touch it',
+        desc: 'Run generated contract tests, add real-world regression cases, then move the app into Deploy when the behavior is stable.',
+        accent: '#FDCB6E',
+        icon: '🧪',
+      }
+    : {
+        eyebrow: 'Release command center',
+        title: 'Package this app for real users',
+        desc: 'Publish only after the checklist is clean. Links, embed code, API access, quotas, and callbacks are managed here.',
+        accent: '#00B894',
+        icon: '🚀',
+      }
+
+  const phaseMeta = DEV_PHASES[phase] || DEV_PHASES.design
+
+  return (
+    <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5 overflow-hidden relative">
+      <div className="absolute inset-x-0 top-0 h-0.5" style={{ background: meta.accent }} />
+      <div className="flex flex-col xl:flex-row xl:items-center gap-4">
+        <div className="flex items-start gap-3 flex-1 min-w-0">
+          <div className="w-11 h-11 rounded-2xl flex items-center justify-center text-xl shrink-0"
+            style={{ background: meta.accent + '18', border: `1px solid ${meta.accent}38` }}>
+            {meta.icon}
+          </div>
+          <div className="min-w-0">
+            <p className="text-[10px] uppercase tracking-widest font-bold" style={{ color: meta.accent }}>{meta.eyebrow}</p>
+            <p className="text-white text-lg font-bold leading-tight mt-1">{meta.title}</p>
+            <p className="text-slate-400 text-sm leading-relaxed mt-1 max-w-3xl">{meta.desc}</p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto] xl:grid-cols-1 gap-3 xl:w-[330px] shrink-0">
+          <div className="rounded-2xl bg-[#0E1424] border border-white/8 px-4 py-3 min-w-0">
+            <p className="text-[9px] text-slate-500 uppercase font-bold tracking-wider">Selected app</p>
+            <div className="flex items-center gap-2 mt-1.5 min-w-0">
+              <AppEmojiWithType app={app} size="lg" />
+              <div className="min-w-0 flex-1">
+                <p className="text-white text-sm font-semibold truncate">{app.name}</p>
+                <p className="text-slate-500 text-[11px] truncate">{typeLabel}</p>
+              </div>
+              <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border shrink-0 ${phaseMeta.bg} ${phaseMeta.color} ${phaseMeta.border}`}>
+                {phaseMeta.label}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex sm:flex-col gap-2">
+            {isTest ? (
+              <>
+                <button onClick={() => onMovePhase?.(app.id, 'design')}
+                  className="flex-1 text-xs font-semibold px-3 py-2 rounded-xl bg-white/5 hover:bg-white/8 text-slate-300 border border-white/10 transition-colors">
+                  ← Back to Design
+                </button>
+                <button onClick={() => onMovePhase?.(app.id, 'deploy')}
+                  className="flex-1 text-xs font-bold px-3 py-2 rounded-xl bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/25 transition-colors">
+                  Move to Deploy →
+                </button>
+              </>
+            ) : (
+              <>
+                <button onClick={() => onMovePhase?.(app.id, 'test')}
+                  className="flex-1 text-xs font-semibold px-3 py-2 rounded-xl bg-amber-500/10 hover:bg-amber-500/18 text-amber-300 border border-amber-500/20 transition-colors">
+                  ← Back to Test
+                </button>
+                <button onClick={() => onMovePhase?.(app.id, 'design')}
+                  className="flex-1 text-xs font-semibold px-3 py-2 rounded-xl bg-white/5 hover:bg-white/8 text-slate-300 border border-white/10 transition-colors">
+                  Edit Design
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Tab: Test ────────────────────────────────────────────────────────────────
 
-function TestTab({ apps, allApps = apps, user, selectedAppId, onSelectApp, phaseByAppId = {} }) {
+function TestTab({ apps, allApps = apps, user, selectedAppId, onSelectApp, phaseByAppId = {}, onMovePhase }) {
   const activeAppId = apps.some(a => a.id === selectedAppId) ? selectedAppId : apps[0]?.id || null
+  const selectedApp = apps.find(a => a.id === activeAppId)
+  const [activeTestPanel, setActiveTestPanel] = useState('blueprint')
+  const testPanels = [
+    {
+      id: 'blueprint',
+      step: '1',
+      label: 'Baseline tests',
+      short: 'Blueprint',
+      desc: 'Generated from the saved Design blueprint, input fields, and output contract to create starter test cases.',
+    },
+    {
+      id: 'app',
+      step: '2',
+      label: 'Run validation',
+      short: 'App test',
+      desc: 'Run the required checks, persona coverage, latency, cost, and deploy-readiness report for this app.',
+    },
+    {
+      id: 'command',
+      step: '3',
+      label: 'Decision',
+      short: 'Command',
+      desc: 'Use the report result to return to Design for fixes or move this app forward to Deploy.',
+    },
+  ]
+  const activePanel = testPanels.find(p => p.id === activeTestPanel) || testPanels[0]
 
   if (!allApps.length) return (
     <div className="bg-[#171B33] border border-white/5 rounded-2xl p-10 text-center">
@@ -3282,34 +3424,52 @@ function TestTab({ apps, allApps = apps, user, selectedAppId, onSelectApp, phase
 
   return (
     <div className="space-y-5">
-
-      <BlueprintTestPanel apps={apps} user={user} selectedAppId={activeAppId} onSelectApp={onSelectApp} />
-      <TestSuite apps={apps} user={user} selectedAppId={activeAppId} onSelectApp={onSelectApp} />
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <ComingSoonCard
-          icon="🎭"
-          title="Persona Pack Testing"
-          desc="Pre-built user personas (first-timer, power user, non-English speaker, edge-case input) auto-run your prompt across 8 realistic scenarios."
-          bullets={[
-            'One-click multi-persona run',
-            'Flags persona-specific failures (e.g. breaks for long input)',
-            'Community persona packs per app category',
-            'Custom persona builder',
-          ]}
-        />
-        <ComingSoonCard
-          icon="📊"
-          title="Latency & Cost Profiling"
-          desc="Understand how fast and expensive each run is before you publish."
-          bullets={[
-            'Per-run latency percentiles (p50, p95)',
-            'Token count per run',
-            'Simulated load testing',
-            'Suggested model swap to cut cost without quality loss',
-          ]}
-        />
+      <div className="bg-[#171B33] border border-white/5 rounded-2xl p-3 space-y-3">
+        <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr_auto_1fr] gap-2 items-stretch">
+          {testPanels.map((item, index) => (
+            <Fragment key={item.id}>
+            <button onClick={() => setActiveTestPanel(item.id)}
+              className={`text-left px-3 py-3 rounded-xl border transition-colors ${
+                activeTestPanel === item.id
+                  ? 'bg-[#6C5CE7]/18 text-white border-[#6C5CE7]/40'
+                  : 'text-slate-400 hover:text-white hover:bg-white/5 border-white/8'
+              }`}>
+              <span className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold mr-2 ${
+                activeTestPanel === item.id ? 'bg-[#6C5CE7] text-white' : 'bg-white/5 text-slate-500'
+              }`}>
+                {item.step}
+              </span>
+              <span className="text-sm font-semibold">{item.label}</span>
+            </button>
+            {index < testPanels.length - 1 && (
+              <div className="hidden md:flex items-center justify-center px-1">
+                <div className="flex items-center gap-2 text-[#A29BFE]/80">
+                  <span
+                    className="flow-connector"
+                    style={{ width: '46px', '--flow-delay': `${index * 0.35}s` }}
+                  />
+                </div>
+              </div>
+            )}
+            </Fragment>
+          ))}
+        </div>
+        <div className="rounded-xl bg-[#0E1224]/70 border border-white/8 px-4 py-3">
+          <p className="text-xs text-slate-400 leading-relaxed">{activePanel.desc}</p>
+        </div>
       </div>
+
+      {activeTestPanel === 'app' && (
+        <TestSuite apps={apps} user={user} selectedAppId={activeAppId} onSelectApp={onSelectApp} />
+      )}
+
+      {activeTestPanel === 'blueprint' && (
+        <BlueprintTestPanel apps={apps} user={user} selectedAppId={activeAppId} onSelectApp={onSelectApp} />
+      )}
+
+      {activeTestPanel === 'command' && (
+        <StageCommandHeader stage="test" app={selectedApp} phaseByAppId={phaseByAppId} onMovePhase={onMovePhase} />
+      )}
     </div>
   )
 }
@@ -3466,7 +3626,7 @@ const CONTEXT_OPTS = [
   { id: 'memory',           label: '🧠 Memory',           desc: 'User preferences & custom facts' },
 ]
 
-function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, user }) {
+function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, user }) {
   const [app, setApp]               = useState(initialApp)
   const [publishing, setPublishing] = useState(false)
   const [showPromote, setShowPromote] = useState(false)
@@ -3483,11 +3643,24 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, user }) {
   const toast = useToast()
 
   const [runStats, setRunStats] = useState(null)
+  const [testStatus, setTestStatus] = useState(null)
+  const [loadingTestStatus, setLoadingTestStatus] = useState(false)
+  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
   useEffect(() => {
     supabase.from('app_blueprints').select('blueprint, readiness_score')
       .eq('app_id', app.id).maybeSingle()
       .then(({ data }) => setBp(data ? migrateBlueprint({ ...EMPTY_BP, ...data.blueprint }) : false))
+    setLoadingTestStatus(true)
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      const headers = session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}
+      return fetch(`${API_URL}/v1/apps/${app.id}/tests/status`, { headers })
+    }).then(async res => {
+      if (!res?.ok) return null
+      return res.json()
+    }).then(data => setTestStatus(data))
+      .catch(() => setTestStatus(null))
+      .finally(() => setLoadingTestStatus(false))
     // Fetch run history summary
     supabase.from('run_history')
       .select('created_at, input_tokens, output_tokens, rating_value')
@@ -3506,6 +3679,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, user }) {
         const lastRun = rows[0]?.created_at ? new Date(rows[0].created_at) : null
         setRunStats({ total: totalRuns, satisfaction, rated: rated.length, avgIn, avgOut, lastRun })
       })
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- API_URL is a build-time constant
   }, [app.id])
 
   function copy(text, label) {
@@ -3516,6 +3690,11 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, user }) {
     if (item.id === 'desc' || item.id === 'price') {
       setExpandSection('details')
       if (item.id === 'desc') setTimeout(() => descriptionRef.current?.focus(), 50)
+      return
+    }
+    if (item.id === 'tests') {
+      toast('Opening Test to run the current draft suite before publishing.', 'info', 4000)
+      onMovePhase?.(app.id, 'test')
       return
     }
     if (item.id === 'design' || item.id === 'prompt' || item.id === 'model' || item.id === 'schema') {
@@ -3536,9 +3715,18 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, user }) {
   const hasOutputSchema = jsonFormat ? (getOutputSchemaFields(bp).length > 0) : true
   const designReadiness = bp ? calcReadiness(app, bp) : 0
   const designReady = !!bp && designReadiness >= 100
+  const testsReady = !!testStatus?.all_passed && !testStatus?.setup_required
+  const testLabel = testStatus?.setup_required
+    ? 'Backend test storage installed'
+    : testStatus?.required_total
+      ? `Quality gate passed (${testStatus.required_passed}/${testStatus.required_total})`
+      : testStatus?.total
+        ? `Current draft tests passed (${testStatus.passed}/${testStatus.total})`
+        : 'Run tests for current draft'
 
   const checklist = [
     { id: 'design',  label: `Design readiness complete (${designReadiness}/100)`, ok: designReady, fix: 'Complete Design readiness' },
+    { id: 'tests',   label: loadingTestStatus ? 'Checking current draft tests…' : testLabel, ok: testsReady, fix: testStatus?.setup_required ? 'Install app_test_runs migration' : 'Run tests in Test tab' },
     { id: 'prompt',  label: 'System prompt written',        ok: !!app.system_prompt?.trim(),              fix: 'Open Prompt Studio in Design tab' },
     { id: 'desc',    label: 'Description filled',           ok: !!app.description?.trim(),                 fix: 'Add a description in app settings' },
     { id: 'model',   label: 'AI model selected',            ok: !!app.ai_model,                            fix: 'Choose a model in app settings' },
@@ -3552,6 +3740,11 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, user }) {
   async function togglePublish() {
     setPublishing(true)
     const next = !app.is_published
+    if (next && !testsReady) {
+      setPublishing(false)
+      toast(testStatus?.setup_required ? 'Install backend test storage before publishing.' : 'Run and pass the Aistrix Quality Gate for this draft before publishing.', 'error', 6000)
+      return
+    }
     const { data, error } = await supabase.rpc('set_app_published_with_gate', { p_app_id: app.id, p_publish: next })
     setPublishing(false)
     if (error) { toast(error.message, 'error'); return }
@@ -4015,7 +4208,7 @@ curl -X POST https://api.aistrix.com/v1/webhooks/${token} \\
   )
 }
 
-function DeployTab({ apps, user, onAppUpdated, onFixInDesign, selectedAppId }) {
+function DeployTab({ apps, user, onAppUpdated, onFixInDesign, selectedAppId, phaseByAppId = {}, onMovePhase }) {
   const activeAppId = apps.some(a => a.id === selectedAppId) ? selectedAppId : apps[0]?.id ?? null
   const selectedApp = apps.find(a => a.id === activeAppId)
 
@@ -4027,8 +4220,18 @@ function DeployTab({ apps, user, onAppUpdated, onFixInDesign, selectedAppId }) {
 
   return (
     <div className="space-y-5">
+      <StageCommandHeader stage="deploy" app={selectedApp} phaseByAppId={phaseByAppId} onMovePhase={onMovePhase} />
       {/* Selected app deploy card */}
-      {selectedApp && <AppDeployCard key={selectedApp.id} app={selectedApp} onUpdate={onAppUpdated} onFixInDesign={onFixInDesign} user={user} />}
+      {selectedApp && (
+        <AppDeployCard
+          key={selectedApp.id}
+          app={selectedApp}
+          onUpdate={onAppUpdated}
+          onFixInDesign={onFixInDesign}
+          onMovePhase={onMovePhase}
+          user={user}
+        />
+      )}
 
       {/* API Keys */}
       <ApiKeySection user={user} />
@@ -6738,8 +6941,8 @@ export default function DevStudioPage({
               phaseScopedActiveAppId ? (
                 <>
                   {tab === 'design' && <DesignTab   apps={activePhaseApps} allApps={apps} loading={loading} onOpenCreate={onOpenCreate} user={user} onAppUpdated={updateAppInState} onGoToTest={appId => { moveAppPhase(appId, 'test'); setDeployFixReason('') }} selectedAppId={phaseScopedActiveAppId} onSelectApp={setActiveAppId} deployFixReason={deployFixReason} phaseByAppId={phaseByAppId} />}
-                  {tab === 'test'   && <TestTab     apps={activePhaseApps} allApps={apps} user={user} selectedAppId={phaseScopedActiveAppId} onSelectApp={setActiveAppId} phaseByAppId={phaseByAppId} />}
-                  {tab === 'deploy' && <DeployTab   apps={activePhaseApps} user={user} onAppUpdated={updateAppInState} onFixInDesign={returnToDesignForPublishFix} selectedAppId={phaseScopedActiveAppId} onSelectApp={setActiveAppId} phaseByAppId={phaseByAppId} />}
+                  {tab === 'test'   && <TestTab     apps={activePhaseApps} allApps={apps} user={user} selectedAppId={phaseScopedActiveAppId} onSelectApp={setActiveAppId} phaseByAppId={phaseByAppId} onMovePhase={moveAppPhase} />}
+                  {tab === 'deploy' && <DeployTab   apps={activePhaseApps} user={user} onAppUpdated={updateAppInState} onFixInDesign={returnToDesignForPublishFix} selectedAppId={phaseScopedActiveAppId} onSelectApp={setActiveAppId} phaseByAppId={phaseByAppId} onMovePhase={moveAppPhase} />}
                 </>
               ) : (
                 (() => {

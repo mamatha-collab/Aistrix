@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
+import { publishApp, unpublishApp } from '../lib/release'
 import { supabase } from '../supabase'
 import AppCard, { AppTab } from './AppCard'
 import { useToast } from '../hooks/useToast'
@@ -318,14 +319,12 @@ export default function AppGrid({ onSelectApp, selectedApp, user, search, runCou
 
   async function togglePublish(app) {
     const next = !app.is_published
-    const { data, error } = await supabase.rpc('set_app_published_with_gate', { p_app_id: app.id, p_publish: next })
-    if (error) {
-      toast(error.message.includes('set_app_published_with_gate') ? 'Publish gate SQL is not installed yet' : error.message, 'error')
-      return
-    }
-    const result = Array.isArray(data) ? data[0] : data
-    if (!result?.ok) {
-      toast(`Publish blocked: ${(result?.errors || ['complete the schema checklist']).join('; ')}`, 'error', 8000)
+    try {
+      // Publishing promotes the draft: it needs the publish checks and passing tests.
+      if (next) await publishApp(app.id)
+      else await unpublishApp(app.id)
+    } catch (e) {
+      toast(`Publish blocked: ${e.message}`, 'error', 9000)
       return
     }
     setMyApps(prev => prev.map(a => a.id === app.id ? { ...a, is_published: next } : a))

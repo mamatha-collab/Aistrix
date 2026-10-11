@@ -9,6 +9,7 @@ import { fieldKeyFromLabel, outputFieldsErrors } from '../utils/schemaContracts'
 import { saveAppContract } from '../utils/appContracts'
 import { TypeGuideSteps } from './TypeBuilderGuide'
 import { DEFAULT_PROVIDERS, PROVIDER_STYLE } from '../lib/providers'
+import { publishApp } from '../lib/release'
 
 const QUESTIONS_SYSTEM_PROMPT = `You are an expert AI app architect on a platform called Aistrix.
 When a developer describes an app idea, generate exactly 6-8 precise clarifying questions.
@@ -400,7 +401,7 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGui
         tags: cfg.tags,
         has_memory: chatbot,
         ...(chatbot ? { greeting: cfg.greeting || null, tone: cfg.tone || null } : {}),
-        is_published: publish,
+        is_published: false,   // published below through the gate (checks + tests)
         created_by: user.id,
         workflow_order: 999,
         total_runs: 0,
@@ -431,10 +432,20 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGui
 
       // The app itself saved even if a follow-up insert failed — say so
       // instead of a plain success toast.
+      // Publishing needs the publish checks and passing tests, so a brand-new
+      // app is usually saved as a draft first.
+      let published = false
+      if (publish && !problems.length) {
+        try { await publishApp(data.id); published = true; data.is_published = true } catch { /* tests first */ }
+      }
       if (problems.length) {
         toast(`"${data.name}" saved, but not its ${problems.join('; ')}`, 'error', 7000)
+      } else if (published) {
+        toast(`🌐 "${data.name}" published`, 'success', 4000)
+      } else if (publish) {
+        toast(`⚫ "${data.name}" saved as a draft — run its tests in Dev Studio → Test, then publish from Deploy.`, 'info', 8000)
       } else {
-        toast(publish ? `🌐 "${data.name}" published` : `⚫ "${data.name}" saved as draft`, 'success', 4000)
+        toast(`⚫ "${data.name}" saved as draft`, 'success', 4000)
       }
       onCreated?.(data)
       onClose()

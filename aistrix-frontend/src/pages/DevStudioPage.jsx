@@ -7,6 +7,7 @@ import ToolsEditor from '../components/ToolsEditor'
 import TestSuite from '../components/TestSuite'
 import BillingModeHint from '../components/BillingModeHint'
 import { runAppTest } from '../lib/appTests'
+import { publishApp, unpublishApp } from '../lib/release'
 import { PROVIDER_STYLE, modelOptions, providerById, useProviders } from '../lib/providers'
 import VersionManager, { VersionSetupCard } from '../components/VersionManager'
 import { useVersions } from '../hooks/useVersions'
@@ -3420,25 +3421,20 @@ function PromoteModal({ app, onClose, onPromoted }) {
       })
   }, [app.id])
 
+  // The backend checks the app and its tests for this draft, then saves it
+  // as the live version end users run.
   async function promote() {
     setPromoting(true)
-    const { data: bpRow } = await supabase.from('app_blueprints')
-      .select('blueprint').eq('app_id', app.id).maybeSingle()
-    const { error: bpErr } = await supabase.from('app_blueprints')
-      .update({ blueprint_prod: bpRow?.blueprint, updated_at: new Date().toISOString() })
-      .eq('app_id', app.id)
-    if (bpErr?.code === '42703' || bpErr?.message?.includes('blueprint_prod')) {
-      toast('Run the SQL migration first: ALTER TABLE app_blueprints ADD COLUMN IF NOT EXISTS blueprint_prod jsonb', 'error', 8000)
-      setPromoting(false); return
+    try {
+      const res = await publishApp(app.id)
+      toast('🚀 Changes promoted to production', 'success', 3000)
+      onPromoted?.({ ...app, has_draft_changes: false, is_published: true, promoted_at: res.promoted_at })
+      onClose()
+    } catch (e) {
+      toast(e.message, 'error', 9000)
+    } finally {
+      setPromoting(false)
     }
-    if (bpErr) { toast(bpErr.message, 'error'); setPromoting(false); return }
-    const { error: appErr } = await supabase.from('apps')
-      .update({ has_draft_changes: false, is_published: true }).eq('id', app.id)
-    setPromoting(false)
-    if (appErr) { toast(appErr.message, 'error'); return }
-    toast('🚀 Changes promoted to production', 'success', 3000)
-    onPromoted?.({ ...app, has_draft_changes: false, is_published: true })
-    onClose()
   }
 
   const diffFields = bpDiff?.current && bpDiff?.prod ? (() => {
@@ -3663,18 +3659,19 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
       toast(testStatus?.setup_required ? 'Install backend test storage before publishing.' : 'Run and pass the Aistrix Quality Gate for this draft before publishing.', 'error', 6000)
       return
     }
-    const { data, error } = await supabase.rpc('set_app_published_with_gate', { p_app_id: app.id, p_publish: next })
-    setPublishing(false)
-    if (error) { toast(error.message, 'error'); return }
-    const result = Array.isArray(data) ? data[0] : data
-    if (!result?.ok) {
-      toast(`Publish blocked: ${(result?.errors || ['complete the schema checklist']).join('; ')}`, 'error', 8000)
-      return
+    try {
+      // Publishing promotes the draft (checks + tests, saves the live version);
+      // unpublishing just takes the app offline.
+      const res = next ? await publishApp(app.id) : await unpublishApp(app.id)
+      const updated = { ...app, is_published: next, ...(next ? { has_draft_changes: false, promoted_at: res?.promoted_at } : {}) }
+      setApp(updated)
+      onUpdate?.(updated)
+      toast(next ? '🚀 App is now live' : 'App set to draft', next ? 'success' : 'info', 3000)
+    } catch (e) {
+      toast(`Publish blocked: ${e.message}`, 'error', 9000)
+    } finally {
+      setPublishing(false)
     }
-    const updated = { ...app, is_published: next }
-    setApp(updated)
-    onUpdate?.(updated)
-    toast(next ? '🚀 App is now live' : 'App set to draft', next ? 'success' : 'info', 3000)
   }
 
   async function saveDescription() {

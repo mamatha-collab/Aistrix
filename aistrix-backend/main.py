@@ -1490,6 +1490,11 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
     if req.app_id and SUPABASE_SERVICE_ROLE_KEY and not app_row:
         return JSONResponse(status_code=404, content={"error": "App not found"})
     is_editor = await can_edit_app(app_row, caller) if app_row else False
+    # End users run the app's production version (set by promoting); editors
+    # run the draft. Apps never promoted run as they are.
+    prod = app_row.get("prod_snapshot") if (app_row and not is_editor and isinstance(app_row.get("prod_snapshot"), dict)) else None
+    if prod:
+        app_row = {**app_row, **{k: prod[k] for k in DRAFT_FIELDS if k in prod}}
 
     if app_row and not is_editor:
         if not app_row.get("is_published") and not (await can_view_app(app_row, caller)):
@@ -1642,9 +1647,9 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
     owner_id = app_row.get("created_by") if app_row else None
     knowledge, tools, app_secrets, blueprint = await asyncio.gather(
         fetch_app_knowledge(req.app_id) if req.app_id else _default(""),
-        fetch_app_tools(req.app_id) if req.app_id else _default([]),
+        _default(prod.get("tools") or []) if prod else fetch_app_tools(req.app_id) if req.app_id else _default([]),
         _load_app_secrets(req.app_id, owner_id) if (req.app_id and owner_id) else _default({}),
-        fetch_app_blueprint(req.app_id) if req.app_id else _default({}),
+        _default(prod.get("blueprint") or {}) if prod else fetch_app_blueprint(req.app_id) if req.app_id else _default({}),
     )
     webhook_url = app_row.get("webhook_url") if app_row else None
 
@@ -1926,6 +1931,15 @@ async def _extract_api_file(f: ApiFileInput, request: Optional[Request] = None,
     return text[:MAX_EXTRACT_CHARS], ext in ("xlsx", "xlsm")
 
 
+async def live_view(app_row: dict, caller: "ApiCaller") -> tuple[dict, dict]:
+    """(app, blueprint) as this caller runs it: editors the draft, everyone
+    else the production version (when the app has been promoted)."""
+    prod = app_row.get("prod_snapshot")
+    if not isinstance(prod, dict) or await can_edit_app(app_row, caller):
+        return app_row, await fetch_app_blueprint(app_row["id"])
+    return {**app_row, **{k: prod[k] for k in DRAFT_FIELDS if k in prod}}, prod.get("blueprint") or {}
+
+
 async def _load_api_app(app_id: str, caller: ApiCaller) -> dict:
     if not SUPABASE_SERVICE_ROLE_KEY:
         raise HTTPException(status_code=503, detail="API gateway is not configured")
@@ -1995,7 +2009,7 @@ async def run_published_app_api(app_id: str, req: ApiRunRequest, request: Reques
     """
     caller = await resolve_api_caller(request)
     app_data = await _load_api_app(app_id, caller)
-    blueprint = await fetch_app_blueprint(app_id)
+    app_data, blueprint = await live_view(app_data, caller)
 
     pieces = []
     if req.fields is not None:
@@ -2094,7 +2108,7 @@ async def get_app(app_id: str, request: Request):
     returned to the app's owner or editors."""
     caller = await resolve_api_caller(request)
     app_data = await _load_api_app(app_id, caller)
-    blueprint = await fetch_app_blueprint(app_id)
+    app_data, blueprint = await live_view(app_data, caller)
     return _public_app_view(app_data, blueprint, await can_edit_app(app_data, caller))
 
 
@@ -2334,7 +2348,7 @@ async def create_batch(app_id: str, body: BatchCreateRequest, request: Request):
     disconnecting). Poll GET /v1/batches/{id} or pass webhook_url."""
     caller = await resolve_api_caller(request, required=True)
     app_data = await _load_api_app(app_id, caller)
-    blueprint = await fetch_app_blueprint(app_id)
+    app_data, blueprint = await live_view(app_data, caller)
     input_fields = _schema_fields(blueprint, "input_schema")
 
     inputs: list[str] = []
@@ -4752,6 +4766,71 @@ async def app_test_status(app_row: dict) -> dict:
 async def get_app_test_status(app_id: str, request: Request):
     _, app_row = await _editable_app(app_id, request)
     return await app_test_status(app_row)
+
+
+# ── Release: draft → production ──────────────────────────────────────────────
+async def _publish_checks(app_id: str, user_jwt: Optional[str]) -> list[str]:
+    """Problems from the database's publish checks (validate_app_publish_ready)."""
+    if not user_jwt:
+        return ["Promote from Dev Studio (signed in) — API keys can't publish"]
+    res = await db(get_supabase_for_user(user_jwt).rpc("validate_app_publish_ready", {"p_app_id": app_id}))
+    row = (res.data[0] if isinstance(res.data, list) and res.data else res.data) or {}
+    return [] if row.get("ok") else list(row.get("errors") or ["The publish checks didn't pass"])
+
+
+def _test_problems(tests: dict) -> list[str]:
+    if tests.get("setup_required"):
+        return ["Test storage isn't set up on this server (app_test_runs migration)"]
+    if tests.get("all_passed"):
+        return []
+    missing = [f"{r['label']}: {r.get('fix') or 'run and pass these tests'}"
+               for r in (tests.get("requirements") or []) if r.get("required") and not r.get("passed")]
+    return missing or ["Run and pass the tests for this draft"]
+
+
+@app.get("/v1/apps/{app_id}/release")
+async def get_release(app_id: str, request: Request):
+    """Draft vs live: what end users run, whether the draft differs, and
+    what's left before it can be promoted."""
+    caller, app_row = await _editable_app(app_id, request)
+    draft = state_hash(await app_draft_state(app_row))
+    prod = app_row.get("prod_snapshot") if isinstance(app_row.get("prod_snapshot"), dict) else None
+    tests = await app_test_status(app_row)
+    checks = await _publish_checks(app_id, caller.user_jwt)
+    return {
+        "is_published": bool(app_row.get("is_published")), "promoted_at": app_row.get("promoted_at"),
+        "has_live_version": bool(prod), "draft_hash": draft, "live_hash": state_hash(prod) if prod else None,
+        "has_changes": (state_hash(prod) != draft) if prod else True,
+        "checks": checks, "tests": tests, "test_problems": _test_problems(tests),
+        "ready": not checks and not _test_problems(tests),
+    }
+
+
+@app.post("/v1/apps/{app_id}/promote")
+async def promote_app(app_id: str, request: Request):
+    """Make the current draft the live version and publish the app. Requires
+    the publish checks and passing tests for this exact draft."""
+    caller, app_row = await _editable_app(app_id, request)
+    checks = await _publish_checks(app_id, caller.user_jwt)
+    tests = await app_test_status(app_row)
+    problems = _test_problems(tests)
+    if checks or problems:
+        return JSONResponse(status_code=409, content={
+            "error": "Not ready to publish yet", "checks": checks, "test_problems": problems})
+    state = await app_draft_state(app_row)
+    if state_hash(state) != tests.get("draft_hash"):
+        return JSONResponse(status_code=409, content={"error": "The draft changed while publishing — run the tests again."})
+    sb = _service_client()
+    if not sb:
+        raise HTTPException(status_code=503, detail="Publishing isn't configured on this server")
+    now = datetime.now(timezone.utc).isoformat()
+    await db(sb.table("apps").update({"prod_snapshot": state, "promoted_at": now, "is_published": True,
+                                      "has_draft_changes": False}).eq("id", app_id))
+    try:
+        await db(sb.table("app_blueprints").update({"blueprint_prod": state["blueprint"]}).eq("app_id", app_id))
+    except Exception as e:
+        print(f"blueprint_prod update skipped: {type(e).__name__}")
+    return {"ok": True, "promoted_at": now, "draft_hash": state_hash(state), "is_published": True}
 
 
 # ── AI providers and developers' own keys ────────────────────────────────────

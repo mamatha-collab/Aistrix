@@ -623,7 +623,7 @@ Return ONLY valid JSON with these fields:
       onUpdated?.(data)
     } else {
       const { data, error: err } = await supabase.from('apps')
-        .insert({ ...payload, is_published: true, created_by: user.id, workflow_order: 999, total_runs: 0 })
+        .insert({ ...payload, is_published: false, created_by: user.id, workflow_order: 999, total_runs: 0 })
         .select('*, domains(name, emoji, color, slug)').single()
       if (err) { setSaving(false); setError(err.message); return }
       const bpErr = await saveBlueprint(data.id)

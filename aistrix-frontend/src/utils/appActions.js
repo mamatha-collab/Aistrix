@@ -22,7 +22,7 @@ export async function duplicateApp(app, userId) {
     output_type: app.output_type || 'markdown',
     sample_input: app.sample_input || null,
     visibility: 'public',
-    is_published: true,
+    is_published: false,   // copies start as drafts; publish from Deploy
     created_by: userId,
     workflow_order: 999,
     total_runs: 0,

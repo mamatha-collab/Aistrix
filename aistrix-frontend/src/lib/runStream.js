@@ -115,14 +115,15 @@ export async function generateJSON(systemPrompt, input, { model = 'claude-sonnet
 }
 
 // Read a web page / document URL server-side (see backend /scrape).
-export async function readUrl(url, { maxChars = 8000 } = {}) {
+// appId: signed-out visitors of an embedded app with visitor access.
+export async function readUrl(url, { maxChars = 8000, appId } = {}) {
   const { data: { session } } = await supabase.auth.getSession()
   let res
   try {
     res = await fetch(`${API_URL}/scrape`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session?.access_token}` },
-      body: JSON.stringify({ url, max_chars: maxChars }),
+      headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+      body: JSON.stringify({ url, max_chars: maxChars, ...(appId ? { app_id: appId } : {}) }),
     })
   } catch {
     throw new RunError('Could not reach the Aistrix server. Check your connection and try again.', { kind: 'network' })

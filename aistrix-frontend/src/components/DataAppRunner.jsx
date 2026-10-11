@@ -11,8 +11,10 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 // Must stay under the backend's MAX_INPUT_LENGTH (20k chars by default).
 const CHUNK_CHARS = 15000
 const MAX_CHUNKS = 12
-const MAX_ANALYSIS_CHARS = CHUNK_CHARS * MAX_CHUNKS
 const MAX_EXTRACT_CHARS = 400000
+// Website visitors (embed widget): each part is one run against their
+// hourly limit, so keep interactive analysis to a few parts.
+const VISITOR_MAX_CHUNKS = 3
 const BINARY_EXTS = ['pdf', 'xlsx', 'xlsm', 'docx']
 
 function fileExt(name) {
@@ -79,6 +81,10 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
   const toast = useToast()
 
   const currentType = DATA_TYPES.find(t => t.id === dataType)
+  // Signed-out website visitor of an embedded app with visitor access.
+  const visitor = !user
+  const maxChunks = visitor ? VISITOR_MAX_CHUNKS : MAX_CHUNKS
+  const maxAnalysisChars = CHUNK_CHARS * maxChunks
 
   function scheduleFlush() {
     if (rafRef.current) return
@@ -122,22 +128,24 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
     setFileName(file.name)
     try {
       const { data: { session } } = await supabase.auth.getSession()
-      if (!session) throw new Error('Sign in again before uploading files')
-      const safeName = file.name.replace(/[^\w.-]+/g, '_')
-      const path = `apps/${app.id}/users/${user.id}/inputs/${Date.now()}-${safeName}`
-      const { error: uploadError } = await supabase.storage.from('aistrix-input-files').upload(path, file, {
-        cacheControl: '3600',
-        upsert: false,
-      })
-      if (uploadError) throw uploadError
-      const registered = await registerStoredFile(file, path, session)
-      setFileMeta(registered)
+      if (!visitor && !session) throw new Error('Sign in again before uploading files')
+      if (!visitor) {   // visitors have no account: their files are read, not stored
+        const safeName = file.name.replace(/[^\w.-]+/g, '_')
+        const path = `apps/${app.id}/users/${user.id}/inputs/${Date.now()}-${safeName}`
+        const { error: uploadError } = await supabase.storage.from('aistrix-input-files').upload(path, file, {
+          cacheControl: '3600',
+          upsert: false,
+        })
+        if (uploadError) throw uploadError
+        const registered = await registerStoredFile(file, path, session)
+        setFileMeta(registered)
+      }
 
       if (isBinary) {
         const res = await fetch(`${API_URL}/v1/files/extract`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session.access_token}` },
-          body: JSON.stringify({ file_name: file.name, content_b64: await fileToBase64(file) }),
+          headers: { 'Content-Type': 'application/json', ...(session ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+          body: JSON.stringify({ file_name: file.name, content_b64: await fileToBase64(file), ...(visitor ? { app_id: app.id } : {}) }),
         })
         const body = await res.json().catch(() => ({}))
         if (!res.ok) {
@@ -164,7 +172,7 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
     const { data: { session } } = await supabase.auth.getSession()
     const res = await fetch(`${API_URL}/run`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
+      headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
       body: JSON.stringify({
         app_id: app.id, input: inputText,
         system_prompt: app.system_prompt,
@@ -216,7 +224,7 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
       let source = rawData, sourceIsCsv = dataType === 'csv', sourceHeader = header
       if (dataType === 'url') {
         setProgressLabel('Reading the URL…')
-        const page = await readUrl(normaliseUrl(rawData), { maxChars: MAX_ANALYSIS_CHARS })
+        const page = await readUrl(normaliseUrl(rawData), { maxChars: maxAnalysisChars, appId: visitor ? app.id : undefined })
         source = page.text
         sourceIsCsv = page.kind === 'csv'
         sourceHeader = `Data source: ${page.url}${page.truncated ? ` (first ${page.text.length.toLocaleString()} of ${page.chars.toLocaleString()} characters)` : ''}`
@@ -224,8 +232,8 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
       }
       {
         const chunks = chunkText(source, sourceIsCsv)
-        if (chunks.length > MAX_CHUNKS) {
-          throw new Error(`This data is too large for an interactive run (${source.length.toLocaleString()} chars, ${chunks.length} parts). This runner analyzes about ${MAX_ANALYSIS_CHARS.toLocaleString()} characters at a time. Trim it or split the file.`)
+        if (chunks.length > maxChunks) {
+          throw new Error(`This data is too large for an interactive run (${source.length.toLocaleString()} chars, ${chunks.length} parts). This runner analyzes about ${maxAnalysisChars.toLocaleString()} characters at a time. Trim it or split the file.`)
         }
         if (chunks.length === 1) {
           final = await streamRun(`${sourceHeader}\n\n${source}`, outputType, live)
@@ -255,6 +263,7 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
       setResult(final.text)
       const finalUsage = totalUsage.input_tokens || totalUsage.output_tokens ? totalUsage : null
       setUsage(finalUsage)
+      if (visitor) return   // no account: no history to save
 
       async function saveHistory() {
         const { data: row, error } = await supabase.from('run_history').insert({
@@ -335,7 +344,7 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
         )}
         {dataType !== 'url' && (
           <p className="text-[10px] text-slate-600 mt-1 leading-relaxed">
-            PDF, Word and Excel files are extracted server-side and stored for 30 days. Scanned PDF pages are read with OCR. Extraction loads up to {MAX_EXTRACT_CHARS.toLocaleString()} characters; interactive analysis handles about {MAX_ANALYSIS_CHARS.toLocaleString()} characters per run.
+            PDF, Word and Excel files are extracted server-side{visitor ? ' (not stored)' : ' and stored for 30 days'}. Scanned PDF pages are read with OCR. Extraction loads up to {MAX_EXTRACT_CHARS.toLocaleString()} characters; interactive analysis handles about {maxAnalysisChars.toLocaleString()} characters per run.
           </p>
         )}
       </div>

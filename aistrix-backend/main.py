@@ -116,7 +116,7 @@ def _decrypt(token: str) -> str:
     if not _fernet:
         raise HTTPException(status_code=503, detail="Secret encryption not configured")
     return _fernet.decrypt(token.encode()).decode()
-REQUEST_TIMEOUT           = int(os.getenv("REQUEST_TIMEOUT", "90"))
+REQUEST_TIMEOUT           = int(os.getenv("REQUEST_TIMEOUT", "180"))
 HOURLY_LIMIT              = int(os.getenv("RATE_LIMIT_PER_HOUR", "30"))
 DAILY_LIMIT               = int(os.getenv("RATE_LIMIT_PER_DAY", "200"))
 MAX_INPUT_LENGTH          = int(os.getenv("MAX_INPUT_LENGTH", "20000"))
@@ -1372,6 +1372,19 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
         req.custom_model_url = None
         req.custom_model_name = None
 
+    # Form apps: required fields are checked here too, not only in the
+    # browser. Applies when form values are sent (the app's form, the embed
+    # widget, API "fields"); plain-text input (flows, API "input") is
+    # accepted as before.
+    if app_row and app_row.get("app_type") == "native" and req.field_values is not None:
+        given = {_field_key(k): v for k, v in req.field_values.items()}
+        missing = [f.get("label") for f in (app_row.get("form_schema") or [])
+                   if f.get("required") and f.get("label")
+                   and not str(given.get(_field_key(f["label"])) or "").strip()]
+        if missing:
+            return JSONResponse(status_code=422, content={
+                "error": f"Fill in the required field{'s' if len(missing) > 1 else ''}: {', '.join(missing)}"})
+
     if req.custom_model_url:
         try:
             assert_public_url(req.custom_model_url)
@@ -2420,6 +2433,8 @@ MAX_EXTRACT_CHARS = int(os.getenv("MAX_EXTRACT_CHARS", "400000"))
 class ExtractRequest(BaseModel):
     file_name: str = Field(..., max_length=255)
     content_b64: str
+    # Signed-out website visitors of an embedded Data app (visitor access).
+    app_id: Optional[str] = None
 
 
 def _extract_pdf(data: bytes) -> str:
@@ -2542,7 +2557,7 @@ async def _ocr_chunk(client, pdf_bytes: bytes, page_numbers: list[int]) -> dict[
     return {n: found.get(n, "") for n in page_numbers}
 
 
-async def extract_pdf_text(data: bytes, get_ocr_key=None) -> tuple[str, int]:
+async def extract_pdf_text(data: bytes, get_ocr_key=None, max_pages: Optional[int] = None) -> tuple[str, int]:
     """Text of a PDF as '--- Page N ---' sections. Scanned (image-only) pages
     are OCR'd with Claude. Returns (text, number_of_pages_OCRd).
     get_ocr_key: async () -> Optional[str] API key, called only if OCR is
@@ -2552,8 +2567,9 @@ async def extract_pdf_text(data: bytes, get_ocr_key=None) -> tuple[str, int]:
     scanned = [i for i, t in enumerate(texts) if len(re.sub(r"\s", "", t)) < _OCR_MIN_TEXT_CHARS]
 
     if scanned:
-        if len(scanned) > OCR_MAX_PAGES:
-            raise ValueError(f"This PDF has {len(scanned)} scanned pages; up to {OCR_MAX_PAGES} can be read per file. "
+        limit = max_pages or OCR_MAX_PAGES
+        if len(scanned) > limit:
+            raise ValueError(f"This PDF has {len(scanned)} scanned pages; up to {limit} can be read per file. "
                              "Split it into smaller files.")
         key = await get_ocr_key() if get_ocr_key else None
         if not (key or os.getenv("ANTHROPIC_API_KEY")):
@@ -2584,6 +2600,37 @@ async def extract_pdf_text(data: bytes, get_ocr_key=None) -> tuple[str, int]:
     if not re.sub(r"--- Page \d+ ---|\[no text\]|\s", "", out):
         raise ValueError("No readable text was found in this PDF.")
     return out, len(scanned)
+
+
+EMBED_VISITOR_OCR_MAX_PAGES = int(os.getenv("EMBED_VISITOR_OCR_MAX_PAGES", "20"))
+
+
+async def file_caller(request: Request, app_id: Optional[str]) -> tuple[Optional[str], Optional[str], Optional[dict]]:
+    """Who is reading a file or URL: (user_id, user_jwt, None) for a signed-in
+    user, or (None, None, app_row) for a signed-out visitor of an embedded
+    app with visitor access (per-visitor, per-app limit applied)."""
+    token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    if token or not app_id:
+        return await require_verified_user(request), token or None, None
+    app_row = await load_app_row(app_id)
+    if not (app_row and app_row.get("is_published") and app_row.get("embed_public")
+            and not app_row.get("is_paid") and app_row.get("visibility") != "private"):
+        raise HTTPException(status_code=401, detail="Sign in to use this app")
+    allowed, msg = check_embed_visitor_rate_limit(client_ip(request), app_row["id"])
+    if not allowed:
+        raise HTTPException(status_code=429, detail=msg)
+    return None, None, app_row
+
+
+def pdf_reader_for(request: Request, user_id: Optional[str], user_jwt: Optional[str], visitor_app: Optional[dict]):
+    """(get_ocr_key, max_pages) for extract_pdf_text. Visitors use the app
+    owner's Claude key when saved, and a smaller scanned-page cap."""
+    if visitor_app:
+        async def owner_key():
+            owner = visitor_app.get("created_by")
+            return await fetch_user_api_key_by_id(owner, "claude") if owner else None
+        return owner_key, EMBED_VISITOR_OCR_MAX_PAGES
+    return (lambda: ocr_key_for(request, user_jwt, user_id)), None
 
 
 async def ocr_key_for(request: Request, user_jwt: Optional[str], caller_id: Optional[str]) -> Optional[str]:
@@ -2648,8 +2695,7 @@ def _extract_docx(data: bytes) -> str:
 async def extract_file_text(req: ExtractRequest, request: Request):
     """Turn an uploaded PDF / XLSX / DOCX into plain text (CSV for sheets).
     Scanned PDF pages are read with OCR."""
-    user_id = await require_verified_user(request)
-    user_jwt = request.headers.get("Authorization", "").removeprefix("Bearer ").strip() or None
+    user_id, user_jwt, visitor_app = await file_caller(request, req.app_id)
     import base64
     try:
         data = base64.b64decode(req.content_b64, validate=True)
@@ -2664,7 +2710,8 @@ async def extract_file_text(req: ExtractRequest, request: Request):
     ocr_pages = 0
     try:
         if ext == "pdf":
-            text, ocr_pages = await extract_pdf_text(data, lambda: ocr_key_for(request, user_jwt, user_id))
+            get_key, max_pages = pdf_reader_for(request, user_id, user_jwt, visitor_app)
+            text, ocr_pages = await extract_pdf_text(data, get_key, max_pages)
         else:
             text = await asyncio.to_thread(extractor, data)
     except OcrError as e:
@@ -3978,6 +4025,8 @@ class ScrapeRequest(BaseModel):
     url: str = Field(..., max_length=2048)
     # Website apps read one page (~8k chars); Data apps fetch whole documents.
     max_chars: int = Field(default=8000, ge=500, le=400_000)
+    # Signed-out website visitors of an embedded Data app (visitor access).
+    app_id: Optional[str] = None
 
 
 class SheetsRequest(BaseModel):
@@ -4053,7 +4102,7 @@ async def scrape_website(body: ScrapeRequest, request: Request):
     # Real verification instead of a bare "Bearer " prefix check (see
     # require_verified_user) — this endpoint fetches arbitrary caller-supplied
     # URLs server-side, so it needs actual auth plus SSRF protection.
-    scrape_user_id = await require_verified_user(request)
+    scrape_user_id, scrape_jwt, visitor_app = await file_caller(request, body.app_id)
     url = body.url.strip()
     if not url.startswith(("http://", "https://")):
         url = "https://" + url
@@ -4072,9 +4121,9 @@ async def scrape_website(body: ScrapeRequest, request: Request):
             raise HTTPException(status_code=413, detail=f"That file is larger than {MAX_EXTRACT_BYTES // (1024 * 1024)} MB")
 
         if ctype == "application/pdf" or path.endswith(".pdf"):
-            user_jwt = request.headers.get("Authorization", "").removeprefix("Bearer ").strip() or None
+            get_key, max_pages = pdf_reader_for(request, scrape_user_id, scrape_jwt, visitor_app)
             try:
-                text, _ = await extract_pdf_text(resp.content, lambda: ocr_key_for(request, user_jwt, scrape_user_id))
+                text, _ = await extract_pdf_text(resp.content, get_key, max_pages)
                 kind = "text"
             except OcrError as e:
                 raise HTTPException(status_code=e.status, detail=str(e))

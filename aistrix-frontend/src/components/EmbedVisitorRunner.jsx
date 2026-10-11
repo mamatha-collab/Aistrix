@@ -33,7 +33,11 @@ export default function EmbedVisitorRunner({ app }) {
       const res = await fetch(`${API_URL}/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ app_id: app.id, input: runInput, output_type: app.output_type || 'markdown' }),
+        body: JSON.stringify({
+          app_id: app.id, input: runInput, output_type: app.output_type || 'markdown',
+          // Form apps: required fields are checked server-side; also fills {{Field}} placeholders.
+          ...(isForm ? { field_values: Object.fromEntries(app.form_schema.map(f => [f.label, formValues[f.id] ?? ''])) } : {}),
+        }),
       })
       if (!res.ok) {
         const err = await res.json().catch(() => ({}))

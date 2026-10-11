@@ -594,7 +594,7 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
     }
 
     const controller = new AbortController()
-    const timeoutId = setTimeout(() => controller.abort(), 95000)
+    const timeoutId = setTimeout(() => controller.abort(), 185000)   // backend REQUEST_TIMEOUT is 180 s
 
     try {
       if (bulkMode) {

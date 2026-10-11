@@ -127,6 +127,8 @@ export default function AppEmbedPage() {
             {/* Chat apps keep the conversation (in this tab) so follow-ups work */}
             {(app.has_memory || app.app_type === 'chatbot')
               ? <ConversationThread app={app} user={null} inline />
+              : app.app_type === 'data'
+              ? <DataAppRunner app={app} user={null} inline />
               : <EmbedVisitorRunner app={app} />}
           </Suspense>
         ) : !user ? (

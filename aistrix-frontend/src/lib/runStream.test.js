@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // runStream reads the session token from Supabase; no real client in tests.
+const signedIn = { data: { session: { access_token: 'tok' } } }
 vi.mock('../supabase', () => ({
-  supabase: { auth: { getSession: async () => ({ data: { session: { access_token: 'tok' } } }) } },
+  supabase: { auth: { getSession: vi.fn(async () => signedIn) } },
 }))
 
+const { supabase } = await import('../supabase')
 const { RunError, errorFromResponse, normaliseUrl, parseModelJSON, readUrl, streamRun } = await import('./runStream')
 
 const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
@@ -96,6 +98,15 @@ describe('readUrl', () => {
     expect((await readUrl('https://acme.com', { maxChars: 500 })).text).toBe('About us')
     expect(fetch.mock.calls[0][0]).toMatch(/\/scrape$/)
     expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({ url: 'https://acme.com', max_chars: 500 })
+  })
+  it('embed visitors: no sign-in header, app id sent', async () => {
+    supabase.auth.getSession.mockResolvedValueOnce({ data: { session: null } })
+    const fetch = vi.fn(async () => json(200, { text: 'region,amount', url: 'https://acme.com/d.csv', kind: 'csv', truncated: false, chars: 13 }))
+    vi.stubGlobal('fetch', fetch)
+    await readUrl('https://acme.com/d.csv', { appId: 'app-1' })
+    const [, init] = fetch.mock.calls[0]
+    expect(init.headers.Authorization).toBeUndefined()
+    expect(JSON.parse(init.body)).toEqual({ url: 'https://acme.com/d.csv', max_chars: 8000, app_id: 'app-1' })
   })
   it("passes on the server's reason when a page can't be read", async () => {
     vi.stubGlobal('fetch', async () => json(422, { detail: 'This page is built with JavaScript' }))

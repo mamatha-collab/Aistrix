@@ -162,3 +162,17 @@ export function buildTemplateCases(app, blueprint = {}) {
   }
   return common
 }
+
+// Persona Pack Testing (optional) and the speed & cost check inputs.
+export const PERSONA_PACKS = [
+  { id: 'first_timer', label: 'First-timer', desc: 'Plain-language user who needs clear next steps.' },
+  { id: 'power_user', label: 'Power user', desc: 'Dense input, expects concise structured output.' },
+  { id: 'non_english', label: 'Non-native English', desc: 'Imperfect grammar or mixed-language phrasing.' },
+  { id: 'edge_case', label: 'Edge case', desc: 'Incomplete, long, ambiguous, or contradictory details.' },
+]
+
+export const PROFILE_INPUTS = [
+  { label: 'Short input', input: 'Help me complete this task quickly with a useful answer.' },
+  { label: 'Normal business input', input: 'I need a practical business-ready response. Include assumptions, recommended next steps, and any risks I should know.' },
+  { label: 'Long input', input: 'Context:\n'.repeat(1) + Array.from({ length: 18 }, (_, i) => `Detail ${i + 1}: This is realistic user context with requirements, constraints, examples, and business goals.`).join('\n') },
+]

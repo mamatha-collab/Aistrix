@@ -4806,7 +4806,7 @@ async def app_test_status(app_row: dict) -> dict:
         "draft_hash": draft,
         "total": len(cases), "passed": sum(1 for r in cases if r["passed"]),
         "failed": [{"source": r["source"], "case_ref": r["case_ref"], "label": r.get("label"), "persona": r.get("persona"),
-                    "errors": r.get("errors") or []} for r in cases if not r["passed"]],
+                    "category": _test_category(r), "errors": r.get("errors") or []} for r in cases if not r["passed"]],
         "requirements": requirements,
         "required_total": len(required_requirements),
         "required_passed": sum(1 for r in required_requirements if r["passed"]),

@@ -1,10 +1,10 @@
-import { Fragment, useState, useEffect, useMemo, useRef, lazy, Suspense } from 'react'
+import { useState, useEffect, useMemo, useRef, lazy, Suspense } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { track, EVENTS } from '../lib/analytics'
 import { timeAgo } from '../utils'
 import ToolsEditor from '../components/ToolsEditor'
-import TestSuite from '../components/TestSuite'
+import SimpleTestPanel from '../components/SimpleTestPanel'
 import BillingModeHint from '../components/BillingModeHint'
 import { publishApp, unpublishApp } from '../lib/release'
 
@@ -2965,29 +2965,9 @@ function StageCommandHeader({ stage, app, phaseByAppId = {}, onMovePhase }) {
 
 // ─── Tab: Test ────────────────────────────────────────────────────────────────
 
-function TestTab({ apps, allApps = apps, user, selectedAppId, onSelectApp, phaseByAppId = {}, onMovePhase }) {
+function TestTab({ apps, allApps = apps, user, selectedAppId, phaseByAppId = {}, onMovePhase }) {
   const activeAppId = apps.some(a => a.id === selectedAppId) ? selectedAppId : apps[0]?.id || null
   const selectedApp = apps.find(a => a.id === activeAppId)
-  const [activeTestPanel, setActiveTestPanel] = useState('app')
-  // Blueprint-generated cases are part of the app templates in Run validation.
-  const testPanels = [
-    {
-      id: 'app',
-      step: '1',
-      label: 'Run validation',
-      short: 'App test',
-      desc: 'Run the required checks, persona coverage, latency, cost, and deploy-readiness report for this app.',
-    },
-    {
-      id: 'command',
-      step: '2',
-      label: 'Decision',
-      short: 'Command',
-      desc: 'Use the report result to return to Design for fixes or move this app forward to Deploy.',
-    },
-  ]
-  const activePanel = testPanels.find(p => p.id === activeTestPanel) || testPanels[0]
-
   if (!allApps.length) return (
     <div className="bg-[#171B33] border border-white/5 rounded-2xl p-10 text-center">
       <p className="text-slate-400 text-sm">Create an app in Design before testing.</p>
@@ -3001,7 +2981,7 @@ function TestTab({ apps, allApps = apps, user, selectedAppId, onSelectApp, phase
       <p className="text-slate-400 text-sm mb-5">Move a Design or Deploy app here when you need to validate changes before publishing.</p>
       <div className="flex justify-center gap-2 flex-wrap">
         {allApps.map(a => (
-          <button key={a.id} onClick={() => onSelectApp?.(a.id)}
+          <button key={a.id} onClick={() => onMovePhase?.(a.id, 'test')}
             className="text-xs px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 border border-white/10 transition-colors">
             {a.emoji} {a.name} · {DEV_PHASES[getDevPhase(a, phaseByAppId)]?.label}
           </button>
@@ -3011,51 +2991,7 @@ function TestTab({ apps, allApps = apps, user, selectedAppId, onSelectApp, phase
   )
 
   return (
-    <div className="space-y-5">
-      <div className="bg-[#171B33] border border-white/5 rounded-2xl p-3 space-y-3">
-        <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-2 items-stretch">
-          {testPanels.map((item, index) => (
-            <Fragment key={item.id}>
-            <button onClick={() => setActiveTestPanel(item.id)}
-              className={`text-left px-3 py-3 rounded-xl border transition-colors ${
-                activeTestPanel === item.id
-                  ? 'bg-[#6C5CE7]/18 text-white border-[#6C5CE7]/40'
-                  : 'text-slate-400 hover:text-white hover:bg-white/5 border-white/8'
-              }`}>
-              <span className={`inline-flex items-center justify-center w-5 h-5 rounded-full text-[10px] font-bold mr-2 ${
-                activeTestPanel === item.id ? 'bg-[#6C5CE7] text-white' : 'bg-white/5 text-slate-500'
-              }`}>
-                {item.step}
-              </span>
-              <span className="text-sm font-semibold">{item.label}</span>
-            </button>
-            {index < testPanels.length - 1 && (
-              <div className="hidden md:flex items-center justify-center px-1">
-                <div className="flex items-center gap-2 text-[#A29BFE]/80">
-                  <span
-                    className="flow-connector"
-                    style={{ width: '46px', '--flow-delay': `${index * 0.35}s` }}
-                  />
-                </div>
-              </div>
-            )}
-            </Fragment>
-          ))}
-        </div>
-        <div className="rounded-xl bg-[#0E1224]/70 border border-white/8 px-4 py-3">
-          <p className="text-xs text-slate-400 leading-relaxed">{activePanel.desc}</p>
-        </div>
-      </div>
-
-      {activeTestPanel === 'app' && (
-        <TestSuite apps={apps} user={user} selectedAppId={activeAppId} onSelectApp={onSelectApp} />
-      )}
-
-
-      {activeTestPanel === 'command' && (
-        <StageCommandHeader stage="test" app={selectedApp} phaseByAppId={phaseByAppId} onMovePhase={onMovePhase} />
-      )}
-    </div>
+    <SimpleTestPanel key={selectedApp?.id} app={selectedApp} user={user} onMovePhase={onMovePhase} />
   )
 }
 
@@ -6526,17 +6462,17 @@ export default function DevStudioPage({
               phaseScopedActiveAppId ? (
                 <>
                   {tab === 'design' && <DesignTab   apps={activePhaseApps} allApps={apps} loading={loading} onOpenCreate={onOpenCreate} user={user} onAppUpdated={updateAppInState} onGoToTest={appId => { moveAppPhase(appId, 'test'); setDeployFixReason('') }} selectedAppId={phaseScopedActiveAppId} onSelectApp={setActiveAppId} deployFixReason={deployFixReason} phaseByAppId={phaseByAppId} />}
-                  {tab === 'test'   && <TestTab     apps={activePhaseApps} allApps={apps} user={user} selectedAppId={phaseScopedActiveAppId} onSelectApp={setActiveAppId} phaseByAppId={phaseByAppId} onMovePhase={moveAppPhase} />}
+                  {tab === 'test'   && <TestTab     apps={activePhaseApps} allApps={apps} user={user} selectedAppId={phaseScopedActiveAppId} phaseByAppId={phaseByAppId} onMovePhase={moveAppPhase} />}
                   {tab === 'deploy' && <DeployTab   apps={activePhaseApps} user={user} onAppUpdated={updateAppInState} onFixInDesign={returnToDesignForPublishFix} selectedAppId={phaseScopedActiveAppId} onSelectApp={setActiveAppId} phaseByAppId={phaseByAppId} onMovePhase={moveAppPhase} />}
                 </>
               ) : (
                 (() => {
                   const designApps = visibleApps.filter(a => getDevPhase(a, phaseByAppId) === 'design')
-                  const appRow = (a) => {
+                  const appRow = (a, onPick = () => setActiveAppId(a.id)) => {
                     const phase = DEV_PHASES[getDevPhase(a, phaseByAppId)]
                     return (
                       <div key={a.id} className="relative">
-                        <button onClick={() => setActiveAppId(a.id)}
+                        <button onClick={onPick}
                           className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-[#131929] border border-white/8 hover:border-white/20 hover:bg-[#1A2038] text-left transition-colors">
                           <AppEmojiWithType app={a} size="lg" />
                           <div className="flex-1 min-w-0 overflow-hidden">
@@ -6592,7 +6528,7 @@ export default function DevStudioPage({
                         {designApps.length > 0 && (
                           <div className="space-y-2">
                             <p className="text-xs font-semibold uppercase tracking-widest text-slate-500 px-1">✏️ Still designing — blueprint may be incomplete</p>
-                            {designApps.map(appRow)}
+                            {designApps.map(a => appRow(a, () => moveAppPhase(a.id, 'test')))}
                           </div>
                         )}
                       </div>

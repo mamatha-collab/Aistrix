@@ -26,7 +26,7 @@ import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { track, EVENTS } from '../lib/analytics'
 import { evaluateCase } from '../lib/promptTests'
-import { isRealCheck, appTypeOf, appTypeLabel, outputSchemaFields, judge, buildTemplateCases } from '../lib/testTemplates'
+import { isRealCheck, appTypeOf, appTypeLabel, outputSchemaFields, judge, buildTemplateCases, PERSONA_PACKS, PROFILE_INPUTS } from '../lib/testTemplates'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -58,19 +58,6 @@ const CATEGORY_OPTIONS = [
 function withServerVerdicts(ruleResults, run) {
   return (ruleResults || []).map(r => (SERVER_GRADED.has(r.type) ? { ...r, passed: !!run.passed } : r))
 }
-
-const PERSONA_PACKS = [
-  { id: 'first_timer', label: 'First-timer', desc: 'Plain-language user who needs clear next steps.' },
-  { id: 'power_user', label: 'Power user', desc: 'Dense input, expects concise structured output.' },
-  { id: 'non_english', label: 'Non-native English', desc: 'Imperfect grammar or mixed-language phrasing.' },
-  { id: 'edge_case', label: 'Edge case', desc: 'Incomplete, long, ambiguous, or contradictory details.' },
-]
-
-const PROFILE_INPUTS = [
-  { label: 'Short input', input: 'Help me complete this task quickly with a useful answer.' },
-  { label: 'Normal business input', input: 'I need a practical business-ready response. Include assumptions, recommended next steps, and any risks I should know.' },
-  { label: 'Long input', input: 'Context:\n'.repeat(1) + Array.from({ length: 18 }, (_, i) => `Detail ${i + 1}: This is realistic user context with requirements, constraints, examples, and business goals.`).join('\n') },
-]
 
 const REQUIREMENT_META = {
   functional: { label: 'Functional', desc: 'Normal user input produces a useful business result.' },
@@ -536,7 +523,9 @@ function TestReport({ app, requirements, storageMissing, serverStatus, publishRe
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
-export default function TestSuite({ apps, user, selectedAppId: controlledAppId }) {
+// compact: just the test list and editor ("Customize tests" under the
+// one-click Test panel), without the scores, gate, report and extra panels.
+export default function TestSuite({ apps, user, selectedAppId: controlledAppId, compact = false }) {
   const [internalAppId] = useState(() => apps[0]?.id || null)
   const selectedAppId = controlledAppId !== undefined ? controlledAppId : internalAppId
   const [testCases, setTestCases]   = useState([])
@@ -910,6 +899,7 @@ export default function TestSuite({ apps, user, selectedAppId: controlledAppId }
 
   return (
     <div className="space-y-4">
+      {!compact && (<>
       <AppTestHero
         app={selectedApp}
         qualityScore={qualityScore}
@@ -918,6 +908,7 @@ export default function TestSuite({ apps, user, selectedAppId: controlledAppId }
         serverStatus={serverStatus}
         storageMissing={testStorageMissing}
       />
+      </>)}
 
       <div className="bg-[#171B33] border border-white/10 rounded-2xl p-4 space-y-4">
       <div className="flex items-start gap-3 flex-wrap">
@@ -969,6 +960,7 @@ export default function TestSuite({ apps, user, selectedAppId: controlledAppId }
         </div>
       )}
 
+      {!compact && (<>
       <QualityGatePlan
         app={selectedApp}
         requirements={requirements}
@@ -978,7 +970,9 @@ export default function TestSuite({ apps, user, selectedAppId: controlledAppId }
         onRequirementClick={handleRequirementClick}
         profileRunning={profileRunning}
       />
+      </>)}
 
+      {!compact && (<>
       <div className="space-y-4">
       {/* Server-side current draft status */}
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-3">
@@ -1073,7 +1067,9 @@ export default function TestSuite({ apps, user, selectedAppId: controlledAppId }
         </div>
       </div>
       </div>
+      </>)}
 
+      {!compact && (<>
       <div className="space-y-4">
       {/* Publish readiness gate */}
       {showReadiness && (
@@ -1113,6 +1109,7 @@ export default function TestSuite({ apps, user, selectedAppId: controlledAppId }
         localResults={results}
       />
       </div>
+      </>)}
 
       <div className="space-y-4">
       {/* Empty state */}
@@ -1208,14 +1205,6 @@ export default function TestSuite({ apps, user, selectedAppId: controlledAppId }
         </div>
       )}
 
-      {/* Context testing info banner */}
-      {testCases.some(tc => tc.context?.length > 0) && (
-        <div className="bg-[#6C5CE7]/8 border border-[#6C5CE7]/20 rounded-xl px-4 py-3">
-          <p className="text-[11px] text-[#A29BFE]">
-            💡 Some test cases have context injection enabled. During preview runs, context data is not fetched — context-aware tests are fully accurate only when run by an end user who has a saved profile.
-          </p>
-        </div>
-      )}
       </div>
     </div>
   )

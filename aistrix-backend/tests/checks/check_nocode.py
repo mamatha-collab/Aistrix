@@ -6,6 +6,7 @@ import _harness
 from _harness import ok, finish
 _harness.setup()
 import main  # noqa
+REAL_STREAM_CLAUDE, REAL_STREAM_OPENAI = main.stream_claude, main.stream_openai   # later checks swap in fakes
 os.environ.pop("ANTHROPIC_API_KEY", None)   # never call the real API from tests
 from fastapi.testclient import TestClient
 
@@ -89,4 +90,68 @@ c.post("/run", json={"app_id": "f1", "input": "Company Name: Acme", "field_value
 ok("form placeholders filled via /run", "pitch for Acme with budget 5k" in seen["system"])
 c.post("/v1/apps/f1/run", json={"fields": {"company_name": "Globex", "budget": 900}, "stream": False})
 ok("form placeholders filled via API fields", "pitch for Globex with budget 900" in seen["system"])
+
+# ── answers cut off at the length limit, or refused ─────────────────────────
+from types import SimpleNamespace as NS
+main.load_app_row = app_row          # plain chatbot app, no output contract
+
+def stopping(reason):
+    async def fake(system, user_input, model, api_key=None, usage_holder=None, **kw):
+        yield "Partial answer"
+        if usage_holder is not None:
+            usage_holder.update(input_tokens=5, output_tokens=7, _stop=reason)
+    return fake
+
+main.stream_claude = stopping("max_tokens")
+body = c.post("/run", json={"app_id": "a1", "input": "write a lot"}).text
+ok("cut-off answer gets a visible note", "Answer cut off" in body and '"done": true' in body)
+ok("internal stop marker never reaches the client", "_stop" not in body)
+
+main.stream_claude = stopping("refusal")
+body = c.post("/run", json={"app_id": "a1", "input": "x"}).text
+ok("refusal → clear error, no done", "declined to answer" in body and '"done": true' not in body)
+
+main.stream_claude = stopping("end_turn")
+body = c.post("/run", json={"app_id": "a1", "input": "x"}).text
+ok("normal finish has no note", "Answer cut off" not in body and '"done": true' in body)
+
+# the real stream functions report why the model stopped
+import asyncio as _asyncio
+
+async def _drain(gen): return "".join([t async for t in gen])
+
+class _ClaudeStream:
+    def __init__(self, reason): self.reason = reason
+    async def __aenter__(self): return self
+    async def __aexit__(self, *a): return False
+    @property
+    def text_stream(self):
+        async def gen():
+            yield "hi"
+        return gen()
+    async def get_final_message(self):
+        return NS(stop_reason=self.reason, usage=NS(input_tokens=1, output_tokens=2))
+
+for reason in ("max_tokens", "refusal"):
+    main.anthropic.AsyncAnthropic = lambda **kw: NS(messages=NS(stream=lambda **k: _ClaudeStream(reason)))
+    holder = {}
+    text = _asyncio.run(_drain(REAL_STREAM_CLAUDE("s", "u", "m", usage_holder=holder)))
+    ok(f"stream_claude records stop_reason={reason}", text == "hi" and holder.get("_stop") == reason and holder["output_tokens"] == 2)
+
+def _oai_chunks(finish):
+    chunks = [NS(usage=None, choices=[NS(delta=NS(content="hi"), finish_reason=None)]),
+              NS(usage=None, choices=[NS(delta=NS(content=None), finish_reason=finish)]),
+              NS(usage=NS(prompt_tokens=3, completion_tokens=4), choices=[])]
+    async def gen():
+        for ch in chunks:
+            yield ch
+    return gen()
+
+for finish_reason, expected in (("length", "max_tokens"), ("content_filter", "refusal"), ("stop", "stop")):
+    async def create(**kw): return _oai_chunks(finish_reason)
+    main.openai.AsyncOpenAI = lambda **kw: NS(chat=NS(completions=NS(create=create)))
+    holder = {}
+    text = _asyncio.run(_drain(REAL_STREAM_OPENAI("s", "u", "m", usage_holder=holder)))
+    ok(f"stream_openai maps finish_reason={finish_reason} → {expected}", text == "hi" and holder.get("_stop") == expected and holder["output_tokens"] == 4)
+
 finish()

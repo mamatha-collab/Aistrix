@@ -178,7 +178,7 @@ async function checkAlerts(userId, input, result, toast) {
 
     if (triggered) {
       toast(`🔔 ${message}`, 'info', 5000)
-      if (Notification.permission === 'granted') new Notification('Aistrix Alert', { body: message })
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') new Notification('Aistrix Alert', { body: message })
       // Push to notifications center
       await createNotification(userId, { type: 'alert', title: 'Alert triggered', message, link_view: 'alerts' })
     }
@@ -193,7 +193,8 @@ async function requestNotificationPermission() {
 }
 
 function sendNotification(appName) {
-  if (Notification.permission !== 'granted') return
+  // Not every browser has notifications (e.g. iOS Safari, in-app browsers).
+  if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return
   new Notification(`${appName} finished`, {
     body: 'Your result is ready — click to view.',
     icon: '/favicon.ico',
@@ -626,33 +627,40 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
           if (error) toast(`Result ready, but couldn't save to history: ${error.message}`, 'error', 8000, { label: 'Retry', onClick: saveHistory })
           return null
         }
-        const historyRow = await saveHistory()
-
         clearTimeout(timeoutId)
-        await supabase.rpc('increment_app_runs', { p_app_id: app.id })
 
-        // Feature 1: Save structured record if output is JSON-parseable
-        if (app.output_type && app.output_type !== 'markdown') {
-          const structured = extractStructuredData(resultRef.current)
-          if (structured) {
-            const { error: recordError } = await supabase.from('app_records').insert({
-              app_id: app.id, user_id: user.id,
-              run_id: historyRow?.id || null,
-              data: structured,
-              label: runInput.slice(0, 80),
-            })
-            if (recordError) toast(`Couldn't save structured record: ${recordError.message}`, 'error')
+        // The answer is shown — the steps below are extras. A failure in one
+        // of them must not turn a successful run into an error.
+        let historyRow = null
+        try {
+          historyRow = await saveHistory()
+          await supabase.rpc('increment_app_runs', { p_app_id: app.id })
+
+          // Feature 1: Save structured record if output is JSON-parseable
+          if (app.output_type && app.output_type !== 'markdown') {
+            const structured = extractStructuredData(resultRef.current)
+            if (structured) {
+              const { error: recordError } = await supabase.from('app_records').insert({
+                app_id: app.id, user_id: user.id,
+                run_id: historyRow?.id || null,
+                data: structured,
+                label: runInput.slice(0, 80),
+              })
+              if (recordError) toast(`Couldn't save structured record: ${recordError.message}`, 'error')
+            }
           }
+
+          await checkAlerts(user.id, runInput, resultRef.current, toast)
+
+          // Feature 8: Intelligent next step
+          const next = await findNextAppRecommendation(app, user.id)
+          if (next) setNextApp(next)
+          sendNotification(app.name)
+        } catch (extraErr) {
+          console.warn('Post-run step failed:', extraErr)
         }
-
-        await checkAlerts(user.id, runInput, resultRef.current, toast)
-
-        // Feature 8: Intelligent next step
-        const next = await findNextAppRecommendation(app, user.id)
-        if (next) setNextApp(next)
-        sendNotification(app.name)
         onRun?.()
-        toast('Result saved to history', 'success')
+        if (historyRow) toast('Result saved to history', 'success')
         track(EVENTS.APP_RUN_COMPLETED, { app_id: app.id, app_name: app.name, provider: p, model: m, input_tokens: u?.input_tokens, output_tokens: u?.output_tokens, is_paid: !!app.is_paid, entitled: !!entitlement })
         // The server counts the run against the entitlement quota (and sends
         // the 80% warning email); mirror it locally so the UI stays current.

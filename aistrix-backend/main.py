@@ -949,6 +949,11 @@ def validate_model(provider: str, model: str) -> str:
     return model if model in allowed else get_default_model(provider)
 
 
+# Shown when the model stops early (stop_reason / finish_reason).
+REFUSAL_MESSAGE = "The AI declined to answer this request. Try rephrasing it, or check the app's instructions."
+TRUNCATED_NOTE = "\n\n_(Answer cut off: it reached the maximum length. Ask for a shorter answer, or split the request.)_"
+
+
 async def stream_claude(system: str, user_input: str, model: str, api_key: str = None, max_tokens: int = 4096, temperature: float = 1.0, usage_holder: dict = None):
     client = anthropic.AsyncAnthropic(api_key=api_key or os.getenv("ANTHROPIC_API_KEY"))
     async with client.messages.stream(model=model, max_tokens=max_tokens, system=system,
@@ -960,6 +965,7 @@ async def stream_claude(system: str, user_input: str, model: str, api_key: str =
             final = await stream.get_final_message()
             usage_holder["input_tokens"] = final.usage.input_tokens
             usage_holder["output_tokens"] = final.usage.output_tokens
+            usage_holder["_stop"] = final.stop_reason   # popped by execute_run
 
 
 async def stream_openai(system: str, user_input: str, model: str, api_key: str = None, max_tokens: int = 4096, temperature: float = 1.0, usage_holder: dict = None):
@@ -971,15 +977,20 @@ async def stream_openai(system: str, user_input: str, model: str, api_key: str =
         # actually wants it — some OpenAI-compatible endpoints choke on
         # unrecognized stream_options.
         stream_options={"include_usage": True} if usage_holder is not None else openai.NOT_GIVEN)
+    finish_reason = None
     async for chunk in stream:
         if usage_holder is not None and chunk.usage:
             usage_holder["input_tokens"] = chunk.usage.prompt_tokens
             usage_holder["output_tokens"] = chunk.usage.completion_tokens
         if not chunk.choices:
             continue
+        finish_reason = chunk.choices[0].finish_reason or finish_reason
         c = chunk.choices[0].delta.content
         if c:
             yield c
+    if usage_holder is not None:
+        # Same vocabulary as Claude's stop_reason; popped by execute_run.
+        usage_holder["_stop"] = {"length": "max_tokens", "content_filter": "refusal"}.get(finish_reason, finish_reason)
 
 
 # ─── Agentic loops ────────────────────────────────────────────────────────────
@@ -1537,6 +1548,10 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
                     attempt_usage: dict = {}
                     parts = [t async for t in stream_fn(system, attempt_input, model, user_api_key,
                                                         temperature=min(temp, 0.3), usage_holder=attempt_usage)]
+                    if attempt_usage.pop("_stop", None) == "refusal":
+                        _record_run_outcome(False, "refusal")
+                        yield _sse({"error": REFUSAL_MESSAGE})
+                        return
                     for k, v in attempt_usage.items():
                         usage[k] = usage.get(k, 0) + v
                     text = _strip_json_fences("".join(parts))
@@ -1562,6 +1577,15 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
                 async for token in stream_fn(system, req.input, model, user_api_key, temperature=temp, usage_holder=usage):
                     collected.append(token)
                     yield _sse({"token": token})
+                stop = usage.pop("_stop", None)
+                if stop == "refusal":
+                    _record_run_outcome(False, "refusal")
+                    yield _sse({"error": REFUSAL_MESSAGE})
+                    return
+                if stop == "max_tokens":
+                    # Without this the answer just stops mid-sentence.
+                    collected.append(TRUNCATED_NOTE)
+                    yield _sse({"token": TRUNCATED_NOTE})
 
             async for ev in finish("".join(collected)):
                 yield ev

@@ -34,10 +34,15 @@ export async function duplicateApp(app, userId) {
 // fetch" that means nothing to a user) into something actionable. Shared
 // across every runner so a backend-down/timeout/rate-limit error reads the
 // same way no matter which app type the user happened to be running.
+// What browsers throw when a request never reaches the server (Chrome,
+// Firefox, Safari, React Native). Server messages that merely mention
+// "fetch" (e.g. "Could not fetch that URL") must pass through unchanged.
+const CONNECTION_FAILURE = /^(Failed to fetch|NetworkError when attempting to fetch resource|Load failed|Network request failed)/i
+
 export function friendlyErrorMessage(err) {
   if (err?.name === 'AbortError') return 'Request timed out. Try a shorter input.'
   const msg = err?.message || ''
-  if (/fetch|network|failed to fetch/i.test(msg)) return 'Could not connect to the backend. Check your connection and make sure the server is running.'
+  if (CONNECTION_FAILURE.test(msg)) return 'Could not connect to the backend. Check your connection and make sure the server is running.'
   if (msg === '429' || /rate limit/i.test(msg)) return msg === '429' ? 'Rate limit reached. Try again in a moment.' : msg
   return msg || 'Something went wrong. Please try again.'
 }

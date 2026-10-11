@@ -3,6 +3,7 @@ import ast
 import csv
 import html as html_lib
 import hashlib
+from functools import partial
 import io
 import ipaddress
 import json
@@ -26,7 +27,7 @@ import anthropic
 import httpx
 import openai
 import sentry_sdk
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
@@ -116,6 +117,20 @@ def _decrypt(token: str) -> str:
     if not _fernet:
         raise HTTPException(status_code=503, detail="Secret encryption not configured")
     return _fernet.decrypt(token.encode()).decode()
+
+
+def _open_key(stored: Optional[str]) -> Optional[str]:
+    """A saved provider key. Keys are Fernet-encrypted by /v1/provider-keys;
+    rows saved before that are plaintext and returned as-is (and re-encrypted
+    on their next read by fetch_user_api_key_by_id)."""
+    if not stored:
+        return None
+    if stored.startswith("gAAAA") and _fernet:
+        try:
+            return _fernet.decrypt(stored.encode()).decode()
+        except InvalidToken:
+            return None
+    return stored
 REQUEST_TIMEOUT           = int(os.getenv("REQUEST_TIMEOUT", "180"))
 HOURLY_LIMIT              = int(os.getenv("RATE_LIMIT_PER_HOUR", "30"))
 DAILY_LIMIT               = int(os.getenv("RATE_LIMIT_PER_DAY", "200"))
@@ -281,6 +296,8 @@ _anon_hits: dict[str, deque] = defaultdict(deque)
 
 TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "").lower() in ("1", "true", "yes")
 EMBED_VISITOR_HOURLY_LIMIT = int(os.getenv("EMBED_VISITOR_RATE_LIMIT_PER_HOUR", "20"))
+# Default daily runs per end user on apps whose developer's key pays (apps can set their own).
+DEV_KEY_RUNS_PER_USER_DAY = int(os.getenv("DEV_KEY_RUNS_PER_USER_DAY", "20"))
 
 
 def client_ip(request: Request) -> str:
@@ -327,7 +344,7 @@ async def fetch_user_api_key(user_jwt: str, provider: str, sb: Optional[Client] 
             .maybe_single()
         )
         result = await db(query)
-        return result.data["encrypted_key"] if result.data else None
+        return _open_key(result.data["encrypted_key"]) if result.data else None
     except Exception:
         return None
 
@@ -588,9 +605,17 @@ async def fetch_user_api_key_by_id(user_id: str, provider: str) -> Optional[str]
     if not sb:
         return None
     try:
-        res = await db(sb.table("user_api_keys").select("encrypted_key")
+        res = await db(sb.table("user_api_keys").select("id, encrypted_key")
                        .eq("user_id", user_id).eq("provider", provider).eq("is_active", True).limit(1))
-        return res.data[0]["encrypted_key"] if res and res.data else None
+        if not (res and res.data):
+            return None
+        row = res.data[0]
+        key = _open_key(row["encrypted_key"])
+        if key and key == row["encrypted_key"] and _fernet:
+            # Saved before keys were encrypted: encrypt it now.
+            asyncio.create_task(db(sb.table("user_api_keys").update(
+                {"encrypted_key": _encrypt(key), "last4": key[-4:]}).eq("id", row["id"])))
+        return key
     except Exception:
         return None
 
@@ -608,16 +633,28 @@ async def get_usage_counts(sb: Client, user_id: str) -> tuple[int, int]:
     svc = _service_client() or sb
 
     async def counts(table: str) -> tuple[int, int]:
-        h, d = await asyncio.gather(
-            db(svc.table(table).select("id", count="exact", head=True).eq("user_id", user_id).gte("created_at", one_hour_ago)),
-            db(svc.table(table).select("id", count="exact", head=True).eq("user_id", user_id).gte("created_at", day_start)),
-        )
+        def q(since):
+            query = svc.table(table).select("id", count="exact", head=True).eq("user_id", user_id).gte("created_at", since)
+            # Runs paid by an app developer's key have their own per-app limit.
+            return query.neq("source", "dev_key") if table == "run_events" else query
+        h, d = await asyncio.gather(db(q(one_hour_ago)), db(q(day_start)))
         return h.count or 0, d.count or 0
 
     try:
         return await counts("run_events")
     except Exception:
         return await counts("run_history")   # run_events not migrated yet
+
+
+async def dev_key_runs_today(user_id: str, app_id: str) -> int:
+    """Runs this user made today on an app whose developer's key paid."""
+    sb = _service_client()
+    if not sb:
+        return 0
+    day_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    res = await db(sb.table("run_events").select("id", count="exact", head=True)
+                   .eq("user_id", user_id).eq("app_id", app_id).eq("source", "dev_key").gte("created_at", day_start))
+    return res.count or 0
 
 
 async def record_metered_run(user_id: str, app_id: Optional[str], source: str, workspace_id: Optional[str] = None) -> None:
@@ -837,7 +874,7 @@ async def execute_tool(tool: dict, tool_input: dict, ctx: Optional[dict] = None)
             other_model = validate_model(other_provider, other.get("ai_model") or get_default_model(other_provider))
             key = ctx.get("api_key") if ctx.get("provider") == other_provider else None
             collected = []
-            fn = stream_openai if other_provider == "openai" else stream_claude
+            fn = stream_fn_for(other_provider)
             async for token in fn(other.get("system_prompt") or "You are helpful.", app_input, other_model, key):
                 collected.append(token)
             return "".join(collected)
@@ -939,14 +976,89 @@ ALLOWED_CLAUDE_MODELS = {
 }
 ALLOWED_OPENAI_MODELS = {"gpt-4o-mini", "gpt-4o"}
 
+# AI providers developers can build with. "models" is the short list offered
+# (and allowed) on the platform's own keys; with their own key a developer
+# can pick any model the provider lists for that key (list_provider_models).
+# Gemini is reached through Google's OpenAI-compatible API.
+PROVIDERS: dict[str, dict] = {
+    "claude": {"label": "Claude", "company": "Anthropic", "kind": "anthropic", "env_key": "ANTHROPIC_API_KEY",
+               "keys_url": "https://console.anthropic.com/settings/keys", "key_prefix": "sk-ant-",
+               "models": [("claude-sonnet-5-5", "Claude Sonnet 5.5"), ("claude-haiku-5-5", "Claude Haiku 5.5"),
+                          ("claude-opus-5-5", "Claude Opus 5.5")]},
+    "openai": {"label": "OpenAI", "company": "OpenAI", "kind": "openai", "env_key": "OPENAI_API_KEY",
+               "keys_url": "https://platform.openai.com/api-keys", "key_prefix": "sk-",
+               "models": [("gpt-4o-mini", "GPT-4o mini"), ("gpt-4o", "GPT-4o")]},
+    "gemini": {"label": "Gemini", "company": "Google", "kind": "openai", "env_key": "GEMINI_API_KEY",
+               "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+               "keys_url": "https://aistudio.google.com/apikey", "key_prefix": "",
+               "models": [("gemini-3.8-flash", "Gemini 3.8 Flash")]},
+}
+ALLOWED_GEMINI_MODELS = {m for m, _ in PROVIDERS["gemini"]["models"]}
+_MODEL_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}")
+
 
 def get_default_model(provider: str) -> str:
-    return {"claude": "claude-sonnet-5-5", "openai": "gpt-4o-mini"}.get(provider, "claude-sonnet-5-5")
+    return {"claude": "claude-sonnet-5-5", "openai": "gpt-4o-mini", "gemini": "gemini-3.8-flash"}.get(provider, "claude-sonnet-5-5")
 
 
-def validate_model(provider: str, model: str) -> str:
-    allowed = ALLOWED_CLAUDE_MODELS if provider == "claude" else ALLOWED_OPENAI_MODELS
-    return model if model in allowed else get_default_model(provider)
+def platform_key(provider: str) -> Optional[str]:
+    """Aistrix's own key for a provider (env), if configured."""
+    return os.getenv(PROVIDERS.get(provider, {}).get("env_key", "")) or None
+
+
+def stream_fn_for(provider: str):
+    """Streaming function for a provider (looked up at call time so tests can
+    swap stream_claude / stream_openai)."""
+    if PROVIDERS.get(provider, {}).get("kind") != "openai":
+        return stream_claude
+    return stream_openai if provider == "openai" else partial(stream_openai, provider=provider)
+
+
+def tools_fn_for(provider: str):
+    if PROVIDERS.get(provider, {}).get("kind") != "openai":
+        return run_claude_with_tools
+    return run_openai_with_tools if provider == "openai" else partial(run_openai_with_tools, provider=provider)
+
+
+def _openai_client(provider: str, api_key: Optional[str]):
+    return openai.AsyncOpenAI(api_key=api_key or platform_key(provider),
+                              base_url=PROVIDERS.get(provider, {}).get("base_url"))
+
+
+_CHAT_MODEL = {"openai": re.compile(r"^(gpt-|o\d|chatgpt-)"), "gemini": re.compile(r"^gemini-")}
+_NOT_CHAT = re.compile(r"(audio|realtime|transcribe|tts|image|imagen|veo|search|embedding|moderation|instruct|live|dall-e|whisper)")
+_model_cache: dict[tuple, tuple[float, list]] = {}
+
+
+async def list_provider_models(provider: str, api_key: str) -> list[dict]:
+    """Chat models this key can use, newest first: [{"id", "label"}]. Also
+    how a key is checked when saved (raises the provider's auth error)."""
+    cache_key = (provider, hashlib.sha256(api_key.encode()).hexdigest())
+    hit = _model_cache.get(cache_key)
+    if hit and time.time() - hit[0] < 600:
+        return hit[1]
+    if PROVIDERS[provider]["kind"] == "anthropic":
+        page = await anthropic.AsyncAnthropic(api_key=api_key).models.list(limit=100)
+        models = [{"id": m.id, "label": getattr(m, "display_name", None) or m.id} for m in page.data]
+    else:
+        page = await _openai_client(provider, api_key).models.list()
+        ids = sorted({m.id.removeprefix("models/") for m in page.data}, reverse=True)
+        chat = _CHAT_MODEL.get(provider)
+        models = [{"id": i, "label": i} for i in ids if (not chat or chat.match(i)) and not _NOT_CHAT.search(i)]
+    _model_cache[cache_key] = (time.time(), models)
+    return models
+
+
+def validate_model(provider: str, model: str, any_model: bool = False) -> str:
+    """Platform-key runs are limited to the short list; runs on someone's own
+    key may use any model id the provider accepts."""
+    allowed = {"claude": ALLOWED_CLAUDE_MODELS, "openai": ALLOWED_OPENAI_MODELS,
+               "gemini": ALLOWED_GEMINI_MODELS}.get(provider, ALLOWED_CLAUDE_MODELS)
+    if model in allowed:
+        return model
+    if any_model and model and _MODEL_ID.fullmatch(model):
+        return model
+    return get_default_model(provider)
 
 
 # Shown when the model stops early (stop_reason / finish_reason).
@@ -968,8 +1080,8 @@ async def stream_claude(system: str, user_input: str, model: str, api_key: str =
             usage_holder["_stop"] = final.stop_reason   # popped by execute_run
 
 
-async def stream_openai(system: str, user_input: str, model: str, api_key: str = None, max_tokens: int = 4096, temperature: float = 1.0, usage_holder: dict = None):
-    client = openai.AsyncOpenAI(api_key=api_key or os.getenv("OPENAI_API_KEY"))
+async def stream_openai(system: str, user_input: str, model: str, api_key: str = None, max_tokens: int = 4096, temperature: float = 1.0, usage_holder: dict = None, provider: str = "openai"):
+    client = _openai_client(provider, api_key)
     stream = await client.chat.completions.create(
         model=model, messages=[{"role": "system", "content": system}, {"role": "user", "content": user_input}],
         max_tokens=max_tokens, stream=True, temperature=temperature,
@@ -1039,8 +1151,8 @@ async def run_claude_with_tools(system, user_input, model, tools, api_key=None, 
     yield ("usage", {"input_tokens": input_tokens, "output_tokens": output_tokens})
 
 
-async def run_openai_with_tools(system, user_input, model, tools, api_key=None, max_steps: int = 10, ctx: Optional[dict] = None):
-    client = openai.AsyncOpenAI(api_key=api_key or os.getenv("OPENAI_API_KEY"))
+async def run_openai_with_tools(system, user_input, model, tools, api_key=None, max_steps: int = 10, ctx: Optional[dict] = None, provider: str = "openai"):
+    client = _openai_client(provider, api_key)
     oai_tools = tools_to_openai_format(tools)
     messages = [{"role": "system", "content": system}, {"role": "user", "content": user_input}]
     tool_map = {t["name"]: t for t in tools}
@@ -1404,31 +1516,69 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
             return JSONResponse(status_code=402, content={"error": reason})
 
     # ── Provider + model ─────────────────────────────────────────────────────
-    if req.custom_model_url and req.custom_model_name:
-        provider = "custom"
+    custom = bool(req.custom_model_url and req.custom_model_name)
+    provider = "custom" if custom else (req.ai_provider if req.ai_provider in PROVIDERS else "claude")
+    label = PROVIDERS.get(provider, {}).get("label", "AI")
+
+    # ── Whose key pays. Owners/editors (building, testing) and runs with no
+    # app use their own key, else the platform's. For end users the app
+    # decides (apps.billing_mode):
+    #   free — the developer's key pays (per-user daily limit set on the app);
+    #          without a developer key: the user's own key, else the platform.
+    #   byok — end users must use their own key for the app's provider.
+    # Website visitors (embed widget with visitor access) are end users with
+    # a per-visitor, per-app limit. ──────────────────────────────────────────
+    embed_visitor = bool(app_row and not caller_id and app_row.get("embed_public") and not app_row.get("is_paid"))
+    billing = (app_row.get("billing_mode") or "free") if (app_row and not is_editor) else None
+    owner_id = app_row.get("created_by") if app_row else None
+    if custom:
+        own_key = None
+    elif caller_id and user_jwt:
+        own_key = await fetch_user_api_key(user_jwt, provider)
+    elif caller_id:
+        own_key = await fetch_user_api_key_by_id(caller_id, provider)
+    else:
+        own_key = None
+
+    if billing == "byok" and not custom:
+        if not own_key:
+            return JSONResponse(status_code=401 if not caller_id else 403, content={
+                "code": "needs_own_key", "provider": provider,
+                "error": (f"This app runs on your own {label} API key. "
+                          + ("Sign in to Aistrix and add it in Settings → Keys." if not caller_id else "Add it in Settings → Keys to run it."))})
+        user_api_key, key_source = own_key, "own"
+    else:
+        dev_key = (await fetch_user_api_key_by_id(owner_id, provider)
+                   if billing == "free" and owner_id and (caller_id or embed_visitor) and not custom else None)
+        if dev_key:
+            user_api_key, key_source = dev_key, "developer"
+        elif own_key:
+            user_api_key, key_source = own_key, "own"
+        else:
+            user_api_key, key_source = None, "platform"
+
+    if custom:
         model = req.custom_model_name
     else:
-        provider = req.ai_provider if req.ai_provider in ("claude", "openai") else "claude"
-        model = validate_model(provider, req.ai_model or get_default_model(provider))
+        model = validate_model(provider, req.ai_model or get_default_model(provider), any_model=bool(user_api_key))
+        if not (user_api_key or platform_key(provider)):
+            return JSONResponse(status_code=400, content={
+                "code": "needs_own_key", "provider": provider,
+                "error": f"No {label} API key is available for this run. Add your own {label} key in Settings → Keys."})
 
-    # ── Key + rate limit. Bring-your-own-key callers aren't metered against
-    # platform limits (that's what the 429 message has always promised).
-    # Anonymous website visitors of a widget with visitor access run on the
-    # owner's key when saved, with a per-visitor, per-app limit. ────────────
-    embed_visitor = bool(app_row and not caller_id and app_row.get("embed_public") and not app_row.get("is_paid"))
-    if caller_id and user_jwt:
-        user_api_key = await fetch_user_api_key(user_jwt, provider)
-    elif caller_id:
-        user_api_key = await fetch_user_api_key_by_id(caller_id, provider)
-    elif embed_visitor and app_row.get("created_by"):
-        user_api_key = await fetch_user_api_key_by_id(app_row["created_by"], provider)
-    else:
-        user_api_key = None
     if embed_visitor:
         allowed, rate_msg = check_embed_visitor_rate_limit(client_ip(request), app_row["id"])
         if not allowed:
             return JSONResponse(status_code=429, content={"error": rate_msg})
-    elif not user_api_key:
+    elif key_source == "developer":
+        limit = app_row.get("free_runs_per_user_day")
+        limit = DEV_KEY_RUNS_PER_USER_DAY if limit is None else int(limit)
+        if await dev_key_runs_today(caller_id, app_row["id"]) >= limit:
+            return JSONResponse(status_code=429, content={"error": (
+                f"You've used today's {limit} free run{'s' if limit != 1 else ''} of this app. "
+                f"Add your own {label} key in Settings → Keys to keep going, or try again tomorrow.")})
+        await record_metered_run(caller_id, app_row["id"], "dev_key", caller.workspace_id)
+    elif key_source == "platform":
         allowed, rate_msg = await check_rate_limit(request, user_jwt, caller_id)
         if not allowed:
             return JSONResponse(status_code=429, content={"error": rate_msg})
@@ -1526,11 +1676,11 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
 
             raw_temp = req.temperature if req.temperature is not None else 1.0
             temp = min(raw_temp, 1.0) if provider != "openai" else raw_temp
-            stream_fn = stream_openai if provider == "openai" else stream_claude
+            stream_fn = stream_fn_for(provider)
 
             # ── Tool-enabled agentic loop ──
             if tools:
-                run_fn = run_claude_with_tools if provider != "openai" else run_openai_with_tools
+                run_fn = tools_fn_for(provider)
                 async for event_type, data in run_fn(system, req.input, model, tools, user_api_key, req.max_tool_steps or 10, tool_ctx):
                     if event_type == "token":
                         # The tool loops return the final answer in one piece; chunk it
@@ -4244,6 +4394,92 @@ async def publish_app(app_id: str, request: Request):
             .eq("app_id", app_id).eq("user_id", user_id).execute()
     )
     return {"status": "live"}
+
+
+# ── AI providers and developers' own keys ────────────────────────────────────
+class ProviderKeyRequest(BaseModel):
+    key: str = Field(..., min_length=8, max_length=500)
+
+
+def _provider_or_404(provider: str) -> dict:
+    p = PROVIDERS.get(provider)
+    if not p:
+        raise HTTPException(status_code=404, detail=f"Unknown provider. Use one of: {', '.join(PROVIDERS)}")
+    return p
+
+
+async def _saved_keys(user_id: str) -> dict[str, dict]:
+    sb = _service_client()
+    if not sb:
+        return {}
+    res = await db(sb.table("user_api_keys").select("provider, last4, is_active, encrypted_key")
+                   .eq("user_id", user_id).eq("is_active", True))
+    return {r["provider"]: r for r in (res.data or [])}
+
+
+@app.get("/v1/providers")
+async def list_providers(request: Request):
+    """Providers developers can build with: whether the caller has a key
+    saved, and the models they can pick (live list for their key, else the
+    platform's short list)."""
+    user_id = await require_verified_user(request)
+    saved = await _saved_keys(user_id)
+    out = []
+    for pid, p in PROVIDERS.items():
+        row = saved.get(pid)
+        models = [{"id": m, "label": lbl} for m, lbl in p["models"]]
+        models_error = None
+        key = _open_key(row["encrypted_key"]) if row else None
+        if key:
+            try:
+                live = await list_provider_models(pid, key)
+                known = {m["id"] for m in models}
+                models = models + [m for m in live if m["id"] not in known]
+            except Exception as e:
+                models_error = f"Couldn't load models for your {p['label']} key ({type(e).__name__})."
+        out.append({"id": pid, "label": p["label"], "company": p["company"], "keys_url": p["keys_url"],
+                    "connected": bool(row), "last4": (row or {}).get("last4"),
+                    "platform_available": bool(platform_key(pid)), "default_model": get_default_model(pid),
+                    "models": models, "models_error": models_error})
+    return {"providers": out}
+
+
+@app.put("/v1/provider-keys/{provider}")
+async def save_provider_key(provider: str, body: ProviderKeyRequest, request: Request):
+    """Check a key with the provider, then store it encrypted."""
+    user_id = await require_verified_user(request)
+    p = _provider_or_404(provider)
+    key = body.key.strip()
+    if p["key_prefix"] and not key.startswith(p["key_prefix"]):
+        raise HTTPException(status_code=422, detail=f"{p['label']} keys start with {p['key_prefix']}")
+    try:
+        models = await list_provider_models(provider, key)
+    except (anthropic.AuthenticationError, openai.AuthenticationError, anthropic.PermissionDeniedError, openai.PermissionDeniedError):
+        raise HTTPException(status_code=422, detail=f"{p['label']} rejected that key. Check it and try again.")
+    except (anthropic.BadRequestError, openai.BadRequestError):
+        raise HTTPException(status_code=422, detail=f"{p['label']} rejected that key. Check it and try again.")
+    except Exception as e:
+        print(f"provider key check failed [{provider}]: {type(e).__name__}: {e}")
+        raise HTTPException(status_code=502, detail=f"Couldn't reach {p['label']} to check the key. Try again in a moment.")
+    sb = _service_client()
+    if not sb:
+        raise HTTPException(status_code=503, detail="Key storage isn't configured on this server")
+    await db(sb.table("user_api_keys").upsert({
+        "user_id": user_id, "provider": provider, "encrypted_key": _encrypt(key), "last4": key[-4:],
+        "label": f"My {p['label']} key", "is_active": True,
+    }, on_conflict="user_id,provider"))
+    return {"provider": provider, "connected": True, "last4": key[-4:], "models": models}
+
+
+@app.delete("/v1/provider-keys/{provider}")
+async def delete_provider_key(provider: str, request: Request):
+    user_id = await require_verified_user(request)
+    _provider_or_404(provider)
+    sb = _service_client()
+    if not sb:
+        raise HTTPException(status_code=503, detail="Key storage isn't configured on this server")
+    await db(sb.table("user_api_keys").delete().eq("user_id", user_id).eq("provider", provider))
+    return {"provider": provider, "connected": False}
 
 
 @app.get("/health")

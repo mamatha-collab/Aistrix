@@ -8,6 +8,7 @@ import { TOOL_DEFAULT_SCHEMAS } from '../utils/toolTypes'
 import { fieldKeyFromLabel, outputFieldsErrors } from '../utils/schemaContracts'
 import { saveAppContract } from '../utils/appContracts'
 import { TypeGuideSteps } from './TypeBuilderGuide'
+import { DEFAULT_PROVIDERS, PROVIDER_STYLE } from '../lib/providers'
 
 const QUESTIONS_SYSTEM_PROMPT = `You are an expert AI app architect on a platform called Aistrix.
 When a developer describes an app idea, generate exactly 6-8 precise clarifying questions.
@@ -38,7 +39,7 @@ Return ONLY valid JSON — no markdown, no explanation:
   "output_type": "markdown OR table OR cards OR key_value OR json",
   "input_placeholder": "Short example of what a user would type",
   "system_prompt": "Detailed, well-crafted system prompt that makes the AI behave correctly for this use case. Include output format instructions based on the chosen output format.",
-  "ai_provider": "claude OR openai",
+  "ai_provider": "claude OR openai OR gemini",
   "ai_model": "claude-sonnet-5-5 OR gpt-4o-mini OR gpt-4o",
   "tags": ["tag1", "tag2", "tag3"],
   "form_schema": [
@@ -74,7 +75,7 @@ const OUTPUT_TYPES = { json: 'json', table: 'table', cards: 'cards', chart: 'cha
 const FIELD_TYPES = ['text', 'textarea', 'number', 'select', 'date']
 const OUTPUT_FIELD_TYPES = ['string', 'number', 'boolean', 'enum', 'string_array', 'number_array', 'object']
 const TONES = ['friendly', 'professional', 'concise', 'playful', 'empathetic']
-const MODELS = { claude: ['claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-opus-5-5'], openai: ['gpt-4o-mini', 'gpt-4o'] }
+const MODELS = Object.fromEntries(DEFAULT_PROVIDERS.map(p => [p.id, p.models.map(m => m.id)]))
 
 // The model's JSON is a suggestion: coerce it into a config the app can run.
 function normaliseConfig(raw) {
@@ -109,7 +110,7 @@ function normaliseConfig(raw) {
   if (outputFieldsErrors(outputFields)) outputFields = []
   if (appType === 'structured' && !outputFields.length) appType = 'prompt'
 
-  const provider = c.ai_provider === 'openai' ? 'openai' : 'claude'
+  const provider = MODELS[c.ai_provider] ? c.ai_provider : 'claude'
   const model = MODELS[provider].includes(c.ai_model) ? c.ai_model : MODELS[provider][0]
   let outputType = OUTPUT_TYPES[String(c.output_type || '').toLowerCase()] || 'markdown'
   if (appType === 'structured') outputType = 'json'
@@ -226,7 +227,7 @@ function AppPreview({ config, onSaveDraft, onPublish, onBack, saving }) {
             <p className="text-white font-semibold text-lg">{config.name}</p>
             <div className="flex items-center gap-2 mt-0.5">
               <span className="text-[10px] bg-[#6C5CE7]/20 text-[#6C5CE7] px-2 py-0.5 rounded-full capitalize">{config.app_type} app</span>
-              <span className="text-[10px] text-slate-500">{config.ai_provider === 'openai' ? '🟢 GPT' : '🟣 Claude'}</span>
+              <span className="text-[10px] text-slate-500">{(PROVIDER_STYLE[config.ai_provider] || PROVIDER_STYLE.claude).icon} {(PROVIDER_STYLE[config.ai_provider] || PROVIDER_STYLE.claude).name}</span>
             </div>
           </div>
         </div>

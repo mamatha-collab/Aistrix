@@ -6,6 +6,7 @@ import _harness
 from _harness import ok, finish
 _harness.setup()
 import main  # noqa
+main.platform_key = lambda provider: "test-platform-key"   # model calls are stubbed; never a real key
 REAL_STREAM_CLAUDE, REAL_STREAM_OPENAI = main.stream_claude, main.stream_openai   # later checks swap in fakes
 os.environ.pop("ANTHROPIC_API_KEY", None)   # never call the real API from tests
 from fastapi.testclient import TestClient

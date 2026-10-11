@@ -7,6 +7,7 @@ import _harness
 from _harness import ok, finish
 _harness.setup(RATE_LIMIT_PER_HOUR="1000")
 import main  # noqa
+main.platform_key = lambda provider: "test-platform-key"   # model calls are stubbed; never a real key
 os.environ.pop("ANTHROPIC_API_KEY", None)   # never call the real API from tests
 import uvicorn  # noqa
 from aistrix import (AistrixClient, AuthenticationError, ContractError, PaymentRequiredError)  # noqa

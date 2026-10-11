@@ -8,6 +8,7 @@ import _harness
 from _harness import ok, finish
 _harness.setup()
 import main  # noqa
+main.platform_key = lambda provider: "test-platform-key"   # model calls are stubbed; never a real key
 from fastapi.testclient import TestClient
 import pypdf
 

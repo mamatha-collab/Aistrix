@@ -2,12 +2,9 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { applyTheme } from '../utils/theme'
+import { PROVIDER_STYLE, removeProviderKey, saveProviderKey, useProviders } from '../lib/providers'
 
 const AVATAR_COLORS = ['#6C5CE7','#E84393','#00B894','#0984E3','#FDCB6E','#E17055','#74B9FF','#A29BFE','#55EFC4','#FD79A8']
-const PROVIDERS = [
-  { id: 'claude', name: 'Claude', company: 'Anthropic', color: '#6C5CE7', placeholder: 'sk-ant-api03-...' },
-  { id: 'openai', name: 'GPT-4', company: 'OpenAI', color: '#00A67E', placeholder: 'sk-proj-...' },
-]
 
 function Section({ title, description, children }) {
   return (
@@ -42,21 +39,13 @@ export default function SettingsPage({ user }) {
   )
 
   // API Keys
-  const [keys, setKeys] = useState({})
   const [keyInputs, setKeyInputs] = useState({})
   const [keySaving, setKeySaving] = useState({})
   const [keyShow, setKeyShow] = useState({})
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount only
-  useEffect(() => { loadKeys() }, [])
-
-  async function loadKeys() {
-    const { data } = await supabase.from('user_api_keys')
-      .select('provider, label, is_active, updated_at').eq('user_id', user.id)
-    if (data) {
-      const m = {}; data.forEach(k => { m[k.provider] = k }); setKeys(m)
-    }
-  }
+  const providers = useProviders()
+  const PROVIDERS = providers.map(p => ({ ...p, ...PROVIDER_STYLE[p.id] }))
+  const keys = Object.fromEntries(providers.filter(p => p.connected).map(p => [p.id, p]))
 
   async function saveProfile() {
     setSavingProfile(true)
@@ -89,26 +78,28 @@ export default function SettingsPage({ user }) {
     toast(result === 'granted' ? 'Notifications enabled' : 'Permission denied', result === 'granted' ? 'success' : 'error')
   }
 
+  // Saved through the backend: it checks the key with the provider and
+  // stores it encrypted.
   async function saveKey(provider) {
     const raw = keyInputs[provider]?.trim()
     if (!raw) return
     setKeySaving(prev => ({ ...prev, [provider]: true }))
-    const { error } = await supabase.from('user_api_keys').upsert({
-      user_id: user.id, provider, encrypted_key: raw,
-      label: `My ${provider} key`, is_active: true,
-    }, { onConflict: 'user_id,provider' })
-    setKeySaving(prev => ({ ...prev, [provider]: false }))
-    if (error) { toast(error.message, 'error'); return }
-    setKeys(prev => ({ ...prev, [provider]: { provider, is_active: true } }))
-    setKeyInputs(prev => ({ ...prev, [provider]: '' }))
-    toast(`${provider === 'claude' ? 'Claude' : 'OpenAI'} key saved`, 'success')
+    try {
+      await saveProviderKey(provider, raw)
+      setKeyInputs(prev => ({ ...prev, [provider]: '' }))
+      toast(`${PROVIDER_STYLE[provider]?.name || provider} key saved`, 'success')
+    } catch (e) {
+      toast(e.message, 'error', 6000)
+    } finally {
+      setKeySaving(prev => ({ ...prev, [provider]: false }))
+    }
   }
 
   async function removeKey(provider) {
-    const { error } = await supabase.from('user_api_keys').delete().eq('user_id', user.id).eq('provider', provider)
-    if (error) { toast(error.message, 'error'); return }
-    setKeys(prev => { const n = { ...prev }; delete n[provider]; return n })
-    toast('Key removed', 'info')
+    try {
+      await removeProviderKey(provider)
+      toast('Key removed', 'info')
+    } catch (e) { toast(e.message, 'error') }
   }
 
   const initial = (displayName || user?.email || '?')[0].toUpperCase()
@@ -266,7 +257,7 @@ export default function SettingsPage({ user }) {
                 </div>
                 {keys[p.id] ? (
                   <div className="flex items-center gap-2">
-                    <span className="text-[10px] text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full">✓ Connected</span>
+                    <span className="text-[10px] text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full">✓ Connected{keys[p.id].last4 ? ` ····${keys[p.id].last4}` : ''}</span>
                     <button onClick={() => removeKey(p.id)} className="text-[10px] text-red-400 hover:text-red-300">Remove</button>
                   </div>
                 ) : <span className="text-[10px] text-slate-500">Not connected</span>}

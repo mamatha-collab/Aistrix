@@ -7,6 +7,7 @@ import _harness
 from _harness import ok, finish
 _harness.setup()
 import main
+main.platform_key = lambda provider: "test-platform-key"   # model calls are stubbed; never a real key
 from fastapi.testclient import TestClient
 
 c = TestClient(main.app)

@@ -2,6 +2,8 @@ import { useState, useEffect, useTransition, useRef } from 'react'
 import { supabase } from '../supabase'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { confirmDiscard } from '../lib/confirmDiscard'
+import { PROVIDER_STYLE, modelOptions, providerById, useProviders } from '../lib/providers'
+import BillingModeHint from './BillingModeHint'
 import { TypeGuideSteps } from './TypeBuilderGuide'
 import { useToast } from '../hooks/useToast'
 import { generateJSON, normaliseUrl, readUrl, streamRun } from '../lib/runStream'
@@ -36,17 +38,6 @@ function defaultForType(type, key, fallback = '') {
 
 const EMOJI_OPTIONS = ['🤖','🧠','✍️','📊','🔍','💡','📝','🎯','🚀','🛠️','💬','📈','🔧','🎨','📧','🌐','⚡','🏆','🎓','🔑']
 
-const MODELS = {
-  claude: [
-    { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5 (Recommended)' },
-    { id: 'claude-haiku-5-5', label: 'Claude Haiku 5.5 (Fast)' },
-    { id: 'claude-opus-5-5', label: 'Claude Opus 5.5 (Powerful)' },
-  ],
-  openai: [
-    { id: 'gpt-4o-mini', label: 'GPT-4o Mini (Recommended)' },
-    { id: 'gpt-4o', label: 'GPT-4o (Powerful)' },
-  ],
-}
 
 const FIELD_TYPES = [
   { id: 'text',     label: 'Short text' },
@@ -372,6 +363,7 @@ function QualityScore({ form, appType, formSchema }) {
 export default function CreateAppModal({ user, onClose, onBack, onCreated, onUpdated, existingApp, initialType = 'prompt', websitePrefilled, withGuide = false }) {
   const modalRef = useRef(null)
   const toast = useToast()
+  const providers = useProviders()
   const isEdit = !!existingApp
   const [appType] = useState(existingApp?.app_type || initialType)
   const [domains, setDomains] = useState([])
@@ -398,6 +390,8 @@ export default function CreateAppModal({ user, onClose, onBack, onCreated, onUpd
     sample_input: existingApp?.sample_input || '',
     greeting: existingApp?.greeting || '',
     tone: existingApp?.tone || '',
+    billing_mode: existingApp?.billing_mode || 'free',
+    free_runs_per_user_day: existingApp?.free_runs_per_user_day ?? '',
   })
   const [formSchema, setFormSchema] = useState(existingApp?.form_schema || [])
   const [outputFields, setOutputFields] = useState([])
@@ -559,7 +553,7 @@ Return ONLY valid JSON with these fields:
   function set(key, val) {
     setForm(prev => {
       const next = { ...prev, [key]: val }
-      if (key === 'ai_provider') next.ai_model = MODELS[val][0].id
+      if (key === 'ai_provider') next.ai_model = providerById(providers, val).default_model || modelOptions(providers, val)[0]?.id || ''
       return next
     })
   }
@@ -601,6 +595,8 @@ Return ONLY valid JSON with these fields:
       custom_model_url: form.custom_model_url?.trim() || null,
       custom_model_name: form.custom_model_name?.trim() || null,
       sample_input: form.sample_input?.trim() || null,
+      billing_mode: form.billing_mode,
+      free_runs_per_user_day: form.billing_mode === 'free' && form.free_runs_per_user_day !== '' ? Math.max(0, Number(form.free_runs_per_user_day)) : null,
     }
 
     if (isEdit) {
@@ -955,17 +951,33 @@ Return ONLY valid JSON with these fields:
                 <div>
                   <label className="text-xs text-slate-400 block mb-1.5">AI Provider</label>
                   <select className={inputCls} value={form.ai_provider} onChange={e => set('ai_provider', e.target.value)}>
-                    <option value="claude">🟣 Claude</option>
-                    <option value="openai">🟢 GPT</option>
+                    {providers.map(p => <option key={p.id} value={p.id}>{PROVIDER_STYLE[p.id]?.icon} {PROVIDER_STYLE[p.id]?.name || p.label}</option>)}
                   </select>
                 </div>
                 <div>
                   <label className="text-xs text-slate-400 block mb-1.5">Model</label>
                   <select className={inputCls} value={form.ai_model} onChange={e => set('ai_model', e.target.value)}>
-                    {MODELS[form.ai_provider].map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+                    {modelOptions(providers, form.ai_provider, form.ai_model).map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
                   </select>
                 </div>
               </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-slate-400 block mb-1.5">Who pays for runs</label>
+                  <select className={inputCls} value={form.billing_mode} onChange={e => set('billing_mode', e.target.value)}>
+                    <option value="free">Free for users — your key</option>
+                    <option value="byok">Users bring their own key</option>
+                  </select>
+                </div>
+                {form.billing_mode === 'free' && (
+                  <div>
+                    <label className="text-xs text-slate-400 block mb-1.5">Free runs per user per day</label>
+                    <input type="number" min="0" className={inputCls} placeholder="20"
+                      value={form.free_runs_per_user_day} onChange={e => set('free_runs_per_user_day', e.target.value)} />
+                  </div>
+                )}
+              </div>
+              <BillingModeHint mode={form.billing_mode} provider={providerById(providers, form.ai_provider)} freeRuns={form.free_runs_per_user_day} className="-mt-2" />
               {hasOutputSchema && (
                 <div>
                   <label className="text-xs text-slate-400 block mb-1">

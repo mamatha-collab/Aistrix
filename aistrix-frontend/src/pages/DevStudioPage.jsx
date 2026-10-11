@@ -5,6 +5,8 @@ import { track, EVENTS } from '../lib/analytics'
 import { timeAgo } from '../utils'
 import ToolsEditor from '../components/ToolsEditor'
 import TestSuite from '../components/TestSuite'
+import BillingModeHint from '../components/BillingModeHint'
+import { PROVIDER_STYLE, modelOptions, providerById, useProviders } from '../lib/providers'
 import VersionManager, { VersionSetupCard } from '../components/VersionManager'
 import { useVersions } from '../hooks/useVersions'
 import ApiKeysManager from '../components/ApiKeysManager'
@@ -54,16 +56,12 @@ const FEATURES = [
   { icon: '👤', label: 'Dev profile',    desc: 'Public profile page with your published apps and bio.' },
 ]
 
-const APP_MODEL_OPTIONS = {
-  claude: [
-    { id: 'claude-sonnet-5-5', label: 'Claude Sonnet 5.5', hint: 'Best default for quality' },
-    { id: 'claude-haiku-5-5', label: 'Claude Haiku 5.5', hint: 'Fast and lower cost' },
-    { id: 'claude-opus-5-5', label: 'Claude Opus 5.5', hint: 'Highest reasoning cost' },
-  ],
-  openai: [
-    { id: 'gpt-4o-mini', label: 'GPT-4o mini', hint: 'Fast and lower cost' },
-    { id: 'gpt-4o', label: 'GPT-4o', hint: 'Higher quality multimodal model' },
-  ],
+// Hints for the platform's short list; other models (from a developer's own
+// key) are shown by name.
+const MODEL_HINTS = {
+  'claude-sonnet-5-5': 'Best default for quality', 'claude-haiku-5-5': 'Fast and lower cost',
+  'claude-opus-5-5': 'Highest reasoning cost', 'gpt-4o-mini': 'Fast and lower cost',
+  'gpt-4o': 'Higher quality multimodal model', 'gemini-3.8-flash': 'Fast and lower cost',
 }
 
 const APP_TYPE_META = {
@@ -1942,6 +1940,8 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
   const [tableNeeded, setTableNeeded] = useState(false)
   const [saving, setSaving]   = useState(false)
   const [savingModel, setSavingModel] = useState(false)
+  const providers = useProviders()
+  const [freeRunsDraft, setFreeRunsDraft] = useState(app.free_runs_per_user_day ?? '')
   const [copilot, setCopilot] = useState('')
   const [generating, setGenerating] = useState(false)
   const [copilotOutput, setCopilotOutput] = useState('')
@@ -2002,7 +2002,7 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
 
   async function updateAppModel(patch) {
     const nextProvider = patch.ai_provider || app.ai_provider || 'claude'
-    const firstModel = APP_MODEL_OPTIONS[nextProvider]?.[0]?.id
+    const firstModel = providerById(providers, nextProvider).default_model || modelOptions(providers, nextProvider)[0]?.id
     const next = {
       ai_provider: nextProvider,
       ai_model: patch.ai_model || (patch.ai_provider ? firstModel : app.ai_model || firstModel),
@@ -2013,6 +2013,16 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
     if (error) { toast(error.message, 'error'); return }
     onAppUpdated?.({ ...app, ...next })
     toast('Model settings saved', 'success', 2000)
+  }
+
+  // Who pays when end users run the app (see BillingModeHint).
+  async function updateBilling(patch) {
+    setSavingModel(true)
+    const { error } = await supabase.from('apps').update(patch).eq('id', app.id)
+    setSavingModel(false)
+    if (error) { toast(error.message, 'error'); return }
+    onAppUpdated?.({ ...app, ...patch })
+    toast('Billing settings saved', 'success', 2000)
   }
 
   // ── Input schema helpers ──
@@ -2449,23 +2459,50 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
               onChange={e => updateAppModel({ ai_provider: e.target.value })}
               disabled={savingModel}
               className="w-full bg-[#0E1424] border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-[#6C5CE7]/40 disabled:opacity-50">
-              <option value="claude">Claude</option>
-              <option value="openai">OpenAI</option>
+              {providers.map(p => <option key={p.id} value={p.id}>{PROVIDER_STYLE[p.id]?.name || p.label}</option>)}
             </select>
           </div>
           <div className="space-y-1">
             <label className="text-[10px] text-slate-400 uppercase font-semibold tracking-wide">Model</label>
             <select
-              value={app.ai_model || APP_MODEL_OPTIONS[app.ai_provider || 'claude']?.[0]?.id || ''}
+              value={app.ai_model || providerById(providers, app.ai_provider || 'claude').default_model || ''}
               onChange={e => updateAppModel({ ai_model: e.target.value })}
               disabled={savingModel}
               className="w-full bg-[#0E1424] border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-[#6C5CE7]/40 disabled:opacity-50">
-              {(APP_MODEL_OPTIONS[app.ai_provider || 'claude'] || []).map(m => (
-                <option key={m.id} value={m.id}>{m.label} - {m.hint}</option>
+              {modelOptions(providers, app.ai_provider || 'claude', app.ai_model).map(m => (
+                <option key={m.id} value={m.id}>{m.label}{MODEL_HINTS[m.id] ? ` - ${MODEL_HINTS[m.id]}` : ''}</option>
               ))}
             </select>
           </div>
         </div>
+        <div className="grid md:grid-cols-2 gap-3">
+          <div className="space-y-1">
+            <label className="text-[10px] text-slate-400 uppercase font-semibold tracking-wide">Who pays for runs</label>
+            <select
+              value={app.billing_mode || 'free'}
+              onChange={e => updateBilling({ billing_mode: e.target.value })}
+              disabled={savingModel}
+              className="w-full bg-[#0E1424] border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-[#6C5CE7]/40 disabled:opacity-50">
+              <option value="free">Free for users — your key</option>
+              <option value="byok">Users bring their own key</option>
+            </select>
+          </div>
+          {(app.billing_mode || 'free') === 'free' && (
+            <div className="space-y-1">
+              <label className="text-[10px] text-slate-400 uppercase font-semibold tracking-wide">Free runs per user per day</label>
+              <input type="number" min="0" placeholder="20"
+                value={freeRunsDraft}
+                onChange={e => setFreeRunsDraft(e.target.value)}
+                onBlur={() => {
+                  const next = freeRunsDraft === '' ? null : Math.max(0, Number(freeRunsDraft))
+                  if (next !== (app.free_runs_per_user_day ?? null)) updateBilling({ free_runs_per_user_day: next })
+                }}
+                disabled={savingModel}
+                className="w-full bg-[#0E1424] border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:border-[#6C5CE7]/40 disabled:opacity-50" />
+            </div>
+          )}
+        </div>
+        <BillingModeHint mode={app.billing_mode || 'free'} provider={providerById(providers, app.ai_provider || 'claude')} freeRuns={freeRunsDraft} />
         {(() => {
           const MODEL_COSTS = {
             'gpt-4o': { input: 2.50, output: 10.00 }, 'gpt-4o-mini': { input: 0.15, output: 0.60 },

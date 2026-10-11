@@ -6,6 +6,7 @@ import { timeAgo } from '../utils'
 import ToolsEditor from '../components/ToolsEditor'
 import TestSuite from '../components/TestSuite'
 import BillingModeHint from '../components/BillingModeHint'
+import { runAppTest } from '../lib/appTests'
 import { PROVIDER_STYLE, modelOptions, providerById, useProviders } from '../lib/providers'
 import VersionManager, { VersionSetupCard } from '../components/VersionManager'
 import { useVersions } from '../hooks/useVersions'
@@ -2881,7 +2882,6 @@ function BlueprintTestPanel({ apps, user, selectedAppId }) {
   const [running, setRunning]     = useState(null)
   const [runResult, setRunResult] = useState({})
   const toast = useToast()
-  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
   const app = apps.find(a => a.id === selectedApp_id)
 
@@ -2986,62 +2986,6 @@ function BlueprintTestPanel({ apps, user, selectedAppId }) {
     }).join('\n\n')
   }
 
-  // Returns { errors: string[], parseError: string|null, looksLikeMarkdown: boolean }
-  // `nested` flag = called recursively, skip fence-stripping and markdown detection
-  function validateJsonSchema(rawOutput, fields, nested = false) {
-    const errors = []
-    const raw = rawOutput.trim()
-
-    const looksLikeMarkdown = !nested && (/^(#|\*\*|Here |Sure|I'll|The |This )/i.test(raw) || raw.startsWith('```'))
-    const stripped = nested ? raw : raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim()
-    let parsed
-    let parseError = null
-    try {
-      parsed = JSON.parse(stripped)
-    } catch (e) {
-      parseError = e.message  // exact V8 parser message, e.g. "Unexpected token 'H' at position 0"
-      return { errors: [`Output is not valid JSON: ${e.message}`], parseError, looksLikeMarkdown }
-    }
-    if (typeof parsed !== 'object' || Array.isArray(parsed) || parsed === null) {
-      return { errors: ['Output JSON must be a plain object, not an array or primitive'], parseError: null, looksLikeMarkdown }
-    }
-    for (const f of fields) {
-      const isRequired = f.required !== false
-      const present = f.field in parsed && parsed[f.field] !== null && parsed[f.field] !== undefined
-      if (!present) {
-        if (isRequired) errors.push(`Missing required field: "${f.field}"`)
-        continue
-      }
-      const val = parsed[f.field]
-      if (f.type === 'object') {
-        if (typeof val !== 'object' || Array.isArray(val)) {
-          errors.push(`"${f.field}": expected object, got ${typeof val}`)
-        } else if (f.nested_fields?.length) {
-          // recurse — prefix nested errors with parent key
-          const nestedResult = validateJsonSchema(JSON.stringify(val), f.nested_fields, true)
-          errors.push(...nestedResult.errors.map(e => `${f.field}.${e}`))
-        }
-        continue
-      }
-      const typeErrors = {
-        string:       typeof val !== 'string'               && `"${f.field}": expected string, got ${typeof val}`,
-        number:       typeof val !== 'number'               && `"${f.field}": expected number, got ${typeof val}`,
-        boolean:      typeof val !== 'boolean'              && `"${f.field}": expected boolean, got ${typeof val}`,
-        string_array: (!Array.isArray(val) || val.some(x => typeof x !== 'string')) && `"${f.field}": expected string[]`,
-        number_array: (!Array.isArray(val) || val.some(x => typeof x !== 'number')) && `"${f.field}": expected number[]`,
-        enum: (() => {
-          if (typeof val !== 'string') return `"${f.field}": expected string (enum), got ${typeof val}`
-          if (f.enum_values?.length && !f.enum_values.includes(val))
-            return `"${f.field}": "${val}" not in allowed values [${f.enum_values.join(', ')}]`
-          return false
-        })(),
-      }
-      const err = typeErrors[f.type]
-      if (err) errors.push(err)
-    }
-    return { errors, parseError, looksLikeMarkdown }
-  }
-
   function buildChecks(bp) {
     const checks = []
     const oc = bp.output_contract || {}
@@ -3067,47 +3011,21 @@ function BlueprintTestPanel({ apps, user, selectedAppId }) {
     setRunning(idx)
     const tc = cases[idx]
     try {
-      const { data: { session } } = await supabase.auth.getSession()
-      const res = await fetch(`${API_URL}/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...(session ? { Authorization: `Bearer ${session.access_token}` } : {}) },
-        body: JSON.stringify({ app_id: app.id, input: tc.input, system_prompt: app.system_prompt, ai_provider: app.ai_provider || 'claude', ai_model: app.ai_model || null }),
+      // Runs on the server through the real app path; checks graded there
+      // (AI-graded for fallback/safety/refusal checks) and recorded for the
+      // current draft.
+      const run = await runAppTest(app.id, {
+        source: 'blueprint', case_ref: tc.label, label: tc.label, input: tc.input,
+        checks: (tc.expected_checks || []).map(({ desc, ...chk }) => ({ ...chk, desc })),
       })
-      if (!res.ok) throw new Error('Run failed')
-      const reader = res.body.getReader(); const dec = new TextDecoder()
-      let buf = ''; let output = ''
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buf += dec.decode(value, { stream: true })
-        const lines = buf.split('\n'); buf = lines.pop()
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          try { const d = JSON.parse(line.slice(6)); if (d.token) output += d.token; if (d.input_tokens) tc._inTok = d.input_tokens; if (d.output_tokens) tc._outTok = d.output_tokens } catch {}
-        }
+      const output = run.output || ''
+      const errors = run.errors || []
+      const parseError = errors.find(e => /not valid JSON/i.test(e)) || null
+      const looksLikeMarkdown = /^(#|\*\*|Here |Sure|I'll|The |This )/i.test(output.trim()) || output.trim().startsWith('```')
+      const resultData = {
+        output, status: run.passed ? 'pass' : 'fail', errors, parseError, looksLikeMarkdown,
+        inputTokens: run.input_tokens, outputTokens: run.output_tokens, cost: run.cost_usd, latencyMs: run.latency_ms,
       }
-      if (!tc._inTok) tc._inTok = Math.round(((app.system_prompt||'').length + tc.input.length) / 4)
-      if (!tc._outTok) tc._outTok = Math.round(output.length / 4)
-      // Validate output against checks
-      const errors = []
-      let parseError = null, looksLikeMarkdown = false
-      for (const chk of tc.expected_checks) {
-        if (chk.type === 'json_schema') {
-          const r = validateJsonSchema(output, chk.fields)
-          errors.push(...r.errors)
-          if (r.parseError) parseError = r.parseError
-          if (r.looksLikeMarkdown) looksLikeMarkdown = true
-        } else if (chk.type === 'field_present') {
-          try { const parsed = JSON.parse(output.trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,'')); if (!(chk.field in parsed)) errors.push(`Missing field: ${chk.field}`) } catch (e) { errors.push(`Output is not valid JSON: ${e.message}`) }
-        } else if (chk.type === 'section_present') {
-          if (!output.toLowerCase().includes(chk.section.toLowerCase())) errors.push(`Missing section: ${chk.section}`)
-        }
-      }
-      const status = errors.length === 0 ? 'pass' : 'fail'
-      const MODEL_COSTS_BP = { 'gpt-4o': { input: 2.50, output: 10.00 }, 'gpt-4o-mini': { input: 0.15, output: 0.60 }, 'claude-haiku-4-5': { input: 0.80, output: 4.00 }, 'claude-sonnet-4-5': { input: 3.00, output: 15.00 }, 'claude-sonnet-5': { input: 3.00, output: 15.00 }, 'claude-opus-4-5': { input: 15.00, output: 75.00 }, 'claude-opus-5': { input: 15.00, output: 75.00 } }
-      const bpRates = MODEL_COSTS_BP[app.ai_model] || Object.entries(MODEL_COSTS_BP).find(([k]) => (app.ai_model||'').includes(k) || k.includes(app.ai_model||''))?.[1]
-      const cost = bpRates ? ((tc._inTok / 1e6) * bpRates.input) + ((tc._outTok / 1e6) * bpRates.output) : null
-      const resultData = { output, status, errors, parseError, looksLikeMarkdown, inputTokens: tc._inTok, outputTokens: tc._outTok, cost }
       setRunResult(p => ({ ...p, [idx]: resultData }))
       persistCaseResult(idx, resultData)
     } catch (e) {

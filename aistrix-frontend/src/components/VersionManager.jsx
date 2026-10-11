@@ -2,7 +2,7 @@ import { useState, useRef } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { timeAgo } from '../utils'
-import { evaluateCase, runPrompt } from '../lib/promptTests'
+import { runAppTest, rulesToChecks } from '../lib/appTests'
 import { useVersions } from '../hooks/useVersions'
 import { track, EVENTS } from '../lib/analytics'
 
@@ -142,9 +142,9 @@ export default function VersionManager({ app, user, onRollback, selectedId, onSe
     for (const tc of testCases) {
       if (ctrl.signal.aborted) break
       try {
-        const output = await runPrompt(app, tc.input, ctrl.signal)
-        const { passed, results: ruleResults } = evaluateCase(output, tc.rules)
-        results.push({ id: tc.id, name: tc.name, passed, output, ruleResults })
+        // Server-side: the real app path, rules graded there.
+        const run = await runAppTest(app.id, { source: 'suite', case_ref: tc.id, label: tc.name, input: tc.input || '(no input)', checks: rulesToChecks(tc.rules) }, { signal: ctrl.signal })
+        results.push({ id: tc.id, name: tc.name, passed: run.passed, output: run.output, errors: run.errors || [] })
       } catch (e) {
         if (e.name === 'AbortError') break
         results.push({ id: tc.id, name: tc.name, passed: false, error: e.message })

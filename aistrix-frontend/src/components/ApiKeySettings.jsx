@@ -2,7 +2,10 @@ import { useState } from 'react'
 import { useToast } from '../hooks/useToast'
 import { PROVIDER_STYLE, removeProviderKey, saveProviderKey, useProviders } from '../lib/providers'
 
-export default function ApiKeySettings({ onClose }) {
+// onContinue: shown before building (no key saved yet) — saving the first
+// key continues straight into the chosen app type.
+export default function ApiKeySettings({ onClose, onContinue, title = 'API Key Settings',
+  subtitle = 'Use your own keys — sent securely and never returned to the browser after saving' }) {
   const providers = useProviders()
   const PROVIDERS = providers.map(p => ({ ...p, ...PROVIDER_STYLE[p.id] }))
   const keys = Object.fromEntries(providers.filter(p => p.connected).map(p => [p.id, p]))
@@ -27,6 +30,7 @@ export default function ApiKeySettings({ onClose }) {
       setInputs(prev => ({ ...prev, [provider]: '' }))
       toast(`${p.name} key saved`, 'success')
       setTimeout(() => setSaved(prev => ({ ...prev, [provider]: false })), 2000)
+      onContinue?.()
     } catch (e) {
       setErrors(prev => ({ ...prev, [provider]: e.message }))
     } finally {
@@ -47,8 +51,8 @@ export default function ApiKeySettings({ onClose }) {
       <div className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-lg">
         <div className="flex items-center justify-between p-5 border-b border-white/5">
           <div>
-            <p className="text-white font-medium">API Key Settings</p>
-            <p className="text-xs text-slate-400 mt-0.5">Use your own keys — sent securely and never returned to the browser after saving</p>
+            <p className="text-white font-medium">{title}</p>
+            <p className="text-xs text-slate-400 mt-0.5">{subtitle}</p>
           </div>
           <button aria-label="Close" onClick={onClose} className="text-slate-500 hover:text-white">✕</button>
         </div>

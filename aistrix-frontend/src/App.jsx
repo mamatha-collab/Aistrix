@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback, lazy, Suspense, startTransition } from 'react'
 import { supabase } from './supabase'
+import { loadProviders } from './lib/providers'
 import Sidebar from './components/SidebarClean'
 import TopBar from './components/TopBarClean'
 import AppGrid from './components/AppGrid'
@@ -100,6 +101,8 @@ export default function App() {
   const [showHistory, setShowHistory] = useState(false)
   const [search, setSearch] = useState('')
   const [showSettings, setShowSettings] = useState(false)
+  // App type waiting for the developer to add their first AI key.
+  const [keyGateType, setKeyGateType] = useState(null)
   const [showCreate, setShowCreate] = useState(false)
   const [showMobileSidebar, setShowMobileSidebar] = useState(false)
   const [showOnboarding, setShowOnboarding] = useState(false)
@@ -153,6 +156,14 @@ export default function App() {
     localStorage.setItem('aistrix:app_onboarding_done', '1')
     setShowAppOnboarding(false)
   }, [])
+
+  function openBuilder(type) {
+    startTransition(() => {
+      setSelectedAppType(type)
+      if (type === 'ai_builder') setShowAIBuilder(true)
+      else setShowCreate(true)
+    })
+  }
 
   // Picking a type opens one popup (guide first, then the build steps) over
   // the type picker; closing it ends the whole flow.
@@ -461,12 +472,13 @@ export default function App() {
               <AppTypeSelector
                 hidden={showAIBuilder || showCreate}
                 onClose={closeBuildFlow}
-                onSelect={type => {
-                  startTransition(() => {
-                    setSelectedAppType(type)
-                    if (type === 'ai_builder') setShowAIBuilder(true)
-                    else setShowCreate(true)
-                  })
+                onSelect={async type => {
+                  // Building needs the developer's own AI key: ask for one
+                  // first (continues into this type once it's saved). If the
+                  // key status can't be loaded, don't block building.
+                  const providers = await loadProviders().catch(() => null)
+                  if (providers && !providers.some(p => p.connected)) { setKeyGateType(type); return }
+                  openBuilder(type)
                 }}
               />
               {showAIBuilder && (
@@ -536,6 +548,16 @@ export default function App() {
 
           {showHistory    && <Suspense fallback={null}><RunHistory     user={session.user} onClose={() => setShowHistory(false)} /></Suspense>}
           {showSettings   && <Suspense fallback={null}><ApiKeySettings  user={session.user} onClose={() => setShowSettings(false)} /></Suspense>}
+          {keyGateType && (
+            <Suspense fallback={null}>
+              <ApiKeySettings
+                title="Add an AI key to start building"
+                subtitle="Your apps run on your own AI provider key. Add a Claude, OpenAI or Gemini key — it's checked and stored encrypted."
+                onClose={() => setKeyGateType(null)}
+                onContinue={() => { const type = keyGateType; setKeyGateType(null); openBuilder(type) }}
+              />
+            </Suspense>
+          )}
           {showProfile    && <Suspense fallback={null}><UserProfile     user={session.user} onClose={() => setShowProfile(false)} /></Suspense>}
           {showOnboarding && (
             <Suspense fallback={null}>

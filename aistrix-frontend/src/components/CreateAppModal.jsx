@@ -4,6 +4,7 @@ import { useFocusTrap } from '../hooks/useFocusTrap'
 import { confirmDiscard } from '../lib/confirmDiscard'
 import { PROVIDER_STYLE, modelOptions, providerById, useProviders } from '../lib/providers'
 import BillingModeHint from './BillingModeHint'
+import { moveToolKeysToSecrets } from '../lib/toolSecrets'
 import { TypeGuideSteps } from './TypeBuilderGuide'
 import { useToast } from '../hooks/useToast'
 import { generateJSON, normaliseUrl, readUrl, streamRun } from '../lib/runStream'
@@ -284,7 +285,7 @@ function LocalToolBuilder({ tools, onChange }) {
           {type === 'calendar' && (
             <div>
               <label className="text-[10px] text-slate-400 block mb-1">Calendar API key / OAuth</label>
-              <input className={inCls} placeholder="Google Calendar API key"
+              <input className={inCls} placeholder="Google Calendar API key" type="password" autoComplete="new-password"
                 value={config.api_key || ''} onChange={e => setConfig(c => ({ ...c, api_key: e.target.value }))} />
             </div>
           )}
@@ -629,7 +630,10 @@ Return ONLY valid JSON with these fields:
       setSaving(false)
       if (bpErr) toast(`"${data.name}" saved, but its input/output contract wasn't: ${bpErr.message}`, 'error', 8000)
       if (pendingTools.length > 0) {
-        const { error: toolsErr } = await supabase.from('app_tools').insert(pendingTools.map(t => ({ ...t, app_id: data.id })))
+        // Keys in tool settings become encrypted app secrets first.
+        const { tools: safeTools, problems: keyProblems } = await moveToolKeysToSecrets(data.id, pendingTools)
+        if (keyProblems.length) toast(`"${data.name}" saved, but a tool key wasn't (add it under Secrets): ${keyProblems.join('; ')}`, 'error', 8000)
+        const { error: toolsErr } = await supabase.from('app_tools').insert(safeTools.map(t => ({ ...t, app_id: data.id })))
         // The app itself saved fine — surface this via toast (not setError,
         // which the modal is about to unmount) so it isn't lost silently.
         if (toolsErr) toast(`"${data.name}" saved, but its tools weren't: ${toolsErr.message}`, 'error', 6000)

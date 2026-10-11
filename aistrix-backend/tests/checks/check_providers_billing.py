@@ -186,4 +186,28 @@ ok("providers: not-connected providers show the platform list", not by["gemini"]
 r = c.delete("/v1/provider-keys/claude", headers=auth)
 ok("remove key", r.status_code == 200 and SAVED == [])
 
+
+# ── keys never leave the server in error reports or logs ────────────────────
+leaky = ("Incorrect API key provided: sk-proj-abcdefghijklmnop1234 · AIzaSyA1234567890abcdefghij · "
+         "ak_live_abcdef123456 · Authorization: Bearer abcdefghijklmnopqrstuvwx · " + main._encrypt("sk-ant-x-12345678"))
+scrubbed = str(main._scrub_event({"exception": {"values": [{"value": leaky}]}, "extra": {"k": [leaky]}}, None))
+ok("error reports: keys, tokens and ciphertext are masked",
+   all(x not in scrubbed for x in ("sk-proj-abc", "AIzaSy", "ak_live_abc", "Bearer abcdef", "gAAAA")) and scrubbed.count("[redacted]") == 10)
+
+import io, contextlib
+async def echoing(provider, key):
+    raise RuntimeError(f"Incorrect API key provided: {key}")
+main.list_provider_models = echoing
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    r = c.put("/v1/provider-keys/claude", json={"key": "sk-ant-leaky-secret-4242"}, headers=auth)
+ok("a failed key check never logs the key", r.status_code == 502 and "leaky-secret" not in buf.getvalue())
+
+# ── app secrets: only people who can edit the app may set them ──────────────
+APPS["owners-app"] = {"id": "owners-app", "created_by": OWNER, "name": "x"}
+async def other_user(req): return "someone-else"
+main.require_verified_user = other_user
+r = c.put("/apps/owners-app/secrets", json={"key": "SEND_EMAIL_API_KEY", "value": "SG.x"})
+ok("setting a secret on someone else's app → 404", r.status_code == 404)
+
 finish()

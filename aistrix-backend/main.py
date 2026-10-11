@@ -42,6 +42,28 @@ from supabase import create_client, Client
 load_dotenv()
 
 # ─── Sentry ───────────────────────────────────────────────────────────────────
+# Anything that looks like a credential is masked before an error report
+# leaves the server (provider keys, Fernet ciphertext, Aistrix API keys,
+# SendGrid/GitHub tokens, bearer headers).
+_KEY_LIKE = re.compile(
+    r"(sk-ant-[\w-]{8,}|sk-(?:proj-)?[\w-]{16,}|AIza[\w-]{20,}|gAAAA[\w=-]{20,}|ak_live_\w{8,}"
+    r"|SG\.[\w.-]{16,}|gh[pousr]_\w{20,}|Bearer\s+[\w.~+/-]{16,}=*)")
+
+
+def _scrub_keys(value):
+    if isinstance(value, str):
+        return _KEY_LIKE.sub("[redacted]", value)
+    if isinstance(value, dict):
+        return {k: _scrub_keys(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_scrub_keys(v) for v in value]
+    return value
+
+
+def _scrub_event(event, hint):
+    return _scrub_keys(event)
+
+
 SENTRY_DSN = os.getenv("SENTRY_DSN")
 if SENTRY_DSN:
     sentry_sdk.init(
@@ -49,7 +71,12 @@ if SENTRY_DSN:
         integrations=[StarletteIntegration(), FastApiIntegration()],
         traces_sample_rate=0.1,
         environment=os.getenv("ENVIRONMENT", "production"),
-        before_send=lambda event, hint: event,  # filter here if needed
+        # Stack-frame locals would include decrypted keys (user_api_key,
+        # dev_key, …), which Sentry's name-based scrubbing doesn't catch.
+        include_local_variables=False,
+        send_default_pii=False,
+        before_send=_scrub_event,
+        before_send_transaction=_scrub_event,
     )
 
 @asynccontextmanager
@@ -3991,6 +4018,8 @@ async def upsert_secret(app_id: str, body: SecretUpsert, request: Request):
     if not _fernet:
         raise HTTPException(status_code=503, detail="SECRET_ENCRYPTION_KEY not set on server — add it to .env and restart")
     user_id = await require_verified_user(request)
+    if not await can_edit_app(await load_app_row(app_id), ApiCaller(user_id=user_id)):
+        raise HTTPException(status_code=404, detail="App not found")
     if not body.key.strip():
         raise HTTPException(status_code=400, detail="Key cannot be empty")
     if len(body.key) > 100:
@@ -4459,7 +4488,7 @@ async def save_provider_key(provider: str, body: ProviderKeyRequest, request: Re
     except (anthropic.BadRequestError, openai.BadRequestError):
         raise HTTPException(status_code=422, detail=f"{p['label']} rejected that key. Check it and try again.")
     except Exception as e:
-        print(f"provider key check failed [{provider}]: {type(e).__name__}: {e}")
+        print(f"provider key check failed [{provider}]: {type(e).__name__}")   # not the message: it can echo the key
         raise HTTPException(status_code=502, detail=f"Couldn't reach {p['label']} to check the key. Try again in a moment.")
     sb = _service_client()
     if not sb:

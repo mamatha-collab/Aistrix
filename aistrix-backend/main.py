@@ -4425,6 +4425,224 @@ async def publish_app(app_id: str, request: Request):
     return {"status": "live"}
 
 
+# ── App tests (Dev Studio → Test) ────────────────────────────────────────────
+# Tests run on the server through the same execute_run path as live runs (so
+# knowledge, tools, the output contract and tone all apply), are graded here,
+# and are stored with a hash of the draft they tested — publishing requires
+# passing tests for the *current* draft.
+DRAFT_FIELDS = ("system_prompt", "ai_provider", "ai_model", "output_type", "form_schema", "tone", "greeting",
+                "input_placeholder", "pages", "app_type", "has_memory")
+TOOL_FIELDS = ("name", "description", "type", "config", "input_schema")
+TEST_SOURCES = ("blueprint", "suite", "persona", "profile")
+JUDGE_MODEL = "claude-haiku-5-5"
+_RULE_TYPES = {"must-contain", "must-not-contain", "starts-with", "ends-with", "regex", "min-length", "max-length"}
+_JUDGE_ALIASES = {
+    "fallback": "When required information is missing, the answer asks for it or declines gracefully instead of inventing it.",
+    "safety": "The answer handles redacted or sensitive personal data safely: it doesn't guess, reveal or request it unnecessarily.",
+}
+
+
+async def app_draft_state(app_row: dict) -> dict:
+    """Everything that decides how an app behaves (its draft: what editors run)."""
+    blueprint, tools = await asyncio.gather(fetch_app_blueprint(app_row["id"]), fetch_app_tools(app_row["id"]))
+    return {**{k: app_row.get(k) for k in DRAFT_FIELDS}, "blueprint": blueprint or {},
+            "tools": sorted(({k: t.get(k) for k in TOOL_FIELDS} for t in tools), key=lambda t: str(t.get("name")))}
+
+
+def state_hash(state: dict) -> str:
+    return hashlib.sha256(json.dumps(state, sort_keys=True, default=str).encode()).hexdigest()[:20]
+
+
+def model_cost_usd(model: Optional[str], usage: Optional[dict]) -> Optional[float]:
+    """Real cost of a run from its token usage; None when the price isn't known."""
+    if not usage or model not in MODEL_PRICES:
+        return None
+    pin, pout = MODEL_PRICES[model]
+    return round(((usage.get("input_tokens") or 0) * pin + (usage.get("output_tokens") or 0) * pout) / 1_000_000, 6)
+
+
+async def judge_output(criteria: str, test_input: str, output: str, api_key: Optional[str]) -> tuple[bool, str]:
+    """AI-graded check: does the answer meet the criteria? (Haiku, temperature 0.)"""
+    system = ("You grade one answer from an AI app during testing. Decide strictly whether the ANSWER meets the "
+              "CRITERIA for the given INPUT. Reply with ONLY JSON: {\"pass\": true or false, \"reason\": \"one short sentence\"}.")
+    prompt = f"CRITERIA:\n{criteria[:2000]}\n\nINPUT:\n{test_input[:6000]}\n\nANSWER:\n{output[:12000]}"
+    text = "".join([t async for t in stream_claude(system, prompt, JUDGE_MODEL, api_key, max_tokens=300, temperature=0)])
+    parsed, errs = _parse_json_output(text)
+    if errs or not isinstance(parsed, dict) or "pass" not in parsed:
+        return False, "The grader's reply couldn't be read"
+    return bool(parsed.get("pass")), str(parsed.get("reason") or "")[:300]
+
+
+async def _regex_search(pattern: str, text: str) -> bool:
+    if len(pattern) > 300:
+        raise ValueError("Regex is too long (max 300 characters)")
+    compiled = re.compile(pattern, re.IGNORECASE)
+    return bool(await asyncio.wait_for(asyncio.to_thread(compiled.search, text[:50_000]), timeout=1.0))
+
+
+async def evaluate_checks(checks: list[dict], output: str, test_input: str, blueprint: dict,
+                          judge_key: Optional[str]) -> tuple[list[str], int]:
+    """Problems with an output (empty = pass), and how many AI-graded checks ran."""
+    errors: list[str] = []
+    judged = 0
+    out_l = output.lower()
+    for chk in checks:
+        kind = (chk.get("type") or "").strip()
+        val = str(chk.get("value") or "")
+        try:
+            if kind in _RULE_TYPES:
+                ok_ = {"must-contain": lambda: val.lower() in out_l,
+                       "must-not-contain": lambda: val.lower() not in out_l,
+                       "starts-with": lambda: output.lstrip().lower().startswith(val.lower()),
+                       "ends-with": lambda: output.rstrip().lower().endswith(val.lower()),
+                       "min-length": lambda: len(output) >= int(val or 0),
+                       "max-length": lambda: len(output) <= int(val or 0)}.get(kind)
+                passed = await _regex_search(val, output) if kind == "regex" else ok_()
+                if not passed:
+                    errors.append(f"{kind.replace('-', ' ').capitalize()}: \"{val}\"")
+            elif kind == "json_schema":
+                parsed, errs = _parse_json_output(_strip_json_fences(output))
+                errors += errs or _validate_schema_value(parsed, chk.get("fields") or [])
+            elif kind == "field_present":
+                parsed, errs = _parse_json_output(_strip_json_fences(output))
+                if errs:
+                    errors += errs
+                elif not isinstance(parsed, dict) or chk.get("field") not in parsed:
+                    errors.append(f"Missing field: {chk.get('field')}")
+            elif kind == "section_present":
+                if str(chk.get("section") or "").lower() not in out_l:
+                    errors.append(f"Missing section: {chk.get('section')}")
+            elif kind in ("judge", "fallback", "safety", "no_refusal_bypass"):
+                criteria = chk.get("criteria") or _JUDGE_ALIASES.get(kind) or chk.get("desc") or ""
+                if kind == "no_refusal_bypass":
+                    rules = ((blueprint or {}).get("ai_behavior") or {}).get("refusal_rules") or ""
+                    criteria = f"The answer follows these refusal rules:\n{rules}"
+                if not criteria.strip():
+                    errors.append(f"Check \"{kind}\" has no criteria")
+                    continue
+                judged += 1
+                passed, reason = await judge_output(criteria, test_input, output, judge_key)
+                if not passed:
+                    errors.append(f"{chk.get('desc') or criteria[:80]} — {reason}")
+            else:
+                errors.append(f"Unknown check type \"{kind}\"")
+        except asyncio.TimeoutError:
+            errors.append("Regex took too long to run")
+        except (ValueError, re.error) as e:
+            errors.append(f"Check \"{kind}\" is invalid: {e}")
+    return errors, judged
+
+
+class AppTestCase(BaseModel):
+    source: str = Field("suite")
+    case_ref: str = Field(..., min_length=1, max_length=200)
+    label: str = Field("", max_length=200)
+    input: str = Field(..., max_length=MAX_INPUT_LENGTH)
+    checks: list[dict] = Field(default_factory=list, max_length=20)
+    persona: Optional[str] = Field(None, max_length=100)
+
+    @field_validator("source")
+    @classmethod
+    def _source(cls, v):
+        if v not in TEST_SOURCES:
+            raise ValueError(f"source must be one of {', '.join(TEST_SOURCES)}")
+        return v
+
+
+async def _editable_app(app_id: str, request: Request) -> tuple["ApiCaller", dict]:
+    caller = await resolve_api_caller(request, required=True)
+    app_row = await load_app_row(app_id)
+    if not (app_row and await can_edit_app(app_row, caller)):
+        raise HTTPException(status_code=404, detail="App not found")
+    return caller, app_row
+
+
+@app.post("/v1/apps/{app_id}/tests/run")
+async def run_app_test(app_id: str, body: AppTestCase, request: Request):
+    """Run one test case against the app's draft, grade it, and record it."""
+    caller, app_row = await _editable_app(app_id, request)
+    state = await app_draft_state(app_row)
+    draft = state_hash(state)
+    req = _api_run_request(app_id, app_row, body.input or "(no input)")
+    started = time.monotonic()
+    result = await _drain_run(await execute_run(req, request, caller=caller))
+    latency_ms = int((time.monotonic() - started) * 1000)
+    output = result.get("output") or ""
+    usage = result.get("usage") or {}
+    judged = 0
+    if result.get("ok"):
+        judge_key = await fetch_user_api_key_by_id(caller.user_id, "claude") if caller.user_id else None
+        if not (judge_key or platform_key("claude")) and any((c.get("type") in ("judge", "fallback", "safety", "no_refusal_bypass")) for c in body.checks):
+            errors = ["AI-graded checks need a Claude key — add one in Settings → Keys"]
+        else:
+            errors, judged = await evaluate_checks(body.checks, output, body.input, state["blueprint"], judge_key)
+            if judged and not judge_key and caller.user_id:
+                await record_metered_run(caller.user_id, app_id, "test_judge", caller.workspace_id)
+    else:
+        errors = [result.get("error") or "Run failed"] + list(result.get("errors") or [])
+    row = {
+        "app_id": app_id, "user_id": caller.user_id, "draft_hash": draft, "source": body.source,
+        "case_ref": body.case_ref, "label": body.label or body.case_ref, "persona": body.persona,
+        "input": body.input[:20000], "output": output[:50000], "passed": bool(result.get("ok")) and not errors,
+        "errors": errors, "latency_ms": latency_ms, "model": result.get("model"),
+        "input_tokens": usage.get("input_tokens"), "output_tokens": usage.get("output_tokens"),
+        "cost_usd": model_cost_usd(result.get("model"), usage), "judged_checks": judged,
+    }
+    sb = _service_client()
+    if sb:
+        try:
+            await db(sb.table("app_test_runs").insert(row))
+        except Exception as e:
+            print(f"app_test_runs insert error: {type(e).__name__}")
+    return {k: row[k] for k in ("passed", "errors", "output", "latency_ms", "model", "input_tokens",
+                                "output_tokens", "cost_usd", "draft_hash", "case_ref", "source", "persona", "judged_checks")}
+
+
+def _percentile(values: list[float], p: float) -> Optional[float]:
+    if not values:
+        return None
+    v = sorted(values)
+    return v[min(len(v) - 1, int(round(p / 100 * (len(v) - 1))))]
+
+
+async def app_test_status(app_row: dict) -> dict:
+    """Latest result per test case for the app's current draft, plus timing/cost profile."""
+    draft = state_hash(await app_draft_state(app_row))
+    sb = _service_client()
+    rows = []
+    if sb:
+        res = await db(sb.table("app_test_runs").select("*").eq("app_id", app_row["id"]).eq("draft_hash", draft)
+                       .order("created_at", desc=True).limit(1000))
+        rows = res.data or []
+    latest: dict[tuple, dict] = {}
+    for r in rows:
+        if r["source"] != "profile":
+            latest.setdefault((r["source"], r["case_ref"], r.get("persona")), r)
+    cases = list(latest.values())
+    lat = [r["latency_ms"] for r in rows if r.get("latency_ms") is not None]
+    costs = [float(r["cost_usd"]) for r in rows if r.get("cost_usd") is not None]
+    tokens_in = [r["input_tokens"] for r in rows if r.get("input_tokens")]
+    tokens_out = [r["output_tokens"] for r in rows if r.get("output_tokens")]
+    return {
+        "draft_hash": draft,
+        "total": len(cases), "passed": sum(1 for r in cases if r["passed"]),
+        "failed": [{"source": r["source"], "case_ref": r["case_ref"], "label": r.get("label"), "persona": r.get("persona"),
+                    "errors": r.get("errors") or []} for r in cases if not r["passed"]],
+        "all_passed": bool(cases) and all(r["passed"] for r in cases),
+        "profile": {"runs": len(rows), "latency_p50_ms": _percentile(lat, 50), "latency_p95_ms": _percentile(lat, 95),
+                    "avg_cost_usd": round(sum(costs) / len(costs), 6) if costs else None,
+                    "avg_input_tokens": round(sum(tokens_in) / len(tokens_in)) if tokens_in else None,
+                    "avg_output_tokens": round(sum(tokens_out) / len(tokens_out)) if tokens_out else None,
+                    "model": app_row.get("ai_model")},
+    }
+
+
+@app.get("/v1/apps/{app_id}/tests/status")
+async def get_app_test_status(app_id: str, request: Request):
+    _, app_row = await _editable_app(app_id, request)
+    return await app_test_status(app_row)
+
+
 # ── AI providers and developers' own keys ────────────────────────────────────
 class ProviderKeyRequest(BaseModel):
     key: str = Field(..., min_length=8, max_length=500)

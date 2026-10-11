@@ -6321,13 +6321,6 @@ export default function DevStudioPage({
 
       {/* ── Sticky top bar: tab ribbon + guide + tab note folder tab ── */}
       <div className="sticky top-0 z-30 bg-[#09101F] border-b border-white/5">
-        {/* First-time welcome screen */}
-        {!loading && apps.length === 0 && (
-          <div className="px-6 pt-6">
-            <WelcomeScreen onCreateApp={onOpenCreate} />
-          </div>
-        )}
-
         {(loading || apps.length > 0) && (
           <>
             <div className="h-[72px] px-6 bg-[#111827] border-b border-white/5 grid grid-cols-[260px_minmax(0,1fr)_auto] items-center gap-3">
@@ -6452,6 +6445,13 @@ export default function DevStudioPage({
       </div>
 
       {/* ── Body: content + right panes ── */}
+      {/* First-time welcome screen (scrolls on its own; the top bar above doesn't) */}
+      {!loading && apps.length === 0 && (
+        <div className="flex-1 min-h-0 overflow-y-auto px-6 pt-6">
+          <WelcomeScreen onCreateApp={onOpenCreate} />
+        </div>
+      )}
+
       {(loading || apps.length > 0) && (
         <div className="flex flex-1 min-h-0 overflow-hidden">
 

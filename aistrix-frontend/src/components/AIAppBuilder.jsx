@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { useFocusTrap } from '../hooks/useFocusTrap'
-import { useEscapeKey } from '../hooks/useEscapeKey'
+import { confirmDiscard } from '../lib/confirmDiscard'
 import { generateJSON, streamRun } from '../lib/runStream'
 import { TOOL_DEFAULT_SCHEMAS } from '../utils/toolTypes'
 import { fieldKeyFromLabel, outputFieldsErrors } from '../utils/schemaContracts'
@@ -309,7 +309,7 @@ function AppPreview({ config, onSaveDraft, onPublish, onBack, saving }) {
 
 // `withGuide`: start on the type guide ("Start building →" moves on to
 // Describe), so the whole Build with AI flow stays in this one popup.
-export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGuide = false, embedded = false }) {
+export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGuide = false }) {
   const panelRef = useRef(null)
   const [phase, setPhase] = useState(withGuide ? 'intro' : 'describe')
   const [description, setDescription] = useState('')
@@ -323,10 +323,8 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGui
   const toast = useToast()
 
   function closeWithWarning() {
-    const hasProgress = description.trim() || questions.length > 0 || generatedConfig
-    if (!hasProgress || window.confirm('Close Build with AI? Your unsaved app setup will be lost.')) {
-      onClose()
-    }
+    const hasChanges = !!(description.trim() || questions.length || Object.keys(answers).length || generatedConfig)
+    if (confirmDiscard(hasChanges)) onClose()
   }
 
   function goBack() {
@@ -342,8 +340,6 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGui
 
   const canGoBack = phase !== 'intro' && (phase !== 'describe' || withGuide || !!onBack)
   useFocusTrap(panelRef, { onEscape: closeWithWarning })
-  // Embedded in the type picker there's no trap of our own: catch Escape first
-  useEscapeKey(closeWithWarning, embedded)
 
   async function handleDescribe() {
     if (!description.trim()) return
@@ -482,8 +478,6 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGui
           </div>
         )}
 
-        {/* Embedded in the type picker: steps sit in a centred column */}
-        <div className={embedded ? 'flex-1 min-h-0 w-full max-w-2xl mx-auto flex flex-col' : 'contents'}>
         {phase === 'intro' ? (
           <TypeGuideSteps type="ai_builder" onBack={goBack} onContinue={() => setPhase('describe')} />
         ) : (<>
@@ -586,10 +580,8 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGui
           )}
         </div>
         </>)}
-        </div>
     </>
   )
-  if (embedded) return content
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
       <div ref={panelRef} role="dialog" aria-modal="true" aria-label="Build with AI"

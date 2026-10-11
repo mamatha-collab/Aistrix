@@ -454,54 +454,55 @@ export default function App() {
           </div>
 
           {showTypeSelector && (
+            // One Suspense boundary for the picker and the builders: choosing
+            // a type is a transition, so the picker stays on screen until the
+            // builder has loaded, then hides behind it (kept mounted).
             <Suspense fallback={null}>
               <AppTypeSelector
+                hidden={showAIBuilder || showCreate}
                 onClose={closeBuildFlow}
                 onSelect={type => {
-                  // In a transition: the picker stays visible until the
-                  // builder has loaded, then it takes over the same popup.
                   startTransition(() => {
                     setSelectedAppType(type)
                     if (type === 'ai_builder') setShowAIBuilder(true)
                     else setShowCreate(true)
                   })
                 }}
-                step={showAIBuilder ? (
-                  <AIAppBuilder
-                    embedded
-                    user={session.user}
-                    withGuide
-                    onClose={closeBuildFlow}
-                    onBack={() => setShowAIBuilder(false)}
-                    onCreated={newApp => {
-                      closeBuildFlow()
-                      setCreatedApp(newApp)
-                      if (activeView !== 'developer') {
-                        navigateToView('apps')
-                        setSelectedApp(newApp)
-                        setWorkspaceRecoApp(newApp)
-                      }
-                    }}
-                  />
-                ) : showCreate ? (
-                  <CreateAppModal
-                    embedded
-                    user={session.user}
-                    initialType={selectedAppType}
-                    withGuide
-                    onClose={closeBuildFlow}
-                    onBack={() => setShowCreate(false)}
-                    onCreated={newApp => {
-                      closeBuildFlow()
-                      setCreatedApp(newApp)
-                      if (activeView !== 'developer') {
-                        navigateToView('apps')
-                        setWorkspaceRecoApp(newApp)
-                      }
-                    }}
-                  />
-                ) : null}
               />
+              {showAIBuilder && (
+                <AIAppBuilder
+                  user={session.user}
+                  withGuide
+                  onClose={() => setShowAIBuilder(false)}
+                  onBack={() => setShowAIBuilder(false)}
+                  onCreated={newApp => {
+                    closeBuildFlow()
+                    setCreatedApp(newApp)
+                    if (activeView !== 'developer') {
+                      navigateToView('apps')
+                      setSelectedApp(newApp)
+                      setWorkspaceRecoApp(newApp)
+                    }
+                  }}
+                />
+              )}
+              {showCreate && (
+                <CreateAppModal
+                  user={session.user}
+                  initialType={selectedAppType}
+                  withGuide
+                  onClose={() => setShowCreate(false)}
+                  onBack={() => setShowCreate(false)}
+                  onCreated={newApp => {
+                    closeBuildFlow()
+                    setCreatedApp(newApp)
+                    if (activeView !== 'developer') {
+                      navigateToView('apps')
+                      setWorkspaceRecoApp(newApp)
+                    }
+                  }}
+                />
+              )}
             </Suspense>
           )}
           {workspaceRecoApp && (

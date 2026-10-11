@@ -1,7 +1,7 @@
 import { useState, useEffect, useTransition, useRef } from 'react'
 import { supabase } from '../supabase'
 import { useFocusTrap } from '../hooks/useFocusTrap'
-import { useEscapeKey } from '../hooks/useEscapeKey'
+import { confirmDiscard } from '../lib/confirmDiscard'
 import { TypeGuideSteps } from './TypeBuilderGuide'
 import { useToast } from '../hooks/useToast'
 import { generateJSON, normaliseUrl, readUrl, streamRun } from '../lib/runStream'
@@ -369,7 +369,7 @@ function QualityScore({ form, appType, formSchema }) {
 // ─── Main modal ───────────────────────────────────────────────────────────────
 // `withGuide`: start on the type guide ("Start building →" moves on to
 // step 1), so creating an app stays in this one popup.
-export default function CreateAppModal({ user, onClose, onBack, onCreated, onUpdated, existingApp, initialType = 'prompt', websitePrefilled, withGuide = false, embedded = false }) {
+export default function CreateAppModal({ user, onClose, onBack, onCreated, onUpdated, existingApp, initialType = 'prompt', websitePrefilled, withGuide = false }) {
   const modalRef = useRef(null)
   const toast = useToast()
   const isEdit = !!existingApp
@@ -427,11 +427,16 @@ export default function CreateAppModal({ user, onClose, onBack, onCreated, onUpd
   const [websiteScraped, setWebsiteScraped] = useState(!!websitePrefilled)
   const [websiteSource, setWebsiteSource] = useState(null)   // { url, text } read on this form's URL step
 
+  // Unsaved changes = anything that differs from how the form opened (type
+  // defaults count as unchanged; for Edit, the saved app and its saved
+  // output fields once loaded).
+  const [startState] = useState(() => JSON.stringify({ form, formSchema, pendingTools, websiteUrl }))
+  const startOutputFields = useRef('[]')
+  const hasChanges = JSON.stringify({ form, formSchema, pendingTools, websiteUrl }) !== startState
+    || JSON.stringify(outputFields) !== startOutputFields.current
+
   function closeWithWarning() {
-    const hasProgress = isEdit || !intro || form.name.trim() || form.description.trim() || form.system_prompt.trim() || formSchema.length || outputFields.length || pendingTools.length
-    if (!hasProgress || window.confirm('Close app builder? Your unsaved app setup will be lost.')) {
-      onClose()
-    }
+    if (confirmDiscard(hasChanges)) onClose()
   }
 
   function goBack() {
@@ -447,8 +452,6 @@ export default function CreateAppModal({ user, onClose, onBack, onCreated, onUpd
 
   const showTopBack = !existingApp && !intro && step === 1 && (withGuide || !!onBack)
   useFocusTrap(modalRef, { onEscape: closeWithWarning })
-  // Embedded in the type picker there's no trap of our own: catch Escape first
-  useEscapeKey(closeWithWarning, embedded)
 
   async function scrapeWebsite() {
     const url = normaliseUrl(websiteUrl)
@@ -521,8 +524,10 @@ Return ONLY valid JSON with these fields:
     supabase.from('app_blueprints').select('blueprint').eq('app_id', existingApp.id).maybeSingle()
       .then(({ data }) => {
         const bp = data?.blueprint || {}
+        const saved = getOutputSchemaFields(bp).map(f => ({ ...f }))
+        startOutputFields.current = JSON.stringify(saved)
         setExistingBlueprint(bp)
-        setOutputFields(getOutputSchemaFields(bp).map(f => ({ ...f })))
+        setOutputFields(saved)
       })
   }, [existingApp?.id])
 
@@ -729,8 +734,6 @@ Return ONLY valid JSON with these fields:
           </div>
         )}
 
-        {/* Embedded in the type picker: steps sit in a centred column */}
-        <div className={embedded ? 'flex-1 min-h-0 w-full max-w-2xl mx-auto flex flex-col' : 'contents'}>
         {intro ? (
           <TypeGuideSteps type={appType} onBack={goBack} onContinue={() => setIntro(false)} />
         ) : (<>
@@ -1175,10 +1178,8 @@ Return ONLY valid JSON with these fields:
           )}
         </div>
         </>)}
-        </div>
     </>
   )
-  if (embedded) return content
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
       <div ref={modalRef} role="dialog" aria-modal="true" aria-label={isEdit ? `Edit ${typeLabel}` : `New ${typeLabel}`}

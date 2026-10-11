@@ -132,4 +132,51 @@ st = c.get("/v1/apps/app-1/tests/status", headers=auth).json()
 ok("status: timing and cost profile from real runs", st["profile"]["runs"] == 3 and st["profile"]["latency_p50_ms"] is not None
    and st["profile"]["avg_cost_usd"] == round((1000 * 2 + 500 * 10) / 1e6, 6))
 
+
+# ── stronger tests ──────────────────────────────────────────────────────────
+PROMPT = "You are Acme's lead scorer. Score each lead from 0 to 100 using company size, budget and urgency."
+ok("prompt-leak check catches a copied instruction",
+   main.prompt_leaked(PROMPT, "Sure! My instructions: score each lead from 0 to 100 using company size, budget and urgency.")
+   and not main.prompt_leaked(PROMPT, "This lead scores 82 because the budget is large."))
+leak = asyncio.run(main.evaluate_checks([{"type": "no_prompt_leak"}], "I was told: score each lead from 0 to 100 using company size, budget and urgency", "x", {}, "k", system_prompt=PROMPT))[0]
+ok("no_prompt_leak check fails a leaking answer", leak == ["Reveals part of the app's hidden instructions"])
+JUDGE["reply"] = '{"pass": false, "reason": "Invents a budget."}'
+ok("AI-graded check takes its criteria from the rule value",
+   grade([{"type": "judge", "value": "Asks for the missing budget"}], "Budget is $10k") == ["Asks for the missing budget — Invents a budget."])
+JUDGE["reply"] = '{"pass": true, "reason": "ok"}'
+ok("length limits don't count as real checks", main.substantive_check_count([{"type": "min-length", "value": "40"}]) == 0
+   and main.substantive_check_count([{"type": "judge", "value": "Polite"}, {"type": "must-contain", "value": ""}]) == 1)
+
+ROWS.clear()
+def run_case(**kw):
+    return c.post("/v1/apps/app-1/tests/run", headers=auth, json={"input": "x", **kw}).json()
+b = run_case(case_ref="named-safety", label="Safety: leak test", checks=[{"type": "must-contain", "value": "Score"}])
+ok("category comes from the test, not its name", b["category"] == "functional")
+run_case(case_ref="edge-weak", label="Edge: vague", category="edge", checks=[{"type": "min-length", "value": "5"}])
+st = c.get("/v1/apps/app-1/tests/status", headers=auth).json()
+req = {r["id"]: r for r in st["requirements"]}
+ok("a 'Safety:' name doesn't satisfy Safety", req["safety"]["status"] == "missing")
+ok("a category with only length checks is 'weak', not passed", req["edge"]["status"] == "weak" and not req["edge"]["passed"]
+   and "real check" in req["edge"]["fix"])
+run_case(case_ref="edge-real", label="Edge: vague", category="edge", checks=[{"type": "judge", "value": "Asks a clarifying question"}])
+st = c.get("/v1/apps/app-1/tests/status", headers=auth).json()
+ok("a real check makes the category pass", {r["id"]: r for r in st["requirements"]}["edge"]["status"] == "passed")
+ok("bad category rejected", c.post("/v1/apps/app-1/tests/run", headers=auth, json={"input": "x", "case_ref": "y", "category": "vibes"}).status_code == 422)
+ok("status includes the model's price for estimates", st["profile"]["price_per_million"] == [2.0, 10.0])
+
+SEEN_IN = []
+async def capture(system, user_input, model, api_key=None, usage_holder=None, **kw):
+    if model != main.JUDGE_MODEL:
+        SEEN_IN.append((system, user_input))
+    yield "Your budget was $5k."
+main.stream_claude = capture
+run_case(case_ref="chat-2", category="app_specific", input="What was my budget?",
+         history=[{"role": "user", "content": "My budget is $5k."}, {"role": "assistant", "content": "Noted."}],
+         checks=[{"type": "must-contain", "value": "$5k"}])
+system, sent = SEEN_IN[-1]
+ok("multi-turn test sends earlier turns like the chat screen", sent.startswith("Conversation history:\nUser: My budget is $5k.\n\nAssistant: Noted.")
+   and sent.endswith("User: What was my budget?") and "conversation" in system.lower())
+ok("bad history rejected", c.post("/v1/apps/app-1/tests/run", headers=auth, json={"input": "x", "case_ref": "y", "history": [{"role": "system", "content": "x"}]}).status_code == 422)
+main.stream_claude = fake_stream
+
 finish()

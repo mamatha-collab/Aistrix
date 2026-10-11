@@ -6,7 +6,6 @@ import { timeAgo } from '../utils'
 import ToolsEditor from '../components/ToolsEditor'
 import TestSuite from '../components/TestSuite'
 import BillingModeHint from '../components/BillingModeHint'
-import { runAppTest } from '../lib/appTests'
 import { publishApp, unpublishApp } from '../lib/release'
 
 // The API address shown in code snippets (this deployment's backend).
@@ -2879,333 +2878,6 @@ function DesignTab({ apps, allApps = apps, loading, onOpenCreate, user, onAppUpd
 
 // ─── Blueprint-driven test panel ─────────────────────────────────────────────
 
-function BlueprintTestPanel({ apps, user, selectedAppId }) {
-  const selectedApp_id = selectedAppId ?? apps[0]?.id ?? null
-  const [bp, setBp]               = useState(undefined)  // undefined=loading, null=no saved blueprint, object=loaded
-  const [cases, setCases]         = useState([])
-  const [running, setRunning]     = useState(null)
-  const [runResult, setRunResult] = useState({})
-  const toast = useToast()
-
-  const app = apps.find(a => a.id === selectedApp_id)
-
-  function getEffectiveInputs() {
-    if (bp && bp !== null) {
-      const schemaInputs = getInputSchemaFields(bp)
-      if (schemaInputs.length) return schemaToInputFields(schemaInputs)
-      if (bp.inputs?.length) return bp.inputs
-    }
-    if (app?.form_schema?.length) {
-      return app.form_schema.map((f, i) => ({
-        key: f.key || f.field || f.name || `field_${i + 1}`,
-        label: f.label || f.field || f.name || `Field ${i + 1}`,
-        type: f.type || 'short_text',
-        required: f.required !== false,
-        pii: !!f.pii,
-      }))
-    }
-    return [{
-      key: 'user_request',
-      label: app?.input_placeholder || app?.sample_input || 'User request',
-      type: 'long_text',
-      required: true,
-      pii: false,
-    }]
-  }
-
-  useEffect(() => {
-    if (!selectedApp_id) return
-    setBp(undefined); setCases([]); setRunResult({})
-    Promise.all([
-      supabase.from('app_blueprints').select('blueprint').eq('app_id', selectedApp_id).maybeSingle(),
-      supabase.from('blueprint_test_results').select('*').eq('app_id', selectedApp_id).order('created_at', { ascending: true }),
-    ]).then(([{ data: bpData, error: bpErr }, { data: savedCases }]) => {
-      setBp(isMissingBlueprintTable(bpErr) ? null : bpData?.blueprint ? migrateBlueprint({ ...EMPTY_BP, ...bpData.blueprint }) : null)
-      if (savedCases?.length) {
-        setCases(savedCases.map(r => ({ label: r.label, input: r.input, expected_checks: r.expected_checks, status: r.last_status, output: r.last_output || '' })))
-        setRunResult(Object.fromEntries(savedCases.filter(r => r.last_status).map((r, i) => [i, { output: r.last_output || '', status: r.last_status, errors: r.last_errors || [] }])))
-      }
-    })
-  }, [selectedApp_id])
-
-  async function persistCaseResult(idx, result) {
-    if (!selectedApp_id || !user?.id) return
-    const tc = cases[idx]
-    await supabase.from('blueprint_test_results').upsert({
-      app_id: selectedApp_id, user_id: user.id,
-      label: tc.label, input: tc.input, expected_checks: tc.expected_checks,
-      last_status: result.status, last_output: result.output, last_errors: result.errors,
-      updated_at: new Date().toISOString(),
-    }, { onConflict: 'app_id,label' })
-  }
-
-  function generateCasesFromBlueprint() {
-    if (!bp || bp === undefined) return
-    const inputFields = getEffectiveInputs()
-    const generated = []
-
-    // One happy-path case per required input combination
-    const happyInputs = inputFields.reduce((acc, f) => {
-      acc[f.key] = sampleValue(f.type, f.label)
-      return acc
-    }, {})
-    generated.push({ label: 'Functional: blueprint happy path', input: formatInputs(happyInputs, inputFields), expected_checks: buildChecks(bp), status: null, output: '' })
-
-    // One missing-required-field case
-    const missingRequired = inputFields.find(f => f.required)
-    if (missingRequired) {
-      const partial = { ...happyInputs }
-      delete partial[missingRequired.key]
-      generated.push({ label: `Edge: missing ${missingRequired.label}`, input: formatInputs(partial, inputFields), expected_checks: [{ type: 'fallback', desc: 'Should ask for missing data or refuse gracefully' }], status: null, output: '' })
-    }
-
-    // One PII field edge case
-    const piiField = inputFields.find(f => f.pii)
-    if (piiField) {
-      generated.push({ label: `Safety: PII field ${piiField.label}`, input: formatInputs({ ...happyInputs, [piiField.key]: '[REDACTED]' }, inputFields), expected_checks: [{ type: 'safety', desc: 'Should handle redacted PII gracefully' }], status: null, output: '' })
-    }
-
-    setCases(generated)
-    toast(`${generated.length} test cases generated from blueprint`, 'success', 3000)
-  }
-
-  function sampleValue(type, label) {
-    if (type === 'long_text') return `Sample ${label} text for testing purposes. This is a realistic-length input to validate the app handles normal content correctly.`
-    if (type === 'short_text') return `Sample ${label}`
-    if (type === 'number') return 42
-    if (type === 'boolean') return true
-    if (type === 'url') return 'https://example.com'
-    if (type === 'date') return new Date().toISOString().split('T')[0]
-    if (type === 'email') return 'test@example.com'
-    if (type === 'select' || type === 'multi_select') return `Option A`
-    if (type === 'json') return '{"key": "value"}'
-    if (type === 'csv') return 'name,value\nRow 1,100\nRow 2,200'
-    return `Sample ${label}`
-  }
-
-  function formatInputs(inputs, inputFields = getEffectiveInputs()) {
-    return Object.entries(inputs).map(([k, v]) => {
-      const field = inputFields.find(f => f.key === k)
-      return `${field?.label || k}:\n${v}`
-    }).join('\n\n')
-  }
-
-  function buildChecks(bp) {
-    const checks = []
-    const oc = bp.output_contract || {}
-    const schemaFields = getOutputSchemaFields(bp)
-    if (oc.format === 'json' && schemaFields.length) {
-      checks.push({
-        type: 'json_schema',
-        desc: `Valid JSON with schema: ${schemaFields.map(f => `${f.field}(${f.type}${f.required === false ? '?' : ''})`).join(', ')}`,
-        fields: schemaFields,
-      })
-    } else if (oc.format && oc.format_rules) {
-      const sections = oc.format_rules.sections || oc.format_rules.columns || ''
-      if (sections) sections.split(',').map(s => s.trim()).filter(Boolean).forEach(s =>
-        checks.push({ type: 'section_present', desc: `Output contains: ${s}`, section: s })
-      )
-    }
-    if (bp.ai_behavior?.refusal_rules?.trim()) checks.push({ type: 'no_refusal_bypass', desc: 'Output respects refusal rules' })
-    return checks
-  }
-
-  async function runCase(idx) {
-    if (!app) return
-    setRunning(idx)
-    const tc = cases[idx]
-    try {
-      // Runs on the server through the real app path; checks graded there
-      // (AI-graded for fallback/safety/refusal checks) and recorded for the
-      // current draft.
-      const run = await runAppTest(app.id, {
-        source: 'blueprint', case_ref: tc.label, label: tc.label, input: tc.input,
-        checks: (tc.expected_checks || []).map(({ desc, ...chk }) => ({ ...chk, desc })),
-      })
-      const output = run.output || ''
-      const errors = run.errors || []
-      const parseError = errors.find(e => /not valid JSON/i.test(e)) || null
-      const looksLikeMarkdown = /^(#|\*\*|Here |Sure|I'll|The |This )/i.test(output.trim()) || output.trim().startsWith('```')
-      const resultData = {
-        output, status: run.passed ? 'pass' : 'fail', errors, parseError, looksLikeMarkdown,
-        inputTokens: run.input_tokens, outputTokens: run.output_tokens, cost: run.cost_usd, latencyMs: run.latency_ms,
-      }
-      setRunResult(p => ({ ...p, [idx]: resultData }))
-      persistCaseResult(idx, resultData)
-    } catch (e) {
-      setRunResult(p => ({ ...p, [idx]: { output: '', status: 'fail', errors: [e.message] } }))
-    } finally {
-      setRunning(null)
-    }
-  }
-
-  async function runAll() {
-    for (let i = 0; i < cases.length; i++) await runCase(i)
-  }
-
-  const passed   = Object.values(runResult).filter(r => r.status === 'pass').length
-  const ran      = Object.values(runResult).length
-  const passRate = ran > 0 ? Math.round((passed / ran) * 100) : null
-  const gateColor = passRate === null ? null : passRate === 100 ? '#00B894' : passRate >= 50 ? '#FDCB6E' : '#E84393'
-
-  // Collect suggested fixes from failed cases
-  const suggestions = Object.entries(runResult)
-    .filter(([, r]) => r.status === 'fail')
-    .flatMap(([idx, r]) => r.errors.map(e => ({ case: cases[Number(idx)]?.label, error: e })))
-    .slice(0, 5)
-  const effectiveInputs = bp && bp !== undefined ? getEffectiveInputs() : []
-
-  return (
-    <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5 space-y-4">
-      <div className="flex items-start justify-between gap-4">
-        <div className="space-y-0.5">
-          <div className="flex items-center gap-2">
-            <p className="text-xs font-bold text-white uppercase tracking-wider">Blueprint-generated tests</p>
-            {app && <span className="text-[10px] text-slate-500 font-medium">{app.emoji} {app.name}</span>}
-          </div>
-          <p className="text-[10px] text-slate-500">Generated from the saved Aistrix app blueprint, input schema, and output contract.</p>
-        </div>
-        {passRate !== null && (
-          <div className="flex items-center gap-3 shrink-0">
-            <span className="text-xs font-bold" style={{ color: gateColor }}>{passed}/{ran} passed — {passRate}%</span>
-            {passRate === 100 && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400">✓ Ready to publish</span>}
-            {passRate < 100 && ran > 0 && <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-red-500/10 text-red-400">Fix failures before publishing</span>}
-          </div>
-        )}
-      </div>
-
-      {bp === undefined && <p className="text-slate-600 text-xs text-center py-3">Loading blueprint…</p>}
-
-      {bp === null && (
-        <div className="bg-[#0E1424] border border-amber-500/20 rounded-xl px-4 py-3 space-y-1">
-          <p className="text-amber-300 text-xs font-semibold">No saved blueprint</p>
-          <p className="text-slate-500 text-xs">Go to the Design tab, fill in your app blueprint, and save it — then come back here to generate tests.</p>
-        </div>
-      )}
-
-      {bp !== null && bp !== undefined && !getInputSchemaFields(bp).length && !bp.inputs?.length && (
-        <div className="bg-[#0E1424] border border-[#6C5CE7]/20 rounded-xl px-4 py-3">
-          <p className="text-[#A29BFE] text-xs font-semibold">Using fallback input</p>
-          <p className="text-slate-500 text-xs mt-1">
-            No formal input schema is saved yet, so Aistrix will generate tests from the app form fields, placeholder, or a generic user request.
-          </p>
-        </div>
-      )}
-
-      {bp !== null && bp !== undefined && (
-        <div className="flex items-center gap-2">
-          <button onClick={generateCasesFromBlueprint}
-            className="text-xs font-semibold px-4 py-2 rounded-xl bg-[#6C5CE7]/15 hover:bg-[#6C5CE7]/25 text-[#A29BFE] border border-[#6C5CE7]/25 transition-colors">
-            ↺ Generate from {effectiveInputs.length ? 'available inputs' : 'app defaults'}
-          </button>
-          {cases.length > 0 && (
-            <button onClick={runAll} disabled={running !== null}
-              className="text-xs font-semibold px-4 py-2 rounded-xl bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors disabled:opacity-40">
-              {running !== null ? 'Running…' : `▶ Run all (${cases.length})`}
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* Suggested fixes from failures */}
-      {suggestions.length > 0 && (
-        <div className="bg-[#0E1424] border border-red-500/15 rounded-xl px-4 py-3 space-y-2">
-          <p className="text-[10px] font-semibold text-red-400 uppercase tracking-wider">Suggested fixes</p>
-          {suggestions.map((s, i) => (
-            <div key={i} className="flex gap-2 text-xs">
-              <span className="text-red-400 shrink-0">✕</span>
-              <span className="text-slate-400"><span className="text-slate-500">{s.case}: </span>{s.error}</span>
-            </div>
-          ))}
-          <p className="text-[10px] text-slate-400 pt-1">Fix these in the Design tab → AI Behavior or Output Contract, then re-run.</p>
-        </div>
-      )}
-
-      {cases.length > 0 && (
-        <div className="space-y-2">
-          {cases.map((tc, i) => {
-            const result = runResult[i]
-            return (
-              <div key={i} className={`border rounded-xl p-3 space-y-2 transition-colors ${result?.status === 'pass' ? 'border-emerald-500/20 bg-emerald-500/5' : result?.status === 'fail' ? 'border-red-500/20 bg-red-500/5' : 'border-white/5 bg-[#0E1424]'}`}>
-                <div className="flex items-center gap-2">
-                  <span className={`text-sm shrink-0 ${result?.status === 'pass' ? 'text-emerald-400' : result?.status === 'fail' ? 'text-red-400' : 'text-slate-600'}`}>
-                    {result?.status === 'pass' ? '✓' : result?.status === 'fail' ? '✕' : '○'}
-                  </span>
-                  <p className="text-xs font-semibold text-white flex-1">{tc.label}</p>
-                  <button onClick={() => runCase(i)} disabled={running !== null}
-                    className="text-[10px] text-slate-500 hover:text-[#A29BFE] transition-colors disabled:opacity-40 shrink-0">
-                    {running === i ? '…' : 'Run'}
-                  </button>
-                </div>
-                {/* Expected checks — show schema fields with optional badges */}
-                <div className="text-[10px] text-slate-400 space-y-0.5">
-                  {tc.expected_checks.map((chk, j) => (
-                    <div key={j}>
-                      {chk.type === 'json_schema' ? (
-                        <div className="flex flex-wrap gap-1 items-center">
-                          <span className="text-slate-600">✦ JSON schema:</span>
-                          {chk.fields.map((f, k) => (
-                            <span key={k} className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[9px] font-mono border ${f.required === false ? 'border-slate-700 text-slate-600' : 'border-slate-600 text-slate-400'}`}>
-                              {f.field}
-                              <span className="text-[8px] text-slate-700">{f.type}{f.enum_values?.length ? `(${f.enum_values.join('|')})` : ''}</span>
-                              {f.required === false && <span className="text-[8px] text-slate-700">opt</span>}
-                            </span>
-                          ))}
-                        </div>
-                      ) : (
-                        <p>✦ {chk.desc}</p>
-                      )}
-                    </div>
-                  ))}
-                </div>
-
-                {/* Errors */}
-                {result?.errors?.length > 0 && (
-                  <div className="space-y-1">
-                    {result.errors.map((e, j) => <p key={j} className="text-[10px] text-red-400">✕ {e}</p>)}
-                    {result.parseError && (
-                      <p className="text-[10px] text-orange-400 font-mono bg-orange-500/5 px-2 py-1 rounded border border-orange-500/15">
-                        Parser: {result.parseError}
-                      </p>
-                    )}
-                    {result.looksLikeMarkdown && (
-                      <p className="text-[10px] text-amber-400 bg-amber-500/5 px-2 py-1 rounded border border-amber-500/15">
-                        💡 Output starts with prose/markdown — add to system prompt: "Return ONLY valid JSON, no explanation, no markdown fences."
-                      </p>
-                    )}
-                  </div>
-                )}
-
-                {/* Token + cost */}
-                {result?.inputTokens && (
-                  <div className="flex gap-4 text-[10px] bg-[#0A0F1E] rounded-lg px-3 py-1.5">
-                    <span className="text-slate-500">In: <span className="text-slate-300">{result.inputTokens.toLocaleString()} tok</span></span>
-                    <span className="text-slate-500">Out: <span className="text-slate-300">{result.outputTokens?.toLocaleString()} tok</span></span>
-                    {result.cost != null && <span className="text-slate-500">Cost: <span className="text-green-400 font-semibold">{result.cost < 0.001 ? `$${(result.cost*1000).toFixed(3)}m` : `$${result.cost.toFixed(4)}`}</span></span>}
-                  </div>
-                )}
-                {/* Raw output — always open on fail, collapsed on pass */}
-                {result && (result.status === 'fail' || result.output) && (
-                  <details className="text-[10px] text-slate-400" open={result.status === 'fail'}>
-                    <summary className="cursor-pointer hover:text-slate-400">
-                      {result.status === 'fail' ? 'Raw output' : 'View output'}
-                    </summary>
-                    <pre className="mt-1 bg-[#171B33] rounded-lg p-2 overflow-x-auto text-slate-400 whitespace-pre-wrap leading-relaxed max-h-40">
-                      {result.output || '(empty output)'}
-                    </pre>
-                  </details>
-                )}
-              </div>
-            )
-          })}
-        </div>
-      )}
-    </div>
-  )
-}
-
-// ─── Test / Deploy command headers ───────────────────────────────────────────
-
 function StageCommandHeader({ stage, app, phaseByAppId = {}, onMovePhase }) {
   if (!app) return null
   const phase = getDevPhase(app, phaseByAppId)
@@ -3296,25 +2968,19 @@ function StageCommandHeader({ stage, app, phaseByAppId = {}, onMovePhase }) {
 function TestTab({ apps, allApps = apps, user, selectedAppId, onSelectApp, phaseByAppId = {}, onMovePhase }) {
   const activeAppId = apps.some(a => a.id === selectedAppId) ? selectedAppId : apps[0]?.id || null
   const selectedApp = apps.find(a => a.id === activeAppId)
-  const [activeTestPanel, setActiveTestPanel] = useState('blueprint')
+  const [activeTestPanel, setActiveTestPanel] = useState('app')
+  // Blueprint-generated cases are part of the app templates in Run validation.
   const testPanels = [
     {
-      id: 'blueprint',
-      step: '1',
-      label: 'Baseline tests',
-      short: 'Blueprint',
-      desc: 'Generated from the saved Design blueprint, input fields, and output contract to create starter test cases.',
-    },
-    {
       id: 'app',
-      step: '2',
+      step: '1',
       label: 'Run validation',
       short: 'App test',
       desc: 'Run the required checks, persona coverage, latency, cost, and deploy-readiness report for this app.',
     },
     {
       id: 'command',
-      step: '3',
+      step: '2',
       label: 'Decision',
       short: 'Command',
       desc: 'Use the report result to return to Design for fixes or move this app forward to Deploy.',
@@ -3347,7 +3013,7 @@ function TestTab({ apps, allApps = apps, user, selectedAppId, onSelectApp, phase
   return (
     <div className="space-y-5">
       <div className="bg-[#171B33] border border-white/5 rounded-2xl p-3 space-y-3">
-        <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr_auto_1fr] gap-2 items-stretch">
+        <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-2 items-stretch">
           {testPanels.map((item, index) => (
             <Fragment key={item.id}>
             <button onClick={() => setActiveTestPanel(item.id)}
@@ -3385,9 +3051,6 @@ function TestTab({ apps, allApps = apps, user, selectedAppId, onSelectApp, phase
         <TestSuite apps={apps} user={user} selectedAppId={activeAppId} onSelectApp={onSelectApp} />
       )}
 
-      {activeTestPanel === 'blueprint' && (
-        <BlueprintTestPanel apps={apps} user={user} selectedAppId={activeAppId} onSelectApp={onSelectApp} />
-      )}
 
       {activeTestPanel === 'command' && (
         <StageCommandHeader stage="test" app={selectedApp} phaseByAppId={phaseByAppId} onMovePhase={onMovePhase} />

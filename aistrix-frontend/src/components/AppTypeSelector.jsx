@@ -261,6 +261,7 @@ export default function AppTypeSelector({ onSelect, onClose, hidden = false }) {
   const [intent, setIntent] = useState('')
   const [suggestion, setSuggestion] = useState(null)
   const [activeGroup, setActiveGroup] = useState(TYPE_GROUPS[0].id)
+  const [showExamples, setShowExamples] = useState(false)
   useFocusTrap(panelRef, { onEscape: onClose })
   const selectedGroup = TYPE_GROUPS.find(group => group.id === activeGroup) || TYPE_GROUPS[0]
   const selectedTypes = selectedGroup.typeIds.map(typeId => TYPES.find(type => type.id === typeId)).filter(Boolean)
@@ -299,7 +300,7 @@ export default function AppTypeSelector({ onSelect, onClose, hidden = false }) {
           </div>
         </div>
 
-        <div className="flex-1 min-h-0 px-6 pb-6 flex flex-col gap-5">
+        <div className="flex-1 min-h-0 overflow-y-auto px-6 pb-6 flex flex-col gap-5">
           {/* Primary input */}
           <form onSubmit={handleIntentSubmit} className="grid lg:grid-cols-[1fr_220px] gap-3 pt-5">
             <textarea
@@ -358,15 +359,27 @@ export default function AppTypeSelector({ onSelect, onClose, hidden = false }) {
 
           {/* Example chips */}
           {!suggestion && (
-            <div>
-              <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide mb-2.5">Common automations</p>
-              <div className="flex flex-wrap gap-2">
-                {EXAMPLES.map(ex => (
+            <div className="rounded-xl border border-white/8 bg-[#11162A]/50 px-3 py-2">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide">Common automations</p>
+                <button type="button" onClick={() => setShowExamples(v => !v)}
+                  className="text-[11px] text-[#A29BFE] hover:text-white font-semibold transition-colors">
+                  {showExamples ? 'Hide examples' : 'Show examples'}
+                </button>
+              </div>
+              <div className={`flex flex-wrap gap-2 transition-all ${showExamples ? 'mt-2.5 max-h-44 overflow-y-auto pr-1' : 'mt-2 max-h-8 overflow-hidden'}`}>
+                {(showExamples ? EXAMPLES : EXAMPLES.slice(0, 4)).map(ex => (
                   <button key={ex.label} onClick={() => pickExample(ex)}
                     className="text-xs text-slate-300 hover:text-white bg-[#1A2038] hover:bg-[#222A48] border border-white/10 hover:border-white/20 px-3 py-1.5 rounded-full transition-all">
                     {ex.label}
                   </button>
                 ))}
+                {!showExamples && (
+                  <button type="button" onClick={() => setShowExamples(true)}
+                    className="text-xs text-[#A29BFE] hover:text-white bg-[#1A2038] hover:bg-[#222A48] border border-[#6C5CE7]/25 px-3 py-1.5 rounded-full transition-all">
+                    More…
+                  </button>
+                )}
               </div>
             </div>
           )}
@@ -381,7 +394,7 @@ export default function AppTypeSelector({ onSelect, onClose, hidden = false }) {
             <div className="flex-1 h-px bg-white/8" />
           </div>
 
-          <div className="rounded-2xl border border-white/10 bg-[#11162A]/70 p-4 flex-1 min-h-0 grid lg:grid-cols-[230px_1fr] gap-4">
+          <div className="rounded-2xl border border-white/10 bg-[#11162A]/70 p-4 min-h-[460px] grid lg:grid-cols-[230px_1fr] gap-4">
             <div className="space-y-2">
               <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wide px-1">App families</p>
               {TYPE_GROUPS.map(group => {
@@ -425,7 +438,7 @@ export default function AppTypeSelector({ onSelect, onClose, hidden = false }) {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 content-start overflow-y-auto pr-1 min-h-0 flex-1">
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 content-start overflow-y-auto pr-1 min-h-[280px] flex-1">
                 {selectedTypes.map(t => {
                   const status = STATUS_META[t.status || 'preview']
                   const disabled = t.status === 'soon'

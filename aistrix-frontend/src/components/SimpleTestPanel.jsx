@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { runAppTest } from '../lib/appTests'
@@ -28,19 +28,26 @@ function labelFor(req, app) {
   return req.id === 'app_specific' ? (APP_SPECIFIC[appTypeOf(app)] || 'Does what this app type should') : (LABELS[req.id] || req.label)
 }
 
+function isBlockingRunProblem(message = '') {
+  return /rate limit|api key|provider|timed out|quota|allowance|could not reach|network/i.test(message)
+}
+
 // One-click testing: prepares the right tests for the app, runs them (plus a
 // speed & cost check) on the server, and shows a plain checklist. The same
 // server rules decide whether the app can be deployed.
-export default function SimpleTestPanel({ app, user, onMovePhase }) {
+export default function SimpleTestPanel({ app, user, onMovePhase, onOpenKeys }) {
   const toast = useToast()
   const providers = useProviders()
   const [status, setStatus] = useState(null)
   const [statusError, setStatusError] = useState('')
   const [cases, setCases] = useState([])
   const [blueprint, setBlueprint] = useState({})
+  const [usage, setUsage] = useState(null)
   const [running, setRunning] = useState(null)        // 'tests' | 'personas' | null
   const [progress, setProgress] = useState({ done: 0, total: 0 })
   const [showCustomize, setShowCustomize] = useState(false)
+  const [lastProblem, setLastProblem] = useState('')
+  const abortRef = useRef(null)
 
   const load = useCallback(async () => {
     if (!app?.id) return
@@ -51,6 +58,12 @@ export default function SimpleTestPanel({ app, user, onMovePhase }) {
       supabase.from('app_test_cases').select('*').eq('app_id', app.id).eq('user_id', user.id).order('created_at'),
       supabase.from('app_blueprints').select('blueprint').eq('app_id', app.id).maybeSingle(),
     ])
+    if (headers.Authorization) {
+      fetch(`${API_URL}/v1/usage`, { headers })
+        .then(r => r.ok ? r.json() : null)
+        .then(data => { if (data) setUsage(data) })
+        .catch(() => {})
+    }
     if (statusRes?.ok) { setStatus(await statusRes.json()); setStatusError('') }
     else setStatusError(statusRes ? ((await statusRes.json().catch(() => ({}))).detail || 'Could not load test results') : 'Could not reach the server')
     setCases(casesRes.data || [])
@@ -73,8 +86,29 @@ export default function SimpleTestPanel({ app, user, onMovePhase }) {
     return next
   }
 
+  function stopRun() {
+    abortRef.current?.abort()
+    setRunning(null)
+    toast('Test run stopped', 'info', 2500)
+  }
+
+  function allowanceProblem() {
+    if (!usage || usesOwnKey || platformRemaining !== 0) return ''
+    return `Your free allowance is empty for ${providerName}. Add your own key to keep testing without platform limits.`
+  }
+
   async function runTests() {
+    const blocked = allowanceProblem()
+    if (blocked) {
+      setLastProblem(blocked)
+      toast(blocked, 'error', 9000)
+      return
+    }
+    abortRef.current?.abort()
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
     setRunning('tests')
+    setLastProblem('')
     const problems = []
     try {
       const list = await ensureTests()
@@ -82,16 +116,26 @@ export default function SimpleTestPanel({ app, user, onMovePhase }) {
       let done = 0
       setProgress({ done, total })
       for (const tc of list) {
+        if (ctrl.signal.aborted) break
         try {
           await runAppTest(app.id, { source: 'suite', case_ref: tc.id, label: tc.name, input: tc.input || '(no input)',
-            checks: tc.rules || [], category: tc.category || 'functional', ...(tc.history?.length ? { history: tc.history } : {}) })
-        } catch (e) { problems.push(e.message) }
+            checks: tc.rules || [], category: tc.category || 'functional', ...(tc.history?.length ? { history: tc.history } : {}) }, { signal: ctrl.signal })
+        } catch (e) {
+          if (e.name === 'AbortError') break
+          problems.push(e.message)
+          if (isBlockingRunProblem(e.message)) break
+        }
         setProgress({ done: ++done, total })
       }
       for (const item of PROFILE_RUNS) {
+        if (ctrl.signal.aborted) break
         try {
-          await runAppTest(app.id, { source: 'profile', case_ref: `profile:${item.label}`, label: `Speed & cost: ${item.label}`, input: item.input, checks: [] })
-        } catch (e) { problems.push(e.message) }
+          await runAppTest(app.id, { source: 'profile', case_ref: `profile:${item.label}`, label: `Speed & cost: ${item.label}`, input: item.input, checks: [] }, { signal: ctrl.signal })
+        } catch (e) {
+          if (e.name === 'AbortError') break
+          problems.push(e.message)
+          if (isBlockingRunProblem(e.message)) break
+        }
         setProgress({ done: ++done, total })
       }
     } catch (e) {
@@ -99,29 +143,109 @@ export default function SimpleTestPanel({ app, user, onMovePhase }) {
     } finally {
       await load()
       setRunning(null)
+      if (abortRef.current === ctrl) abortRef.current = null
     }
     // Same problem on every run (e.g. no AI key) → say it once.
-    if (problems.length) toast([...new Set(problems)].slice(0, 2).join(' · '), 'error', 9000)
+    if (problems.length) {
+      const msg = [...new Set(problems)].slice(0, 2).join(' · ')
+      setLastProblem(msg)
+      toast(msg, 'error', 9000)
+    }
   }
 
   async function runPersonas() {
+    const blocked = allowanceProblem()
+    if (blocked) {
+      setLastProblem(blocked)
+      toast(blocked, 'error', 9000)
+      return
+    }
+    abortRef.current?.abort()
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
     setRunning('personas')
+    setLastProblem('')
     const base = cases.find(tc => (tc.category || 'functional') === 'functional' && tc.input)?.input
       || buildTemplateCases(app, blueprint)[0]?.input
     let done = 0
     setProgress({ done, total: PERSONA_PACKS.length })
     try {
       for (const p of PERSONA_PACKS) {
+        if (ctrl.signal.aborted) break
         try {
           await runAppTest(app.id, { source: 'persona', case_ref: `persona:${p.id}`, label: `Persona: ${p.label}`, persona: p.id,
-            input: base, checks: [judge('Gives a useful, on-task answer that suits this kind of user')] })
-        } catch (e) { toast(e.message, 'error', 6000); break }
+            input: base, checks: [judge('Gives a useful, on-task answer that suits this kind of user')] }, { signal: ctrl.signal })
+        } catch (e) {
+          if (e.name !== 'AbortError') { setLastProblem(e.message); toast(e.message, 'error', 6000) }
+          break
+        }
         setProgress({ done: ++done, total: PERSONA_PACKS.length })
       }
     } finally {
       await load()
       setRunning(null)
+      if (abortRef.current === ctrl) abortRef.current = null
     }
+  }
+
+  async function runProfileOnly() {
+    const blocked = allowanceProblem()
+    if (blocked) {
+      setLastProblem(blocked)
+      toast(blocked, 'error', 9000)
+      return
+    }
+    abortRef.current?.abort()
+    const ctrl = new AbortController()
+    abortRef.current = ctrl
+    setRunning('profile')
+    setLastProblem('')
+    const problems = []
+    let done = 0
+    setProgress({ done, total: PROFILE_RUNS.length })
+    try {
+      for (const item of PROFILE_RUNS) {
+        if (ctrl.signal.aborted) break
+        try {
+          await runAppTest(app.id, { source: 'profile', case_ref: `profile:${item.label}`, label: `Speed & cost: ${item.label}`, input: item.input, checks: [] }, { signal: ctrl.signal })
+        } catch (e) {
+          if (e.name === 'AbortError') break
+          problems.push(e.message)
+          if (isBlockingRunProblem(e.message)) break
+        }
+        setProgress({ done: ++done, total: PROFILE_RUNS.length })
+      }
+    } finally {
+      await load()
+      setRunning(null)
+      if (abortRef.current === ctrl) abortRef.current = null
+    }
+    if (problems.length) {
+      const msg = [...new Set(problems)].slice(0, 2).join(' · ')
+      setLastProblem(msg)
+      toast(msg, 'error', 9000)
+    }
+  }
+
+  async function handleRequirementClick(req) {
+    if (running) return
+    if (req.id === 'performance') {
+      await runProfileOnly()
+      return
+    }
+    if (req.id === 'persona') {
+      await runPersonas()
+      return
+    }
+    if (req.status === 'missing' || req.status === 'weak') {
+      try {
+        await ensureTests()
+        await load()
+      } catch (e) {
+        toast(e.message, 'error', 6000)
+      }
+    }
+    setShowCustomize(true)
   }
 
   if (!app) return null
@@ -142,8 +266,12 @@ export default function SimpleTestPanel({ app, user, onMovePhase }) {
   }
   const cost = perRun == null ? null : perRun * plannedCount
   const provider = providerById(providers, app.ai_provider || 'claude')
-  const payer = provider.connected ? `your ${PROVIDER_STYLE[provider.id]?.name || provider.label} key` : 'your free allowance'
+  const providerName = PROVIDER_STYLE[provider.id]?.name || provider.label
+  const platformRemaining = usage ? Math.min(usage.hourly?.remaining ?? 0, usage.daily?.remaining ?? 0) : null
+  const usesOwnKey = provider.connected || usage?.own_provider_keys?.includes?.(provider.id)
+  const payer = usesOwnKey ? `your ${providerName} key` : platformRemaining == null ? 'your free allowance' : `${platformRemaining} free run${platformRemaining === 1 ? '' : 's'} left`
   const noPrompt = !app.system_prompt?.trim()
+  const hasBlockingProblem = isBlockingRunProblem(lastProblem) || (!usesOwnKey && platformRemaining === 0)
 
   const reasonFor = req => {
     if (req.id === 'performance' && req.status === 'passed' && profile) {
@@ -175,11 +303,26 @@ export default function SimpleTestPanel({ app, user, onMovePhase }) {
               </p>
             </div>
           </div>
-          <button onClick={runTests} disabled={!!running || noPrompt}
-            className="text-sm font-semibold px-5 py-2.5 rounded-xl bg-[#6C5CE7] hover:bg-[#7C6CFF] disabled:opacity-40 text-white transition-colors shrink-0">
-            {running === 'tests' ? `Running ${progress.done} of ${progress.total}…` : anyRun ? '↻ Run tests again' : '▶ Run tests'}
+          <button onClick={running ? stopRun : runTests} disabled={noPrompt}
+            className={`text-sm font-semibold px-5 py-2.5 rounded-xl disabled:opacity-40 text-white transition-colors shrink-0 ${running ? 'bg-red-500/80 hover:bg-red-500' : 'bg-[#6C5CE7] hover:bg-[#7C6CFF]'}`}>
+            {running === 'tests' ? `Stop ${progress.done} of ${progress.total}` : running === 'personas' ? `Stop personas ${progress.done}/${progress.total}` : running === 'profile' ? `Stop profile ${progress.done}/${progress.total}` : anyRun ? '↻ Run tests again' : '▶ Run tests'}
           </button>
         </div>
+
+        {hasBlockingProblem && (
+          <div className="rounded-xl border border-amber-500/25 bg-amber-500/8 px-3 py-3 flex items-start justify-between gap-3">
+            <div>
+              <p className="text-amber-200 text-xs font-semibold">Testing needs a provider key or more free allowance</p>
+              <p className="text-amber-100/70 text-[11px] mt-1">
+                {lastProblem || `Your free allowance is empty for ${providerName}. Add your own key to keep testing without platform limits.`}
+              </p>
+            </div>
+            <button type="button" onClick={onOpenKeys}
+              className="shrink-0 text-xs font-semibold px-3 py-1.5 rounded-lg bg-amber-400 text-[#171B33] hover:bg-amber-300 transition-colors">
+              Add {providerName} key
+            </button>
+          </div>
+        )}
 
         {status?.setup_required && (
           <p className="text-xs text-amber-300 bg-amber-500/8 border border-amber-500/20 rounded-xl px-3 py-2">
@@ -193,13 +336,15 @@ export default function SimpleTestPanel({ app, user, onMovePhase }) {
             const i = icon(req.status)
             const reason = reasonFor(req)
             return (
-              <div key={req.id} className="flex items-start gap-3 px-3 py-2 rounded-xl bg-white/[0.02]">
+              <button key={req.id} type="button" onClick={() => handleRequirementClick(req)}
+                className="w-full text-left flex items-start gap-3 px-3 py-2 rounded-xl bg-white/[0.02] hover:bg-white/[0.05] transition-colors focus:outline-none focus:ring-2 focus:ring-[#6C5CE7]/40">
                 <span className={`${i.c} font-bold text-sm w-4 text-center shrink-0`}>{i.t}</span>
                 <div className="min-w-0 flex-1">
                   <p className="text-sm text-slate-200">{labelFor(req, app)}</p>
                   {reason && <p className={`text-[11px] mt-0.5 ${req.status === 'failed' ? 'text-red-300/80' : 'text-slate-500'}`}>{reason}</p>}
+                  <p className="text-[10px] text-[#A29BFE]/75 mt-1">{req.status === 'passed' ? 'Open related tests' : req.id === 'performance' ? 'Run speed and cost check' : 'Add or customize tests'}</p>
                 </div>
-              </div>
+              </button>
             )
           })}
           {optional.map(req => {
@@ -246,7 +391,7 @@ export default function SimpleTestPanel({ app, user, onMovePhase }) {
         </button>
         {showCustomize && (
           <div className="px-4 pb-4">
-            <TestSuite apps={[app]} user={user} selectedAppId={app.id} compact />
+            <TestSuite key={`${app.id}:${cases.length}:${status?.draft_hash || ''}`} apps={[app]} user={user} selectedAppId={app.id} compact />
           </div>
         )}
       </div>

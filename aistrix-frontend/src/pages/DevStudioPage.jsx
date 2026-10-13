@@ -7,6 +7,7 @@ import ToolsEditor from '../components/ToolsEditor'
 import SimpleTestPanel from '../components/SimpleTestPanel'
 import BillingModeHint from '../components/BillingModeHint'
 import { publishApp, unpublishApp } from '../lib/release'
+import ErrorBoundary from '../components/ErrorBoundary'
 
 // The API address shown in code snippets (this deployment's backend).
 const PUBLIC_API_URL = (import.meta.env.VITE_PUBLIC_API_URL || import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '')
@@ -724,8 +725,8 @@ function inputsToSchema(inputs = []) {
 
 function schemaToInputFields(fields = []) {
   return fields.map(f => ({
-    key: f.field || '',
-    label: f.description || f.field || '',
+    key: f.field || f.name || '',
+    label: f.label || f.description || f.field || f.name || '',
     type: f.type === 'number' ? 'number'
       : f.type === 'boolean' ? 'boolean'
       : f.type === 'enum' ? 'select'
@@ -753,6 +754,8 @@ function getOutputSchemaFields(bp = {}) {
 function schemaToZod(fields = [], indent = 0) {
   const pad = '  '.repeat(indent)
   const lines = fields.map(f => {
+    const fieldName = f.field || f.name
+    if (!fieldName) return ''
     let zodType
     switch (f.type) {
       case 'string':       zodType = 'z.string()'; break
@@ -778,8 +781,8 @@ function schemaToZod(fields = [], indent = 0) {
     }
     if (f.required === false) zodType += '.optional()'
     const comment = f.description ? `  // ${f.description}` : ''
-    return `${pad}  ${f.field}: ${zodType},${comment}`
-  })
+    return `${pad}  ${fieldName}: ${zodType},${comment}`
+  }).filter(Boolean)
   return lines.join('\n')
 }
 
@@ -793,6 +796,8 @@ function buildZodExport(inputFields, outputFields) {
 function schemaToTs(fields = [], indent = 0) {
   const pad = '  '.repeat(indent)
   return fields.map(f => {
+    const fieldName = f.field || f.name
+    if (!fieldName) return ''
     let tsType
     switch (f.type) {
       case 'string':       tsType = 'string'; break
@@ -814,8 +819,8 @@ function schemaToTs(fields = [], indent = 0) {
     }
     const opt = f.required === false ? '?' : ''
     const comment = f.description ? `  // ${f.description}` : ''
-    return `${pad}  ${f.field}${opt}: ${tsType};${comment}`
-  }).join('\n')
+    return `${pad}  ${fieldName}${opt}: ${tsType};${comment}`
+  }).filter(Boolean).join('\n')
 }
 
 function buildTsExport(inputFields, outputFields) {
@@ -826,7 +831,8 @@ function schemaToJsonSchema(fields = []) {
   const properties = {}
   const required = []
   fields.forEach(f => {
-    if (!f?.field) return
+    const fieldName = f?.field || f?.name
+    if (!fieldName) return
     let prop
     switch (f.type) {
       case 'number':
@@ -853,8 +859,8 @@ function schemaToJsonSchema(fields = []) {
         prop = { type: 'string' }
     }
     if (f.description) prop.description = f.description
-    properties[f.field] = prop
-    if (f.required !== false) required.push(f.field)
+    properties[fieldName] = prop
+    if (f.required !== false) required.push(fieldName)
   })
   return {
     type: 'object',
@@ -874,12 +880,18 @@ function buildJsonSchemaExport(inputFields, outputFields) {
 // Migrate old blueprint shape into first-class schema objects.
 function migrateBlueprint(raw) {
   if (!raw) return raw
+  const normalizeSchemaFields = fields => (fields || []).map(f => ({
+    ...f,
+    field: f.field || f.name || '',
+    description: f.description || f.label || '',
+    nested_fields: f.nested_fields?.length ? normalizeSchemaFields(f.nested_fields) : f.nested_fields,
+  }))
   const oc = raw.output_contract || {}
   const outputFields = raw.output_schema?.fields?.length
-    ? raw.output_schema.fields
-    : oc.fields || oc.required_fields || []
+    ? normalizeSchemaFields(raw.output_schema.fields)
+    : normalizeSchemaFields(oc.fields || oc.required_fields || [])
   const inputFields = raw.input_schema?.fields?.length
-    ? raw.input_schema.fields
+    ? normalizeSchemaFields(raw.input_schema.fields)
     : inputsToSchema(raw.inputs || [])
   const inputs = raw.inputs?.length ? raw.inputs : schemaToInputFields(inputFields)
   return {
@@ -2965,7 +2977,7 @@ function StageCommandHeader({ stage, app, phaseByAppId = {}, onMovePhase }) {
 
 // ─── Tab: Test ────────────────────────────────────────────────────────────────
 
-function TestTab({ apps, allApps = apps, user, selectedAppId, phaseByAppId = {}, onMovePhase }) {
+function TestTab({ apps, allApps = apps, user, selectedAppId, phaseByAppId = {}, onMovePhase, onOpenKeys }) {
   const activeAppId = apps.some(a => a.id === selectedAppId) ? selectedAppId : apps[0]?.id || null
   const selectedApp = apps.find(a => a.id === activeAppId)
   if (!allApps.length) return (
@@ -2991,7 +3003,7 @@ function TestTab({ apps, allApps = apps, user, selectedAppId, phaseByAppId = {},
   )
 
   return (
-    <SimpleTestPanel key={selectedApp?.id} app={selectedApp} user={user} onMovePhase={onMovePhase} />
+    <SimpleTestPanel key={selectedApp?.id} app={selectedApp} user={user} onMovePhase={onMovePhase} onOpenKeys={onOpenKeys} />
   )
 }
 
@@ -6460,19 +6472,20 @@ export default function DevStudioPage({
             {/* Tab content */}
             {['design','test','deploy'].includes(tab) ? (
               phaseScopedActiveAppId ? (
-                <>
+                <ErrorBoundary compact title={`${DEV_PHASES[tab]?.label || 'Dev Studio'} section could not load`} resetKey={`${tab}:${phaseScopedActiveAppId}`}>
                   {tab === 'design' && <DesignTab   apps={activePhaseApps} allApps={apps} loading={loading} onOpenCreate={onOpenCreate} user={user} onAppUpdated={updateAppInState} onGoToTest={appId => { moveAppPhase(appId, 'test'); setDeployFixReason('') }} selectedAppId={phaseScopedActiveAppId} onSelectApp={setActiveAppId} deployFixReason={deployFixReason} phaseByAppId={phaseByAppId} />}
-                  {tab === 'test'   && <TestTab     apps={activePhaseApps} allApps={apps} user={user} selectedAppId={phaseScopedActiveAppId} phaseByAppId={phaseByAppId} onMovePhase={moveAppPhase} />}
+                  {tab === 'test'   && <TestTab     apps={activePhaseApps} allApps={apps} user={user} selectedAppId={phaseScopedActiveAppId} phaseByAppId={phaseByAppId} onMovePhase={moveAppPhase} onOpenKeys={onShowSettings} />}
                   {tab === 'deploy' && <DeployTab   apps={activePhaseApps} user={user} onAppUpdated={updateAppInState} onFixInDesign={returnToDesignForPublishFix} selectedAppId={phaseScopedActiveAppId} onSelectApp={setActiveAppId} phaseByAppId={phaseByAppId} onMovePhase={moveAppPhase} />}
-                </>
+                </ErrorBoundary>
               ) : (
                 (() => {
                   const designApps = visibleApps.filter(a => getDevPhase(a, phaseByAppId) === 'design')
-                  const appRow = (a, onPick = () => setActiveAppId(a.id)) => {
+                  const appRow = (a, onPick) => {
+                    const pick = typeof onPick === 'function' ? onPick : () => setActiveAppId(a.id)
                     const phase = DEV_PHASES[getDevPhase(a, phaseByAppId)]
                     return (
                       <div key={a.id} className="relative">
-                        <button onClick={onPick}
+                        <button onClick={pick}
                           className="w-full flex items-center gap-3 px-4 py-3 rounded-xl bg-[#131929] border border-white/8 hover:border-white/20 hover:bg-[#1A2038] text-left transition-colors">
                           <AppEmojiWithType app={a} size="lg" />
                           <div className="flex-1 min-w-0 overflow-hidden">

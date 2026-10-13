@@ -9,6 +9,7 @@
     "build": "vite build",
     "build:staging": "vite build --mode staging",
     "lint": "oxlint",
+    "smoke:dev-lifecycle": "node scripts/smoke-dev-lifecycle.mjs",
     "test": "vitest run",
     "preview": "vite preview"
   },

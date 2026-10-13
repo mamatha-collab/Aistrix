@@ -26,7 +26,7 @@ export function appTypeLabel(app) {
 }
 
 export function sampleForField(field) {
-  const label = field?.label || field?.description || field?.field || 'value'
+  const label = field?.label || field?.description || field?.field || field?.name || 'value'
   const type = field?.type || 'text'
   if (type === 'number') return '42'
   if (type === 'date') return new Date().toISOString().slice(0, 10)
@@ -40,13 +40,18 @@ export function sampleForField(field) {
 export function formatFormInput(app) {
   const fields = app?.form_schema || []
   if (!fields.length) return app?.sample_input || 'Sample user request'
-  return fields.map(f => `${f.label || f.field}:\n${sampleForField(f)}`).join('\n\n')
+  return fields.map(f => `${f.label || f.field || f.name}:\n${sampleForField(f)}`).join('\n\n')
 }
 
 export function outputSchemaFields(blueprint) {
-  return blueprint?.output_schema?.fields?.length
+  const fields = blueprint?.output_schema?.fields?.length
     ? blueprint.output_schema.fields
     : blueprint?.output_contract?.fields || blueprint?.output_contract?.required_fields || []
+  return fields.map(f => ({
+    ...f,
+    field: f.field || f.name || '',
+    description: f.description || f.label || '',
+  })).filter(f => f.field)
 }
 
 export const judge = value => ({ type: 'judge', value })

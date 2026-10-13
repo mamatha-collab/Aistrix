@@ -1339,7 +1339,7 @@ def _validate_schema_value(value: Any, fields: list[dict[str, Any]], path: str =
         return [f"{path or 'value'} must be an object"]
 
     for field in fields:
-        name = field.get("field")
+        name = field.get("field") or field.get("name")
         if not name:
             continue
         label = f"{path}.{name}" if path else str(name)
@@ -1454,12 +1454,13 @@ RUN_MODE_SUFFIX = {
 def _describe_fields(fields: list[dict[str, Any]], indent: str = "") -> str:
     lines = []
     for f in fields:
-        if not f.get("field"):
+        field_name = f.get("field") or f.get("name")
+        if not field_name:
             continue
         req = "required" if f.get("required") is not False else "optional"
         extra = f" one of {f['enum_values']}" if f.get("enum_values") else ""
-        desc = f" — {f['description']}" if f.get("description") else ""
-        lines.append(f"{indent}- {f['field']} ({f.get('type') or 'string'}, {req}){extra}{desc}")
+        desc = f" — {f.get('description') or f.get('label')}" if (f.get("description") or f.get("label")) else ""
+        lines.append(f"{indent}- {field_name} ({f.get('type') or 'string'}, {req}){extra}{desc}")
         if f.get("nested_fields"):
             lines.append(_describe_fields(f["nested_fields"], indent + "  "))
     return "\n".join(lines)

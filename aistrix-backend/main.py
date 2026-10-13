@@ -1794,7 +1794,13 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
             yield _sse({"error": f"API key does not have permission for this model. Check your {provider} account."})
         except (anthropic.RateLimitError, openai.RateLimitError):
             _record_run_outcome(False, "rate_limit")
-            yield _sse({"error": "Rate limit reached. Add your own API key in Settings → Keys for unlimited runs, or wait a moment and try again."})
+            if key_source == "platform":
+                yield _sse({"error": "Rate limit reached. Add your own API key in Settings → Keys for unlimited runs, or wait a moment and try again."})
+            else:
+                # The provider says the same thing for "too many requests" and "no credit left".
+                whose = "your" if key_source == "own" else "the app developer's"
+                yield _sse({"error": f"{label} turned this run away: {whose} {label} account hit its rate limit or is out of credit. "
+                                     f"Check the account's usage and billing, or wait a moment and try again."})
         except (anthropic.BadRequestError, openai.BadRequestError) as e:
             _record_run_outcome(False, "bad_request")
             yield _sse({"error": f"Prompt config error: {str(e)[:200]}"})

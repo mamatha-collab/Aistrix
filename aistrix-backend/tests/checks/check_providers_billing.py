@@ -210,6 +210,23 @@ main.require_verified_user = other_user
 r = c.put("/apps/owners-app/secrets", json={"key": "SEND_EMAIL_API_KEY", "value": "SG.x"})
 ok("setting a secret on someone else's app → 404", r.status_code == 404)
 
+# ── provider "too many requests": the message names whose account to check ──
+import httpx, openai as _openai
+def limited_stream():
+    async def stream(*a, **kw):
+        raise _openai.RateLimitError("429", response=httpx.Response(429, request=httpx.Request("POST", "https://x")), body=None)
+        yield ""
+    return stream
+saved_stream = main.stream_claude
+main.stream_claude = limited_stream()
+KEYS.clear(); app("rl-app"); KEYS[(OWNER, "claude")] = "sk-dev"
+ok("rate limit on the developer's key → check the developer's account", "app developer's Claude account" in run("rl-app", "tok-buyer")[1])
+KEYS.clear(); KEYS[(BUYER, "claude")] = "sk-buyer"
+ok("rate limit on your own key → check your account, no 'add a key'", "your Claude account" in (t := run("rl-app", "tok-buyer")[1]) and "Add your own" not in t)
+KEYS.clear()
+ok("rate limit on the platform key → suggests adding your own key", "Add your own API key" in run("rl-app", "tok-stranger")[1])
+main.stream_claude = saved_stream
+
 # ── browsers can call every write method the frontend uses (CORS preflight) ─
 origin = main.ALLOWED_ORIGINS[0]
 for method, path in [("PUT", "/v1/provider-keys/openai"), ("DELETE", "/v1/provider-keys/openai"), ("PUT", "/apps/a1/secrets")]:

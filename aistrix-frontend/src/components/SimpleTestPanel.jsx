@@ -36,7 +36,20 @@ function labelFor(req, app) {
 }
 
 function isBlockingRunProblem(message = '') {
-  return /rate limit|api key|provider|timed out|quota|allowance|could not reach|network/i.test(message)
+  return /rate limit|api key|provider|timed out|quota|allowance|could not reach|network|out of credit|refused this run/i.test(message)
+}
+
+// The server's own messages for a run the AI provider refused (no credit,
+// rate limit, bad key, provider down, timeout). Every later test would fail
+// the same way, each after the provider's retries, so the run stops there.
+// Ordinary failed checks don't match these.
+const PROVIDER_REFUSAL = /out of credit|turned this run away|Rate limit reached|API key — check Settings|does not have permission for this model|No \w+ API key is available|runs on your own \w+ API key|service error — try again|Request timed out/i
+
+async function runChecked(appId, testCase, opts) {
+  const result = await runAppTest(appId, testCase, opts)
+  const first = result?.errors?.[0]
+  if (result && !result.passed && first && PROVIDER_REFUSAL.test(first)) throw new Error(first)
+  return result
 }
 
 // One-click testing: prepares the right tests for the app, runs them (plus a
@@ -123,6 +136,7 @@ export default function SimpleTestPanel({ app, user, onMovePhase, onOpenKeys }) 
     setRunning('tests')
     setLastProblem('')
     const problems = []
+    let refused = false
     try {
       const list = await ensureTests()
       const total = list.length + PROFILE_RUNS.length
@@ -131,19 +145,19 @@ export default function SimpleTestPanel({ app, user, onMovePhase, onOpenKeys }) 
       for (const tc of list) {
         if (ctrl.signal.aborted) break
         try {
-          await runAppTest(app.id, { source: 'suite', case_ref: tc.id, label: tc.name, input: tc.input || '(no input)',
+          await runChecked(app.id, { source: 'suite', case_ref: tc.id, label: tc.name, input: tc.input || '(no input)',
             checks: tc.rules || [], category: tc.category || 'functional', ...(tc.history?.length ? { history: tc.history } : {}) }, { signal: ctrl.signal })
         } catch (e) {
           if (e.name === 'AbortError') break
           problems.push(e.message)
-          if (isBlockingRunProblem(e.message)) break
+          if (isBlockingRunProblem(e.message)) { refused = true; break }
         }
         setProgress({ done: ++done, total })
       }
       for (const item of profileRuns(list)) {
-        if (ctrl.signal.aborted) break
+        if (refused || ctrl.signal.aborted) break
         try {
-          await runAppTest(app.id, { source: 'profile', case_ref: `profile:${item.label}`, label: `Speed & cost: ${item.label}`, input: item.input, checks: [] }, { signal: ctrl.signal })
+          await runChecked(app.id, { source: 'profile', case_ref: `profile:${item.label}`, label: `Speed & cost: ${item.label}`, input: item.input, checks: [] }, { signal: ctrl.signal })
         } catch (e) {
           if (e.name === 'AbortError') break
           problems.push(e.message)
@@ -186,7 +200,7 @@ export default function SimpleTestPanel({ app, user, onMovePhase, onOpenKeys }) 
       for (const p of PERSONA_PACKS) {
         if (ctrl.signal.aborted) break
         try {
-          await runAppTest(app.id, { source: 'persona', case_ref: `persona:${p.id}`, label: `Persona: ${p.label}`, persona: p.id,
+          await runChecked(app.id, { source: 'persona', case_ref: `persona:${p.id}`, label: `Persona: ${p.label}`, persona: p.id,
             input: base, checks: [judge('Gives a useful, on-task answer that suits this kind of user')] }, { signal: ctrl.signal })
         } catch (e) {
           if (e.name !== 'AbortError') { setLastProblem(e.message); toast(e.message, 'error', 6000) }
@@ -221,7 +235,7 @@ export default function SimpleTestPanel({ app, user, onMovePhase, onOpenKeys }) 
       for (const item of runs) {
         if (ctrl.signal.aborted) break
         try {
-          await runAppTest(app.id, { source: 'profile', case_ref: `profile:${item.label}`, label: `Speed & cost: ${item.label}`, input: item.input, checks: [] }, { signal: ctrl.signal })
+          await runChecked(app.id, { source: 'profile', case_ref: `profile:${item.label}`, label: `Speed & cost: ${item.label}`, input: item.input, checks: [] }, { signal: ctrl.signal })
         } catch (e) {
           if (e.name === 'AbortError') break
           problems.push(e.message)

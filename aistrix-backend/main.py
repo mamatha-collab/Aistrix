@@ -1093,11 +1093,21 @@ REFUSAL_MESSAGE = "The AI declined to answer this request. Try rephrasing it, or
 TRUNCATED_NOTE = "\n\n_(Answer cut off: it reached the maximum length. Ask for a shorter answer, or split the request.)_"
 
 
+# Claude 4.5/4.6 and the older Claude 4 models still take a temperature.
+# Newer models reject it (Opus 4.7+ any value; Sonnet 5/5.5 and Haiku 5.5 any
+# value but the default), so for them it's left out and the prompt steers.
+_CLAUDE_TAKES_TEMPERATURE = re.compile(r"^claude-(opus|sonnet|haiku)-4(-[56])?(-\d{8})?$|^claude-(opus|sonnet)-4-\d{8}$")
+
+
+def claude_sampling(model: str, temperature: Optional[float]) -> dict:
+    return {"temperature": temperature} if temperature is not None and _CLAUDE_TAKES_TEMPERATURE.match(model or "") else {}
+
+
 async def stream_claude(system: str, user_input: str, model: str, api_key: str = None, max_tokens: int = 4096, temperature: float = 1.0, usage_holder: dict = None):
     client = anthropic.AsyncAnthropic(api_key=api_key or os.getenv("ANTHROPIC_API_KEY"))
     async with client.messages.stream(model=model, max_tokens=max_tokens, system=system,
                                       messages=[{"role": "user", "content": user_input}],
-                                      temperature=temperature) as stream:
+                                      **claude_sampling(model, temperature)) as stream:
         async for text in stream.text_stream:
             yield text
         if usage_holder is not None:
@@ -4526,7 +4536,7 @@ def model_cost_usd(model: Optional[str], usage: Optional[dict]) -> Optional[floa
 
 
 async def judge_output(criteria: str, test_input: str, output: str, api_key: Optional[str]) -> tuple[bool, str]:
-    """AI-graded check: does the answer meet the criteria? (Haiku, temperature 0.)"""
+    """AI-graded check: does the answer meet the criteria? (Haiku)"""
     system = ("You grade one answer from an AI app during testing. Decide strictly whether the ANSWER meets the "
               "CRITERIA for the given INPUT. Reply with ONLY JSON: {\"pass\": true or false, \"reason\": \"one short sentence\"}.")
     prompt = f"CRITERIA:\n{criteria[:2000]}\n\nINPUT:\n{test_input[:6000]}\n\nANSWER:\n{output[:12000]}"
@@ -4588,7 +4598,12 @@ async def evaluate_checks(checks: list[dict], output: str, test_input: str, blue
                     errors.append(f"Check \"{kind}\" has no criteria")
                     continue
                 judged += 1
-                passed, reason = await judge_output(criteria, test_input, output, judge_key)
+                try:
+                    passed, reason = await judge_output(criteria, test_input, output, judge_key)
+                except Exception as e:
+                    # A grader problem fails this check; it must not crash the whole test run.
+                    print(f"Judge error [{type(e).__name__}]: {e}")
+                    passed, reason = False, "the AI grader couldn't check this answer (try again)"
                 if not passed:
                     errors.append(f"{chk.get('desc') or criteria[:80]} — {reason}")
             else:

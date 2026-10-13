@@ -179,4 +179,20 @@ ok("multi-turn test sends earlier turns like the chat screen", sent.startswith("
 ok("bad history rejected", c.post("/v1/apps/app-1/tests/run", headers=auth, json={"input": "x", "case_ref": "y", "history": [{"role": "system", "content": "x"}]}).status_code == 422)
 main.stream_claude = fake_stream
 
+# ── current Claude models reject temperature; a grader failure isn't a crash ─
+ok("temperature only sent to Claude models that accept it",
+   main.claude_sampling("claude-haiku-4-5-20251001", 0) == {"temperature": 0}
+   and main.claude_sampling("claude-sonnet-4-6", 0.3) == {"temperature": 0.3}
+   and all(main.claude_sampling(m, 0) == {} for m in ("claude-haiku-5-5", "claude-sonnet-5-5", "claude-opus-4-7", "claude-opus-5-5", main.JUDGE_MODEL)))
+async def broken_judge(system, user_input, model, api_key=None, usage_holder=None, **kw):
+    if model == main.JUDGE_MODEL:
+        raise main.anthropic.BadRequestError("`temperature` is deprecated for this model.",
+                                             response=NS(status_code=400, headers={}, request=None), body=None)
+    yield "Score: 82."
+main.stream_claude = broken_judge
+r = c.post("/v1/apps/app-1/tests/run", headers=auth, json={"input": "x", "case_ref": "judge-down", "checks": [{"type": "judge", "value": "Polite"}]})
+ok("grader error → this check fails with a reason, the request doesn't crash",
+   r.status_code == 200 and not r.json()["passed"] and "grader couldn't check" in r.json()["errors"][0])
+main.stream_claude = fake_stream
+
 finish()

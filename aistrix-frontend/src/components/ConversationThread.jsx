@@ -15,7 +15,7 @@ function loadVisitorMessages(appId) {
   try { return JSON.parse(sessionStorage.getItem(visitorKey(appId)) || '[]') } catch { return [] }
 }
 
-export default function ConversationThread({ app, user, threadId: initialThreadId, onClose, inline = false }) {
+export default function ConversationThread({ app, user, threadId: initialThreadId, onClose, onRun, inline = false }) {
   const visitor = !user
   const [messages, setMessages] = useState(() => (visitor ? loadVisitorMessages(app.id) : []))
   const [threadId, setThreadId] = useState(initialThreadId || null)
@@ -73,6 +73,23 @@ export default function ConversationThread({ app, user, threadId: initialThreadI
   async function switchThread(tid) {
     setThreadId(tid); setShowThreads(false); setStreaming('')
     loadMessages(tid)
+  }
+
+  // Each reply is a run, like any other app run: the user's run history, the
+  // app's run count and the counter on the page. Extras — a failure here
+  // never turns a delivered reply into an error.
+  async function recordRun(input, output, usage) {
+    onRun?.()
+    if (visitor || !user) return
+    try {
+      await supabase.from('run_history').insert({
+        user_id: user.id, app_id: app.id, app_name: app.name, input, output,
+        input_tokens: usage?.input_tokens ?? null, output_tokens: usage?.output_tokens ?? null,
+      })
+      await supabase.rpc('increment_app_runs', { p_app_id: app.id })
+    } catch (e) {
+      console.warn('Chat run not recorded:', e)
+    }
   }
 
   async function sendMessage() {
@@ -134,6 +151,7 @@ export default function ConversationThread({ app, user, threadId: initialThreadI
       setMessages(prev => [...prev, { id: asstLocalId, role: 'assistant', content: full, usage: finalUsage }])
       setStreaming('')
       await saveAssistantMessage()
+      await recordRun(userMsg, full, finalUsage)
     } catch (e) {
       // A failed or cut-off reply is not saved; the user's message stays so
       // they can simply send again.

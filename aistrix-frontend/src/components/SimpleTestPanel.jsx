@@ -45,6 +45,23 @@ function isBlockingRunProblem(message = '') {
 // Ordinary failed checks don't match these.
 const PROVIDER_REFUSAL = /out of credit|turned this run away|Rate limit reached|API key — check Settings|does not have permission for this model|No \w+ API key is available|runs on your own \w+ API key|service error — try again|Request timed out/i
 
+// Where to add credit for each provider's own account.
+const BILLING_URL = {
+  claude: 'https://console.anthropic.com/settings/billing',
+  openai: 'https://platform.openai.com/settings/organization/billing/overview',
+  gemini: 'https://aistudio.google.com/',
+}
+
+// What the banner says for each kind of refused run, so "out of credit"
+// doesn't show up as "add a key".
+function refusalKind(message = '') {
+  if (/out of credit/i.test(message)) return 'credit'
+  if (/API key — check Settings|does not have permission for this model|No \w+ API key is available|runs on your own \w+ API key/i.test(message)) return 'key'
+  if (/turned this run away/i.test(message)) return 'rate'
+  if (/service error|timed out|could not reach|network/i.test(message)) return 'provider'
+  return 'allowance'
+}
+
 async function runChecked(appId, testCase, opts) {
   const result = await runAppTest(appId, testCase, opts)
   const first = result?.errors?.[0]
@@ -337,20 +354,34 @@ export default function SimpleTestPanel({ app, user, onMovePhase, onOpenKeys }) 
           </button>
         </div>
 
-        {hasBlockingProblem && (
-          <div className="rounded-xl border border-amber-500/25 bg-amber-500/8 px-3 py-3 flex items-start justify-between gap-3">
-            <div>
-              <p className="text-amber-200 text-xs font-semibold">Testing needs a provider key or more free allowance</p>
-              <p className="text-amber-100/70 text-[11px] mt-1">
-                {lastProblem || `Your free allowance is empty for ${providerName}. Add your own key to keep testing without platform limits.`}
-              </p>
+        {hasBlockingProblem && (() => {
+          const kind = lastProblem ? refusalKind(lastProblem) : 'allowance'
+          const company = provider.label || providerName
+          const title = {
+            credit: `Your ${company} account is out of credit`,
+            key: `Testing needs a working ${company} key`,
+            rate: `${company} is rate-limiting your key`,
+            provider: `${company} isn't responding`,
+            allowance: 'Testing needs a provider key or more free allowance',
+          }[kind]
+          const btn = 'shrink-0 text-xs font-semibold px-3 py-1.5 rounded-lg bg-amber-400 text-[#171B33] hover:bg-amber-300 transition-colors'
+          return (
+            <div className="rounded-xl border border-amber-500/25 bg-amber-500/8 px-3 py-3 flex items-start justify-between gap-3">
+              <div>
+                <p className="text-amber-200 text-xs font-semibold">{title}</p>
+                <p className="text-amber-100/70 text-[11px] mt-1">
+                  {lastProblem || `Your free allowance is empty for ${providerName}. Add your own key to keep testing without platform limits.`}
+                  {(kind === 'rate' || kind === 'provider') && ' Wait a minute, then run the tests again.'}
+                </p>
+              </div>
+              {kind === 'credit' && BILLING_URL[provider.id] ? (
+                <a href={BILLING_URL[provider.id]} target="_blank" rel="noopener noreferrer" className={btn}>Open {company} billing ↗</a>
+              ) : (kind === 'key' || kind === 'allowance') ? (
+                <button type="button" onClick={onOpenKeys} className={btn}>Add {providerName} key</button>
+              ) : null}
             </div>
-            <button type="button" onClick={onOpenKeys}
-              className="shrink-0 text-xs font-semibold px-3 py-1.5 rounded-lg bg-amber-400 text-[#171B33] hover:bg-amber-300 transition-colors">
-              Add {providerName} key
-            </button>
-          </div>
-        )}
+          )
+        })()}
 
         {status?.setup_required && (
           <p className="text-xs text-amber-300 bg-amber-500/8 border border-amber-500/20 rounded-xl px-3 py-2">

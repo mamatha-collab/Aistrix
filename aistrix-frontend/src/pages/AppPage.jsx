@@ -139,7 +139,7 @@ export default function AppPage() {
                 : app.app_type === 'api'
                 ? <ApiAppRunner app={app} user={user} inline onRun={() => setApp(prev => ({ ...prev, total_runs: (prev.total_runs || 0) + 1 }))} />
                 : (app.has_memory || app.app_type === 'chatbot')
-                ? <ConversationThread app={app} user={user} inline />
+                ? <ConversationThread app={app} user={user} inline onRun={() => setApp(prev => ({ ...prev, total_runs: (prev.total_runs || 0) + 1 }))} />
                 : <AppRunner app={app} user={user} inline onRun={() => setApp(prev => ({ ...prev, total_runs: (prev.total_runs || 0) + 1 }))} />}
             </Suspense>
           </div>

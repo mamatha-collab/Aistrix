@@ -133,11 +133,15 @@ export function buildTemplateCases(app, blueprint = {}) {
     ]
   }
   if (type === 'data' || type === 'batch') {
-    const csv = 'name,company,score\nAda,Acme,91\nBen,Globex,64\nCara,Initech,78'
+    // The app's own sample data when it has some; otherwise a small, typical
+    // business table. Checks don't name its values, so a developer can swap in
+    // their own data without editing the rules.
+    const csv = (placeholder.includes(',') && placeholder.includes('\n')) ? placeholder
+      : 'date,region,product,units,revenue\n2026-09-01,North,Starter plan,12,1188\n2026-09-01,South,Pro plan,5,1495\n2026-09-02,North,Pro plan,3,897\n2026-09-02,West,Starter plan,8,792'
     return [
       { name: 'Functional: data analysis happy path', category: 'functional', input: csv, rules: [useful, ...blueprintChecks] },
       { name: 'App-specific: small CSV sample', category: 'app_specific', input: csv,
-        rules: [{ type: 'must-contain', value: 'Acme' }, judge('Uses the figures from the data accurately (Acme 91, Globex 64, Initech 78)')] },
+        rules: [judge('Uses the numbers that are in the data accurately and does not invent any')] },
       { name: 'Edge: messy rows', category: 'edge', input: 'lead | notes\nAda | wants demo, budget unknown\nBen | no reply, maybe later',
         rules: [judge('Handles the messy rows without inventing missing values such as budgets')] },
       leak, ...extra,

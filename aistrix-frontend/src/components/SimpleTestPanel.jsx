@@ -74,10 +74,16 @@ export default function SimpleTestPanel({ app, user, onMovePhase, onOpenKeys }) 
 
   // Add the recommended tests for any category the app has no real test for yet.
   async function ensureTests() {
+    // Read the saved tests fresh: the list on screen may not have loaded yet
+    // (Run clicked right away), which would add the same tests again.
+    const { data: saved, error: readError } = await supabase.from('app_test_cases')
+      .select('*').eq('app_id', app.id).eq('user_id', user.id).order('created_at')
+    if (readError) throw new Error(`Couldn't load this app's tests: ${readError.message}`)
+    const cases = saved || []
     const covered = new Set(cases.filter(tc => (tc.rules || []).some(isRealCheck)).map(tc => tc.category || 'functional'))
     const names = new Set(cases.map(tc => tc.name))
     const missing = buildTemplateCases(app, blueprint).filter(tc => !covered.has(tc.category) && !names.has(tc.name))
-    if (!missing.length) return cases
+    if (!missing.length) { setCases(cases); return cases }
     const { data, error } = await supabase.from('app_test_cases')
       .insert(missing.map(tc => ({ app_id: app.id, user_id: user.id, history: [], ...tc }))).select()
     if (error) throw new Error(`Couldn't add the recommended tests: ${error.message}`)

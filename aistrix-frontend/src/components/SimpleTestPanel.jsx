@@ -344,6 +344,7 @@ export default function SimpleTestPanel({ app, user, onMovePhase, onOpenKeys }) 
           </p>
         )}
         {statusError && !status && <p className="text-xs text-amber-300">{statusError}</p>}
+        {!status && !statusError && <p className="text-xs text-slate-500 px-1">Loading test results…</p>}
 
         <div className="space-y-1.5">
           {required.map(req => {
@@ -381,7 +382,7 @@ export default function SimpleTestPanel({ app, user, onMovePhase, onOpenKeys }) 
 
         <div className="flex items-center justify-between gap-3 flex-wrap pt-3 border-t border-white/5">
           <p className={`text-sm font-semibold ${ready ? 'text-emerald-400' : anyRun ? 'text-amber-300' : 'text-slate-400'}`}>
-            {ready ? 'Ready to deploy' : anyRun ? `Not ready yet — ${toFix.length} item${toFix.length === 1 ? '' : 's'} to fix` : 'Run the tests to see if this app is ready.'}
+            {ready ? 'Ready to deploy' : anyRun ? `Not ready yet — ${toFix.length} item${toFix.length === 1 ? '' : 's'} to fix` : status ? 'Run the tests to see if this app is ready.' : ''}
           </p>
           {ready ? (
             <button onClick={() => onMovePhase?.(app.id, 'deploy')}

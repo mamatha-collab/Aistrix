@@ -3480,7 +3480,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
                   : 'bg-white/3 text-slate-500 border-white/5 cursor-not-allowed'
               }`}
             >
-              {publishing ? '…' : '🚀 Publish app'}
+              {publishing ? 'Publishing…' : '🚀 Publish app'}
             </button>
             {!canPublish && (
               <p className="text-[10px] text-amber-400 text-center">Complete all checklist items to publish</p>

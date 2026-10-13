@@ -397,8 +397,18 @@ async def fetch_app_tools(app_id: str) -> list:
 
 
 # ─── App access helpers (service role — server is the source of truth) ───────
+# One shared service-role client: creating one per query cost ~0.5s each
+# (new client + new TLS connection), and a single request makes several.
+_sb_service: Optional[Client] = None
+
+
 def _service_client() -> Optional[Client]:
-    return create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) if SUPABASE_SERVICE_ROLE_KEY else None
+    global _sb_service
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        return None
+    if _sb_service is None:
+        _sb_service = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    return _sb_service
 
 
 async def load_app_row(app_id: Optional[str]) -> Optional[dict]:
@@ -713,7 +723,7 @@ async def check_rate_limit(request: Request, user_jwt: Optional[str], user_id: O
         try:
             # Service role when available so API-key callers (no JWT) are
             # metered the same way as signed-in browser sessions.
-            sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY) if SUPABASE_SERVICE_ROLE_KEY else get_supabase_for_user(user_jwt)
+            sb = _service_client() if SUPABASE_SERVICE_ROLE_KEY else get_supabase_for_user(user_jwt)
             hourly_count, daily_count = await get_usage_counts(sb, user_id)
 
             if hourly_count >= HOURLY_LIMIT:
@@ -1399,7 +1409,7 @@ async def fetch_app_blueprint(app_id: str) -> dict[str, Any]:
     if not (app_id and SUPABASE_SERVICE_ROLE_KEY):
         return {}
     try:
-        sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+        sb = _service_client()
         row = await asyncio.to_thread(
             lambda: sb.table("app_blueprints").select("blueprint").eq("app_id", app_id).maybe_single().execute()
         )
@@ -2989,7 +2999,7 @@ async def get_file_download_url(file_id: str, request: Request, expires_in: int 
         raise HTTPException(status_code=404, detail="File not found")
     if not SUPABASE_SERVICE_ROLE_KEY:
         raise HTTPException(status_code=503, detail="Storage signer is not configured")
-    sb_service = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    sb_service = _service_client()
     signed = await asyncio.to_thread(
         lambda: sb_service.storage.from_(visible.data["bucket"]).create_signed_url(
             visible.data["storage_path"],
@@ -3252,7 +3262,7 @@ async def run_scheduled_workspace(sb_service: Client, schedule: dict):
 
 async def _execute_due_schedules() -> tuple[list, list]:
     """Shared by both schedule-trigger endpoints below (previously duplicated in full)."""
-    sb_service = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    sb_service = _service_client()
     now = datetime.now(timezone.utc)
     due = await db(sb_service.table("flow_schedules").select("*").eq("enabled", True).lte("next_run_at", now.isoformat()))
 
@@ -3472,7 +3482,7 @@ async def _lookup_email(user_id: str) -> Optional[str]:
     if not SUPABASE_SERVICE_ROLE_KEY:
         return None
     try:
-        sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+        sb = _service_client()
         result = await asyncio.to_thread(
             lambda: sb.auth.admin.get_user_by_id(user_id)
         )
@@ -3569,7 +3579,7 @@ async def _upsert_entitlement(
     if not SUPABASE_SERVICE_ROLE_KEY:
         print("WARN: SUPABASE_SERVICE_ROLE_KEY not set — cannot upsert entitlement")
         return
-    sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    sb = _service_client()
     row = {
         "app_id": app_id,
         "user_id": user_id,
@@ -3707,7 +3717,7 @@ async def stripe_webhook(request: Request):
             # Try to look up via customer in app_entitlements
             customer_id = sub.get("customer")
             if customer_id and SUPABASE_SERVICE_ROLE_KEY:
-                sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+                sb = _service_client()
                 row = await asyncio.to_thread(
                     lambda: sb.table("app_entitlements")
                         .select("app_id, user_id")
@@ -3736,7 +3746,7 @@ async def stripe_webhook(request: Request):
     elif event_type == "customer.subscription.deleted":
         sub_id = obj.get("id")
         if sub_id and SUPABASE_SERVICE_ROLE_KEY:
-            sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+            sb = _service_client()
             rows = await asyncio.to_thread(
                 lambda: sb.table("app_entitlements")
                     .select("app_id, user_id")
@@ -3822,7 +3832,7 @@ async def stripe_connect_onboard(request: Request):
 
     if not SUPABASE_SERVICE_ROLE_KEY:
         raise HTTPException(status_code=503, detail="Service role key not configured")
-    sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    sb = _service_client()
 
     # Check if dev already has a Connect account
     dev_row = await asyncio.to_thread(
@@ -3867,7 +3877,7 @@ async def stripe_connect_status(request: Request):
 
     if not SUPABASE_SERVICE_ROLE_KEY:
         return {"connected": False}
-    sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    sb = _service_client()
 
     dev_row = await asyncio.to_thread(
         lambda: sb.table("developer_profiles")
@@ -3903,7 +3913,7 @@ async def stripe_earnings(request: Request):
 
     if not SUPABASE_SERVICE_ROLE_KEY:
         raise HTTPException(status_code=503, detail="Service role key not configured")
-    sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    sb = _service_client()
 
     purchases = await asyncio.to_thread(
         lambda: sb.table("purchases")
@@ -4007,7 +4017,7 @@ async def github_oauth_callback(code: str, state: str, request: Request):
 
     # Store token server-side in developer_settings (service-role only)
     if SUPABASE_SERVICE_ROLE_KEY:
-        sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+        sb = _service_client()
         existing = await asyncio.to_thread(
             lambda: sb.table("developer_settings")
                 .select("settings")
@@ -4040,7 +4050,7 @@ async def list_secrets(app_id: str, request: Request):
     user_id = await require_verified_user(request)
     if not SUPABASE_SERVICE_ROLE_KEY:
         return {"secrets": []}
-    sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    sb = _service_client()
     rows = await asyncio.to_thread(
         lambda: sb.table("app_secrets")
             .select("key, created_at, updated_at")
@@ -4065,7 +4075,7 @@ async def upsert_secret(app_id: str, body: SecretUpsert, request: Request):
         raise HTTPException(status_code=400, detail="Key must contain only letters, numbers, and underscores")
     encrypted = _encrypt(body.value)
     now = datetime.now(timezone.utc).isoformat()
-    sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    sb = _service_client()
     await asyncio.to_thread(
         lambda: sb.table("app_secrets").upsert({
             "app_id":           app_id,
@@ -4080,7 +4090,7 @@ async def upsert_secret(app_id: str, body: SecretUpsert, request: Request):
 @app.delete("/apps/{app_id}/secrets/{key}")
 async def delete_secret(app_id: str, key: str, request: Request):
     user_id = await require_verified_user(request)
-    sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    sb = _service_client()
     await asyncio.to_thread(
         lambda: sb.table("app_secrets")
             .delete().eq("app_id", app_id).eq("user_id", user_id).eq("key", key.upper())
@@ -4092,7 +4102,7 @@ async def _load_app_secrets(app_id: str, user_id: str) -> dict[str, str]:
     """Load decrypted secrets for injection into a run — server-side only."""
     if not _fernet or not SUPABASE_SERVICE_ROLE_KEY:
         return {}
-    sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    sb = _service_client()
     rows = await asyncio.to_thread(
         lambda: sb.table("app_secrets")
             .select("key, encrypted_value")
@@ -4380,7 +4390,7 @@ async def trigger_via_webhook(token: str, request: Request):
     if not SUPABASE_SERVICE_ROLE_KEY:
         raise HTTPException(status_code=503, detail="Server not configured for webhook triggers")
 
-    sb_service = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    sb_service = _service_client()
     result = await db(sb_service.table("flows").select("*").eq("webhook_token", token).maybe_single())
     flow = result.data
     if not flow:
@@ -4438,7 +4448,7 @@ async def publish_app(app_id: str, request: Request):
     user_id = await require_verified_user(request)
     if not SUPABASE_SERVICE_ROLE_KEY:
         raise HTTPException(status_code=503, detail="Service not configured")
-    sb = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    sb = _service_client()
     app_row = await asyncio.to_thread(
         lambda: sb.table("apps")
             .select("id, name, system_prompt, created_by")

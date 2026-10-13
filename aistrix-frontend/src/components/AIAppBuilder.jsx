@@ -10,6 +10,7 @@ import { saveStarterBlueprint } from '../utils/appContracts'
 import { TypeGuideSteps } from './TypeBuilderGuide'
 import { DEFAULT_PROVIDERS, PROVIDER_STYLE, defaultAppProvider, loadProviders } from '../lib/providers'
 import { publishApp } from '../lib/release'
+import OutputRenderer from './OutputRenderer'
 
 const QUESTIONS_SYSTEM_PROMPT = `You are an expert AI app architect on a platform called Aistrix.
 When a developer describes an app idea, generate exactly 6-8 precise clarifying questions.
@@ -61,7 +62,7 @@ Return ONLY valid JSON — no markdown, no explanation:
   "audience": "Who uses it day to day, from the answers (e.g. 'Sales development reps at B2B software companies')",
   "missing_data_fallback": "One sentence: what the app does when the input lacks details it needs, from the answers",
   "output_sections": ["Only for markdown/key_value/table output: the sections, fields or columns every answer must contain, exactly as the system_prompt names them"],
-  "notes": "Brief note to developer about limitations or next steps (e.g. file upload coming soon)"
+  "notes": "One or two plain-language sentences for the developer about limitations or next steps. Never use internal names such as app_type, native, structured, key_value, output_type, output_fields or form_schema."
 }
 
 Rules:
@@ -76,6 +77,23 @@ Rules:
 - Make the system_prompt professional and detailed — this is the heart of the app`
 
 const APP_TYPES = ['prompt', 'native', 'structured', 'data', 'chatbot']
+
+// The names developers see in the type picker.
+const TYPE_NAMES = { prompt: 'Prompt App', native: 'Form App', structured: 'Structured Output', data: 'Data App', chatbot: 'Chatbot' }
+
+// The builder's note is for developers, not engineers: translate any internal
+// names that slip through ('native', key_value, output_fields…).
+const PLAIN_TERMS = {
+  native: 'Form app', prompt: 'Prompt app', structured: 'Structured Output', data: 'Data app', chatbot: 'Chatbot',
+  key_value: 'Label: value', 'key-value': 'Label: value', output_type: 'output format', output_fields: 'output fields',
+  form_schema: 'form fields', app_type: 'app type', json: 'JSON', markdown: 'formatted text',
+}
+function plainNote(note) {
+  return String(note || '')
+    .replace(/['"`‘’“”]([a-z_-]+)['"`‘’“”]/gi, (m, w) => PLAIN_TERMS[w.toLowerCase()] || m)
+    .replace(/\b(app_type|output_type|output_fields|form_schema|key_value)\b/g, w => PLAIN_TERMS[w])
+    .trim()
+}
 const OUTPUT_TYPES = { json: 'json', table: 'table', cards: 'cards', chart: 'chart', key_value: 'key_value', 'key-value': 'key_value', markdown: 'markdown' }
 const FIELD_TYPES = ['text', 'textarea', 'number', 'select', 'date']
 const OUTPUT_FIELD_TYPES = ['string', 'number', 'boolean', 'enum', 'string_array', 'number_array', 'object']
@@ -144,7 +162,7 @@ function normaliseConfig(raw) {
     greeting: appType === 'chatbot' ? String(c.greeting || '').trim().slice(0, 1000) : '',
     tone: appType === 'chatbot' && TONES.includes(c.tone) ? c.tone : null,
     tools,
-    notes: c.notes || '',
+    notes: plainNote(c.notes),
     // What Design asks for, so the app doesn't land there half-empty.
     known: {
       business_problem: String(c.business_problem || '').trim().slice(0, 500),
@@ -178,15 +196,21 @@ function QuestionCard({ q, answer, onAnswer }) {
 
 function TestRunPanel({ config }) {
   const [input, setInput] = useState('')
+  const [formValues, setFormValues] = useState({})
   const [result, setResult] = useState('')
   const [running, setRunning] = useState(false)
+  // Form apps are tried with their form, sent the way the live app sends it.
+  const fields = config.app_type === 'native' ? (config.form_schema || []) : []
+  const formInput = fields.map(f => formValues[f.id]?.trim() ? `${f.label}: ${formValues[f.id].trim()}` : null).filter(Boolean).join('\n')
+  const ready = fields.length ? !!formInput : !!input.trim()
 
   async function run() {
-    if (!input.trim()) return
+    if (!ready) return
     setRunning(true); setResult('')
     try {
       await streamRun({
-        input,
+        input: fields.length ? formInput : input,
+        ...(fields.length ? { field_values: Object.fromEntries(fields.map(f => [f.label, formValues[f.id] ?? ''])) } : {}),
         system_prompt: config.system_prompt,
         ai_provider: config.ai_provider || 'claude',
         ai_model: config.ai_model || 'claude-sonnet-5-5',
@@ -203,23 +227,51 @@ function TestRunPanel({ config }) {
   return (
     <div className="border border-[#6C5CE7]/20 rounded-xl p-3 space-y-2 bg-[#0F1225]/60">
       <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide">Test Run</p>
-      <div className="flex gap-2">
-        <input
-          value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && run()}
-          placeholder="Type a test input and press Enter…"
-          className="flex-1 bg-[#1F2444] border border-white/10 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/50 transition-colors"
-        />
-        <button onClick={run} disabled={running || !input.trim()}
-          className="px-3 py-2 rounded-lg text-xs font-medium bg-[#6C5CE7]/20 hover:bg-[#6C5CE7]/30 text-[#A29BFE] border border-[#6C5CE7]/25 disabled:opacity-40 transition-colors shrink-0">
-          {running ? '⟳' : '▶ Run'}
-        </button>
-      </div>
+      {fields.length ? (
+        <div className="space-y-2">
+          {fields.map(f => {
+            const cls = 'w-full bg-[#1F2444] border border-white/10 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/50 transition-colors'
+            const set = e => setFormValues(v => ({ ...v, [f.id]: e.target.value }))
+            return (
+              <div key={f.id}>
+                <label className="text-[11px] text-slate-400 block mb-1">{f.label}{f.required && <span className="text-red-400"> *</span>}</label>
+                {f.type === 'textarea' ? <textarea rows={2} className={`${cls} resize-none`} placeholder={f.placeholder} value={formValues[f.id] || ''} onChange={set} />
+                  : f.type === 'select' ? (
+                    <select className={cls} value={formValues[f.id] || ''} onChange={set}>
+                      <option value="">Select...</option>
+                      {String(f.options || '').split(',').map(o => o.trim()).filter(Boolean).map(o => <option key={o} value={o}>{o}</option>)}
+                    </select>
+                  ) : <input type={f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : 'text'} className={cls} placeholder={f.placeholder} value={formValues[f.id] || ''} onChange={set} />}
+              </div>
+            )
+          })}
+          <button onClick={run} disabled={running || !ready}
+            className="w-full px-3 py-2 rounded-lg text-xs font-medium bg-[#6C5CE7]/20 hover:bg-[#6C5CE7]/30 text-[#A29BFE] border border-[#6C5CE7]/25 disabled:opacity-40 transition-colors">
+            {running ? '⟳ Running…' : '▶ Run'}
+          </button>
+        </div>
+      ) : (
+        <div className="flex gap-2">
+          <input
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && run()}
+            placeholder="Type a test input and press Enter…"
+            className="flex-1 bg-[#1F2444] border border-white/10 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7]/50 transition-colors"
+          />
+          <button onClick={run} disabled={running || !ready}
+            className="px-3 py-2 rounded-lg text-xs font-medium bg-[#6C5CE7]/20 hover:bg-[#6C5CE7]/30 text-[#A29BFE] border border-[#6C5CE7]/25 disabled:opacity-40 transition-colors shrink-0">
+            {running ? '⟳' : '▶ Run'}
+          </button>
+        </div>
+      )}
       {result && (
         <div className="space-y-1.5">
-          <div className="bg-[#0F1225] rounded-lg p-3 text-xs text-slate-300 leading-relaxed max-h-36 overflow-y-auto whitespace-pre-wrap">
-            {result}
+          {/* The same output view the live app uses (fields, table, JSON, text). */}
+          <div className="bg-[#0F1225] rounded-lg p-3 text-xs text-slate-300 leading-relaxed max-h-72 overflow-y-auto">
+            {result.startsWith('Test run failed:')
+              ? <p className="whitespace-pre-wrap">{result}</p>
+              : <OutputRenderer result={result} outputType={config.output_type || 'markdown'} loading={running} title={config.name} />}
           </div>
           <p className="text-[10px] text-slate-500 italic">Not saved — this is a sample run only.</p>
         </div>
@@ -239,7 +291,7 @@ function AppPreview({ config, onSaveDraft, onPublish, onBack, saving }) {
           <div>
             <p className="text-white font-semibold text-lg">{config.name}</p>
             <div className="flex items-center gap-2 mt-0.5">
-              <span className="text-[10px] bg-[#6C5CE7]/20 text-[#6C5CE7] px-2 py-0.5 rounded-full capitalize">{config.app_type} app</span>
+              <span className="text-[10px] bg-[#6C5CE7]/20 text-[#6C5CE7] px-2 py-0.5 rounded-full">{TYPE_NAMES[config.app_type] || 'AI app'}</span>
               <span className="text-[10px] text-slate-500">{(PROVIDER_STYLE[config.ai_provider] || PROVIDER_STYLE.claude).icon} {(PROVIDER_STYLE[config.ai_provider] || PROVIDER_STYLE.claude).name}</span>
             </div>
           </div>

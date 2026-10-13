@@ -1353,11 +1353,12 @@ def _validate_schema_value(value: Any, fields: list[dict[str, Any]], path: str =
         if not name:
             continue
         label = f"{path}.{name}" if path else str(name)
-        present = name in value and value[name] not in (None, "")
-        if not present:
+        if name not in value or value[name] == "":
             if field.get("required") is not False:
                 errors.append(f'"{label}" is required')
             continue
+        if value[name] is None:
+            continue   # present but unknown ("never guess" extraction) is a valid answer
 
         val = value[name]
         ftype = field.get("type") or "string"

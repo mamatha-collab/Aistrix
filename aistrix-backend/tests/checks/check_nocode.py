@@ -155,4 +155,10 @@ for finish_reason, expected in (("length", "max_tokens"), ("content_filter", "re
     text = _asyncio.run(_drain(REAL_STREAM_OPENAI("s", "u", "m", usage_holder=holder)))
     ok(f"stream_openai maps finish_reason={finish_reason} → {expected}", text == "hi" and holder.get("_stop") == expected and holder["output_tokens"] == 4)
 
+# ── output contract: a required field may be null ("not in the text"), not missing ─
+F = [{"field": "vendor", "type": "string"}, {"field": "total", "type": "number"}]
+ok("contract: null for a required field is a valid 'unknown'", main._validate_schema_value({"vendor": None, "total": 12.5}, F) == [])
+ok("contract: a missing required field still fails", main._validate_schema_value({"total": 12.5}, F) == ['"vendor" is required'])
+ok("contract: wrong type still fails", main._validate_schema_value({"vendor": "Acme", "total": "12"}, F) == ['"total" must be a number'])
+
 finish()

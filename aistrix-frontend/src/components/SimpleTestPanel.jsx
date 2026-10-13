@@ -24,6 +24,13 @@ const APP_SPECIFIC = {
 }
 const PROFILE_RUNS = PROFILE_INPUTS.slice(0, 2)   // enough for a speed & cost reading, kept cheap
 
+// Speed & cost is measured on the app's own normal test input (twice), so
+// apps with a strict output format aren't timed on text they can't handle.
+function profileRuns(cases) {
+  const input = cases.find(tc => (tc.category || 'functional') === 'functional' && tc.input)?.input
+  return input ? [{ label: 'Typical input', input }, { label: 'Typical input (again)', input }] : PROFILE_RUNS
+}
+
 function labelFor(req, app) {
   return req.id === 'app_specific' ? (APP_SPECIFIC[appTypeOf(app)] || 'Does what this app type should') : (LABELS[req.id] || req.label)
 }
@@ -133,7 +140,7 @@ export default function SimpleTestPanel({ app, user, onMovePhase, onOpenKeys }) 
         }
         setProgress({ done: ++done, total })
       }
-      for (const item of PROFILE_RUNS) {
+      for (const item of profileRuns(list)) {
         if (ctrl.signal.aborted) break
         try {
           await runAppTest(app.id, { source: 'profile', case_ref: `profile:${item.label}`, label: `Speed & cost: ${item.label}`, input: item.input, checks: [] }, { signal: ctrl.signal })
@@ -208,9 +215,10 @@ export default function SimpleTestPanel({ app, user, onMovePhase, onOpenKeys }) 
     setLastProblem('')
     const problems = []
     let done = 0
-    setProgress({ done, total: PROFILE_RUNS.length })
+    const runs = profileRuns(cases)
+    setProgress({ done, total: runs.length })
     try {
-      for (const item of PROFILE_RUNS) {
+      for (const item of runs) {
         if (ctrl.signal.aborted) break
         try {
           await runAppTest(app.id, { source: 'profile', case_ref: `profile:${item.label}`, label: `Speed & cost: ${item.label}`, input: item.input, checks: [] }, { signal: ctrl.signal })
@@ -219,7 +227,7 @@ export default function SimpleTestPanel({ app, user, onMovePhase, onOpenKeys }) 
           problems.push(e.message)
           if (isBlockingRunProblem(e.message)) break
         }
-        setProgress({ done: ++done, total: PROFILE_RUNS.length })
+        setProgress({ done: ++done, total: runs.length })
       }
     } finally {
       await load()

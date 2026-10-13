@@ -66,10 +66,26 @@ export function blueprintSectionChecks(blueprint) {
   return String(sections).split(',').map(x => x.trim()).filter(Boolean).map(section => ({ type: 'section_present', section, value: section }))
 }
 
+// An input hint like "Paste the invoice text…" tells users what to do; it
+// isn't sample data, so tests shouldn't send it to the app.
+const INSTRUCTION_HINT = /^(paste|enter|type|describe|upload|ask|write|add|drop|select|choose|provide|insert|tell)\b/i
+
+function usableHint(text) {
+  const hint = String(text || '').replace(/^\s*(e\.?g\.?|eg|example)\s*[:,]?\s*/i, '').trim()
+  return hint && !INSTRUCTION_HINT.test(hint) ? hint : ''
+}
+
+// Sample text that contains a value for each output field (structured apps).
+function sampleFromOutputFields(fields) {
+  const human = f => String(f.field || f.name).replace(/[_-]+/g, ' ').replace(/^\w/, c => c.toUpperCase())
+  const value = f => f.type === 'number' ? '1250.50' : f.type === 'boolean' ? 'yes' : f.type?.endsWith('_array') ? 'first, second' : `Sample ${human(f).toLowerCase()}`
+  return fields.length ? fields.map(f => `${human(f)}: ${value(f)}`).join('\n') : ''
+}
+
 export function buildTemplateCases(app, blueprint = {}) {
   const type = appTypeOf(app)
   const name = app?.name || 'this app'
-  const placeholder = app?.sample_input || app?.input_placeholder || ''
+  const placeholder = usableHint(app?.sample_input) || usableHint(app?.input_placeholder)
   const baseInput = placeholder || `Help me use ${name} for a realistic business task.`
   const schemaFields = outputSchemaFields(blueprint)
   const jsonCheck = schemaFields.length
@@ -107,7 +123,7 @@ export function buildTemplateCases(app, blueprint = {}) {
     ]
   }
   if (type === 'structured') {
-    const sample = baseInput || 'Extract name, score, and label from: Acme scored 91 and is high priority.'
+    const sample = placeholder || sampleFromOutputFields(schemaFields) || 'Extract name, score, and label from: Acme scored 91 and is high priority.'
     return [
       { name: 'Functional: structured extraction happy path', category: 'functional', input: sample, rules: [judge('Extracts the values that are actually in the input')] },
       { name: 'Contract: valid JSON output', category: 'contract', input: sample, rules: jsonCheck },

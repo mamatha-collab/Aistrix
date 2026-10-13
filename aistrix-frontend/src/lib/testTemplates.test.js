@@ -55,4 +55,12 @@ describe('app templates', () => {
     expect(edge.input).toContain('Company:\n\n')
     expect(edge.input).toContain('Budget:\nSample Budget')
   })
+  it("structured tests don't send an instruction hint as data; they build a sample from the output fields", () => {
+    const st = { ...app('structured'), input_placeholder: 'Paste messy text to extract structured fields...' }
+    const bp = { output_schema: { fields: [{ field: 'invoice_number', type: 'string' }, { field: 'total', type: 'number' }] } }
+    const happy = buildTemplateCases(st, bp)[0]
+    expect(happy.input).not.toMatch(/^Paste/)
+    expect(happy.input).toContain('Invoice number: Sample invoice number')
+    expect(happy.input).toContain('Total: 1250.50')
+  })
 })

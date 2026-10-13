@@ -4922,6 +4922,14 @@ def describe_changes(previous: Optional[dict], current: dict) -> str:
     return f"{text[0].upper()}{text[1:]} changed"
 
 
+def change_note_text(note) -> str:
+    """The developer's reason for changing a published app, as one line."""
+    if not isinstance(note, dict):
+        return ""
+    reason, text = str(note.get("reason") or "").strip(), str(note.get("note") or "").strip()
+    return f"{reason}: {text}" if reason and text else reason or text
+
+
 async def _save_published_version(sb, app_row: dict, state: dict, tests: dict, user_id: Optional[str]) -> Optional[int]:
     """Record a publish as the app's next version. Returns its number (None if
     the versions table isn't migrated yet — publishing still succeeds)."""
@@ -4932,7 +4940,9 @@ async def _save_published_version(sb, app_row: dict, state: dict, tests: dict, u
         await db(sb.table("app_versions").insert({
             "app_id": app_row["id"], "user_id": user_id, "version_num": num, "semver": f"v{num}",
             "version_data": state,
-            "changelog": describe_changes(app_row.get("prod_snapshot") if isinstance(app_row.get("prod_snapshot"), dict) else None, state),
+            "changelog": " · ".join(x for x in (
+                describe_changes(app_row.get("prod_snapshot") if isinstance(app_row.get("prod_snapshot"), dict) else None, state),
+                change_note_text(app_row.get("change_note"))) if x),
             "tests": {"passed": tests.get("required_passed"), "total": tests.get("required_total")},
         }))
         return num
@@ -5023,6 +5033,8 @@ async def promote_app(app_id: str, request: Request):
     update = {"prod_snapshot": state, "promoted_at": now, "is_published": True, "has_draft_changes": False}
     if version is not None:
         update["live_version"] = version
+    if app_row.get("change_note"):
+        update["change_note"] = None   # now part of this version's history
     await db(sb.table("apps").update(update).eq("id", app_id))
     try:
         await db(sb.table("app_blueprints").update({"blueprint_prod": state["blueprint"]}).eq("app_id", app_id))

@@ -154,6 +154,12 @@ APP["system_prompt"] = "BETTER PROMPT"; APP["ai_model"] = "claude-haiku-5-5"; UP
 r2 = c.post("/v1/apps/app-1/promote", headers=owner).json()
 ok("next publish is v2 and says what changed", r2["version"] == 2 and TABLES["app_versions"][1]["changelog"] == "Prompt and model changed")
 APP["prod_snapshot"] = next(p for t, p in UPDATES if t == "apps")["prod_snapshot"]; APP["live_version"] = 2
+APP["system_prompt"] = "SHORTER PROMPT"; APP["change_note"] = {"reason": "Bug fix", "note": "Replies were too long"}; UPDATES.clear()
+r3 = c.post("/v1/apps/app-1/promote", headers=owner).json()
+v3_patch = next(p for t, p in UPDATES if t == "apps")
+ok("the reason given when moving back goes into the version's history, then is cleared",
+   TABLES["app_versions"][2]["changelog"] == "Prompt changed · Bug fix: Replies were too long" and v3_patch["change_note"] is None)
+APP.pop("change_note"); TABLES["app_versions"].pop(); APP["system_prompt"] = "BETTER PROMPT"
 lst = c.get("/v1/apps/app-1/versions", headers=owner).json()
 ok("history lists versions newest first, marking the live one",
    [v["version_num"] for v in lst["versions"]] == [2, 1] and lst["versions"][0]["is_live"] and not lst["versions"][1]["is_live"])

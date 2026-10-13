@@ -3036,6 +3036,87 @@ function TestTab({ apps, allApps = apps, user, selectedAppId, phaseByAppId = {},
   )
 }
 
+// ─── Move back from Deploy ───────────────────────────────────────────────────
+// Asked whenever an app in Deploy goes back to Test or Design: says what
+// happens to the live version and records why it's changing (written into the
+// next published version's history).
+const CHANGE_REASONS = ['Bug fix', 'Improve answers', 'New feature', 'User feedback', 'Other']
+
+function MoveBackModal({ app, phase, onCancel, onConfirm }) {
+  const previous = app.change_note || {}
+  const [reason, setReason] = useState(previous.reason || '')
+  const [note, setNote] = useState(previous.note || '')
+  const [saving, setSaving] = useState(false)
+  const target = phase === 'test' ? 'Test' : 'Design'
+  const live = app.is_published
+  const ready = reason && note.trim().length >= 10
+
+  async function confirm() {
+    setSaving(true)
+    try { await onConfirm({ reason, note: note.trim() }) } finally { setSaving(false) }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4">
+      <div className="bg-[#141828] border border-white/10 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-white/8">
+          <div>
+            <p className="text-white font-semibold text-sm">Move back to {target}?</p>
+            <p className="text-slate-400 text-xs mt-0.5">{app.emoji} {app.name}</p>
+          </div>
+          <button onClick={onCancel} aria-label="Close" className="text-slate-500 hover:text-white text-lg leading-none px-1">×</button>
+        </div>
+
+        <div className="px-5 py-4 space-y-4 max-h-[70vh] overflow-y-auto">
+          <div className="bg-amber-500/8 border border-amber-500/20 rounded-xl px-4 py-3">
+            {live ? (
+              <>
+                <p className="text-amber-200 text-sm font-semibold">{app.live_version ? `v${app.live_version}` : 'The live version'} stays live</p>
+                <p className="text-slate-300 text-xs mt-1 leading-relaxed">
+                  End users keep using it while you work. Your changes are a draft: they must pass the tests again before you can publish them as a new version.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="text-amber-200 text-sm font-semibold">This app isn't live</p>
+                <p className="text-slate-300 text-xs mt-1 leading-relaxed">Nothing changes for end users. The app will need to pass its tests again before it can be published.</p>
+              </>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-[10px] text-slate-400 uppercase font-semibold tracking-wide">Why are you changing it?</p>
+            <div className="flex flex-wrap gap-2">
+              {CHANGE_REASONS.map(r => (
+                <button key={r} onClick={() => setReason(r)}
+                  className={`text-[11px] px-3 py-1.5 rounded-lg border transition-colors ${reason === r ? 'bg-[#6C5CE7]/15 border-[#6C5CE7]/40 text-[#A29BFE]' : 'bg-white/3 border-white/8 text-slate-400 hover:text-white hover:border-white/20'}`}>
+                  {r}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-[10px] text-slate-400 uppercase font-semibold tracking-wide">What will change?</p>
+            <textarea value={note} onChange={e => setNote(e.target.value)} rows={3} maxLength={500}
+              placeholder="e.g. Replies are too long. Shorten them and always include the order number."
+              className="w-full bg-[#0E1424] border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder:text-slate-600 focus:outline-none focus:border-[#6C5CE7]/50 resize-none" />
+            <p className="text-[11px] text-slate-500">Saved with the draft and added to the next version's history.</p>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between px-5 py-3 border-t border-white/8">
+          <button onClick={onCancel} className="text-xs text-slate-500 hover:text-white transition-colors">Cancel</button>
+          <button onClick={confirm} disabled={!ready || saving}
+            className="text-xs font-semibold px-4 py-2 rounded-xl bg-[#6C5CE7] hover:bg-[#7C6CFF] disabled:opacity-40 text-white transition-colors">
+            {saving ? 'Moving…' : `Move to ${target}`}
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Promote Modal ───────────────────────────────────────────────────────────
 
 function PromoteModal({ app, onClose, onPromoted }) {
@@ -6215,6 +6296,8 @@ export default function DevStudioPage({
   const [loading, setLoading] = useState(true)
   const [showHelp, setShowHelp] = useState(false)
   const [phaseByAppId, setPhaseByAppId] = useState({})  // explicit phase overrides per app
+  const [moveBack, setMoveBack] = useState(null)        // { app, phase } while asking why a deployed app goes back
+  const toast = useToast()
 
   useEffect(() => {
     if (!createdApp) return
@@ -6298,9 +6381,14 @@ export default function DevStudioPage({
     setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))
   }
 
-  async function moveAppPhase(appId, newPhase) {
+  async function moveAppPhase(appId, newPhase, { confirmed = false } = {}) {
     const phase = normalizeDevPhase(newPhase) || 'design'
     const app = apps.find(a => a.id === appId)
+    // Leaving Deploy: warn about the live version and ask why (MoveBackModal).
+    if (!confirmed && phase !== 'deploy' && app && getDevPhase(app, phaseByAppId) === 'deploy') {
+      setMoveBack({ app, phase })
+      return
+    }
     setPhaseByAppId(prev => ({ ...prev, [appId]: phase }))
     // A live app stays live while it's changed: end users keep running the
     // published version until a new one passes its tests and is published.
@@ -6316,6 +6404,15 @@ export default function DevStudioPage({
     if (phase === 'deploy') { setActiveAppId(appId); setTab('deploy') }
     else if (phase === 'test') { setActiveAppId(appId); setTab('test') }
     else { setActiveAppId(appId); setTab('design') }
+  }
+
+  async function confirmMoveBack(note) {
+    const { app, phase } = moveBack
+    const { error } = await supabase.from('apps').update({ change_note: note }).eq('id', app.id)
+    if (error) { toast(error.message, 'error'); return }
+    updateAppInState({ ...app, change_note: note })
+    setMoveBack(null)
+    await moveAppPhase(app.id, phase, { confirmed: true })
   }
 
   function returnToDesignForPublishFix(appId, reason) {
@@ -6350,6 +6447,7 @@ export default function DevStudioPage({
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
+      {moveBack && <MoveBackModal app={moveBack.app} phase={moveBack.phase} onCancel={() => setMoveBack(null)} onConfirm={confirmMoveBack} />}
 
       {/* ── Sticky top bar: tab ribbon + guide + tab note folder tab ── */}
       <div className="sticky top-0 z-30 bg-[#09101F] border-b border-white/5">

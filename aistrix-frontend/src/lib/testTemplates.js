@@ -28,8 +28,8 @@ export function appTypeLabel(app) {
 export function sampleForField(field) {
   const label = field?.label || field?.description || field?.field || field?.name || 'value'
   const type = field?.type || 'text'
-  const hint = field?.placeholder || field?.example
-  if (hint && String(hint).trim()) return String(hint).trim()
+  const hint = String(field?.placeholder || field?.example || '').replace(/^\s*(e\.?g\.?|eg|example)\s*[:,]?\s*/i, '').replace(/\.{3}$|…$/, '').trim()
+  if (hint) return hint
   if (type === 'number') return '42'
   if (type === 'date') return new Date().toISOString().slice(0, 10)
   if (type === 'select' && field.options) return String(field.options).split(',')[0]?.trim() || 'Option A'

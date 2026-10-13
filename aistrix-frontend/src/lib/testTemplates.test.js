@@ -47,7 +47,7 @@ describe('app templates', () => {
   })
   it('form tests use field hints and leave one required field empty for the edge case', () => {
     const form = { ...app('native'), form_schema: [
-      { label: 'Company', type: 'text', required: true, placeholder: 'Northwind Logistics' },
+      { label: 'Company', type: 'text', required: true, placeholder: 'e.g. Northwind Logistics' },
       { label: 'Budget', type: 'text', required: false } ] }
     const cases = buildTemplateCases(form, {})
     expect(cases[0].input).toContain('Company:\nNorthwind Logistics')

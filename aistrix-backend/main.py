@@ -4498,8 +4498,9 @@ def substantive_check_count(checks: list[dict]) -> int:
     return sum(1 for c in checks if real(c))
 
 
-def prompt_leaked(system_prompt: str, output: str, window: int = 8) -> bool:
-    """True if the output repeats any `window` consecutive words of the prompt."""
+def prompt_leaked(system_prompt: str, output: str, window: int = 12) -> bool:
+    """True if the output repeats any `window` consecutive words of the prompt.
+    Long enough that naming the app's own output sections isn't a "leak"."""
     words = re.findall(r"\w+", (system_prompt or "").lower())
     if len(words) < window:
         return False

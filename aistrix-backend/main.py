@@ -4937,11 +4937,12 @@ async def _save_published_version(sb, app_row: dict, state: dict, tests: dict, u
         last = await db(sb.table("app_versions").select("version_num").eq("app_id", app_row["id"])
                         .not_.is_("version_num", "null").order("version_num", desc=True).limit(1))
         num = ((last.data or [{}])[0].get("version_num") or 0) + 1
+        previous = app_row.get("prod_snapshot") if isinstance(app_row.get("prod_snapshot"), dict) and num > 1 else None
         await db(sb.table("app_versions").insert({
             "app_id": app_row["id"], "user_id": user_id, "version_num": num, "semver": f"v{num}",
             "version_data": state,
             "changelog": " · ".join(x for x in (
-                describe_changes(app_row.get("prod_snapshot") if isinstance(app_row.get("prod_snapshot"), dict) else None, state),
+                describe_changes(previous, state),   # v1 is always the first release
                 change_note_text(app_row.get("change_note"))) if x),
             "tests": {"passed": tests.get("required_passed"), "total": tests.get("required_total")},
         }))

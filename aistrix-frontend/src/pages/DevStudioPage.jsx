@@ -3119,30 +3119,39 @@ function MoveBackModal({ app, phase, onCancel, onConfirm }) {
 
 // ─── Promote Modal ───────────────────────────────────────────────────────────
 
+// ~120 characters of `value` starting just before where it differs from
+// `other`, so a change late in a long prompt is visible.
+function diffSnippet(value, other) {
+  const a = typeof value === 'object' && value !== null ? JSON.stringify(value) : String(value ?? '')
+  const b = typeof other === 'object' && other !== null ? JSON.stringify(other) : String(other ?? '')
+  let i = 0
+  while (i < a.length && i < b.length && a[i] === b[i]) i++
+  const start = Math.max(0, i - 40)
+  return `${start > 0 ? '…' : ''}${a.slice(start, start + 120)}${a.length > start + 120 ? '…' : ''}`
+}
+
+// What end users run, compared field by field when promoting (see backend DRAFT_FIELDS).
+const PROMOTE_FIELDS = ['system_prompt', 'ai_provider', 'ai_model', 'output_type', 'form_schema', 'tone', 'greeting', 'input_placeholder', 'app_type', 'has_memory']
+
 function PromoteModal({ app, onClose, onPromoted }) {
   const toast = useToast()
   const [step, setStep] = useState('diff')   // 'diff' | 'confirm'
   const [promoting, setPromoting] = useState(false)
   const [bpDiff, setBpDiff] = useState(null)
 
+  // The draft vs the live version end users run (apps.prod_snapshot): the
+  // same fields the server compares, so a prompt or model change shows up.
   useEffect(() => {
-    supabase.from('app_blueprints')
-      .select('blueprint, blueprint_prod')
-      .eq('app_id', app.id).maybeSingle()
-      .then(({ data, error }) => {
-        if (error?.code === '42703' || error?.message?.includes('blueprint_prod')) {
-          // column not yet added — treat as no prod snapshot
-          supabase.from('app_blueprints').select('blueprint').eq('app_id', app.id).maybeSingle()
-            .then(({ data: d2 }) => {
-              const current = d2?.blueprint ? migrateBlueprint({ ...EMPTY_BP, ...d2.blueprint }) : null
-              setBpDiff({ current, prod: null })
-            })
-          return
-        }
-        const current = data?.blueprint ? migrateBlueprint({ ...EMPTY_BP, ...data.blueprint }) : null
-        const prod    = data?.blueprint_prod ? migrateBlueprint({ ...EMPTY_BP, ...data.blueprint_prod }) : null
-        setBpDiff({ current, prod })
-      })
+    Promise.all([
+      supabase.from('apps').select(`prod_snapshot, ${PROMOTE_FIELDS.join(', ')}`).eq('id', app.id).maybeSingle(),
+      supabase.from('app_blueprints').select('blueprint').eq('app_id', app.id).maybeSingle(),
+    ]).then(([{ data: row }, { data: bp }]) => {
+      const withoutPhase = b => { const { dev_phase: _phase, ...rest } = b || {}; return rest }
+      const current = row ? { ...Object.fromEntries(PROMOTE_FIELDS.map(k => [k, row[k] ?? null])), blueprint: withoutPhase(bp?.blueprint) } : null
+      const live = row?.prod_snapshot
+      const prod = live ? { ...Object.fromEntries(PROMOTE_FIELDS.map(k => [k, live[k] ?? null])), blueprint: withoutPhase(live.blueprint) } : null
+      setBpDiff({ current, prod })
+    })
   }, [app.id])
 
   // The backend checks the app and its tests for this draft, then saves it
@@ -3152,7 +3161,7 @@ function PromoteModal({ app, onClose, onPromoted }) {
     try {
       const res = await publishApp(app.id)
       toast('🚀 Changes promoted to production', 'success', 3000)
-      onPromoted?.({ ...app, has_draft_changes: false, is_published: true, promoted_at: res.promoted_at })
+      onPromoted?.({ ...app, has_draft_changes: false, is_published: true, promoted_at: res.promoted_at, change_note: null, ...(res.version ? { live_version: res.version } : {}) })
       onClose()
     } catch (e) {
       toast(e.message, 'error', 9000)
@@ -3161,13 +3170,20 @@ function PromoteModal({ app, onClose, onPromoted }) {
     }
   }
 
-  const diffFields = bpDiff?.current && bpDiff?.prod ? (() => {
-    const keys = ['app_name', 'tagline', 'system_prompt', 'input_label', 'output_label', 'tone', 'output_format', 'key_capabilities']
-    return keys.filter(k => JSON.stringify(bpDiff.current[k]) !== JSON.stringify(bpDiff.prod[k]))
-      .map(k => ({ key: k, from: bpDiff.prod[k], to: bpDiff.current[k] }))
-  })() : []
+  const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
+  const diffFields = bpDiff?.current && bpDiff?.prod ? [
+    ...PROMOTE_FIELDS.filter(k => !same(bpDiff.current[k], bpDiff.prod[k]))
+      .map(k => ({ key: k, from: bpDiff.prod[k], to: bpDiff.current[k] })),
+    // The design is large: name the parts that changed instead of dumping it.
+    ...(() => {
+      const keys = [...new Set([...Object.keys(bpDiff.current.blueprint), ...Object.keys(bpDiff.prod.blueprint)])]
+        .filter(k => !same(bpDiff.current.blueprint[k], bpDiff.prod.blueprint[k]))
+      return keys.length ? [{ key: 'blueprint', from: null, to: `Changed: ${keys.map(k => k.replace(/_/g, ' ')).join(', ')}` }] : []
+    })(),
+  ] : []
 
-  const FIELD_LABEL = { app_name: 'App name', tagline: 'Tagline', system_prompt: 'System prompt', input_label: 'Input label', output_label: 'Output label', tone: 'Tone', output_format: 'Output format', key_capabilities: 'Key capabilities' }
+  const FIELD_LABEL = { system_prompt: 'System prompt', ai_provider: 'AI provider', ai_model: 'Model', output_type: 'Output format', form_schema: 'Form fields',
+    tone: 'Tone', greeting: 'Greeting', input_placeholder: 'Input hint', app_type: 'App type', has_memory: 'Memory', blueprint: 'Design' }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4">
@@ -3198,7 +3214,7 @@ function PromoteModal({ app, onClose, onPromoted }) {
             ) : diffFields.length === 0 && bpDiff.prod ? (
               <div className="text-center py-6">
                 <p className="text-slate-300 text-sm font-semibold">No changes to promote</p>
-                <p className="text-slate-500 text-xs mt-1">Current blueprint matches production.</p>
+                <p className="text-slate-500 text-xs mt-1">The draft matches the live version.</p>
               </div>
             ) : !bpDiff.prod ? (
               <div className="bg-green-500/8 border border-green-500/20 rounded-xl px-4 py-3">
@@ -3212,13 +3228,9 @@ function PromoteModal({ app, onClose, onPromoted }) {
                   <div key={key} className="bg-[#0E1424] rounded-xl p-3 space-y-1.5">
                     <p className="text-[10px] text-slate-500 uppercase font-semibold">{FIELD_LABEL[key] || key}</p>
                     {from != null && (
-                      <p className="text-xs text-red-300/70 line-through leading-relaxed">
-                        {typeof from === 'object' ? JSON.stringify(from) : String(from).slice(0, 120)}{String(typeof from === 'object' ? JSON.stringify(from) : from).length > 120 ? '…' : ''}
-                      </p>
+                      <p className="text-xs text-red-300/70 line-through leading-relaxed">{diffSnippet(from, to)}</p>
                     )}
-                    <p className="text-xs text-green-300 leading-relaxed">
-                      {typeof to === 'object' ? JSON.stringify(to) : String(to ?? '').slice(0, 120)}{String(typeof to === 'object' ? JSON.stringify(to) : (to ?? '')).length > 120 ? '…' : ''}
-                    </p>
+                    <p className="text-xs text-green-300 leading-relaxed">{diffSnippet(to, from)}</p>
                   </div>
                 ))}
               </div>
@@ -3387,10 +3399,10 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
       // Publishing promotes the draft (checks + tests, saves the live version);
       // unpublishing just takes the app offline.
       const res = next ? await publishApp(app.id) : await unpublishApp(app.id)
-      const updated = { ...app, is_published: next, ...(next ? { has_draft_changes: false, promoted_at: res?.promoted_at } : {}) }
+      const updated = { ...app, is_published: next, ...(next ? { has_draft_changes: false, promoted_at: res?.promoted_at, change_note: null, ...(res?.version ? { live_version: res.version } : {}) } : {}) }
       setApp(updated)
       onUpdate?.(updated)
-      toast(next ? '🚀 App is now live' : 'App set to draft', next ? 'success' : 'info', 3000)
+      toast(next ? `🚀 App is now live${res?.version ? ` · v${res.version}` : ''}` : 'App set to draft', next ? 'success' : 'info', 3000)
     } catch (e) {
       toast(`Publish blocked: ${e.message}`, 'error', 9000)
     } finally {

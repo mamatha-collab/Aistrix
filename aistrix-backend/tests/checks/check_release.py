@@ -123,4 +123,48 @@ APP["system_prompt"] = "DRAFT PROMPT v2"
 rel = c.get("/v1/apps/app-1/release", headers=owner).json()
 ok("release: editing the draft shows unpromoted changes", rel["has_changes"] and rel["draft_hash"] != rel["live_hash"])
 
+# ── published versions: v1, v2…, history and rollback ──────────────────────
+TABLES = {"app_versions": [], "apps": [], "app_blueprints": []}
+class _Q:
+    def __init__(self, name): self.name, self.f, self.op, self.row, self.patch, self.desc = name, [], "select", None, None, False
+    def select(self, *a, **k): return self
+    def insert(self, row): self.op, self.row = "insert", row; return self
+    def update(self, patch): self.op, self.patch = "update", patch; return self
+    def eq(self, k, v): self.f.append(lambda r, k=k, v=v: r.get(k) == v); return self
+    @property
+    def not_(self): return self
+    def is_(self, k, v): self.f.append(lambda r, k=k: r.get(k) is not None); return self
+    def order(self, k, desc=False): self.key, self.desc = k, desc; return self
+    def limit(self, n): return self
+    def execute(self):
+        if self.op == "insert": TABLES[self.name].append(dict(self.row)); return NS(data=[self.row])
+        if self.op == "update": UPDATES.append((self.name, self.patch)); return NS(data=[])
+        rows = [r for r in TABLES[self.name] if all(f(r) for f in self.f)]
+        if hasattr(self, "key"): rows.sort(key=lambda r: r.get(self.key) or 0, reverse=self.desc)
+        return NS(data=rows)
+main._service_client = lambda: NS(table=lambda t: _Q(t))
+STATUS.update(required_passed=5, required_total=5)
+APP["system_prompt"] = "DRAFT PROMPT"; APP.pop("prod_snapshot", None); UPDATES.clear()
+r1 = c.post("/v1/apps/app-1/promote", headers=owner).json()
+v1_patch = next(p for t, p in UPDATES if t == "apps")
+ok("first publish is v1, recorded as live", r1["version"] == 1 and v1_patch["live_version"] == 1
+   and TABLES["app_versions"][0]["changelog"] == "First release" and TABLES["app_versions"][0]["tests"] == {"passed": 5, "total": 5})
+APP["prod_snapshot"] = v1_patch["prod_snapshot"]; APP["live_version"] = 1
+APP["system_prompt"] = "BETTER PROMPT"; APP["ai_model"] = "claude-haiku-5-5"; UPDATES.clear()
+r2 = c.post("/v1/apps/app-1/promote", headers=owner).json()
+ok("next publish is v2 and says what changed", r2["version"] == 2 and TABLES["app_versions"][1]["changelog"] == "Prompt and model changed")
+APP["prod_snapshot"] = next(p for t, p in UPDATES if t == "apps")["prod_snapshot"]; APP["live_version"] = 2
+lst = c.get("/v1/apps/app-1/versions", headers=owner).json()
+ok("history lists versions newest first, marking the live one",
+   [v["version_num"] for v in lst["versions"]] == [2, 1] and lst["versions"][0]["is_live"] and not lst["versions"][1]["is_live"])
+UPDATES.clear()
+r = c.post("/v1/apps/app-1/versions/1/rollback", headers=owner)
+rb = next(p for t, p in UPDATES if t == "apps")
+ok("rollback makes v1 live again without touching the draft", r.status_code == 200 and rb["live_version"] == 1
+   and rb["prod_snapshot"]["system_prompt"] == "DRAFT PROMPT" and rb["has_draft_changes"] is True and APP["system_prompt"] == "BETTER PROMPT")
+ok("rollback: unknown version → 404", c.post("/v1/apps/app-1/versions/9/rollback", headers=owner).status_code == 404)
+ok("rollback/history: only editors (404)", c.post("/v1/apps/app-1/versions/1/rollback", headers={"Authorization": "Bearer tok-user"}).status_code == 404
+   and c.get("/v1/apps/app-1/versions", headers={"Authorization": "Bearer tok-user"}).status_code == 404)
+ok("change summary ignores the workflow phase", main.describe_changes({"blueprint": {"dev_phase": "test"}}, {"blueprint": {}}) == "Republished (no changes)")
+
 finish()

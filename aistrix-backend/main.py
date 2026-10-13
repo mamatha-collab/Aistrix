@@ -4898,6 +4898,91 @@ def _test_problems(tests: dict) -> list[str]:
     return missing or ["Run and pass the tests for this draft"]
 
 
+# ── Published versions (v1, v2, v3…) ─────────────────────────────────────────
+_CHANGE_LABELS = (
+    ("system_prompt", "prompt"), ("ai_provider", "AI provider"), ("ai_model", "model"),
+    ("output_type", "output format"), ("form_schema", "form fields"), ("app_type", "app type"),
+    ("tone", "tone"), ("greeting", "greeting"), ("input_placeholder", "input hint"),
+    ("pages", "pages"), ("has_memory", "memory"), ("blueprint", "design"), ("tools", "tools"),
+)
+
+
+def describe_changes(previous: Optional[dict], current: dict) -> str:
+    """Plain summary of what a new version changed, e.g. "prompt, model and design changed"."""
+    if not previous:
+        return "First release"
+    if "blueprint" in previous:   # older snapshots stored the workflow phase in the blueprint
+        previous = {**previous, "blueprint": {k: v for k, v in (previous.get("blueprint") or {}).items()
+                                              if k not in BLUEPRINT_WORKFLOW_KEYS}}
+    changed = [label for key, label in _CHANGE_LABELS
+               if json.dumps(previous.get(key), sort_keys=True, default=str) != json.dumps(current.get(key), sort_keys=True, default=str)]
+    if not changed:
+        return "Republished (no changes)"
+    text = changed[0] if len(changed) == 1 else ", ".join(changed[:-1]) + " and " + changed[-1]
+    return f"{text[0].upper()}{text[1:]} changed"
+
+
+async def _save_published_version(sb, app_row: dict, state: dict, tests: dict, user_id: Optional[str]) -> Optional[int]:
+    """Record a publish as the app's next version. Returns its number (None if
+    the versions table isn't migrated yet — publishing still succeeds)."""
+    try:
+        last = await db(sb.table("app_versions").select("version_num").eq("app_id", app_row["id"])
+                        .not_.is_("version_num", "null").order("version_num", desc=True).limit(1))
+        num = ((last.data or [{}])[0].get("version_num") or 0) + 1
+        await db(sb.table("app_versions").insert({
+            "app_id": app_row["id"], "user_id": user_id, "version_num": num, "semver": f"v{num}",
+            "version_data": state,
+            "changelog": describe_changes(app_row.get("prod_snapshot") if isinstance(app_row.get("prod_snapshot"), dict) else None, state),
+            "tests": {"passed": tests.get("required_passed"), "total": tests.get("required_total")},
+        }))
+        return num
+    except Exception as e:
+        print(f"version not saved: {type(e).__name__}: {str(e)[:200]}")
+        return None
+
+
+@app.get("/v1/apps/{app_id}/versions")
+async def list_versions(app_id: str, request: Request):
+    """Published versions, newest first, and which one end users run."""
+    _, app_row = await _editable_app(app_id, request)
+    sb = _service_client()
+    if not sb:
+        raise HTTPException(status_code=503, detail="Versions aren't configured on this server")
+    try:
+        res = await db(sb.table("app_versions").select("version_num, created_at, changelog, tests, user_id")
+                       .eq("app_id", app_id).not_.is_("version_num", "null").order("version_num", desc=True).limit(100))
+    except Exception as e:
+        if "version_num" in str(e) or "tests" in str(e):
+            return {"versions": [], "live_version": None, "setup_required": True}
+        raise
+    live = app_row.get("live_version")
+    return {"live_version": live, "is_published": bool(app_row.get("is_published")),
+            "versions": [{**v, "is_live": v["version_num"] == live and bool(app_row.get("is_published"))} for v in (res.data or [])]}
+
+
+@app.post("/v1/apps/{app_id}/versions/{version_num}/rollback")
+async def rollback_version(app_id: str, version_num: int, request: Request):
+    """Make an earlier published version live again. The draft isn't changed."""
+    _, app_row = await _editable_app(app_id, request)
+    sb = _service_client()
+    if not sb:
+        raise HTTPException(status_code=503, detail="Versions aren't configured on this server")
+    res = await db(sb.table("app_versions").select("version_data").eq("app_id", app_id).eq("version_num", version_num).limit(1))
+    if not res.data or not isinstance(res.data[0].get("version_data"), dict):
+        raise HTTPException(status_code=404, detail=f"Version v{version_num} not found")
+    snapshot = res.data[0]["version_data"]
+    draft = state_hash(await app_draft_state(app_row))
+    now = datetime.now(timezone.utc).isoformat()
+    await db(sb.table("apps").update({"prod_snapshot": snapshot, "promoted_at": now, "is_published": True,
+                                      "live_version": version_num,
+                                      "has_draft_changes": state_hash(snapshot) != draft}).eq("id", app_id))
+    try:
+        await db(sb.table("app_blueprints").update({"blueprint_prod": snapshot.get("blueprint")}).eq("app_id", app_id))
+    except Exception as e:
+        print(f"blueprint_prod update skipped: {type(e).__name__}")
+    return {"ok": True, "live_version": version_num, "promoted_at": now, "is_published": True}
+
+
 @app.get("/v1/apps/{app_id}/release")
 async def get_release(app_id: str, request: Request):
     """Draft vs live: what end users run, whether the draft differs, and
@@ -4909,7 +4994,7 @@ async def get_release(app_id: str, request: Request):
     checks = await _publish_checks(app_id, caller.user_jwt)
     return {
         "is_published": bool(app_row.get("is_published")), "promoted_at": app_row.get("promoted_at"),
-        "has_live_version": bool(prod), "draft_hash": draft, "live_hash": state_hash(prod) if prod else None,
+        "live_version": app_row.get("live_version"), "has_live_version": bool(prod), "draft_hash": draft, "live_hash": state_hash(prod) if prod else None,
         "has_changes": (state_hash(prod) != draft) if prod else True,
         "checks": checks, "tests": tests, "test_problems": _test_problems(tests),
         "ready": not checks and not _test_problems(tests),
@@ -4934,13 +5019,16 @@ async def promote_app(app_id: str, request: Request):
     if not sb:
         raise HTTPException(status_code=503, detail="Publishing isn't configured on this server")
     now = datetime.now(timezone.utc).isoformat()
-    await db(sb.table("apps").update({"prod_snapshot": state, "promoted_at": now, "is_published": True,
-                                      "has_draft_changes": False}).eq("id", app_id))
+    version = await _save_published_version(sb, app_row, state, tests, caller.user_id)
+    update = {"prod_snapshot": state, "promoted_at": now, "is_published": True, "has_draft_changes": False}
+    if version is not None:
+        update["live_version"] = version
+    await db(sb.table("apps").update(update).eq("id", app_id))
     try:
         await db(sb.table("app_blueprints").update({"blueprint_prod": state["blueprint"]}).eq("app_id", app_id))
     except Exception as e:
         print(f"blueprint_prod update skipped: {type(e).__name__}")
-    return {"ok": True, "promoted_at": now, "draft_hash": state_hash(state), "is_published": True}
+    return {"ok": True, "promoted_at": now, "draft_hash": state_hash(state), "is_published": True, "version": version}
 
 
 # ── AI providers and developers' own keys ────────────────────────────────────

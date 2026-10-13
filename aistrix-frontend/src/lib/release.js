@@ -39,3 +39,18 @@ export async function getRelease(appId) {
   if (!res.ok) throw await errorFromResponse(res, 'Could not load release status')
   return res.json()
 }
+
+// Published versions, newest first: { versions: [{ version_num, created_at,
+// changelog, tests: { passed, total }, is_live }], live_version, is_published }
+export async function listVersions(appId) {
+  const res = await fetch(`${API_URL}/v1/apps/${appId}/versions`, { headers: await headers() })
+  if (!res.ok) throw await errorFromResponse(res, 'Could not load versions')
+  return res.json()
+}
+
+// Make an earlier published version live again (the draft isn't changed).
+export async function rollbackVersion(appId, versionNum) {
+  const res = await fetch(`${API_URL}/v1/apps/${appId}/versions/${versionNum}/rollback`, { method: 'POST', headers: await headers() })
+  if (!res.ok) throw await errorFromResponse(res, 'Could not roll back')
+  return res.json()
+}

@@ -13,7 +13,8 @@ import ErrorBoundary from '../components/ErrorBoundary'
 // The API address shown in code snippets (this deployment's backend).
 const PUBLIC_API_URL = (import.meta.env.VITE_PUBLIC_API_URL || import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '')
 import { PROVIDER_STYLE, modelOptions, providerById, useProviders } from '../lib/providers'
-import VersionManager, { VersionSetupCard } from '../components/VersionManager'
+import { VersionSetupCard } from '../components/VersionManager'
+import PublishedVersions from '../components/PublishedVersions'
 import { useVersions } from '../hooks/useVersions'
 import ApiKeysManager from '../components/ApiKeysManager'
 import { scopeToWorkspace } from '../lib/workspace'
@@ -3428,11 +3429,11 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
         </div>
         <div className="flex-1 min-w-0">
           <p className="text-white font-medium text-sm truncate">{app.name}</p>
-          <p className="text-[10px] text-slate-500">{app.ai_provider === 'openai' ? '🟢' : '🟣'} {app.ai_model?.split('-').slice(0, 3).join('-') || 'default'}</p>
+          <p className="text-[10px] text-slate-500">{app.ai_provider === 'openai' ? '🟢' : app.ai_provider === 'gemini' ? '🔵' : '🟣'} {app.ai_model || 'default'}</p>
         </div>
         <div className="flex items-center gap-2">
           {app.is_published
-            ? <span className="text-[10px] text-green-400 bg-green-500/10 px-2 py-0.5 rounded-full border border-green-500/20">● Live</span>
+            ? <span className="text-[10px] text-green-400 bg-green-500/10 px-2 py-0.5 rounded-full border border-green-500/20">● Live{app.live_version ? ` · v${app.live_version}` : ''}</span>
             : <span className="text-[10px] text-slate-500 bg-white/5 px-2 py-0.5 rounded-full border border-white/10">◌ Draft</span>}
         </div>
       </div>
@@ -5393,13 +5394,7 @@ function VersionTab({ apps, user, onAppUpdated, selectedAppId }) {
     <div className="space-y-5">
       {/* App selector */}
 
-      {appObj && (
-        <VersionManager
-          app={appObj}
-          user={user}
-          onRollback={updated => onAppUpdated?.(updated)}
-        />
-      )}
+      {appObj && <PublishedVersions app={appObj} onAppUpdated={onAppUpdated} />}
 
       {/* Feature flag integrations */}
       <div>
@@ -6307,11 +6302,8 @@ export default function DevStudioPage({
     const phase = normalizeDevPhase(newPhase) || 'design'
     const app = apps.find(a => a.id === appId)
     setPhaseByAppId(prev => ({ ...prev, [appId]: phase }))
-
-    if (phase !== 'deploy' && app?.is_published) {
-      await supabase.from('apps').update({ is_published: false }).eq('id', appId)
-      updateAppInState({ ...app, is_published: false })
-    }
+    // A live app stays live while it's changed: end users keep running the
+    // published version until a new one passes its tests and is published.
 
     const { data: row } = await supabase.from('app_blueprints')
       .select('blueprint').eq('app_id', appId).maybeSingle()

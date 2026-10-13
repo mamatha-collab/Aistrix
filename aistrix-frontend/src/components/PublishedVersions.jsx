@@ -1,0 +1,76 @@
+import { useCallback, useEffect, useState } from 'react'
+import { useToast } from '../hooks/useToast'
+import { listVersions, rollbackVersion } from '../lib/release'
+import { timeAgo } from '../utils'
+
+// Every publish saves a numbered version (v1, v2…). End users run the live
+// one; any earlier version can be made live again. The draft isn't changed.
+export default function PublishedVersions({ app, onAppUpdated }) {
+  const toast = useToast()
+  const [data, setData] = useState(null)
+  const [error, setError] = useState('')
+  const [confirming, setConfirming] = useState(null)   // version_num awaiting a second click
+  const [busy, setBusy] = useState(null)
+
+  const load = useCallback(async () => {
+    try { setData(await listVersions(app.id)); setError('') } catch (e) { setError(e.message) }
+  }, [app.id])
+
+  useEffect(() => { load() }, [load])
+
+  async function rollback(num) {
+    if (confirming !== num) { setConfirming(num); return }
+    setBusy(num); setConfirming(null)
+    try {
+      const res = await rollbackVersion(app.id, num)
+      toast(`v${num} is live again`, 'success', 3000)
+      onAppUpdated?.({ ...app, live_version: res.live_version, is_published: true, promoted_at: res.promoted_at })
+      await load()
+    } catch (e) {
+      toast(e.message, 'error', 6000)
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const versions = data?.versions || []
+  return (
+    <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5 space-y-3">
+      <div>
+        <p className="text-xs font-bold text-white uppercase tracking-wider">Published versions</p>
+        <p className="text-[11px] text-slate-500 mt-1">Every publish saves a version. End users run the live one while you change the draft.</p>
+      </div>
+
+      {error && <p className="text-xs text-amber-300">{error}</p>}
+      {!data && !error && <p className="text-xs text-slate-500">Loading versions…</p>}
+      {data?.setup_required && <p className="text-xs text-amber-300">Version history needs a database update on this server.</p>}
+      {data && !data.setup_required && !versions.length && (
+        <p className="text-xs text-slate-500">No published versions yet. Publishing from Deploy saves v1.</p>
+      )}
+
+      <div className="space-y-1.5">
+        {versions.map(v => (
+          <div key={v.version_num} className="flex items-center gap-3 px-3 py-2 rounded-xl bg-white/[0.02]">
+            <span className={`text-xs font-bold w-9 shrink-0 ${v.is_live ? 'text-emerald-400' : 'text-slate-300'}`}>v{v.version_num}</span>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm text-slate-200 truncate">
+                {v.changelog || 'Published'}
+                {v.is_live && <span className="ml-2 text-[10px] text-green-400 bg-green-500/10 px-2 py-0.5 rounded-full border border-green-500/20">● Live</span>}
+              </p>
+              <p className="text-[11px] text-slate-500 mt-0.5">
+                {timeAgo(v.created_at)}{v.tests?.total ? ` · ${v.tests.passed}/${v.tests.total} test checks passed` : ''}
+              </p>
+            </div>
+            {!v.is_live && (
+              <button onClick={() => rollback(v.version_num)} disabled={busy != null}
+                className={`text-[11px] font-semibold px-3 py-1 rounded-lg border transition-colors shrink-0 disabled:opacity-40 ${
+                  confirming === v.version_num ? 'bg-amber-500/15 border-amber-500/30 text-amber-200' : 'bg-white/5 hover:bg-white/10 border-white/10 text-slate-300'}`}>
+                {busy === v.version_num ? 'Rolling back…' : confirming === v.version_num ? `Make v${v.version_num} live?` : 'Roll back'}
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}

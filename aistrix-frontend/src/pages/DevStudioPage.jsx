@@ -916,12 +916,28 @@ function outputContractHasRules(oc = {}) {
   }))
 }
 
+// The app's own output setting (apps.output_type) for a Design output format.
+// JSON and tables are their own kinds; everything else is written text, so a
+// key-value, cards or markdown app keeps its setting.
+function appOutputTypeFor(format, current) {
+  if (format === 'json') return 'json'
+  if (format === 'table') return 'table'
+  return current === 'json' || current === 'table' ? 'markdown' : current || 'markdown'
+}
+
 function outputContractMismatch(app, bp) {
-  const promptFormat = inferPromptOutputFormat(app?.system_prompt || '')
   const contractFormat = bp?.output_contract?.format
+  if (contractFormat && app?.output_type && appOutputTypeFor(contractFormat, app.output_type) !== app.output_type) {
+    return { kind: 'app', appFormat: app.output_type, contractFormat }
+  }
+  const promptFormat = inferPromptOutputFormat(app?.system_prompt || '')
   if (!promptFormat || !contractFormat || promptFormat === contractFormat) return null
   return { promptFormat, contractFormat }
 }
+
+const mismatchLabel = m => m.kind === 'app'
+  ? `App returns ${m.appFormat === 'json' ? 'JSON' : m.appFormat}, contract is ${m.contractFormat}`
+  : `Prompt expects ${m.promptFormat}, contract is ${m.contractFormat}`
 
 const PRODUCTION_MODULES = [
   {
@@ -1349,7 +1365,7 @@ function DesignTestHandoff({ app, bp, isDirty, saving, onSave, onGoToTest }) {
     {
       ok: hasFormatRules && !mismatch,
       label: mismatch
-        ? `Prompt expects ${mismatch.promptFormat}, contract is ${mismatch.contractFormat}`
+        ? mismatchLabel(mismatch)
         : oc.format ? `Output contract: ${oc.format}${hasFormatRules ? ' ✓' : ' — rules missing'}` : 'No output format chosen',
     },
     { ok: !!app?.system_prompt?.trim(),label: app?.system_prompt?.trim() ? 'System prompt written' : 'System prompt missing' },
@@ -2028,6 +2044,16 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
     toast('Model settings saved', 'success', 2000)
   }
 
+  // Picking a Design output format also sets what the app actually returns.
+  async function chooseOutputFormat(format) {
+    setBp({ ...bp, output_contract: { ...bp.output_contract, format } })
+    const outputType = appOutputTypeFor(format, app.output_type)
+    if (outputType === app.output_type) return
+    const { error } = await supabase.from('apps').update({ output_type: outputType }).eq('id', app.id)
+    if (error) { toast(error.message, 'error'); return }
+    onAppUpdated?.({ ...app, output_type: outputType })
+  }
+
   // Who pays when end users run the app (see BillingModeHint).
   async function updateBilling(patch) {
     setSavingModel(true)
@@ -2210,7 +2236,12 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
       {(mismatch || invalidInputs.length > 0) && (
         <div className="bg-amber-500/8 border border-amber-500/20 rounded-2xl p-4 space-y-2">
           <p className="text-xs font-semibold text-amber-300 uppercase tracking-wider">Blueprint validation</p>
-          {mismatch && (
+          {mismatch?.kind === 'app' && (
+            <p className="text-xs text-slate-300">
+              This app currently returns <span className="text-amber-200 font-semibold">{mismatch.appFormat === 'json' ? 'JSON' : mismatch.appFormat}</span>, but the output contract is set to <span className="text-amber-200 font-semibold">{mismatch.contractFormat}</span>. Pick the output format again to align them.
+            </p>
+          )}
+          {mismatch && mismatch.kind !== 'app' && (
             <p className="text-xs text-slate-300">
               Your prompt appears to require <span className="text-amber-200 font-semibold">{mismatch.promptFormat}</span>, but the output contract is set to <span className="text-amber-200 font-semibold">{mismatch.contractFormat}</span>. Align these before testing.
             </p>
@@ -2331,7 +2362,7 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
           <label className="text-[10px] text-slate-400 uppercase font-semibold tracking-wide">Output format</label>
           <div className="flex flex-wrap gap-2">
             {OUTPUT_FORMATS.map(f => (
-              <button key={f.id} onClick={() => setBp({ ...bp, output_contract: { ...bp.output_contract, format: f.id } })}
+              <button key={f.id} onClick={() => chooseOutputFormat(f.id)}
                 className={`text-[11px] px-3 py-1.5 rounded-lg border transition-colors ${bp.output_contract?.format === f.id ? 'bg-[#6C5CE7]/15 border-[#6C5CE7]/40 text-[#A29BFE]' : 'bg-white/3 border-white/8 text-slate-500 hover:text-white hover:border-white/20'}`}>
                 {f.label}
               </button>

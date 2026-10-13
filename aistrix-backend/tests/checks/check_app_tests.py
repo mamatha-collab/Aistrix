@@ -179,6 +179,10 @@ ok("multi-turn test sends earlier turns like the chat screen", sent.startswith("
 ok("bad history rejected", c.post("/v1/apps/app-1/tests/run", headers=auth, json={"input": "x", "case_ref": "y", "history": [{"role": "system", "content": "x"}]}).status_code == 422)
 main.stream_claude = fake_stream
 
+JUDGE["reply"] = 'Here is my verdict: {"pass": true, "reason": "Uses the budget."} Hope that helps.'
+ok("grader reply with text around the JSON is still read", grade([{"type": "judge", "value": "Uses the budget"}], "Budget $10k") == [])
+JUDGE["reply"] = '{"pass": true, "reason": "ok"}'
+
 # ── current Claude models reject temperature; a grader failure isn't a crash ─
 ok("temperature only sent to Claude models that accept it",
    main.claude_sampling("claude-haiku-4-5-20251001", 0) == {"temperature": 0}

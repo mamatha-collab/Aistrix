@@ -4540,9 +4540,14 @@ async def judge_output(criteria: str, test_input: str, output: str, api_key: Opt
     system = ("You grade one answer from an AI app during testing. Decide strictly whether the ANSWER meets the "
               "CRITERIA for the given INPUT. Reply with ONLY JSON: {\"pass\": true or false, \"reason\": \"one short sentence\"}.")
     prompt = f"CRITERIA:\n{criteria[:2000]}\n\nINPUT:\n{test_input[:6000]}\n\nANSWER:\n{output[:12000]}"
-    text = "".join([t async for t in stream_claude(system, prompt, JUDGE_MODEL, api_key, max_tokens=300, temperature=0)])
+    # Room for the model's own thinking before the short JSON reply.
+    text = "".join([t async for t in stream_claude(system, prompt, JUDGE_MODEL, api_key, max_tokens=1500, temperature=0)])
     parsed, errs = _parse_json_output(text)
+    if errs:   # tolerate a sentence around the JSON object
+        found = re.search(r"\{[^{}]*\"pass\"[^{}]*\}", text)
+        parsed, errs = _parse_json_output(found.group(0)) if found else (None, ["no JSON"])
     if errs or not isinstance(parsed, dict) or "pass" not in parsed:
+        print(f"Judge reply unreadable: {text[:300]!r}")
         return False, "The grader's reply couldn't be read"
     return bool(parsed.get("pass")), str(parsed.get("reason") or "")[:300]
 

@@ -210,4 +210,11 @@ main.require_verified_user = other_user
 r = c.put("/apps/owners-app/secrets", json={"key": "SEND_EMAIL_API_KEY", "value": "SG.x"})
 ok("setting a secret on someone else's app → 404", r.status_code == 404)
 
+# ── browsers can call every write method the frontend uses (CORS preflight) ─
+origin = main.ALLOWED_ORIGINS[0]
+for method, path in [("PUT", "/v1/provider-keys/openai"), ("DELETE", "/v1/provider-keys/openai"), ("PUT", "/apps/a1/secrets")]:
+    pre = c.options(path, headers={"Origin": origin, "Access-Control-Request-Method": method,
+                                   "Access-Control-Request-Headers": "authorization,content-type"})
+    ok(f"browser may send {method} {path}", pre.status_code == 200 and method in pre.headers.get("access-control-allow-methods", ""))
+
 finish()

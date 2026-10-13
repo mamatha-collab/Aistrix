@@ -114,7 +114,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
     # Narrowed from ["*"]/["*"] — only the methods/headers this API actually uses.
-    allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "X-Cron-Secret", "X-Schedule-Secret", "X-Workspace-Id"],
 )
 

@@ -1285,10 +1285,16 @@ function isMissingBlueprintTable(error) {
     error?.message?.includes('does not exist')
 }
 
+// Chatbots answer in short conversational replies: an output format is enough,
+// they don't need required sections (which their replies would never contain).
+function outputRulesSatisfied(app, oc) {
+  return outputContractHasRules(oc) || (app?.app_type === 'chatbot' && !!oc.format)
+}
+
 function readinessChecks(app, bp) {
   const oc = bp.output_contract || {}
   const hasValidInputs = validInputFields(bp).length > 0 && invalidInputFields(bp).length === 0
-  const hasFormatRules = outputContractHasRules(oc)
+  const hasFormatRules = outputRulesSatisfied(app, oc)
   const mismatch = outputContractMismatch(app, bp)
   return [
     { key: 'business', label: 'Business',   ok: !!(bp.business_problem?.trim() && bp.audience?.trim()) },
@@ -1339,7 +1345,7 @@ function DesignTestHandoff({ app, bp, isDirty, saving, onSave, onGoToTest }) {
   const oc = bp?.output_contract || {}
   const validInputs = validInputFields(bp)
   const invalidInputs = invalidInputFields(bp)
-  const hasFormatRules = outputContractHasRules(oc)
+  const hasFormatRules = outputRulesSatisfied(app, oc)
   const mismatch = outputContractMismatch(app, bp)
 
   const items = [

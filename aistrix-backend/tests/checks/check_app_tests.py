@@ -192,6 +192,19 @@ JUDGE["reply"] = 'Here is my verdict: {"pass": true, "reason": "Uses the budget.
 ok("grader reply with text around the JSON is still read", grade([{"type": "judge", "value": "Uses the budget"}], "Budget $10k") == [])
 JUDGE["reply"] = '{"pass": true, "reason": "ok"}'
 
+ROWS.clear()
+async def bad_then_good(system, user_input, model, api_key=None, usage_holder=None, **kw):
+    if user_input == "generic":
+        raise main.anthropic.RateLimitError("slow down", response=NS(status_code=429, headers={}, request=None), body=None)
+    yield "Score: 82."
+main.stream_claude = bad_then_good
+run_case(source="profile", case_ref="profile:old", input="generic")
+run_case(source="profile", case_ref="profile:Typical input", input="real")
+run_case(source="profile", case_ref="profile:Typical input (again)", input="real")
+st = c.get("/v1/apps/app-1/tests/status", headers=auth).json()
+ok("an older failed speed check doesn't block once the latest passes", {r["id"]: r for r in st["requirements"]}["performance"]["status"] == "passed")
+main.stream_claude = fake_stream
+
 # ── current Claude models reject temperature; a grader failure isn't a crash ─
 ok("temperature only sent to Claude models that accept it",
    main.claude_sampling("claude-haiku-4-5-20251001", 0) == {"temperature": 0}

@@ -4835,7 +4835,9 @@ async def app_test_status(app_row: dict) -> dict:
         if r["source"] != "profile":
             latest.setdefault((r["source"], r["case_ref"], r.get("persona")), r)
     cases = list(latest.values())
-    gate_rows = cases + [r for r in rows if r.get("source") == "profile"]
+    # Speed & cost: only the latest check (its two runs) decides; an older failed
+    # check on the same draft mustn't block publishing for good.
+    gate_rows = cases + [r for r in rows if r.get("source") == "profile"][:2]
     requirements = _test_requirements(app_row, state.get("blueprint") or {}, gate_rows)
     required_requirements = [r for r in requirements if r["required"]]
     lat = [r["latency_ms"] for r in rows if r.get("latency_ms") is not None]

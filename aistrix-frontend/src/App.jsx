@@ -155,9 +155,31 @@ export default function App() {
     setShowOnboarding(false)
   }, [])
 
+  // One welcome per new developer: finishing or closing the first-app
+  // onboarding also counts as the welcome, so the second popup doesn't follow.
   const dismissAppOnboarding = useCallback(() => {
     localStorage.setItem('aistrix:app_onboarding_done', '1')
+    localStorage.setItem('aistrix_welcomed', '1')
+    localStorage.setItem('aistrix_onboarding_done', '1')
     setShowAppOnboarding(false)
+    setShowOnboarding(false)
+  }, [])
+
+  // New developers (no apps yet) get the first-app onboarding; anyone else who
+  // hasn't been welcomed gets the welcome wizard. Never both.
+  const pickOnboarding = useCallback(session => {
+    if (!session || !shouldShowStarterOnboarding()) return
+    const welcomed = !!localStorage.getItem('aistrix_welcomed')
+    if (localStorage.getItem('aistrix:app_onboarding_done')) {
+      if (!welcomed) setShowOnboarding(true)
+      return
+    }
+    supabase.from('apps').select('id', { count: 'exact', head: true })
+      .eq('created_by', session.user.id)
+      .then(({ count }) => {
+        if ((count || 0) === 0) setShowAppOnboarding(true)
+        else if (!welcomed) setShowOnboarding(true)
+      })
   }, [])
 
   function openBuilder(type) {
@@ -208,7 +230,7 @@ export default function App() {
       setSession(session)
       setLoading(false)
       if (session) {
-        if (!localStorage.getItem('aistrix_welcomed') && shouldShowStarterOnboarding()) setShowOnboarding(true)
+        pickOnboarding(session)
         getUserRole(session.user.id).then(setUserRole)
       }
     })
@@ -217,18 +239,11 @@ export default function App() {
       setSession(session)
       if (session) identify(session.user.id, { email: session.user.email })
       else if (event === 'SIGNED_OUT') resetIdentity()
-      if (session && !localStorage.getItem('aistrix_welcomed') && shouldShowStarterOnboarding()) setShowOnboarding(true)
-      if (session && !localStorage.getItem('aistrix:app_onboarding_done') && shouldShowStarterOnboarding()) {
-        supabase.from('apps').select('id', { count: 'exact', head: true })
-          .eq('created_by', session.user.id)
-          .then(({ count }) => {
-            if ((count || 0) === 0) setShowAppOnboarding(true)
-          })
-      }
+      if (event === 'SIGNED_IN') pickOnboarding(session)
     })
 
     return () => subscription.unsubscribe()
-  }, [])
+  }, [pickOnboarding])
 
   // Remember the page that required sign-in so we can return to it afterward,
   // instead of always dropping the user on the default view post-login.

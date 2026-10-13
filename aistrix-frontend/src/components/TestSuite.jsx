@@ -124,8 +124,13 @@ function SetupCard({ onRetry }) {
 function TestCaseEditor({ tc, onChange, onDelete, onClose }) {
   const [draft, setDraft] = useState(() => JSON.parse(JSON.stringify(tc)))
 
+  // Tell the parent outside the state updater: updaters run during render
+  // (twice in development), so calling onChange there updated TestSuite
+  // mid-render and could save twice.
   function updateField(key, val) {
-    setDraft(d => { const next = { ...d, [key]: val }; onChange(next); return next })
+    const next = { ...draft, [key]: val }
+    setDraft(next)
+    onChange(next)
   }
 
   function addRule() {

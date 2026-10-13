@@ -225,6 +225,16 @@ KEYS.clear(); KEYS[(BUYER, "claude")] = "sk-buyer"
 ok("rate limit on your own key → check your account, no 'add a key'", "your Claude account" in (t := run("rl-app", "tok-buyer")[1]) and "Add your own" not in t)
 KEYS.clear()
 ok("rate limit on the platform key → suggests adding your own key", "Add your own API key" in run("rl-app", "tok-stranger")[1])
+def no_credit_stream():
+    async def stream(*a, **kw):
+        raise _openai.RateLimitError("429", response=httpx.Response(429, request=httpx.Request("POST", "https://x")),
+                                     body={"code": "credit_balance_exhausted", "type": "insufficient_quota"})
+        yield ""
+    return stream
+main.stream_claude = no_credit_stream()
+KEYS[(BUYER, "claude")] = "sk-buyer"
+ok("out of credit on your own key → says so plainly", "Your Claude account is out of credit" in run("rl-app", "tok-buyer")[1])
+KEYS.clear()
 main.stream_claude = saved_stream
 
 # ── browsers can call every write method the frontend uses (CORS preflight) ─

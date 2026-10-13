@@ -1792,12 +1792,17 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
         except (anthropic.PermissionDeniedError,):
             _record_run_outcome(False, "permission")
             yield _sse({"error": f"API key does not have permission for this model. Check your {provider} account."})
-        except (anthropic.RateLimitError, openai.RateLimitError):
+        except (anthropic.RateLimitError, openai.RateLimitError) as e:
             _record_run_outcome(False, "rate_limit")
+            # OpenAI answers 429 both for "too many requests" and for "no credit left".
+            out_of_credit = "insufficient_quota" in (getattr(e, "code", None), getattr(e, "type", None))
             if key_source == "platform":
                 yield _sse({"error": "Rate limit reached. Add your own API key in Settings → Keys for unlimited runs, or wait a moment and try again."})
+            elif out_of_credit:
+                whose = "Your" if key_source == "own" else "The app developer's"
+                yield _sse({"error": f"{whose} {label} account is out of credit, so {label} refused this run. "
+                                     f"Add credit in the {label} billing settings, then try again."})
             else:
-                # The provider says the same thing for "too many requests" and "no credit left".
                 whose = "your" if key_source == "own" else "the app developer's"
                 yield _sse({"error": f"{label} turned this run away: {whose} {label} account hit its rate limit or is out of credit. "
                                      f"Check the account's usage and billing, or wait a moment and try again."})

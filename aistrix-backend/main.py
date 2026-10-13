@@ -4516,10 +4516,16 @@ def _is_missing_app_test_runs_error(e: Exception) -> bool:
     return "app_test_runs" in text and ("PGRST205" in text or "schema cache" in text or "does not exist" in text)
 
 
+# Blueprint keys that track the Design → Test → Deploy workflow, not how the
+# app behaves: moving an app between phases must not make its tests stale.
+BLUEPRINT_WORKFLOW_KEYS = ("dev_phase",)
+
+
 async def app_draft_state(app_row: dict) -> dict:
     """Everything that decides how an app behaves (its draft: what editors run)."""
     blueprint, tools = await asyncio.gather(fetch_app_blueprint(app_row["id"]), fetch_app_tools(app_row["id"]))
-    return {**{k: app_row.get(k) for k in DRAFT_FIELDS}, "blueprint": blueprint or {},
+    blueprint = {k: v for k, v in (blueprint or {}).items() if k not in BLUEPRINT_WORKFLOW_KEYS}
+    return {**{k: app_row.get(k) for k in DRAFT_FIELDS}, "blueprint": blueprint,
             "tools": sorted(({k: t.get(k) for k in TOOL_FIELDS} for t in tools), key=lambda t: str(t.get("name")))}
 
 

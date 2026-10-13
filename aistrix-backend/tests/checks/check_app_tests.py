@@ -128,6 +128,12 @@ APP["system_prompt"] = "Score the lead, briefly"
 st = c.get("/v1/apps/app-1/tests/status", headers=auth).json()
 ok("status: editing the draft makes old results not count", st["total"] == 0 and not st["all_passed"])
 APP["system_prompt"] = "Score the lead"
+before = c.get("/v1/apps/app-1/tests/status", headers=auth).json()
+BLUEPRINT["dev_phase"] = "deploy"
+after = c.get("/v1/apps/app-1/tests/status", headers=auth).json()
+ok("moving the app to Deploy keeps its test results", after["draft_hash"] == before["draft_hash"] and after["total"] == before["total"] == 2)
+del BLUEPRINT["dev_phase"]
+APP["system_prompt"] = "Score the lead"
 st = c.get("/v1/apps/app-1/tests/status", headers=auth).json()
 ok("status: timing and cost profile from real runs", st["profile"]["runs"] == 3 and st["profile"]["latency_p50_ms"] is not None
    and st["profile"]["avg_cost_usd"] == round((1000 * 2 + 500 * 10) / 1e6, 6))

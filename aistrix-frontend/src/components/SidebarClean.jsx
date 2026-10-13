@@ -25,6 +25,8 @@ import {
 import { supabase } from '../supabase'
 import { applyTheme } from '../utils/theme'
 
+const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+
 const DEVELOPER_NAV = [
   { label: 'STUDIO', alwaysOpen: true, items: [
     { icon: Code2,    label: 'Dev Studio',      view: 'developer' },
@@ -98,12 +100,16 @@ export default function SidebarClean({ user, userRole, onClose, onShowProfile, a
     setTimeout(() => document.documentElement.classList.remove('theme-transitioning'), 350)
   }
 
+  // Today's runs against the free allowance, as the server counts them (runs
+  // on the user's own AI keys don't use it up).
   useEffect(() => {
     if (!user) return
-    const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0)
-    supabase.from('run_history').select('id', { count: 'exact', head: true })
-      .eq('user_id', user.id).gte('created_at', startOfDay.toISOString())
-      .then(({ count }) => setUsage(prev => ({ ...prev, today: count ?? 0 })))
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (!session?.access_token) return
+      return fetch(`${API_URL}/v1/usage`, { headers: { Authorization: `Bearer ${session.access_token}` } })
+        .then(r => r.ok ? r.json() : null)
+        .then(u => { if (u?.daily) setUsage({ today: u.daily.used, limit: u.daily.limit }) })
+    }).catch(() => {})
   }, [user])
 
   async function signOut() { await supabase.auth.signOut() }

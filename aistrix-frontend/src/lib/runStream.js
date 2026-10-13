@@ -111,7 +111,9 @@ export function parseModelJSON(raw) {
 export async function generateJSON(systemPrompt, input, { provider, model, signal } = {}) {
   if (!provider) {
     const { loadProviders, builderProvider } = await import('./providers')
-    ;({ provider, model } = builderProvider(await loadProviders().catch(() => [])))
+    const b = builderProvider(await loadProviders().catch(() => []))
+    provider = b.provider
+    model = (b.provider === 'claude' && model) || b.model   // a requested Claude model (e.g. Haiku) stays on Claude
   }
   const { text } = await streamRun({
     input, system_prompt: systemPrompt, output_type: 'json', ai_provider: provider, ai_model: model,

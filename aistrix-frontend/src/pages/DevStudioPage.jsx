@@ -5,6 +5,7 @@ import { track, EVENTS } from '../lib/analytics'
 import { timeAgo } from '../utils'
 import ToolsEditor from '../components/ToolsEditor'
 import SimpleTestPanel from '../components/SimpleTestPanel'
+import { inferPromptOutputFormat } from '../utils/starterBlueprint'
 import BillingModeHint from '../components/BillingModeHint'
 import { publishApp, unpublishApp } from '../lib/release'
 import ErrorBoundary from '../components/ErrorBoundary'
@@ -913,16 +914,6 @@ function outputContractHasRules(oc = {}) {
     if (Array.isArray(v)) return v.length > 0
     return String(v || '').trim()
   }))
-}
-
-function inferPromptOutputFormat(prompt = '') {
-  const text = prompt.toLowerCase()
-  if (/valid json|json object|return only the json|only the json|strict json/.test(text)) return 'json'
-  if (/markdown|##|###/.test(text)) return 'markdown'
-  if (/table|columns|csv/.test(text)) return 'table'
-  if (/email|subject line|draft reply/.test(text)) return 'email'
-  if (/checklist|check list|action items/.test(text)) return 'checklist'
-  return null
 }
 
 function outputContractMismatch(app, bp) {

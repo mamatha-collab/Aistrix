@@ -6,7 +6,7 @@ import { confirmDiscard } from '../lib/confirmDiscard'
 import { generateJSON, streamRun } from '../lib/runStream'
 import { TOOL_DEFAULT_SCHEMAS } from '../utils/toolTypes'
 import { fieldKeyFromLabel, outputFieldsErrors } from '../utils/schemaContracts'
-import { saveAppContract } from '../utils/appContracts'
+import { saveStarterBlueprint } from '../utils/appContracts'
 import { TypeGuideSteps } from './TypeBuilderGuide'
 import { DEFAULT_PROVIDERS, PROVIDER_STYLE, defaultAppProvider, loadProviders } from '../lib/providers'
 import { publishApp } from '../lib/release'
@@ -57,6 +57,10 @@ Return ONLY valid JSON — no markdown, no explanation:
     // Only include if tools are genuinely needed. Each tool:
     // { "type": "search|calculator|fetch|http", "name": "fn_name", "description": "When to use this" }
   ],
+  "business_problem": "One sentence: the problem this app solves, from the idea and answers",
+  "audience": "Who uses it day to day, from the answers (e.g. 'Sales development reps at B2B software companies')",
+  "missing_data_fallback": "One sentence: what the app does when the input lacks details it needs, from the answers",
+  "output_sections": ["Only for markdown/key_value/table output: the sections, fields or columns every answer must contain, exactly as the system_prompt names them"],
   "notes": "Brief note to developer about limitations or next steps (e.g. file upload coming soon)"
 }
 
@@ -141,6 +145,14 @@ function normaliseConfig(raw) {
     tone: appType === 'chatbot' && TONES.includes(c.tone) ? c.tone : null,
     tools,
     notes: c.notes || '',
+    // What Design asks for, so the app doesn't land there half-empty.
+    known: {
+      business_problem: String(c.business_problem || '').trim().slice(0, 500),
+      audience: String(c.audience || '').trim().slice(0, 300),
+      fallback: String(c.missing_data_fallback || '').trim().slice(0, 500),
+      sections: appType === 'structured' || appType === 'chatbot' ? []
+        : (Array.isArray(c.output_sections) ? c.output_sections : []).map(x => String(x).trim()).filter(x => x && x.length <= 60).slice(0, 12),
+    },
   }
 }
 
@@ -432,9 +444,9 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGui
         )
         if (error) problems.push(`tools: ${error.message}`)
       }
-      if (cfg.app_type === 'native' || cfg.app_type === 'structured') {
-        const error = await saveAppContract(data.id, user.id, { formSchema: data.form_schema, outputFields: cfg.output_fields })
-        if (error) problems.push(`input/output contract: ${error.message}`)
+      {
+        const error = await saveStarterBlueprint(data, user.id, { formSchema: data.form_schema || [], outputFields: cfg.output_fields, known: cfg.known })
+        if (error) problems.push(`design blueprint: ${error.message}`)
       }
 
       // The app itself saved even if a follow-up insert failed — say so

@@ -11,6 +11,7 @@ import { generateJSON, normaliseUrl, readUrl, streamRun } from '../lib/runStream
 import { TOOL_DEFAULT_SCHEMAS } from '../utils/toolTypes'
 import OutputSchemaEditor from './OutputSchemaEditor'
 import { formSchemaToInputFields, getOutputSchemaFields, outputFieldsErrors } from '../utils/schemaContracts'
+import { saveStarterBlueprint } from '../utils/appContracts'
 
 const TYPE_DEFAULTS = {
   native: { emoji: '⊞', placeholder: 'Fill out the form fields and submit...' },
@@ -421,6 +422,7 @@ export default function CreateAppModal({ user, onClose, onBack, onCreated, onUpd
   // If the caller passed prefilled website data, skip the URL step
   const [websiteScraped, setWebsiteScraped] = useState(!!websitePrefilled)
   const [websiteSource, setWebsiteSource] = useState(null)   // { url, text } read on this form's URL step
+  const [websiteKnown, setWebsiteKnown] = useState(websitePrefilled?.known || {})   // what the site generator worked out for Design
 
   // Unsaved changes = anything that differs from how the form opened (type
   // defaults count as unchanged; for Edit, the saved app and its saved
@@ -468,7 +470,10 @@ Return ONLY valid JSON with these fields:
   "description": "one sentence describing what this app does for users",
   "system_prompt": "a detailed system prompt (300+ chars) for an assistant representing this business — business name, what they offer, tone, common questions, and what to say when the answer isn't in the site content",
   "tags": "comma-separated tags, e.g. 'support, retail, customer service'",
-  "input_placeholder": "a helpful prompt placeholder, e.g. 'Ask about our products, hours, or services…'"
+  "input_placeholder": "a helpful prompt placeholder, e.g. 'Ask about our products, hours, or services…'",
+  "business_problem": "one sentence: what visitors of this site need help with",
+  "audience": "who visits this site, from its content (e.g. 'Homeowners in Leeds looking for a plumber')",
+  "missing_data_fallback": "one sentence: what the assistant does when the answer isn't on the site"
 }`, `Text read from ${page.url}:\n\n${page.text.slice(0, 12000)}`)
       if (!parsed?.name || !parsed?.system_prompt) throw new Error('The AI response was missing the app name or instructions. Try again.')
       set('name', parsed.name)
@@ -477,6 +482,7 @@ Return ONLY valid JSON with these fields:
       set('system_prompt', parsed.system_prompt)
       if (parsed.tags)              set('tags', Array.isArray(parsed.tags) ? parsed.tags.join(', ') : parsed.tags)
       if (parsed.input_placeholder) set('input_placeholder', parsed.input_placeholder)
+      setWebsiteKnown({ business_problem: parsed.business_problem, audience: parsed.audience, fallback: parsed.missing_data_fallback })
       setWebsiteSource({ url: page.url, text: page.text })
       setWebsiteScraped(true)
       setStep(2)
@@ -635,9 +641,15 @@ Return ONLY valid JSON with these fields:
         .insert({ ...payload, is_published: false, created_by: user.id, workflow_order: 999, total_runs: 0 })
         .select('*, domains(name, emoji, color, slug)').single()
       if (err) { setSaving(false); setError(err.message); return }
-      const bpErr = await saveBlueprint(data.id)
+      // First Design blueprint from what this wizard knows (inputs, output
+      // contract, business problem; audience/fallback from the site generator).
+      const bpErr = await saveStarterBlueprint(data, user.id, {
+        formSchema: (isNative || isApi) ? formSchema : [],
+        outputFields: hasOutputSchema && !outputFieldsErrors(outputFields) ? outputFields : [],
+        known: isWebsite ? websiteKnown : {},
+      })
       setSaving(false)
-      if (bpErr) toast(`"${data.name}" saved, but its input/output contract wasn't: ${bpErr.message}`, 'error', 8000)
+      if (bpErr) toast(`"${data.name}" saved, but its design blueprint wasn't: ${bpErr.message}`, 'error', 8000)
       if (pendingTools.length > 0) {
         // Keys in tool settings become encrypted app secrets first.
         const { tools: safeTools, problems: keyProblems } = await moveToolKeysToSecrets(data.id, pendingTools)

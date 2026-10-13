@@ -107,9 +107,14 @@ export function parseModelJSON(raw) {
 }
 
 // Ask the model for a JSON object (builder flows) and parse it.
-export async function generateJSON(systemPrompt, input, { model = 'claude-sonnet-5-5', signal } = {}) {
+// Builds on the developer's own AI key when they have one (see builderProvider).
+export async function generateJSON(systemPrompt, input, { provider, model, signal } = {}) {
+  if (!provider) {
+    const { loadProviders, builderProvider } = await import('./providers')
+    ;({ provider, model } = builderProvider(await loadProviders().catch(() => [])))
+  }
   const { text } = await streamRun({
-    input, system_prompt: systemPrompt, output_type: 'json', ai_provider: 'claude', ai_model: model,
+    input, system_prompt: systemPrompt, output_type: 'json', ai_provider: provider, ai_model: model,
   }, { signal })
   return parseModelJSON(text)
 }

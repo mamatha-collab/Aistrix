@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 vi.mock('../supabase', () => ({
   supabase: { auth: { getSession: vi.fn(async () => ({ data: { session: { access_token: 'tok' } } })) } },
 }))
-const { DEFAULT_PROVIDERS, loadProviders, modelOptions, providerById, removeProviderKey, saveProviderKey } = await import('./providers')
+const { DEFAULT_PROVIDERS, builderProvider, defaultAppProvider, loadProviders, modelOptions, providerById, removeProviderKey, saveProviderKey } = await import('./providers')
 
 const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
 afterEach(() => vi.unstubAllGlobals())
@@ -47,5 +47,26 @@ describe('keys', () => {
     await removeProviderKey('claude')
     expect(fetch.mock.calls[0][0]).toMatch(/\/v1\/provider-keys\/claude$/)
     expect(fetch.mock.calls[0][1].method).toBe('DELETE')
+  })
+})
+
+const list = (...connected) => [
+  { id: 'claude', connected: connected.includes('claude'), default_model: 'claude-sonnet-5-5' },
+  { id: 'openai', connected: connected.includes('openai'), default_model: 'gpt-4o-mini' },
+  { id: 'gemini', connected: connected.includes('gemini'), default_model: 'gemini-3.8-flash' },
+]
+
+describe('which provider builds and runs new apps', () => {
+  it("uses the developer's only key", () => {
+    expect(builderProvider(list('openai'))).toEqual({ provider: 'openai', model: 'gpt-4o' })
+    expect(defaultAppProvider(list('openai'))).toEqual({ provider: 'openai', model: 'gpt-4o-mini' })
+    expect(defaultAppProvider(list('gemini'))).toEqual({ provider: 'gemini', model: 'gemini-3.8-flash' })
+  })
+  it('prefers Claude when there are several keys', () => {
+    expect(builderProvider(list('openai', 'claude'))).toEqual({ provider: 'claude', model: 'claude-sonnet-5-5' })
+  })
+  it('falls back to Claude (free allowance) without any key', () => {
+    expect(builderProvider(list())).toEqual({ provider: 'claude', model: 'claude-sonnet-5-5' })
+    expect(defaultAppProvider(undefined)).toEqual({ provider: 'claude', model: 'claude-sonnet-5-5' })
   })
 })

@@ -79,6 +79,28 @@ export function useProviderStatus(userId) {
   return { ...state, hasKey: state.providers.some(p => p.connected) }
 }
 
+// The developer's own keys decide which provider builds and runs a new app
+// (Claude first, then OpenAI, then Gemini). Without any key: Claude on the
+// platform's free allowance.
+const PROVIDER_ORDER = ['claude', 'openai', 'gemini']
+const BUILDER_MODEL = { claude: 'claude-sonnet-5-5', openai: 'gpt-4o' }   // generation quality matters here
+
+function firstConnected(providers) {
+  return PROVIDER_ORDER.map(id => providers.find(p => p.id === id)).find(p => p?.connected) || null
+}
+
+// { provider, model } for new apps' runs.
+export function defaultAppProvider(providers) {
+  const p = firstConnected(providers || [])
+  return p ? { provider: p.id, model: p.default_model || p.models?.[0]?.id } : { provider: 'claude', model: 'claude-sonnet-5-5' }
+}
+
+// { provider, model } for the AI that generates apps (Build with AI, From Website).
+export function builderProvider(providers) {
+  const p = firstConnected(providers || [])
+  return p ? { provider: p.id, model: BUILDER_MODEL[p.id] || p.default_model || p.models?.[0]?.id } : { provider: 'claude', model: 'claude-sonnet-5-5' }
+}
+
 export function providerById(providers, id) {
   return providers.find(p => p.id === id) || DEFAULT_PROVIDERS.find(p => p.id === id) || DEFAULT_PROVIDERS[0]
 }

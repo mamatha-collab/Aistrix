@@ -2,7 +2,7 @@ import { useState, useEffect, useTransition, useRef } from 'react'
 import { supabase } from '../supabase'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { confirmDiscard } from '../lib/confirmDiscard'
-import { PROVIDER_STYLE, modelOptions, providerById, useProviders } from '../lib/providers'
+import { PROVIDER_STYLE, defaultAppProvider, modelOptions, providerById, useProviders } from '../lib/providers'
 import BillingModeHint from './BillingModeHint'
 import { moveToolKeysToSecrets } from '../lib/toolSecrets'
 import { TypeGuideSteps } from './TypeBuilderGuide'
@@ -551,7 +551,16 @@ Return ONLY valid JSON with these fields:
     return error
   }
 
+  // New apps run on a provider the developer has a key for, unless they pick one.
+  const providerTouched = useRef(false)
+  useEffect(() => {
+    if (isEdit || providerTouched.current || providerById(providers, form.ai_provider).connected) return
+    const { provider, model } = defaultAppProvider(providers)
+    if (provider !== form.ai_provider) setForm(prev => ({ ...prev, ai_provider: provider, ai_model: model }))
+  }, [providers, isEdit, form.ai_provider])
+
   function set(key, val) {
+    if (key === 'ai_provider' || key === 'ai_model') providerTouched.current = true
     setForm(prev => {
       const next = { ...prev, [key]: val }
       if (key === 'ai_provider') next.ai_model = providerById(providers, val).default_model || modelOptions(providers, val)[0]?.id || ''

@@ -8,7 +8,7 @@ import { TOOL_DEFAULT_SCHEMAS } from '../utils/toolTypes'
 import { fieldKeyFromLabel, outputFieldsErrors } from '../utils/schemaContracts'
 import { saveAppContract } from '../utils/appContracts'
 import { TypeGuideSteps } from './TypeBuilderGuide'
-import { DEFAULT_PROVIDERS, PROVIDER_STYLE } from '../lib/providers'
+import { DEFAULT_PROVIDERS, PROVIDER_STYLE, defaultAppProvider, loadProviders } from '../lib/providers'
 import { publishApp } from '../lib/release'
 
 const QUESTIONS_SYSTEM_PROMPT = `You are an expert AI app architect on a platform called Aistrix.
@@ -372,6 +372,13 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGui
       const answerSummary = questions.map(q => `${q.question} → ${answers[q.id]}`).join('\n')
       const prompt = `App idea: ${description}\n\nRequirements:\n${answerSummary}`
       const config = normaliseConfig(await generateJSON(GENERATE_SYSTEM_PROMPT, prompt))
+      // Run the app on a provider the developer has a key for.
+      const providers = await loadProviders().catch(() => [])
+      if (!providers.find(p => p.id === config.ai_provider)?.connected) {
+        const { provider, model } = defaultAppProvider(providers)
+        config.ai_provider = provider
+        config.ai_model = model
+      }
       setGeneratedConfig(config)
       setPhase('preview')
     } catch (e) {

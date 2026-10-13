@@ -45,4 +45,14 @@ describe('app templates', () => {
     expect(isRealCheck({ type: 'must-contain', value: '' })).toBeFalsy()
     expect(isRealCheck({ type: 'no_prompt_leak' })).toBe(true)
   })
+  it('form tests use field hints and leave one required field empty for the edge case', () => {
+    const form = { ...app('native'), form_schema: [
+      { label: 'Company', type: 'text', required: true, placeholder: 'Northwind Logistics' },
+      { label: 'Budget', type: 'text', required: false } ] }
+    const cases = buildTemplateCases(form, {})
+    expect(cases[0].input).toContain('Company:\nNorthwind Logistics')
+    const edge = cases.find(tc => tc.name === 'Edge: missing required field')
+    expect(edge.input).toContain('Company:\n\n')
+    expect(edge.input).toContain('Budget:\nSample Budget')
+  })
 })

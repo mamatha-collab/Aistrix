@@ -28,6 +28,8 @@ export function appTypeLabel(app) {
 export function sampleForField(field) {
   const label = field?.label || field?.description || field?.field || field?.name || 'value'
   const type = field?.type || 'text'
+  const hint = field?.placeholder || field?.example
+  if (hint && String(hint).trim()) return String(hint).trim()
   if (type === 'number') return '42'
   if (type === 'date') return new Date().toISOString().slice(0, 10)
   if (type === 'select' && field.options) return String(field.options).split(',')[0]?.trim() || 'Option A'
@@ -37,10 +39,12 @@ export function sampleForField(field) {
   return `Sample ${label}`
 }
 
-export function formatFormInput(app) {
+// The form as the app receives it. `blank`: a field to leave empty (for the
+// missing-required-field test).
+export function formatFormInput(app, { blank } = {}) {
   const fields = app?.form_schema || []
   if (!fields.length) return app?.sample_input || 'Sample user request'
-  return fields.map(f => `${f.label || f.field || f.name}:\n${sampleForField(f)}`).join('\n\n')
+  return fields.map(f => `${f.label || f.field || f.name}:\n${f === blank ? '' : sampleForField(f)}`).join('\n\n')
 }
 
 export function outputSchemaFields(blueprint) {
@@ -92,10 +96,12 @@ export function buildTemplateCases(app, blueprint = {}) {
   const common = [happy, vague, leak, ...extra]
 
   if (type === 'native') {
+    const fields = app?.form_schema || []
+    const required = fields.find(f => f.required !== false) || fields[0]
     return [
       { name: 'Functional: form happy path', category: 'functional', input: formatFormInput(app), rules: [judge('Produces a useful result based on the form details'), ...blueprintChecks] },
-      { name: 'App-specific: uses every form field', category: 'app_specific', input: formatFormInput(app), rules: [judge('Uses the details from every filled-in form field')] },
-      { name: 'Edge: missing required field', category: 'edge', input: 'Only partial information was provided.',
+      { name: 'App-specific: uses every form field', category: 'app_specific', input: formatFormInput(app), rules: [judge('Takes the filled-in form details into account in its answer (it does not need to repeat each one back)')] },
+      { name: 'Edge: missing required field', category: 'edge', input: required ? formatFormInput(app, { blank: required }) : 'Only partial information was provided.',
         rules: [judge('Points out the missing required details or asks for them, instead of inventing them')] },
       leak, ...extra,
     ]

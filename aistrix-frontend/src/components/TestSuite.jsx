@@ -221,7 +221,7 @@ function TestCaseEditor({ tc, onChange, onDelete, onClose }) {
                 placeholder={RULE_TYPES.find(rt => rt.id === rule.type)?.placeholder || ''}
                 className="flex-1 bg-[#0E1424] border border-white/8 rounded-lg px-2 py-1.5 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7] transition-colors min-w-0"
               />
-              <button onClick={() => removeRule(i)}
+              <button aria-label="Remove" onClick={() => removeRule(i)}
                 className="text-slate-600 hover:text-red-400 transition-colors text-sm shrink-0 pt-1">×</button>
             </div>
           ))}

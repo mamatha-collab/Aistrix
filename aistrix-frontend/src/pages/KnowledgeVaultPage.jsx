@@ -306,7 +306,7 @@ export default function KnowledgeVaultPage({ user }) {
                         className={`text-[10px] px-2 py-0.5 rounded-md border font-medium transition-colors ${item.is_active ? 'text-green-400 bg-green-400/10 border-green-400/25 hover:bg-green-400/20' : 'text-slate-500 bg-white/5 border-white/10 hover:text-white'}`}>
                         {item.is_active ? '● Active' : '○ Off'}
                       </button>
-                      <button onClick={e => { e.stopPropagation(); deleteItem(item.id) }}
+                      <button aria-label="Delete" onClick={e => { e.stopPropagation(); deleteItem(item.id) }}
                         className="text-slate-600 hover:text-red-400 text-xs transition-colors p-1">🗑</button>
                       <span className="text-slate-600 text-[10px]">{isExpanded ? '▲' : '▼'}</span>
                     </div>

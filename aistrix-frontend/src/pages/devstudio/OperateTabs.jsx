@@ -2310,7 +2310,7 @@ export function SecretsTab({ apps, selectedAppId }) {
                       <td className="px-4 py-3 text-slate-600 text-xs tracking-widest">••••••••</td>
                       <td className="px-4 py-3 text-slate-600 text-[10px] text-center">{new Date(s.updated_at).toLocaleDateString()}</td>
                       <td className="px-4 py-3">
-                        <button onClick={() => deleteSecret(s.key)}
+                        <button aria-label="Remove" onClick={() => deleteSecret(s.key)}
                           className="text-slate-600 hover:text-red-400 transition-colors text-xs">✕</button>
                       </td>
                     </tr>

@@ -581,14 +581,14 @@ export default function FlowRunner({ flow, user, onClose, onShowHistory, onRunCo
                       <input autoFocus value={editValue} onChange={e => setEditValue(e.target.value)}
                         onKeyDown={e => { if (e.key === 'Enter') saveFactEdit(k); if (e.key === 'Escape') setEditingFact(null) }}
                         className="text-[11px] bg-transparent text-white focus:outline-none w-32" />
-                      <button onClick={() => saveFactEdit(k)} className="text-green-400 text-xs hover:text-green-300">✓</button>
+                      <button aria-label="Confirm" onClick={() => saveFactEdit(k)} className="text-green-400 text-xs hover:text-green-300">✓</button>
                       <button aria-label="Cancel edit" onClick={() => setEditingFact(null)} className="text-slate-400 text-xs hover:text-white">✕</button>
                     </span>
                   ) : (
                     <span key={k} title={prov ? `Learned from ${prov.step_name}${prov.updated_at ? ` · ${new Date(prov.updated_at).toLocaleDateString()}` : ''}` : undefined}
                       className="group/fact flex items-center gap-1 text-[11px] bg-[#1A2038] text-slate-300 pl-2.5 pr-1 py-1 rounded-lg hover:border hover:border-[#6C5CE7]/40">
                       <span className="text-slate-400">{k}:</span> {display}
-                      <button onClick={() => { setEditingFact(k); setEditValue(display) }}
+                      <button aria-label="Edit" onClick={() => { setEditingFact(k); setEditValue(display) }}
                         className="ml-1 text-slate-400 hover:text-white opacity-0 group-hover/fact:opacity-100 transition-opacity px-1">✏️</button>
                       <button aria-label={`Delete fact ${k}`} onClick={() => deleteFact(k)}
                         className="text-slate-400 hover:text-red-400 opacity-0 group-hover/fact:opacity-100 transition-opacity px-1">✕</button>

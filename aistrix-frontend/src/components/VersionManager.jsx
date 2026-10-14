@@ -342,7 +342,7 @@ export default function VersionManager({ app, user, onRollback, selectedId, onSe
                 ) : (
                   <p className="text-white text-xs font-medium truncate">
                     {v.label || vLabel}
-                    <button
+                    <button aria-label="Edit"
                       onClick={e => { e.stopPropagation(); setLabelDraft(v.label || ''); setEditLabelId(v.id) }}
                       className="ml-1.5 text-slate-600 hover:text-slate-400 text-[9px]">✎</button>
                   </p>
@@ -366,7 +366,7 @@ export default function VersionManager({ app, user, onRollback, selectedId, onSe
                   className="text-[10px] text-[#A29BFE] hover:text-white bg-[#6C5CE7]/10 hover:bg-[#6C5CE7]/20 px-2 py-1 rounded-md transition-colors border border-[#6C5CE7]/20">
                   ↺ Restore
                 </button>
-                <button onClick={() => deleteVersion(v.id)}
+                <button aria-label="Remove" onClick={() => deleteVersion(v.id)}
                   className="text-[10px] text-slate-600 hover:text-red-400 transition-colors px-1">×</button>
               </div>
             </div>

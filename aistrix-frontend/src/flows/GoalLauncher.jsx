@@ -53,7 +53,7 @@ export function GoalLauncher({ apps, flows, userId, onInstalled, onRunFlow }) {
           onFocus={() => setFocused(true)}
           onBlur={() => setTimeout(() => setFocused(false), 150)}
         />
-        {query && <button onClick={() => setQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white text-lg leading-none">✕</button>}
+        {query && <button aria-label="Close" onClick={() => setQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white text-lg leading-none">✕</button>}
       </div>
       {focused && suggestions.length > 0 && (
         <div className="absolute top-full left-0 right-0 mt-1.5 bg-[#121829] border border-white/20 rounded-xl overflow-hidden z-30 shadow-2xl">

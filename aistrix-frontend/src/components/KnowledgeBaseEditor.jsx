@@ -140,7 +140,7 @@ export default function KnowledgeBaseEditor({ appId }) {
                     <p className="text-xs text-white font-medium truncate">{item.title}</p>
                     <p className="text-[10px] text-slate-500">{(item.content.length / 1000).toFixed(1)}k chars · {timeAgo(item.created_at)}</p>
                   </div>
-                  <button onClick={e => { e.stopPropagation(); deleteItem(item.id) }}
+                  <button aria-label="Delete" onClick={e => { e.stopPropagation(); deleteItem(item.id) }}
                     className="text-slate-600 hover:text-red-400 text-xs transition-colors shrink-0">🗑</button>
                   <span className="text-slate-500 text-[10px]">{expanded === item.id ? '▲' : '▼'}</span>
                 </div>

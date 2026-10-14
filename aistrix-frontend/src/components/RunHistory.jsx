@@ -190,7 +190,7 @@ export default function RunHistory({ user, onClose, inline = false }) {
                     title="Select for comparison"
                     className={`text-xs transition-colors ${compareIds.includes(entry.id) ? 'text-[#6C5CE7]' : 'text-slate-600 hover:text-slate-400'}`}
                   >⊡</button>
-                  <button
+                  <button aria-label="Delete"
                     onClick={e => { e.stopPropagation(); deleteEntry(entry.id) }}
                     className="text-slate-600 hover:text-red-400 text-xs transition-colors"
                   >🗑</button>

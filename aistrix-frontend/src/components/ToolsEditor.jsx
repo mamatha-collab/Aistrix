@@ -187,9 +187,9 @@ export default function ToolsEditor({ appId, readOnly = false, autoOpen = false 
                   </>
                 ) : (
                   <>
-                    <button onClick={() => { setEditingTool(tool); setShowForm(true) }}
+                    <button aria-label="Edit" onClick={() => { setEditingTool(tool); setShowForm(true) }}
                       className="text-slate-500 hover:text-white text-xs p-1.5 transition-colors">✏️</button>
-                    <button onClick={() => setConfirmDeleteId(tool.id)}
+                    <button aria-label="Delete" onClick={() => setConfirmDeleteId(tool.id)}
                       className="text-slate-500 hover:text-red-400 text-xs p-1.5 transition-colors">🗑</button>
                   </>
                 )}

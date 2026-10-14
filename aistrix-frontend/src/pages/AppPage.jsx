@@ -108,13 +108,13 @@ export default function AppPage() {
           {checkoutBanner === 'success' && (
             <div className="mb-4 bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-4 py-3 flex items-center justify-between">
               <p className="text-emerald-400 text-sm font-semibold">✓ Payment successful — your access is now active</p>
-              <button onClick={() => setCheckoutBanner(null)} className="text-slate-500 hover:text-white text-sm">✕</button>
+              <button aria-label="Close" onClick={() => setCheckoutBanner(null)} className="text-slate-500 hover:text-white text-sm">✕</button>
             </div>
           )}
           {checkoutBanner === 'cancelled' && (
             <div className="mb-4 bg-slate-500/10 border border-white/10 rounded-xl px-4 py-3 flex items-center justify-between">
               <p className="text-slate-400 text-sm">Payment cancelled — you can try again when ready.</p>
-              <button onClick={() => setCheckoutBanner(null)} className="text-slate-500 hover:text-white text-sm">✕</button>
+              <button aria-label="Close" onClick={() => setCheckoutBanner(null)} className="text-slate-500 hover:text-white text-sm">✕</button>
             </div>
           )}
           <div className="flex items-center gap-4 mb-8">

@@ -316,7 +316,7 @@ export function HelpPanel({ onClose }) {
       >
         <div className="sticky top-0 bg-[#0E1424]/95 backdrop-blur-sm px-5 py-4 border-b border-white/5 flex items-center justify-between">
           <p className="text-white font-semibold text-sm">Developer Guide</p>
-          <button onClick={onClose} className="text-slate-400 hover:text-white text-lg leading-none transition-colors">×</button>
+          <button aria-label="Close" onClick={onClose} className="text-slate-400 hover:text-white text-lg leading-none transition-colors">×</button>
         </div>
 
         <div className="px-5 py-5 space-y-6">
@@ -544,7 +544,7 @@ export function TabNoteFolderTab({ id }) {
               <div className="w-2 h-2 rounded-full" style={{ background: note.color }} />
               <p className="text-xs font-bold text-white">{note.title}</p>
             </div>
-            <button onClick={() => setOpen(false)} className="text-slate-500 hover:text-white text-sm leading-none transition-colors">✕</button>
+            <button aria-label="Close" onClick={() => setOpen(false)} className="text-slate-500 hover:text-white text-sm leading-none transition-colors">✕</button>
           </div>
           <ul className="space-y-2">
             {note.points.map((pt, i) => (

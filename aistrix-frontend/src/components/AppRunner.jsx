@@ -1148,7 +1148,7 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
                     </span>
                   )}
                   {r.runId && <RunRating key={r.runId} runId={r.runId} />}
-                  <button onClick={() => navigator.clipboard.writeText(r.result)} className="text-[10px] text-slate-500 hover:text-slate-300">📋</button>
+                  <button aria-label="Copy" onClick={() => navigator.clipboard.writeText(r.result)} className="text-[10px] text-slate-500 hover:text-slate-300">📋</button>
                 </div>
               </div>
               <div className="px-3 py-2">

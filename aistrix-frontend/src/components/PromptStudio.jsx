@@ -325,7 +325,7 @@ export default function PromptStudio({ app: initialApp, onClose, onSaved, mode =
             className="text-xs font-semibold px-4 py-1.5 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] disabled:opacity-40 text-white transition-colors">
             {saving ? 'Saving…' : 'Save  ⌘S'}
           </button>
-          <button onClick={handleClose}
+          <button aria-label="Close" onClick={handleClose}
             className="text-slate-400 hover:text-white transition-colors text-lg leading-none px-1">×</button>
         </div>
       </div>

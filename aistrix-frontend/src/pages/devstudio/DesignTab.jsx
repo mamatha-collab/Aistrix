@@ -935,7 +935,7 @@ function DeploymentBlueprintPanel({ app, bp, setBp }) {
                       className="w-3 h-3 accent-[#6C5CE7]" />
                     Required
                   </label>
-                  <button onClick={() => removeSecret(i)} className="text-slate-600 hover:text-red-400 text-xs">✕</button>
+                  <button aria-label="Remove" onClick={() => removeSecret(i)} className="text-slate-600 hover:text-red-400 text-xs">✕</button>
                 </div>
               ))}
             </div>
@@ -965,7 +965,7 @@ function DeploymentBlueprintPanel({ app, bp, setBp }) {
                       className="w-3 h-3 accent-[#6C5CE7]" />
                     Required
                   </label>
-                  <button onClick={() => removeOutput(i)} className="text-slate-600 hover:text-red-400 text-xs">✕</button>
+                  <button aria-label="Remove" onClick={() => removeOutput(i)} className="text-slate-600 hover:text-red-400 text-xs">✕</button>
                 </div>
               ))}
             </div>
@@ -1534,7 +1534,7 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
                         className="w-3 h-3 accent-amber-500" />
                       <label htmlFor={`pii-${i}`} className="text-[10px] text-slate-400">PII</label>
                     </div>
-                    <button onClick={() => removeInput(i)} className="text-slate-600 hover:text-red-400 transition-colors text-xs pb-1.5 ml-auto">✕</button>
+                    <button aria-label="Remove" onClick={() => removeInput(i)} className="text-slate-600 hover:text-red-400 transition-colors text-xs pb-1.5 ml-auto">✕</button>
                   </div>
                 </div>
                 <input value={field.placeholder || ''} onChange={e => updateInput(i, { placeholder: e.target.value })}
@@ -1923,7 +1923,7 @@ function SchemaFieldRow({ f, depth, onChange, onRemove, onAddNested, onChangeNes
           <input value={f.description || ''} onChange={e => onChange({ description: e.target.value })}
             placeholder="Description"
             className="flex-1 bg-[#171B33] border border-white/8 rounded-lg px-2.5 py-1.5 text-xs text-slate-400 placeholder-slate-500 focus:outline-none" />
-          <button onClick={onRemove} className="text-slate-600 hover:text-red-400 transition-colors text-xs shrink-0">✕</button>
+          <button aria-label="Remove" onClick={onRemove} className="text-slate-600 hover:text-red-400 transition-colors text-xs shrink-0">✕</button>
         </div>
       </div>
 

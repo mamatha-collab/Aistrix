@@ -22,7 +22,7 @@ function SourceCard({ source, onDelete, expanded, onToggle }) {
           </div>
         </div>
         <div className="flex items-center gap-2 shrink-0">
-          <button onClick={e => { e.stopPropagation(); onDelete(source.id) }}
+          <button aria-label="Delete" onClick={e => { e.stopPropagation(); onDelete(source.id) }}
             className="text-slate-600 hover:text-red-400 text-sm transition-colors">🗑</button>
           <span className="text-slate-500 text-xs">{expanded ? '▲' : '▼'}</span>
         </div>

@@ -88,7 +88,7 @@ function PromoteModal({ app, onClose, onPromoted }) {
             <p className="text-white font-semibold text-sm">Promote to Production</p>
             <p className="text-slate-400 text-xs mt-0.5">{app.emoji} {app.name}</p>
           </div>
-          <button onClick={onClose} className="text-slate-500 hover:text-white text-lg leading-none px-1">×</button>
+          <button aria-label="Close" onClick={onClose} className="text-slate-500 hover:text-white text-lg leading-none px-1">×</button>
         </div>
 
         {/* Step tabs */}
@@ -658,7 +658,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
           <span className="text-green-400 text-xs shrink-0">● Live</span>
           <code className="flex-1 text-[11px] text-slate-300 truncate">{liveUrl}</code>
           <a href={liveUrl} target="_blank" rel="noopener noreferrer" className="text-[11px] text-slate-400 hover:text-white shrink-0">Open ↗</a>
-          <button onClick={() => copy(liveUrl, 'App link')} className="text-slate-500 hover:text-white transition-colors text-xs shrink-0">📋</button>
+          <button aria-label="Copy app link" onClick={() => copy(liveUrl, 'App link')} className="text-slate-500 hover:text-white transition-colors text-xs shrink-0">📋</button>
         </div>
       )}
 
@@ -740,7 +740,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
             <code className={`text-[10px] truncate block ${live ? 'text-slate-300' : 'text-slate-600'}`}>{liveUrl}</code>
           </div>
           <a href={liveUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-slate-500 hover:text-white shrink-0">↗</a>
-          <button onClick={() => copy(liveUrl, 'App link')} className="text-slate-500 hover:text-white transition-colors text-xs shrink-0">📋</button>
+          <button aria-label="Copy app link" onClick={() => copy(liveUrl, 'App link')} className="text-slate-500 hover:text-white transition-colors text-xs shrink-0">📋</button>
         </div>
       </>)}</DeployCard>
 
@@ -795,7 +795,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
             <p className="text-[9px] text-slate-500 uppercase">API endpoint{!live && inactiveTag}</p>
             <code className={`text-[10px] truncate block ${live ? 'text-slate-300' : 'text-slate-600'}`}>{`${PUBLIC_API_URL}/v1/apps/${app.id}/run`}</code>
           </div>
-          <button onClick={() => copy(`${PUBLIC_API_URL}/v1/apps/${app.id}/run`, 'API endpoint')} className="text-slate-500 hover:text-white transition-colors text-xs shrink-0">📋</button>
+          <button aria-label="Copy API endpoint" onClick={() => copy(`${PUBLIC_API_URL}/v1/apps/${app.id}/run`, 'API endpoint')} className="text-slate-500 hover:text-white transition-colors text-xs shrink-0">📋</button>
         </div>
         <div className="bg-[#0E1424] rounded-lg px-3 py-2 min-w-0">
           <p className="text-[9px] text-slate-500 uppercase">Inbound trigger{trigger && !live && inactiveTag}</p>
@@ -803,7 +803,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
             <>
               <div className="flex items-center gap-2 min-w-0">
                 <code className={`flex-1 text-[10px] truncate block ${live ? 'text-slate-300' : 'text-slate-600'}`}>{`${PUBLIC_API_URL}/webhooks/${trigger}`}</code>
-                <button onClick={() => copy(`${PUBLIC_API_URL}/webhooks/${trigger}`, 'Trigger link')} className="text-slate-500 hover:text-white transition-colors text-xs shrink-0">📋</button>
+                <button aria-label="Copy trigger link" onClick={() => copy(`${PUBLIC_API_URL}/webhooks/${trigger}`, 'Trigger link')} className="text-slate-500 hover:text-white transition-colors text-xs shrink-0">📋</button>
               </div>
               <p className="text-[9px] text-slate-600 mt-0.5">POST {'{"input":"..."}'} to run the live version. Keep it secret: anyone with the link can run the app on your key.</p>
               <div className="flex gap-3 mt-1.5">
@@ -864,7 +864,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
             <div className="flex items-center gap-2 mt-2 min-w-0">
               <code className="flex-1 text-[10px] text-slate-300 truncate">{webhookSecret || 'whsec_••••••••••••••••'}</code>
               {webhookSecret
-                ? <button onClick={() => copy(webhookSecret, 'Signing secret')} className="text-slate-500 hover:text-white transition-colors text-xs shrink-0">📋</button>
+                ? <button aria-label="Copy signing secret" onClick={() => copy(webhookSecret, 'Signing secret')} className="text-slate-500 hover:text-white transition-colors text-xs shrink-0">📋</button>
                 : <button onClick={showWebhookSecret} className="text-[10px] text-slate-400 hover:text-white transition-colors shrink-0">Show secret</button>}
             </div>
           </div>

@@ -61,7 +61,7 @@ function GoalCard({ goal, onDelete, onToggle }) {
             className={`relative w-8 h-4 rounded-full transition-colors ${goal.is_active ? 'bg-[#6C5CE7]' : 'bg-[#1F2444]'}`}>
             <span className={`absolute top-0.5 w-3 h-3 bg-white rounded-full shadow transition-transform ${goal.is_active ? 'translate-x-4' : 'translate-x-0.5'}`} />
           </button>
-          <button onClick={() => onDelete(goal.id)} className="text-slate-600 hover:text-red-400 text-sm transition-colors">🗑</button>
+          <button aria-label="Delete" onClick={() => onDelete(goal.id)} className="text-slate-600 hover:text-red-400 text-sm transition-colors">🗑</button>
         </div>
       </div>
 

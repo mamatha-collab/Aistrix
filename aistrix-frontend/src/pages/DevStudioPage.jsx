@@ -1997,6 +1997,10 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
   const [copilotOutput, setCopilotOutput] = useState('')
   const [copilotSuggestions, setCopilotSuggestions] = useState(null)
   const [serverProblems, setServerProblems] = useState(null)
+  // When the saved design was last written, as loaded: if it changes before
+  // we save, someone else (or another tab) saved in between.
+  const savedAtRef = useRef(null)
+  const [conflict, setConflict] = useState(null)   // { at, byMe } — someone else saved since we loaded
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
   useEffect(() => { loadBlueprint(); loadServerChecks() }, [app.id])  // eslint-disable-line react-hooks/exhaustive-deps
@@ -2008,11 +2012,12 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
 
   async function loadBlueprint() {
     const { data, error } = await supabase.from('app_blueprints')
-      .select('blueprint, blueprint_prod').eq('app_id', app.id).maybeSingle()
+      .select('blueprint, blueprint_prod, updated_at').eq('app_id', app.id).maybeSingle()
     if (error?.code === '42703' || error?.message?.includes('blueprint_prod')) {
       // blueprint_prod column not added yet — fall back to blueprint only
       const { data: d2, error: e2 } = await supabase.from('app_blueprints')
-        .select('blueprint').eq('app_id', app.id).maybeSingle()
+        .select('blueprint, updated_at').eq('app_id', app.id).maybeSingle()
+      savedAtRef.current = d2?.updated_at || null
       if (isMissingBlueprintTable(e2)) { setTableNeeded(true); return }
       const raw2 = d2?.blueprint ? { ...EMPTY_BP, ...d2.blueprint } : { ...EMPTY_BP }
       const next2 = migrateBlueprint(raw2)
@@ -2020,6 +2025,7 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
       return
     }
     if (isMissingBlueprintTable(error)) { setTableNeeded(true); return }
+    savedAtRef.current = data?.updated_at || null
     const raw  = data?.blueprint ? { ...EMPTY_BP, ...data.blueprint } : { ...EMPTY_BP }
     const next = migrateBlueprint(raw)
     setBp(next)
@@ -2027,14 +2033,24 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
     if (data?.blueprint_prod) setBpProd(migrateBlueprint({ ...EMPTY_BP, ...data.blueprint_prod }))
   }
 
-  async function save(next) {
+  async function save(next, { force = false } = {}) {
     setSaving(true)
+    if (!force && savedAtRef.current) {
+      const { data: current } = await supabase.from('app_blueprints').select('updated_at, user_id').eq('app_id', app.id).maybeSingle()
+      if (current?.updated_at && new Date(current.updated_at).getTime() !== new Date(savedAtRef.current).getTime()) {
+        setSaving(false)
+        setConflict({ at: current.updated_at, byMe: current.user_id === user.id })
+        return false
+      }
+    }
     const normalized = migrateBlueprint(next)
     const score = calcReadiness(app, normalized)
+    const savedAt = new Date().toISOString()
     const { error } = await supabase.from('app_blueprints').upsert(
-      { app_id: app.id, user_id: user.id, blueprint: normalized, readiness_score: score, updated_at: new Date().toISOString() },
+      { app_id: app.id, user_id: user.id, blueprint: normalized, readiness_score: score, updated_at: savedAt },
       { onConflict: 'app_id' }
     )
+    if (!error) savedAtRef.current = savedAt
     if (!error && app.is_published) {
       const { error: dcErr } = await supabase.from('apps').update({ has_draft_changes: true }).eq('id', app.id)
       if (!dcErr) onAppUpdated?.({ ...app, has_draft_changes: true })
@@ -2225,6 +2241,21 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
 
   return (
     <div className="space-y-5">
+      {conflict && (
+        <ConfirmDialog
+          title="This design changed since you opened it"
+          subtitle={`${app.emoji || ''} ${app.name}`.trim()}
+          confirmLabel="Save mine anyway" busyLabel="Saving…" danger
+          onCancel={() => setConflict(null)}
+          onConfirm={async () => { await save(bp, { force: true }); setConflict(null) }}>
+          {conflict.byMe ? 'You saved it in another tab or window' : 'A teammate saved it'} at {new Date(conflict.at).toLocaleTimeString()}.
+          Saving now replaces those changes with yours.
+          <button type="button" onClick={async () => { setConflict(null); await loadBlueprint(); loadServerChecks() }}
+            className="block mt-2 text-[11px] font-semibold text-[#A29BFE] hover:text-white">
+            Load their version instead (your unsaved edits are discarded) →
+          </button>
+        </ConfirmDialog>
+      )}
 
       {/* Header */}
       <div className="flex items-center justify-between">

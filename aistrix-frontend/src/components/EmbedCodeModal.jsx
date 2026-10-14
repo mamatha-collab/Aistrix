@@ -189,7 +189,7 @@ export default function EmbedCodeModal({ app, onClose }) {
               <textarea rows={3} value={domainsText} onChange={e => setDomainsText(e.target.value)}
                 placeholder={'example.com\nshop.example.com'}
                 className="w-full bg-[#0F1225] border border-white/10 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-600 font-mono resize-none focus:outline-none focus:border-[#6C5CE7]" />
-              <p className="text-[10px] text-slate-600 mt-1">Empty = any site can embed. A domain also covers its subdomains.</p>
+              <p className="text-[10px] text-slate-600 mt-1">Empty = any site can embed it for signed-in users. To let visitors use it without an account, list the sites. A domain also covers its subdomains.</p>
               <label className={`flex items-start gap-2 mt-3 ${app.is_paid ? 'opacity-50' : 'cursor-pointer'}`}>
                 <input type="checkbox" className="mt-0.5" disabled={app.is_paid}
                   checked={visitorAccess && !app.is_paid} onChange={e => setVisitorAccess(e.target.checked)} />

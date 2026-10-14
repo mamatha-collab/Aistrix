@@ -39,6 +39,7 @@ from pydantic import BaseModel, Field, field_validator
 from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.starlette import StarletteIntegration
 from supabase import create_client, Client
+from supabase.lib.client_options import SyncClientOptions
 
 load_dotenv()
 
@@ -408,7 +409,12 @@ def _service_client() -> Optional[Client]:
     if not SUPABASE_SERVICE_ROLE_KEY:
         return None
     if _sb_service is None:
-        _sb_service = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+        # Shared by every request, and db() runs queries in worker threads:
+        # one HTTP/2 connection used from several threads at once gets torn
+        # down (ConnectionTerminated). HTTP/1.1's pool is safe across threads.
+        _sb_service = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, options=SyncClientOptions(
+            httpx_client=httpx.Client(http2=False, timeout=120,
+                                      limits=httpx.Limits(max_connections=50, max_keepalive_connections=20))))
     return _sb_service
 
 
@@ -707,6 +713,15 @@ async def claim_app_daily_run(app_id: str, limit: int) -> bool:
     except Exception as e:
         print(f"app quota check failed: {e}")   # migration not applied yet: don't block runs
         return True
+
+
+async def _log_app_run(app_id: str, user_id: Optional[str], source: str, usage: Optional[dict]) -> None:
+    try:
+        await db(_service_client().table("app_runs").insert({
+            "app_id": app_id, "user_id": user_id, "source": source,
+            "input_tokens": (usage or {}).get("input_tokens"), "output_tokens": (usage or {}).get("output_tokens")}))
+    except Exception as e:
+        print(f"app run log skipped: {type(e).__name__}: {str(e)[:120]}")
 
 
 async def record_metered_run(user_id: str, app_id: Optional[str], source: str, workspace_id: Optional[str] = None) -> None:
@@ -1513,7 +1528,7 @@ async def run_app(req: RunRequest, request: Request):
     return await execute_run(req, request, caller=caller)
 
 
-async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller", on_complete=None):
+async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller", on_complete=None, track: bool = True):
     """Shared run pipeline for /run (browser) and /v1/apps/{id}/run (API).
 
     `caller` is already authenticated and carries the active workspace. For
@@ -1716,6 +1731,12 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
 
     collected: list[str] = []
     usage: dict = {}
+    # Deploy's run log: real use of the app, not the developer trying their
+    # draft in the browser (or test runs: track=False).
+    log_source = None
+    if app_row and track and (not is_editor or caller.via_key or caller.live):
+        log_source = ("trigger" if caller.live else "embed" if embed_visitor
+                      else "api" if (caller.via_key or not user_jwt) else "app")
 
     async def finish(full_result: str):
         # Side effects first: consumers (stream=false, batches, clients that
@@ -1726,6 +1747,8 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
             asyncio.create_task(consume_entitlement_run(entitlement, app_name))
         if webhook_url:
             asyncio.create_task(_fire_webhook(webhook_url, req.app_id, req.input, full_result, provider, model))
+        if log_source:
+            asyncio.create_task(_log_app_run(app_row["id"], caller_id, log_source, usage))
         if on_complete:
             # Awaited (not a task) so server-side history is written before the
             # caller's next run is rate-limit checked against it.
@@ -4615,6 +4638,12 @@ def state_hash(state: dict) -> str:
     return hashlib.sha256(json.dumps(state, sort_keys=True, default=str).encode()).hexdigest()[:20]
 
 
+def same_as_live(prod: Optional[dict], state: dict) -> bool:
+    """Is the draft what end users run? Live snapshots saved before a field
+    existed lack that key; missing counts as empty, not as a change."""
+    return bool(prod) and state_hash({k: prod.get(k) for k in state}) == state_hash(state)
+
+
 def model_cost_usd(model: Optional[str], usage: Optional[dict]) -> Optional[float]:
     """Real cost of a run from its token usage; None when the price isn't known."""
     if not usage or model not in MODEL_PRICES:
@@ -4773,7 +4802,7 @@ async def run_app_test(app_id: str, body: AppTestCase, request: Request):
     if body.history or app_row.get("app_type") == "chatbot" or app_row.get("has_memory"):
         req.run_mode = "conversation"
     started = time.monotonic()
-    result = await _drain_run(await execute_run(req, request, caller=caller))
+    result = await _drain_run(await execute_run(req, request, caller=caller, track=False))
     latency_ms = int((time.monotonic() - started) * 1000)
     output = result.get("output") or ""
     usage = result.get("usage") or {}
@@ -5077,20 +5106,26 @@ async def send_test_webhook(app_id: str, request: Request):
 
 @app.get("/v1/apps/{app_id}/stats")
 async def app_run_stats(app_id: str, request: Request):
-    """Runs of this app by everyone (Deploy → Run history). Website visitors
-    without an account aren't in run history, so they aren't counted."""
+    """Real use of this app (Deploy → Run history), from the server's run log:
+    signed-in users, API calls, triggers and anonymous website visitors. Not
+    the developer's own draft runs or test runs. Ratings come from run history."""
     await _editable_app(app_id, request)
     sb = _service_client()
-    total_res, rows_res = await asyncio.gather(
-        db(sb.table("run_history").select("id", count="exact", head=True).eq("app_id", app_id)),
-        db(sb.table("run_history").select("created_at, user_id, input_tokens, output_tokens, rating_value")
-           .eq("app_id", app_id).order("created_at", desc=True).limit(500)))
+    total_res, rows_res, rated_res = await asyncio.gather(
+        db(sb.table("app_runs").select("id", count="exact", head=True).eq("app_id", app_id)),
+        db(sb.table("app_runs").select("created_at, user_id, source, input_tokens, output_tokens")
+           .eq("app_id", app_id).order("created_at", desc=True).limit(1000)),
+        db(sb.table("run_history").select("rating_value").eq("app_id", app_id)
+           .not_.is_("rating_value", "null").order("created_at", desc=True).limit(500)))
     rows = rows_res.data or []
-    rated = [r for r in rows if r.get("rating_value") is not None]
+    rated = rated_res.data or []
     tokens = [r for r in rows if r.get("input_tokens")]
+    by_source = Counter(r["source"] for r in rows)
     return {
         "total": total_res.count or 0,
         "users": len({r["user_id"] for r in rows if r.get("user_id")}),
+        "visitor_runs": by_source.get("embed", 0),
+        "api_runs": by_source.get("api", 0) + by_source.get("trigger", 0),
         "rated": len(rated),
         "satisfaction": round(100 * sum(1 for r in rated if r["rating_value"] == 1) / len(rated)) if rated else None,
         "avg_in": round(sum(r["input_tokens"] for r in tokens) / len(tokens)) if tokens else None,
@@ -5130,11 +5165,11 @@ async def rollback_version(app_id: str, version_num: int, request: Request):
     if not res.data or not isinstance(res.data[0].get("version_data"), dict):
         raise HTTPException(status_code=404, detail=f"Version v{version_num} not found")
     snapshot = res.data[0]["version_data"]
-    draft = state_hash(await app_draft_state(app_row))
+    state = await app_draft_state(app_row)
     now = datetime.now(timezone.utc).isoformat()
     await db(sb.table("apps").update({"prod_snapshot": snapshot, "promoted_at": now, "is_published": True,
                                       "live_version": version_num,
-                                      "has_draft_changes": state_hash(snapshot) != draft}).eq("id", app_id))
+                                      "has_draft_changes": not same_as_live(snapshot, state)}).eq("id", app_id))
     try:
         await db(sb.table("app_blueprints").update({"blueprint_prod": snapshot.get("blueprint")}).eq("app_id", app_id))
     except Exception as e:
@@ -5147,14 +5182,15 @@ async def get_release(app_id: str, request: Request):
     """Draft vs live: what end users run, whether the draft differs, and
     what's left before it can be promoted."""
     caller, app_row = await _editable_app(app_id, request)
-    draft = state_hash(await app_draft_state(app_row))
+    state = await app_draft_state(app_row)
+    draft = state_hash(state)
     prod = app_row.get("prod_snapshot") if isinstance(app_row.get("prod_snapshot"), dict) else None
     tests = await app_test_status(app_row)
     checks = await _publish_checks(app_id, caller.user_jwt)
     return {
         "is_published": bool(app_row.get("is_published")), "promoted_at": app_row.get("promoted_at"),
         "live_version": app_row.get("live_version"), "has_live_version": bool(prod), "draft_hash": draft, "live_hash": state_hash(prod) if prod else None,
-        "has_changes": (state_hash(prod) != draft) if prod else True,
+        "has_changes": not same_as_live(prod, state),
         "checks": checks, "tests": tests, "test_problems": _test_problems(tests),
         "ready": not checks and not _test_problems(tests),
     }
@@ -5178,6 +5214,17 @@ async def promote_app(app_id: str, request: Request):
     if not sb:
         raise HTTPException(status_code=503, detail="Publishing isn't configured on this server")
     now = datetime.now(timezone.utc).isoformat()
+    prod = app_row.get("prod_snapshot") if isinstance(app_row.get("prod_snapshot"), dict) else None
+    if same_as_live(prod, state):
+        # Same as the live version: no new version. Live already → nothing to
+        # do; unpublished → put that same version back online.
+        live = app_row.get("live_version")
+        if app_row.get("is_published"):
+            return JSONResponse(status_code=409, content={
+                "code": "no_changes", "error": f"Nothing to promote: the draft is the same as {'v' + str(live) if live else 'the live version'}."})
+        await db(sb.table("apps").update({"is_published": True, "has_draft_changes": False}).eq("id", app_id))
+        return {"ok": True, "promoted_at": app_row.get("promoted_at"), "draft_hash": state_hash(state), "is_published": True,
+                "version": live, "unchanged": True}
     version = await _save_published_version(sb, app_row, state, tests, caller.user_id)
     update = {"prod_snapshot": state, "promoted_at": now, "is_published": True, "has_draft_changes": False}
     if version is not None:

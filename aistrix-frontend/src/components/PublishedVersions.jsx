@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useToast } from '../hooks/useToast'
 import { listVersions, rollbackVersion } from '../lib/release'
 import { timeAgo } from '../utils'
+import ConfirmDialog from './ConfirmDialog'
 
 // Every publish saves a numbered version (v1, v2…). End users run the live
 // one; any earlier version can be made live again. The draft isn't changed.
@@ -9,7 +10,7 @@ export default function PublishedVersions({ app, onAppUpdated }) {
   const toast = useToast()
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
-  const [confirming, setConfirming] = useState(null)   // version_num awaiting a second click
+  const [confirming, setConfirming] = useState(null)   // version_num in the confirm dialog
   const [busy, setBusy] = useState(null)
 
   const load = useCallback(async () => {
@@ -19,8 +20,7 @@ export default function PublishedVersions({ app, onAppUpdated }) {
   useEffect(() => { load() }, [load])
 
   async function rollback(num) {
-    if (confirming !== num) { setConfirming(num); return }
-    setBusy(num); setConfirming(null)
+    setBusy(num)
     try {
       const res = await rollbackVersion(app.id, num)
       toast(`v${num} is live again`, 'success', 3000)
@@ -30,6 +30,7 @@ export default function PublishedVersions({ app, onAppUpdated }) {
       toast(e.message, 'error', 6000)
     } finally {
       setBusy(null)
+      setConfirming(null)
     }
   }
 
@@ -62,15 +63,23 @@ export default function PublishedVersions({ app, onAppUpdated }) {
               </p>
             </div>
             {!v.is_live && (
-              <button onClick={() => rollback(v.version_num)} disabled={busy != null}
-                className={`text-[11px] font-semibold px-3 py-1 rounded-lg border transition-colors shrink-0 disabled:opacity-40 ${
-                  confirming === v.version_num ? 'bg-amber-500/15 border-amber-500/30 text-amber-200' : 'bg-white/5 hover:bg-white/10 border-white/10 text-slate-300'}`}>
-                {busy === v.version_num ? 'Rolling back…' : confirming === v.version_num ? `Make v${v.version_num} live?` : 'Roll back'}
+              <button onClick={() => setConfirming(v.version_num)} disabled={busy != null}
+                className="text-[11px] font-semibold px-3 py-1 rounded-lg border transition-colors shrink-0 disabled:opacity-40 bg-white/5 hover:bg-white/10 border-white/10 text-slate-300">
+                {busy === v.version_num ? 'Rolling back…' : 'Roll back'}
               </button>
             )}
           </div>
         ))}
       </div>
+
+      {confirming != null && (
+        <ConfirmDialog title={`Make v${confirming} live?`} subtitle={`${app.emoji || ''} ${app.name}`.trim()}
+          confirmLabel={`Make v${confirming} live`} busyLabel="Rolling back…"
+          onCancel={() => setConfirming(null)} onConfirm={() => rollback(confirming)}>
+          End users switch to v{confirming} right away{data?.live_version ? `, replacing v${data.live_version}` : ''}. Your draft isn't changed,
+          and you can switch back from this list at any time.
+        </ConfirmDialog>
+      )}
     </div>
   )
 }

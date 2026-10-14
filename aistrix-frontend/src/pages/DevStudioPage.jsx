@@ -7,7 +7,7 @@ import ToolsEditor from '../components/ToolsEditor'
 import SimpleTestPanel from '../components/SimpleTestPanel'
 import { inferPromptOutputFormat } from '../utils/starterBlueprint'
 import BillingModeHint from '../components/BillingModeHint'
-import { publishApp, unpublishApp } from '../lib/release'
+import { publishApp, unpublishApp, getRelease } from '../lib/release'
 import ErrorBoundary from '../components/ErrorBoundary'
 
 // The API address shown in code snippets (this deployment's backend).
@@ -15,6 +15,7 @@ const PUBLIC_API_URL = (import.meta.env.VITE_PUBLIC_API_URL || import.meta.env.V
 import { PROVIDER_STYLE, modelOptions, providerById, useProviders } from '../lib/providers'
 import { VersionSetupCard } from '../components/VersionManager'
 import PublishedVersions from '../components/PublishedVersions'
+import ConfirmDialog from '../components/ConfirmDialog'
 import { getTrigger, createTrigger, deleteTrigger, getWebhookSecret, sendTestWebhook, getAppStats } from '../lib/deploy'
 import { useVersions } from '../hooks/useVersions'
 import ApiKeysManager from '../components/ApiKeysManager'
@@ -3291,6 +3292,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
   const [expandSection, setExpandSection] = useState(null)
   const [trigger, setTrigger]       = useState(undefined)   // undefined = loading, null = none, string = token
   const [triggerBusy, setTriggerBusy] = useState(false)
+  const [confirmTrigger, setConfirmTrigger] = useState(null)   // 'replace' | 'off'
   const [webhookSecret, setWebhookSecret] = useState('')
   const [testingWebhook, setTestingWebhook] = useState(false)
   const [visitorAccess, setVisitorAccess] = useState(!!app.embed_public)
@@ -3302,34 +3304,31 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
 
   useEffect(() => {
     setApp(a => ({ ...a, live_version: initialApp.live_version, is_published: initialApp.is_published, promoted_at: initialApp.promoted_at }))
+    loadRelease()
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadRelease only reads app.id
   }, [initialApp.live_version, initialApp.is_published, initialApp.promoted_at])
 
   const [runStats, setRunStats] = useState(null)
-  const [testStatus, setTestStatus] = useState(null)
-  const [loadingTestStatus, setLoadingTestStatus] = useState(false)
-  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+  // The server's publish check (GET /release): the same checks and tests
+  // that decide whether Publish / Promote is allowed.
+  const [release, setRelease] = useState(null)
+  const [releaseError, setReleaseError] = useState('')
+  function loadRelease() {
+    return getRelease(app.id).then(r => { setRelease(r); setReleaseError('') }).catch(e => setReleaseError(e.message))
+  }
 
   useEffect(() => {
     supabase.from('app_blueprints').select('blueprint, readiness_score')
       .eq('app_id', app.id).maybeSingle()
       .then(({ data }) => setBp(data ? migrateBlueprint({ ...EMPTY_BP, ...data.blueprint }) : false))
-    setLoadingTestStatus(true)
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      const headers = session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}
-      return fetch(`${API_URL}/v1/apps/${app.id}/tests/status`, { headers })
-    }).then(async res => {
-      if (!res?.ok) return null
-      return res.json()
-    }).then(data => setTestStatus(data))
-      .catch(() => setTestStatus(null))
-      .finally(() => setLoadingTestStatus(false))
+    loadRelease()
     // Run history summary: every user's runs (the server reads them all)
     getAppStats(app.id)
-      .then(st => setRunStats({ total: st.total, users: st.users, satisfaction: st.satisfaction, rated: st.rated,
+      .then(st => setRunStats({ total: st.total, users: st.users, visitorRuns: st.visitor_runs, apiRuns: st.api_runs, satisfaction: st.satisfaction, rated: st.rated,
         avgIn: st.avg_in, avgOut: st.avg_out, lastRun: st.last_run ? new Date(st.last_run) : null }))
       .catch(() => setRunStats(null))
     getTrigger(app.id).then(r => setTrigger(r.token || null)).catch(() => setTrigger(null))
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- API_URL is a build-time constant
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- loadRelease only reads app.id
   }, [app.id])
 
   function copy(text, label) {
@@ -3362,37 +3361,39 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
 
   // ── Publish checklist ──────────────────────────────────────────────────────
   const jsonFormat = bp && bp.output_contract?.format === 'json'
-  const hasOutputSchema = jsonFormat ? (getOutputSchemaFields(bp).length > 0) : true
-  const designReadiness = bp ? calcReadiness(app, bp) : 0
-  const designReady = !!bp && designReadiness >= 100
-  const testsReady = !!testStatus?.all_passed && !testStatus?.setup_required
-  const testLabel = testStatus?.setup_required
-    ? 'Backend test storage installed'
-    : testStatus?.required_total
-      ? `Quality gate passed (${testStatus.required_passed}/${testStatus.required_total})`
-      : testStatus?.total
-        ? `Current draft tests passed (${testStatus.passed}/${testStatus.total})`
-        : 'Run tests for current draft'
-
+  // Each item shows the server's own messages when it fails; anything the
+  // server reports that isn't one of the named items counts under Design.
+  const serverChecks = release?.checks || []
+  const pick = re => serverChecks.filter(m => re.test(m))
+  const problems = {
+    prompt: pick(/system prompt/i), desc: pick(/description/i), model: pick(/AI model/i),
+    price: pick(/price_per_run/i), schema: pick(/output_schema|output schema field/i),
+  }
+  const named = new Set(Object.values(problems).flat())
+  problems.design = serverChecks.filter(m => !named.has(m))
+  problems.tests = release?.test_problems || []
+  const tests = release?.tests || {}
+  const item = (id, label, fix, skip) => ({ id, fix, skip, ok: !problems[id].length, label: problems[id].length ? problems[id].join(' · ') : label })
   const checklist = [
-    { id: 'design',  label: `Design readiness complete (${designReadiness}/100)`, ok: designReady, fix: 'Complete Design readiness' },
-    { id: 'tests',   label: loadingTestStatus ? 'Checking current draft tests…' : testLabel, ok: testsReady, fix: testStatus?.setup_required ? 'Install app_test_runs migration' : 'Run tests in Test tab' },
-    { id: 'prompt',  label: 'System prompt written',        ok: !!app.system_prompt?.trim(),              fix: 'Open Prompt Studio in Design tab' },
-    { id: 'desc',    label: 'Description filled',           ok: !!app.description?.trim(),                 fix: 'Add a description in app settings' },
-    { id: 'model',   label: 'AI model selected',            ok: !!app.ai_model,                            fix: 'Choose a model in app settings' },
-    { id: 'price',   label: 'Pricing configured',           ok: !app.is_paid || !!app.price_per_run,       fix: 'Set price_per_run in app settings', skip: !app.is_paid },
-    { id: 'schema',  label: 'Output schema defined',        ok: hasOutputSchema,                           fix: 'Add at least one field in Design → Output Contract', skip: !jsonFormat || bp === null },
+    item('design', 'Design ready to publish', 'Fix in Design'),
+    item('tests', tests.required_total ? `Quality gate passed (${tests.required_passed}/${tests.required_total})` : 'Tests passed for this draft', 'Run tests in Test tab'),
+    item('prompt', 'System prompt written', 'Open Prompt Studio in Design tab'),
+    item('desc', 'Description filled', 'Add a description in app settings'),
+    item('model', 'AI model selected', 'Choose a model in app settings'),
+    item('price', 'Pricing configured', 'Set price_per_run in app settings', !app.is_paid),
+    item('schema', 'Output schema defined', 'Add at least one field in Design → Output Contract', !jsonFormat && !problems.schema.length),
   ].filter(c => !c.skip)
 
-  const checklistPassed = checklist.every(c => c.ok)
-  const canPublish = checklistPassed
+  const canPublish = !!release?.ready
+  // Draft differs from the live version (the server compares them).
+  const hasChanges = !!release?.has_changes
 
   async function togglePublish() {
     setPublishing(true)
     const next = !app.is_published
-    if (next && !testsReady) {
+    if (next && !canPublish) {
       setPublishing(false)
-      toast(testStatus?.setup_required ? 'Install backend test storage before publishing.' : 'Run and pass the Aistrix Quality Gate for this draft before publishing.', 'error', 6000)
+      toast([...serverChecks, ...problems.tests].join('; ') || 'Not ready to publish yet', 'error', 6000)
       return
     }
     try {
@@ -3402,11 +3403,12 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
       const updated = { ...app, is_published: next, ...(next ? { has_draft_changes: false, promoted_at: res?.promoted_at, change_note: null, ...(res?.version ? { live_version: res.version } : {}) } : {}) }
       setApp(updated)
       onUpdate?.(updated)
-      toast(next ? `🚀 App is now live${res?.version ? ` · v${res.version}` : ''}` : 'App set to draft', next ? 'success' : 'info', 3000)
+      toast(next ? `🚀 App is ${res?.unchanged ? 'live again' : 'now live'}${res?.version ? ` · v${res.version}` : ''}` : 'App set to draft', next ? 'success' : 'info', 3000)
     } catch (e) {
       toast(`Publish blocked: ${e.message}`, 'error', 9000)
     } finally {
       setPublishing(false)
+      loadRelease()
     }
   }
 
@@ -3466,19 +3468,17 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
 
   // ── Inbound trigger ────────────────────────────────────────────────────────
   async function makeTrigger() {
-    if (trigger && !window.confirm('Replace the trigger link? The current link stops working.')) return
     setTriggerBusy(true)
     try { setTrigger((await createTrigger(app.id)).token); toast(trigger ? 'New trigger link created' : 'Trigger link created', 'success', 2500) }
     catch (e) { toast(e.message, 'error', 6000) }
-    finally { setTriggerBusy(false) }
+    finally { setTriggerBusy(false); setConfirmTrigger(null) }
   }
 
   async function removeTrigger() {
-    if (!window.confirm('Turn off the trigger link? Anything using it will stop working.')) return
     setTriggerBusy(true)
     try { await deleteTrigger(app.id); setTrigger(null); toast('Trigger link turned off', 'info', 2500) }
     catch (e) { toast(e.message, 'error', 6000) }
-    finally { setTriggerBusy(false) }
+    finally { setTriggerBusy(false); setConfirmTrigger(null) }
   }
 
   // ── Website visitors (embed) ───────────────────────────────────────────────
@@ -3552,6 +3552,9 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
   -d '{"input": "Your prompt here"}'`,
   }
 
+  // Links can be copied ahead of launch; until then they don't work.
+  const inactiveTag = <span className="ml-2 normal-case text-amber-400/80 bg-amber-500/8 border border-amber-500/20 px-1.5 py-px rounded">Inactive until published</span>
+
   function Section({ id, label, children }) {
     const open = expandSection === id
     return (
@@ -3589,6 +3592,14 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
       {/* Publish checklist + toggle */}
       <div className="px-5 py-4 border-b border-white/5 space-y-3">
         <p className="text-[10px] text-slate-400 uppercase font-semibold tracking-wide">Pre-publish checklist</p>
+        {!release ? (
+          releaseError ? (
+            <div className="flex items-center justify-between gap-2 text-xs">
+              <span className="text-red-300">Couldn't check this app: {releaseError}</span>
+              <button onClick={loadRelease} className="text-[10px] text-slate-400 hover:text-white shrink-0">Retry</button>
+            </div>
+          ) : <p className="text-xs text-slate-500">Checking this draft…</p>
+        ) : (
         <div className="space-y-1.5">
           {checklist.map(c => (
             <button key={c.id} type="button" onClick={() => !c.ok && openChecklistFix(c)}
@@ -3599,18 +3610,21 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
             </button>
           ))}
         </div>
+        )}
 
         {app.is_published ? (
           <div className="space-y-2">
-            {app.has_draft_changes && (
+            {hasChanges && (
               <div className="bg-amber-500/8 border border-amber-500/20 rounded-xl px-3 py-2 flex items-center gap-2">
                 <span className="text-amber-400 text-sm">⚠</span>
                 <p className="text-amber-300 text-xs">Blueprint has unpromoted changes — live users still see the old version.</p>
               </div>
             )}
-            <button onClick={() => setShowPromote(true)}
-              className="w-full text-sm font-semibold py-2.5 rounded-xl bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white border-transparent shadow-lg shadow-[#6C5CE7]/20 transition-all">
-              🚀 {app.has_draft_changes ? 'Promote draft to production' : 'Promote to production'}
+            <button onClick={() => setShowPromote(true)} disabled={!hasChanges}
+              className={`w-full text-sm font-semibold py-2.5 rounded-xl transition-all border ${hasChanges
+                ? 'bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white border-transparent shadow-lg shadow-[#6C5CE7]/20'
+                : 'bg-white/3 text-slate-500 border-white/5 cursor-default'}`}>
+              {!release ? 'Checking…' : hasChanges ? '🚀 Promote draft to production' : `● Published${app.live_version ? ` · v${app.live_version}` : ''} · no changes`}
             </button>
             <button onClick={togglePublish} disabled={publishing}
               className="w-full text-xs py-2 rounded-xl bg-white/4 hover:bg-white/8 text-slate-400 border border-white/8 transition-colors disabled:opacity-40">
@@ -3638,12 +3652,27 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
         )}
       </div>
 
+      {confirmTrigger && (
+        <ConfirmDialog
+          title={confirmTrigger === 'replace' ? 'Replace the trigger link?' : 'Turn off the trigger link?'}
+          subtitle={`${app.emoji || ''} ${app.name}`.trim()}
+          confirmLabel={confirmTrigger === 'replace' ? 'Replace link' : 'Turn off'}
+          busyLabel={confirmTrigger === 'replace' ? 'Replacing…' : 'Turning off…'}
+          danger={confirmTrigger === 'off'}
+          onCancel={() => setConfirmTrigger(null)}
+          onConfirm={confirmTrigger === 'replace' ? makeTrigger : removeTrigger}>
+          {confirmTrigger === 'replace'
+            ? 'The current link stops working right away. Update Zapier, Make or your server with the new link.'
+            : 'Anything using the link (Zapier, Make, your server) gets an error from now on. You can create a new link later.'}
+        </ConfirmDialog>
+      )}
+
       {showPromote && (
         <PromoteModal
           app={app}
           user={user}
           onClose={() => setShowPromote(false)}
-          onPromoted={updated => { setApp(updated); onUpdate?.(updated) }}
+          onPromoted={updated => { setApp(updated); onUpdate?.(updated); loadRelease() }}
         />
       )}
 
@@ -3653,7 +3682,8 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
           <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide mb-3">Run history</p>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             {[
-              { label: 'Total runs', value: runStats.total.toLocaleString(), sub: runStats.users ? `by ${runStats.users} ${runStats.users === 1 ? 'person' : 'people'}` : null, color: '#A29BFE' },
+              { label: 'Total runs', value: runStats.total.toLocaleString(), sub: [runStats.users ? `${runStats.users} signed-in ${runStats.users === 1 ? 'person' : 'people'}` : null,
+                runStats.visitorRuns ? `${runStats.visitorRuns} by visitors` : null, runStats.apiRuns ? `${runStats.apiRuns} via API` : null].filter(Boolean).join(' · ') || null, color: '#A29BFE' },
               { label: 'Satisfaction', value: runStats.satisfaction != null ? `${runStats.satisfaction}%` : '—', sub: runStats.rated ? `${runStats.rated} rated` : 'no ratings', color: runStats.satisfaction >= 80 ? '#00B894' : runStats.satisfaction >= 50 ? '#FDCB6E' : '#E84393' },
               { label: 'Avg input', value: runStats.avgIn ? `${runStats.avgIn.toLocaleString()} tok` : '—', color: '#74B9FF' },
               { label: 'Avg output', value: runStats.avgOut ? `${runStats.avgOut.toLocaleString()} tok` : '—', color: '#55EFC4' },
@@ -3668,7 +3698,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
           {runStats.lastRun && (
             <p className="text-[10px] text-slate-600 mt-3">Last run: {runStats.lastRun.toLocaleDateString()} {runStats.lastRun.toLocaleTimeString()}</p>
           )}
-          <p className="text-[10px] text-slate-600 mt-1">All users, including you. Website visitors without an account aren't counted.</p>
+          <p className="text-[10px] text-slate-600 mt-1">Everyone who used the live app: signed-in users, website visitors and API calls. Your own draft and test runs aren't counted.</p>
         </div>
       )}
       {runStats && runStats.total === 0 && app.is_published && (
@@ -3742,7 +3772,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
           ].map(({ label, value, note }) => (
             <div key={label} className="flex items-center gap-2 bg-[#0E1424] rounded-lg px-3 py-2 min-w-0">
               <div className="flex-1 min-w-0">
-                <p className="text-[9px] text-slate-500 uppercase">{label}</p>
+                <p className="text-[9px] text-slate-500 uppercase">{label}{!app.is_published && inactiveTag}</p>
                 <code className={`text-[10px] truncate block ${app.is_published ? 'text-slate-300' : 'text-slate-600'}`}>{value}</code>
                 {note && <p className="text-[9px] text-slate-600 mt-0.5">{note}</p>}
               </div>
@@ -3750,7 +3780,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
             </div>
           ))}
           <div className="bg-[#0E1424] rounded-lg px-3 py-2 min-w-0">
-            <p className="text-[9px] text-slate-500 uppercase">Inbound trigger</p>
+            <p className="text-[9px] text-slate-500 uppercase">Inbound trigger{trigger && !app.is_published && inactiveTag}</p>
             {trigger ? (
               <>
                 <div className="flex items-center gap-2 min-w-0">
@@ -3759,8 +3789,8 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
                 </div>
                 <p className="text-[9px] text-slate-600 mt-0.5">POST {'{"input":"..."}'} to run the live version. Keep it secret: anyone with the link can run the app on your key.</p>
                 <div className="flex gap-3 mt-1.5">
-                  <button onClick={makeTrigger} disabled={triggerBusy} className="text-[10px] text-slate-400 hover:text-white disabled:opacity-40 transition-colors">↻ Replace link</button>
-                  <button onClick={removeTrigger} disabled={triggerBusy} className="text-[10px] text-slate-400 hover:text-red-300 disabled:opacity-40 transition-colors">Turn off</button>
+                  <button onClick={() => setConfirmTrigger('replace')} disabled={triggerBusy} className="text-[10px] text-slate-400 hover:text-white disabled:opacity-40 transition-colors">↻ Replace link</button>
+                  <button onClick={() => setConfirmTrigger('off')} disabled={triggerBusy} className="text-[10px] text-slate-400 hover:text-red-300 disabled:opacity-40 transition-colors">Turn off</button>
                 </div>
               </>
             ) : (
@@ -3801,7 +3831,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
               <textarea rows={3} value={domainsText} onChange={e => setDomainsText(e.target.value)}
                 placeholder={'example.com\nshop.example.com'}
                 className="w-full bg-[#0E1424] border border-white/8 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 font-mono resize-none focus:outline-none focus:border-[#6C5CE7] transition-colors" />
-              <p className="text-[10px] text-slate-600">Empty = any site can embed. A domain also covers its subdomains.</p>
+              <p className="text-[10px] text-slate-600">Empty = any site can embed it for signed-in users. To let visitors use it without an account, list the sites. A domain also covers its subdomains.</p>
               <label className={`flex items-start gap-2 ${app.is_paid ? 'opacity-50' : 'cursor-pointer'}`}>
                 <input type="checkbox" className="mt-0.5" disabled={app.is_paid}
                   checked={visitorAccess && !app.is_paid} onChange={e => setVisitorAccess(e.target.checked)} />

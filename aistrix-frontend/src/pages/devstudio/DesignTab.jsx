@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, Suspense } from 'react'
 import { track, EVENTS } from '../../lib/analytics'
+import { downloadReport, designReport } from '../../lib/reports'
 import { supabase } from '../../supabase'
 import { useToast } from '../../hooks/useToast'
 import ToolsEditor from '../../components/ToolsEditor'
@@ -1124,6 +1125,7 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
   const [copilotOutput, setCopilotOutput] = useState('')
   const [copilotSuggestions, setCopilotSuggestions] = useState(null)
   const [serverProblems, setServerProblems] = useState(null)
+  const [exporting, setExporting] = useState(false)
   // When the saved design was last written, as loaded: if it changes before
   // we save, someone else (or another tab) saved in between.
   const savedAtRef = useRef(null)
@@ -1367,6 +1369,17 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
   const invalidInputs = invalidInputFields(bp)
   const openPromptStudio = () => onOpenPromptStudio(app)
 
+  async function downloadPdf() {
+    setExporting(true)
+    try {
+      await downloadReport(designReport(app, bp, { checks: readinessChecks(app, bp), score: calcReadiness(app, bp), serverProblems, unsaved: isDirty }))
+    } catch (e) {
+      toast(`Couldn't create the PDF: ${e.message}`, 'error', 6000)
+    } finally {
+      setExporting(false)
+    }
+  }
+
   return (
     <div className="space-y-5">
       {conflict && (
@@ -1405,6 +1418,10 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
               Unsaved changes
             </span>
           )}
+          <button onClick={downloadPdf} disabled={exporting} title="Download this design as a PDF"
+            className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 border border-white/10 transition-colors disabled:opacity-40 whitespace-nowrap">
+            {exporting ? 'Preparing…' : '⬇ PDF report'}
+          </button>
           <button onClick={openPromptStudio}
             className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-[#6C5CE7]/15 hover:bg-[#6C5CE7]/25 text-[#A29BFE] border border-[#6C5CE7]/25 transition-colors">
             ✏️ Prompt Studio

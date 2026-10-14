@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import ConfirmDialog from './ConfirmDialog'
 import {
   BarChart3,
   Bell,
@@ -112,6 +113,8 @@ export default function SidebarClean({ user, userRole, onClose, onShowProfile, a
     }).catch(() => {})
   }, [user])
 
+  // Signing out drops unsaved edits in any open editor: ask first.
+  const [confirmSignOut, setConfirmSignOut] = useState(false)
   async function signOut() { await supabase.auth.signOut() }
 
   return (
@@ -241,12 +244,19 @@ export default function SidebarClean({ user, userRole, onClose, onShowProfile, a
             className="text-slate-500 hover:text-white transition-colors p-1">
             {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
           </button>
-          <button onClick={signOut} title="Sign out" aria-label="Sign out"
+          <button onClick={() => setConfirmSignOut(true)} title="Sign out" aria-label="Sign out"
             className="text-slate-500 hover:text-red-400 transition-colors p-1">
             <LogOut size={14} />
           </button>
         </div>
       </div>
+      {confirmSignOut && (
+        <ConfirmDialog title="Sign out of Aistrix?" subtitle={user?.email}
+          confirmLabel="Sign out" busyLabel="Signing out…" danger
+          onCancel={() => setConfirmSignOut(false)} onConfirm={signOut}>
+          Any unsaved changes in open editors (Design, Prompt Studio, tests) will be lost. Runs and saved work are kept.
+        </ConfirmDialog>
+      )}
     </aside>
   )
 }

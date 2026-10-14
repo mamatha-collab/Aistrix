@@ -5023,6 +5023,11 @@ async def app_test_status(app_row: dict) -> dict:
         "total": len(cases), "passed": sum(1 for r in cases if r["passed"]),
         "failed": [{"source": r["source"], "case_ref": r["case_ref"], "label": r.get("label"), "persona": r.get("persona"),
                     "category": _test_category(r), "errors": r.get("errors") or []} for r in cases if not r["passed"]],
+        # Every test's latest result (passed and failed), for reports.
+        "cases": [{"label": r.get("label") or r.get("case_ref"), "source": r["source"], "persona": r.get("persona"),
+                   "category": _test_category(r), "passed": bool(r["passed"]), "errors": r.get("errors") or [],
+                   "input": (r.get("input") or "")[:400], "output": (r.get("output") or "")[:800],
+                   "latency_ms": r.get("latency_ms"), "created_at": r.get("created_at")} for r in cases],
         "requirements": requirements,
         "required_total": len(required_requirements),
         "required_passed": sum(1 for r in required_requirements if r["passed"]),

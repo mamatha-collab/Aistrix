@@ -2,7 +2,8 @@ import { useState, useEffect, useRef } from 'react'
 import { track, EVENTS } from '../../lib/analytics'
 import { supabase } from '../../supabase'
 import { useToast } from '../../hooks/useToast'
-import { publishApp, unpublishApp, getRelease } from '../../lib/release'
+import { publishApp, unpublishApp, getRelease, listVersions } from '../../lib/release'
+import { downloadReport, deployReport } from '../../lib/reports'
 import { PROVIDER_STYLE, providerById, useProviderStatus } from '../../lib/providers'
 import PublishedVersions from '../../components/PublishedVersions'
 import ConfirmDialog from '../../components/ConfirmDialog'
@@ -260,7 +261,8 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
   const [maxRuns, setMaxRuns]       = useState(app.max_runs_per_day || '')
   const [savingQuota, setSavingQuota] = useState(false)
   const [embedTab, setEmbedTab]     = useState('iframe')
-  const [justLive, setJustLive]     = useState(null)   // { version } right after publishing / promoting
+  const [justLive, setJustLive]     = useState(null)
+  const [exporting, setExporting]   = useState(false)   // { version } right after publishing / promoting
   const [trigger, setTrigger]       = useState(undefined)   // undefined = loading, null = none, string = token
   const [triggerBusy, setTriggerBusy] = useState(false)
   const [confirmTrigger, setConfirmTrigger] = useState(null)   // 'replace' | 'off'
@@ -577,6 +579,38 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
       : !live ? (wasLive ? 'Ready to go back online' : 'Ready to publish')
         : hasChanges ? 'Your changes are ready to go live' : 'Live and up to date'
 
+  const accessRows = [
+    { label: 'Who can open it', value: !live ? 'Only you and your workspace (not live)'
+      : app.visibility === 'private' ? 'Only you and your workspace'
+      : app.visibility === 'invite' ? 'Only people you invite' : 'Anyone with the link' },
+    { label: 'Price', value: app.is_paid ? `$${Number(app.price_per_run || 0).toFixed(2)} per run` : 'Free' },
+    { label: 'Who pays for AI', value: app.billing_mode === 'byok'
+      ? 'Each user, with their own API key'
+      : `Your API key — ${app.free_runs_per_user_day ?? 20} runs per user per day, then their own key` },
+    { label: 'Website visitors', value: app.embed_public && !app.is_paid
+      ? `Can use it without an account on ${(app.embed_allowed_domains || []).join(', ') || 'any site'}`
+      : 'Must sign in to Aistrix' },
+  ]
+
+  async function downloadPdf() {
+    setExporting(true)
+    try {
+      const versions = await listVersions(app.id).then(r => r.versions || []).catch(() => [])
+      await downloadReport(deployReport(app, {
+        release, versions, stats: runStats,
+        checklist: [...checklist, ...(keyWarning ? [keyWarning] : [])],
+        access: [...accessRows.map(r => [r.label, r.value]), ['Daily run limit', app.max_runs_per_day ? `${app.max_runs_per_day} runs per day` : 'None']],
+        links: { 'App page': liveUrl, 'API endpoint': `${PUBLIC_API_URL}/v1/apps/${app.id}/run`,
+          'Inbound trigger': trigger ? 'Enabled (link not included in reports)' : 'Off',
+          'Webhook': app.webhook_url ? 'Set (signed requests)' : 'Not set' },
+      }))
+    } catch (e) {
+      toast(`Couldn't create the PDF: ${e.message}`, 'error', 6000)
+    } finally {
+      setExporting(false)
+    }
+  }
+
   const checkRow = c => (
     <button key={c.id} type="button" onClick={() => !c.ok && openChecklistFix(c)}
       className={`w-full flex items-center gap-2 text-xs rounded-lg px-1.5 py-1 text-left transition-colors ${!c.ok ? 'hover:bg-white/5 cursor-pointer' : 'cursor-default'}`}>
@@ -608,6 +642,10 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
               className="text-[11px] font-semibold px-2.5 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/18 text-amber-300 border border-amber-500/20 transition-colors">← Test</button>
             <button onClick={() => onMovePhase?.(app.id, 'design')}
               className="text-[11px] font-semibold px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/8 text-slate-300 border border-white/10 transition-colors">Design</button>
+            <button onClick={downloadPdf} disabled={exporting} title="Download the deploy status as a PDF"
+              className="text-[11px] font-semibold px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/8 text-slate-300 border border-white/10 transition-colors disabled:opacity-40">
+              {exporting ? '…' : '⬇ PDF'}
+            </button>
           </div>
         </div>
 
@@ -878,18 +916,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
       {/* Limits & access */}
       <DeployCard icon="👥" title="Limits & access" subtitle="Who can use the app, who pays for the AI, and how much it can run.">{() => (<>
         <div className="space-y-1.5">
-          {[
-            { label: 'Who can open it', value: !live ? 'Only you and your workspace (not live)'
-              : app.visibility === 'private' ? 'Only you and your workspace'
-              : app.visibility === 'invite' ? 'Only people you invite' : 'Anyone with the link' },
-            { label: 'Price', value: app.is_paid ? `$${Number(app.price_per_run || 0).toFixed(2)} per run` : 'Free' },
-            { label: 'Who pays for AI', value: app.billing_mode === 'byok'
-              ? 'Each user, with their own API key'
-              : `Your API key — ${app.free_runs_per_user_day ?? 20} runs per user per day, then their own key` },
-            { label: 'Website visitors', value: app.embed_public && !app.is_paid
-              ? `Can use it without an account on ${(app.embed_allowed_domains || []).join(', ') || 'any site'}`
-              : 'Must sign in to Aistrix' },
-          ].map(({ label, value }) => (
+          {accessRows.map(({ label, value }) => (
             <div key={label} className="flex items-start justify-between gap-3 text-[11px]">
               <span className="text-slate-500 shrink-0">{label}</span>
               <span className="text-slate-300 text-right">{value}</span>

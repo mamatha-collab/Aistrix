@@ -7,6 +7,7 @@ import { runAppTest } from '../lib/appTests'
 import { appTypeOf, buildTemplateCases, isRealCheck, judge, PERSONA_PACKS, PROFILE_INPUTS } from '../lib/testTemplates'
 import { PROVIDER_STYLE, providerById, useProviders } from '../lib/providers'
 import TestSuite from './TestSuite'
+import { downloadReport, testReport } from '../lib/reports'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -83,6 +84,7 @@ export default function SimpleTestPanel({ app, user, onMovePhase, onOpenKeys }) 
   const [blueprint, setBlueprint] = useState({})
   const [usage, setUsage] = useState(null)
   const [running, setRunning] = useState(null)        // 'tests' | 'personas' | null
+  const [exporting, setExporting] = useState(false)
   const [progress, setProgress] = useState({ done: 0, total: 0 })
   const [showCustomize, setShowCustomize] = useState(false)
   const [lastProblem, setLastProblem] = useState('')
@@ -336,6 +338,13 @@ export default function SimpleTestPanel({ app, user, onMovePhase, onOpenKeys }) 
     return ''
   }
 
+  async function downloadPdf() {
+    setExporting(true)
+    try { await downloadReport(testReport(app, status)) }
+    catch (e) { toast(`Couldn't create the PDF: ${e.message}`, 'error', 6000) }
+    finally { setExporting(false) }
+  }
+
   const icon = s => s === 'passed' ? { t: '✓', c: 'text-emerald-400' } : s === 'failed' ? { t: '✗', c: 'text-red-400' } : s === 'weak' ? { t: '!', c: 'text-amber-400' } : { t: '○', c: 'text-slate-500' }
 
   return (
@@ -352,10 +361,17 @@ export default function SimpleTestPanel({ app, user, onMovePhase, onOpenKeys }) 
               </p>
             </div>
           </div>
-          <button onClick={running ? stopRun : runTests} disabled={noPrompt}
-            className={`text-sm font-semibold px-5 py-2.5 rounded-xl disabled:opacity-40 text-white transition-colors shrink-0 ${running ? 'bg-red-500/80 hover:bg-red-500' : 'bg-[#6C5CE7] hover:bg-[#7C6CFF]'}`}>
-            {running === 'tests' ? `Stop ${progress.done} of ${progress.total}` : running === 'personas' ? `Stop personas ${progress.done}/${progress.total}` : running === 'profile' ? `Stop profile ${progress.done}/${progress.total}` : anyRun ? '↻ Run tests again' : '▶ Run tests'}
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <button onClick={downloadPdf} disabled={!!running || exporting || !status?.cases?.length}
+              title={status?.cases?.length ? 'Download the test results as a PDF' : 'Run the tests first'}
+              className="text-sm font-semibold px-3 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 border border-white/10 disabled:opacity-40 transition-colors">
+              {exporting ? 'Preparing…' : '⬇ PDF report'}
+            </button>
+            <button onClick={running ? stopRun : runTests} disabled={noPrompt}
+              className={`text-sm font-semibold px-5 py-2.5 rounded-xl disabled:opacity-40 text-white transition-colors shrink-0 ${running ? 'bg-red-500/80 hover:bg-red-500' : 'bg-[#6C5CE7] hover:bg-[#7C6CFF]'}`}>
+              {running === 'tests' ? `Stop ${progress.done} of ${progress.total}` : running === 'personas' ? `Stop personas ${progress.done}/${progress.total}` : running === 'profile' ? `Stop profile ${progress.done}/${progress.total}` : anyRun ? '↻ Run tests again' : '▶ Run tests'}
+            </button>
+          </div>
         </div>
 
         {hasBlockingProblem && (() => {

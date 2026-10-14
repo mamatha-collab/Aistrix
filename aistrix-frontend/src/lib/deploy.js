@@ -27,3 +27,7 @@ export const sendTestWebhook = appId => call(`/v1/apps/${appId}/webhook/test`, {
 
 // { total, users, rated, satisfaction, avg_in, avg_out, last_run }
 export const getAppStats = appId => call(`/v1/apps/${appId}/stats`, { fallback: 'Could not load run history' })
+
+// What end users see: the live version's name, form and greeting.
+// { source: 'live' | 'offline' | 'draft', live_version, name, emoji, description, app_type, greeting, input_placeholder, form_schema }
+export const getLivePreview = appId => call(`/v1/apps/${appId}/live-preview`, { fallback: 'Could not load the preview' })

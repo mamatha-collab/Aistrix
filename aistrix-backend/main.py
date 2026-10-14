@@ -5052,6 +5052,22 @@ async def _save_published_version(sb, app_row: dict, state: dict, tests: dict, u
         return None
 
 
+@app.get("/v1/apps/{app_id}/live-preview")
+async def live_preview(app_id: str, request: Request):
+    """What end users see (Deploy → What users will see): the live version,
+    not the draft the developer would see on the app page. source: live |
+    offline (published before, unpublished now) | draft (never published)."""
+    _, app_row = await _editable_app(app_id, request)
+    prod = app_row.get("prod_snapshot") if isinstance(app_row.get("prod_snapshot"), dict) else None
+    view = {**app_row, **{k: prod[k] for k in DRAFT_FIELDS if k in prod}} if prod else app_row
+    return {
+        "source": ("live" if app_row.get("is_published") else "offline") if prod else "draft",
+        "live_version": app_row.get("live_version"),
+        **{k: view.get(k) for k in ("name", "emoji", "color", "description", "app_type", "greeting",
+                                    "input_placeholder", "form_schema", "output_type")},
+    }
+
+
 @app.get("/v1/apps/{app_id}/trigger")
 async def get_app_trigger(app_id: str, request: Request):
     await _editable_app(app_id, request)

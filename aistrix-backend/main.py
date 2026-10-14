@@ -1709,6 +1709,12 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
                 "error": f"No {label} API key is available for this run. Add your own {label} key in Settings → Keys."})
 
     if embed_visitor:
+        # Visitor runs come from the Aistrix embed page (the iframe checks the
+        # host website against the app's allowed list). Browsers always send
+        # Origin, so other websites can't call the app directly as a visitor.
+        if (request.headers.get("origin") or "").rstrip("/") not in [o.rstrip("/") for o in ALLOWED_ORIGINS]:
+            return JSONResponse(status_code=403, content={
+                "error": "Website visitors can use this app only through its Aistrix embed. Sign in to run it here."})
         allowed, rate_msg = check_embed_visitor_rate_limit(client_ip(request), app_row["id"])
         if not allowed:
             return JSONResponse(status_code=429, content={"error": rate_msg})

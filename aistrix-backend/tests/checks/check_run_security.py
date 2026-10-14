@@ -67,8 +67,10 @@ consumed = []
 async def consume(e, n): consumed.append(e["id"])
 main.consume_entitlement_run = consume
 
-def run(body, tok=None):
+def run(body, tok=None, origin=None):
     h = {"Authorization": f"Bearer {tok}"} if tok else {}
+    if origin:
+        h["Origin"] = origin
     r = c.post("/run", json=body, headers=h)
     return r.status_code, r.text
 
@@ -148,6 +150,10 @@ async def owner_key(uid, prov): keys_used.append(uid); return "sk-owner"
 main.fetch_user_api_key_by_id = owner_key
 captured["mode"] = ""
 main.EMBED_VISITOR_HOURLY_LIMIT = 2
-codes = [run({"app_id": "widget", "input": "hi"})[0] for _ in range(3)]
+EMBED_ORIGIN = main.ALLOWED_ORIGINS[0]
+ok("embed visitors: only through the Aistrix embed page (other origin → 403)",
+   run({"app_id": "widget", "input": "hi"}, origin="https://evil.example")[0] == 403
+   and run({"app_id": "widget", "input": "hi"})[0] == 403)
+codes = [run({"app_id": "widget", "input": "hi"}, origin=EMBED_ORIGIN)[0] for _ in range(3)]
 ok("embed visitors: per-app limit, owner's key", codes == [200, 200, 429] and keys_used[:1] == ["owner"])
 finish()

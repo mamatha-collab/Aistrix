@@ -1,4 +1,4 @@
-import { useState, useEffect, lazy, Suspense } from 'react'
+import { useState, useEffect, useRef, lazy, Suspense } from 'react'
 import { track, EVENTS } from '../lib/analytics'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
@@ -63,6 +63,15 @@ export default function DevStudioPage({
     try { return localStorage.getItem('aistrix_small_screen_note') !== 'dismissed' } catch { return true }
   })
   const NAVIGATOR_TABS = ['design','test','deploy','improve','version','secrets']
+  // Phones: keep the open tab's group (Build / Operate / Manage) in view.
+  const ribbonRef = useRef(null)
+  useEffect(() => {
+    const el = ribbonRef.current
+    if (!el || el.scrollWidth <= el.clientWidth) return   // md+: nothing scrolls
+    const group = LIFECYCLE_TABS.find(t => t.id === tab)?.group
+    const target = group && el.querySelector(`[data-group="${group}"]`)
+    if (target) el.scrollTo({ left: target.offsetLeft - el.offsetLeft, behavior: 'smooth' })
+  }, [tab])
   const [activeAppId, setActiveAppId] = useState(null)
   const [deployFixReason, setDeployFixReason] = useState('')
   const [apps, setApps] = useState([])
@@ -315,11 +324,15 @@ export default function DevStudioPage({
                   onClick={() => { setSmallScreenNote(false); try { localStorage.setItem('aistrix_small_screen_note', 'dismissed') } catch { /* private mode */ } }}>×</button>
               </div>
             )}
-            <div className="min-h-[92px] bg-[#1A2038] grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_340px] overflow-x-auto overflow-y-hidden">
+            <div className="min-h-[92px] bg-[#1A2038] grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_340px] md:overflow-x-auto overflow-y-hidden">
               <div className="min-w-0 px-4 py-3">
-                <div className="grid grid-cols-[0.9fr_1.18fr_0.9fr] gap-2 h-full min-w-[640px]">
+                {/* Phones: one group fills the width and the next one peeks in;
+                    swipe to the next group (snaps). md+: all three side by side. */}
+                <div ref={ribbonRef}
+                  className="flex md:grid md:grid-cols-[0.9fr_1.18fr_0.9fr] gap-2 h-full md:min-w-[640px] overflow-x-auto md:overflow-visible snap-x snap-mandatory md:snap-none [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                   {LIFECYCLE_GROUPS.map(group => (
-                    <div key={group.id} className="min-w-0 rounded-2xl bg-[#111827]/60 border border-white/8 p-2 h-[68px]">
+                    <div key={group.id} data-group={group.id}
+                      className={`${LIFECYCLE_TABS.filter(t => t.group === group.id).length > 3 ? 'w-[94%]' : 'w-[85%]'} shrink-0 snap-start md:w-auto md:shrink min-w-0 rounded-2xl bg-[#111827]/60 border border-white/8 p-2 h-[68px]`}>
                       <p className="px-2 pb-1.5 text-[9px] text-slate-500 uppercase font-bold tracking-wider leading-none truncate">{group.label}</p>
                       <div className="flex gap-1 min-w-0">
                         {LIFECYCLE_TABS.filter(t => t.group === group.id).map(t => {
@@ -327,7 +340,7 @@ export default function DevStudioPage({
                           return (
                             <button key={t.id} onClick={() => { setTab(t.id); if (['design','test','deploy'].includes(t.id)) setActiveAppId(null) }}
                               title={`${t.label}: ${t.desc}`}
-                              className={`flex-1 min-w-0 h-[42px] px-1.5 py-1.5 rounded-xl transition-all text-left ${
+                              className={`flex-1 min-w-0 h-[42px] px-1 md:px-1.5 py-1.5 rounded-xl transition-all text-left ${
                                 active
                                   ? 'bg-[#6C5CE7] text-white shadow-md shadow-[#6C5CE7]/25'
                                   : 'text-slate-400 hover:text-white hover:bg-white/5'

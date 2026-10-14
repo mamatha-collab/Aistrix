@@ -1748,7 +1748,8 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
         if webhook_url:
             asyncio.create_task(_fire_webhook(webhook_url, req.app_id, req.input, full_result, provider, model))
         if log_source:
-            asyncio.create_task(_log_app_run(app_row["id"], caller_id, log_source, usage))
+            # Trigger runs act as the developer: not a person using the app.
+            asyncio.create_task(_log_app_run(app_row["id"], None if caller.live else caller_id, log_source, usage))
         if on_complete:
             # Awaited (not a task) so server-side history is written before the
             # caller's next run is rate-limit checked against it.

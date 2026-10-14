@@ -15,6 +15,7 @@ const PUBLIC_API_URL = (import.meta.env.VITE_PUBLIC_API_URL || import.meta.env.V
 import { PROVIDER_STYLE, modelOptions, providerById, useProviders } from '../lib/providers'
 import { VersionSetupCard } from '../components/VersionManager'
 import PublishedVersions from '../components/PublishedVersions'
+import { getTrigger, createTrigger, deleteTrigger, getWebhookSecret, sendTestWebhook, getAppStats } from '../lib/deploy'
 import { useVersions } from '../hooks/useVersions'
 import ApiKeysManager from '../components/ApiKeysManager'
 import { scopeToWorkspace } from '../lib/workspace'
@@ -440,7 +441,7 @@ const TAB_NOTES = {
       'Setting `is_published = true` on an app row makes it visible to all authenticated users in their app list.',
       'A **share link** points to `/app/{id}` — the AppPage loads the app by ID and checks the published flag before rendering.',
       'You can restrict visibility: private (owner only), published (all users), or marketplace (public + listed).',
-      '**Webhook trigger**: each app can have a unique webhook token stored in `apps.webhook_token`. POST to `/webhooks/{token}` with `{ "input": "..." }` to trigger a run headlessly.',
+      '**Inbound trigger**: an app can have a secret trigger link (Deploy → Share links). POST to `/webhooks/{token}` with `{ "input": "..." }` to run the live version headlessly, on the developer\'s key and limits.',
       'The backend enforces rate limits (hourly + daily) per user, tracked in-memory with a rolling window.',
     ],
   },
@@ -3288,9 +3289,20 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
   const [savingQuota, setSavingQuota] = useState(false)
   const [embedTab, setEmbedTab]     = useState('iframe')
   const [expandSection, setExpandSection] = useState(null)
+  const [trigger, setTrigger]       = useState(undefined)   // undefined = loading, null = none, string = token
+  const [triggerBusy, setTriggerBusy] = useState(false)
+  const [webhookSecret, setWebhookSecret] = useState('')
+  const [testingWebhook, setTestingWebhook] = useState(false)
+  const [visitorAccess, setVisitorAccess] = useState(!!app.embed_public)
+  const [domainsText, setDomainsText] = useState((app.embed_allowed_domains || []).join('\n'))
+  const [savingAccess, setSavingAccess] = useState(false)
   const [bp, setBp]                 = useState(null)   // null = loading, false = no row, object = loaded
   const descriptionRef = useRef(null)
   const toast = useToast()
+
+  useEffect(() => {
+    setApp(a => ({ ...a, live_version: initialApp.live_version, is_published: initialApp.is_published, promoted_at: initialApp.promoted_at }))
+  }, [initialApp.live_version, initialApp.is_published, initialApp.promoted_at])
 
   const [runStats, setRunStats] = useState(null)
   const [testStatus, setTestStatus] = useState(null)
@@ -3311,24 +3323,12 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
     }).then(data => setTestStatus(data))
       .catch(() => setTestStatus(null))
       .finally(() => setLoadingTestStatus(false))
-    // Fetch run history summary
-    supabase.from('run_history')
-      .select('created_at, input_tokens, output_tokens, rating_value')
-      .eq('app_id', app.id)
-      .order('created_at', { ascending: false })
-      .limit(200)
-      .then(({ data: rows }) => {
-        if (!rows?.length) return setRunStats({ total: 0 })
-        const totalRuns  = rows.length
-        const rated      = rows.filter(r => r.rating_value != null)
-        const thumbsUp   = rated.filter(r => r.rating_value === 1).length
-        const satisfaction = rated.length ? Math.round((thumbsUp / rated.length) * 100) : null
-        const withTokens = rows.filter(r => r.input_tokens)
-        const avgIn  = withTokens.length ? Math.round(withTokens.reduce((s, r) => s + r.input_tokens, 0) / withTokens.length) : null
-        const avgOut = withTokens.length ? Math.round(withTokens.reduce((s, r) => s + (r.output_tokens || 0), 0) / withTokens.length) : null
-        const lastRun = rows[0]?.created_at ? new Date(rows[0].created_at) : null
-        setRunStats({ total: totalRuns, satisfaction, rated: rated.length, avgIn, avgOut, lastRun })
-      })
+    // Run history summary: every user's runs (the server reads them all)
+    getAppStats(app.id)
+      .then(st => setRunStats({ total: st.total, users: st.users, satisfaction: st.satisfaction, rated: st.rated,
+        avgIn: st.avg_in, avgOut: st.avg_out, lastRun: st.last_run ? new Date(st.last_run) : null }))
+      .catch(() => setRunStats(null))
+    getTrigger(app.id).then(r => setTrigger(r.token || null)).catch(() => setTrigger(null))
     // eslint-disable-next-line react-hooks/exhaustive-deps -- API_URL is a build-time constant
   }, [app.id])
 
@@ -3445,6 +3445,61 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
     setApp(updated)
     onUpdate?.(updated)
     toast('Webhook saved', 'success', 2000)
+  }
+
+  async function testWebhook() {
+    setTestingWebhook(true)
+    try {
+      const r = await sendTestWebhook(app.id)
+      if (r.ok) toast(`Test sent — your server answered ${r.status}`, 'success', 4000)
+      else toast(r.error || `Test sent, but your server answered ${r.status}`, 'error', 6000)
+    } catch (e) {
+      toast(e.message, 'error', 6000)
+    } finally {
+      setTestingWebhook(false)
+    }
+  }
+
+  async function showWebhookSecret() {
+    try { setWebhookSecret((await getWebhookSecret(app.id)).secret) } catch (e) { toast(e.message, 'error') }
+  }
+
+  // ── Inbound trigger ────────────────────────────────────────────────────────
+  async function makeTrigger() {
+    if (trigger && !window.confirm('Replace the trigger link? The current link stops working.')) return
+    setTriggerBusy(true)
+    try { setTrigger((await createTrigger(app.id)).token); toast(trigger ? 'New trigger link created' : 'Trigger link created', 'success', 2500) }
+    catch (e) { toast(e.message, 'error', 6000) }
+    finally { setTriggerBusy(false) }
+  }
+
+  async function removeTrigger() {
+    if (!window.confirm('Turn off the trigger link? Anything using it will stop working.')) return
+    setTriggerBusy(true)
+    try { await deleteTrigger(app.id); setTrigger(null); toast('Trigger link turned off', 'info', 2500) }
+    catch (e) { toast(e.message, 'error', 6000) }
+    finally { setTriggerBusy(false) }
+  }
+
+  // ── Website visitors (embed) ───────────────────────────────────────────────
+  async function saveAccess() {
+    const domains = domainsText.split(/[\s,]+/).map(d => d.trim().toLowerCase()
+      .replace(/^https?:\/\//, '').replace(/\/.*$/, '')).filter(Boolean)
+    const bad = domains.find(d => !/^(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(d) && d !== 'localhost')
+    if (bad) { toast(`"${bad}" is not a valid domain`, 'error'); return }
+    if (visitorAccess && !domains.length) {
+      toast('Add at least one allowed domain before enabling visitor access', 'error'); return
+    }
+    setSavingAccess(true)
+    const patch = { embed_public: visitorAccess && !app.is_paid, embed_allowed_domains: domains }
+    const { error } = await supabase.from('apps').update(patch).eq('id', app.id)
+    setSavingAccess(false)
+    if (error) { toast(`Could not save: ${error.message}`, 'error'); return }
+    const updated = { ...app, ...patch }
+    setApp(updated)
+    onUpdate?.(updated)
+    setDomainsText(domains.join('\n'))
+    toast('Widget access saved', 'success')
   }
 
   // ── Run quota ──────────────────────────────────────────────────────────────
@@ -3598,7 +3653,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
           <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide mb-3">Run history</p>
           <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
             {[
-              { label: 'Total runs', value: runStats.total.toLocaleString(), color: '#A29BFE' },
+              { label: 'Total runs', value: runStats.total.toLocaleString(), sub: runStats.users ? `by ${runStats.users} ${runStats.users === 1 ? 'person' : 'people'}` : null, color: '#A29BFE' },
               { label: 'Satisfaction', value: runStats.satisfaction != null ? `${runStats.satisfaction}%` : '—', sub: runStats.rated ? `${runStats.rated} rated` : 'no ratings', color: runStats.satisfaction >= 80 ? '#00B894' : runStats.satisfaction >= 50 ? '#FDCB6E' : '#E84393' },
               { label: 'Avg input', value: runStats.avgIn ? `${runStats.avgIn.toLocaleString()} tok` : '—', color: '#74B9FF' },
               { label: 'Avg output', value: runStats.avgOut ? `${runStats.avgOut.toLocaleString()} tok` : '—', color: '#55EFC4' },
@@ -3613,6 +3668,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
           {runStats.lastRun && (
             <p className="text-[10px] text-slate-600 mt-3">Last run: {runStats.lastRun.toLocaleDateString()} {runStats.lastRun.toLocaleTimeString()}</p>
           )}
+          <p className="text-[10px] text-slate-600 mt-1">All users, including you. Website visitors without an account aren't counted.</p>
         </div>
       )}
       {runStats && runStats.total === 0 && app.is_published && (
@@ -3648,6 +3704,30 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
         </div>
       </Section>
 
+      {/* Access & billing */}
+      <Section id="access" label="👥 Access & billing">
+        <div className="space-y-1.5">
+          {[
+            { label: 'Who can open it', value: !app.is_published ? 'Only you and your workspace (not live)'
+              : app.visibility === 'private' ? 'Only you and your workspace'
+              : app.visibility === 'invite' ? 'Only people you invite' : 'Anyone with the link' },
+            { label: 'Price', value: app.is_paid ? `$${Number(app.price_per_run || 0).toFixed(2)} per run` : 'Free' },
+            { label: 'Who pays for AI', value: app.billing_mode === 'byok'
+              ? 'Each user, with their own API key'
+              : `Your API key — ${app.free_runs_per_user_day ?? 20} runs per user per day, then their own key` },
+            { label: 'Website visitors', value: app.embed_public && !app.is_paid
+              ? `Can use it without an account on ${(app.embed_allowed_domains || []).join(', ') || 'any site'}`
+              : 'Must sign in to Aistrix' },
+            { label: 'Daily limit', value: app.max_runs_per_day ? `${app.max_runs_per_day} runs per day` : 'None' },
+          ].map(({ label, value }) => (
+            <div key={label} className="flex items-start justify-between gap-3 text-[11px]">
+              <span className="text-slate-500 shrink-0">{label}</span>
+              <span className="text-slate-300 text-right">{value}</span>
+            </div>
+          ))}
+        </div>
+      </Section>
+
       {/* Share links */}
       <Section id="links" label="🔗 Share links & endpoints">
         {!app.is_published && (
@@ -3659,8 +3739,6 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
           {[
             { label: 'App page',         value: `${window.location.origin}/app/${app.id}` },
             { label: 'API endpoint',     value: `${PUBLIC_API_URL}/v1/apps/${app.id}/run` },
-            { label: 'Team install',     value: `${window.location.origin}/install/${app.id}` },
-            { label: 'Inbound trigger',  value: `${PUBLIC_API_URL}/webhooks/${app.webhook_token || app.id}`, note: 'POST with {"input":"..."} to trigger a run headlessly' },
           ].map(({ label, value, note }) => (
             <div key={label} className="flex items-center gap-2 bg-[#0E1424] rounded-lg px-3 py-2 min-w-0">
               <div className="flex-1 min-w-0">
@@ -3671,6 +3749,30 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
               <button onClick={() => copy(value, label)} className="text-slate-500 hover:text-white transition-colors text-xs shrink-0">📋</button>
             </div>
           ))}
+          <div className="bg-[#0E1424] rounded-lg px-3 py-2 min-w-0">
+            <p className="text-[9px] text-slate-500 uppercase">Inbound trigger</p>
+            {trigger ? (
+              <>
+                <div className="flex items-center gap-2 min-w-0">
+                  <code className={`flex-1 text-[10px] truncate block ${app.is_published ? 'text-slate-300' : 'text-slate-600'}`}>{`${PUBLIC_API_URL}/webhooks/${trigger}`}</code>
+                  <button onClick={() => copy(`${PUBLIC_API_URL}/webhooks/${trigger}`, 'Trigger link')} className="text-slate-500 hover:text-white transition-colors text-xs shrink-0">📋</button>
+                </div>
+                <p className="text-[9px] text-slate-600 mt-0.5">POST {'{"input":"..."}'} to run the live version. Keep it secret: anyone with the link can run the app on your key.</p>
+                <div className="flex gap-3 mt-1.5">
+                  <button onClick={makeTrigger} disabled={triggerBusy} className="text-[10px] text-slate-400 hover:text-white disabled:opacity-40 transition-colors">↻ Replace link</button>
+                  <button onClick={removeTrigger} disabled={triggerBusy} className="text-[10px] text-slate-400 hover:text-red-300 disabled:opacity-40 transition-colors">Turn off</button>
+                </div>
+              </>
+            ) : (
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[9px] text-slate-600">Let Zapier, Make or your server run the live version with a POST. Runs use your key and limits.</p>
+                <button onClick={makeTrigger} disabled={triggerBusy || trigger === undefined}
+                  className="text-[10px] font-semibold px-2.5 py-1 rounded-lg bg-[#6C5CE7]/15 hover:bg-[#6C5CE7]/25 text-[#A29BFE] border border-[#6C5CE7]/25 transition-colors disabled:opacity-40 shrink-0">
+                  {triggerBusy ? 'Creating…' : 'Create link'}
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </Section>
 
@@ -3692,6 +3794,34 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
               📋 Copy
             </button>
           </div>
+          {embedTab !== 'api' && (
+            <div className="space-y-2">
+              <p className="text-[10px] text-slate-400 uppercase font-semibold tracking-wide">Who can use the widget</p>
+              <label className="text-[10px] text-slate-500 block">Allowed websites (one per line)</label>
+              <textarea rows={3} value={domainsText} onChange={e => setDomainsText(e.target.value)}
+                placeholder={'example.com\nshop.example.com'}
+                className="w-full bg-[#0E1424] border border-white/8 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 font-mono resize-none focus:outline-none focus:border-[#6C5CE7] transition-colors" />
+              <p className="text-[10px] text-slate-600">Empty = any site can embed. A domain also covers its subdomains.</p>
+              <label className={`flex items-start gap-2 ${app.is_paid ? 'opacity-50' : 'cursor-pointer'}`}>
+                <input type="checkbox" className="mt-0.5" disabled={app.is_paid}
+                  checked={visitorAccess && !app.is_paid} onChange={e => setVisitorAccess(e.target.checked)} />
+                <span className="text-xs text-slate-400">
+                  Let website visitors use it without an Aistrix account
+                  <span className="block text-[10px] text-slate-600 mt-0.5">
+                    {app.is_paid
+                      ? 'Not available for paid apps.'
+                      : 'Requires allowed websites. Runs are rate-limited per visitor and use your saved API key when you have one. Otherwise visitors must sign in.'}
+                  </span>
+                </span>
+              </label>
+              <div className="flex justify-end">
+                <button onClick={saveAccess} disabled={savingAccess}
+                  className="text-xs font-semibold px-3 py-2 rounded-lg bg-[#6C5CE7]/15 hover:bg-[#6C5CE7]/25 text-[#A29BFE] border border-[#6C5CE7]/25 transition-colors disabled:opacity-40">
+                  {savingAccess ? 'Saving…' : 'Save access settings'}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </Section>
 
@@ -3739,6 +3869,13 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
               className="text-xs font-semibold px-3 py-2 rounded-lg bg-[#6C5CE7]/15 hover:bg-[#6C5CE7]/25 text-[#A29BFE] border border-[#6C5CE7]/25 transition-colors disabled:opacity-40 shrink-0">
               {savingWebhook ? '…' : 'Save'}
             </button>
+            {app.webhook_url && (
+              <button onClick={testWebhook} disabled={testingWebhook || webhookUrl.trim() !== app.webhook_url}
+                title={webhookUrl.trim() !== app.webhook_url ? 'Save the URL first' : 'Send a signed sample payload'}
+                className="text-xs font-semibold px-3 py-2 rounded-lg bg-white/4 hover:bg-white/8 text-slate-300 border border-white/8 transition-colors disabled:opacity-40 shrink-0">
+                {testingWebhook ? 'Sending…' : 'Send test'}
+              </button>
+            )}
           </div>
           {app.webhook_url && (
             <div className="bg-[#0E1424] rounded-lg px-3 py-2">
@@ -3752,6 +3889,18 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
   "model": "<model>",
   "timestamp": "<ISO 8601>"
 }`}</pre>
+              <p className="text-[9px] text-slate-500 uppercase font-semibold mt-3 mb-1">Signature</p>
+              <p className="text-[10px] text-slate-400 leading-relaxed">
+                Each request has an <code className="text-slate-300">X-Aistrix-Signature: t=…,v1=…</code> header. To check it came from Aistrix,
+                compute HMAC-SHA256 of <code className="text-slate-300">{'"<t>.<raw body>"'}</code> with your signing secret and compare it to <code className="text-slate-300">v1</code>.
+                A test send has <code className="text-slate-300">"event": "test"</code>.
+              </p>
+              <div className="flex items-center gap-2 mt-2 min-w-0">
+                <code className="flex-1 text-[10px] text-slate-300 truncate">{webhookSecret || 'whsec_••••••••••••••••'}</code>
+                {webhookSecret
+                  ? <button onClick={() => copy(webhookSecret, 'Signing secret')} className="text-slate-500 hover:text-white transition-colors text-xs shrink-0">📋</button>
+                  : <button onClick={showWebhookSecret} className="text-[10px] text-slate-400 hover:text-white transition-colors shrink-0">Show secret</button>}
+              </div>
             </div>
           )}
         </div>
@@ -3761,7 +3910,8 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
       <Section id="quota" label="⚡ Run quota (daily limit)">
         <div className="space-y-2">
           <p className="text-[11px] text-slate-300">
-            Limit how many times this app can be run per day across all users.
+            Limit how many times this app can be run per day across all users,
+            API calls and website visitors (resets at midnight UTC). Your own test runs don't count.
             Leave blank for unlimited.
           </p>
           <div className="flex gap-2 items-center">
@@ -3788,7 +3938,6 @@ function SdkSnippets({ app }) {
   const [lang, setLang] = useState('curl')
   const [copied, setCopied] = useState(null)
   const appId = app.id
-  const token = app.webhook_token || appId
 
   function cp(text, key) {
     navigator.clipboard.writeText(text).then(() => { setCopied(key); setTimeout(() => setCopied(null), 1500) })
@@ -3828,10 +3977,10 @@ console.log(output)`,
     },
     trigger: {
       label: 'Inbound trigger',
-      code: `# Trigger a run by POSTing to your inbound webhook URL.
-# No API key needed — the URL itself is the secret.
+      code: `# Create the trigger link in Deploy → Share links, then POST to it.
+# No API key needed: the link itself is the secret. Runs the live version.
 
-curl -X POST ${PUBLIC_API_URL}/webhooks/${token} \\
+curl -X POST ${PUBLIC_API_URL}/webhooks/YOUR_TRIGGER_TOKEN \\
   -H "Content-Type: application/json" \\
   -d '{"input": "Your input here"}'`,
     },
@@ -3886,6 +4035,10 @@ function DeployTab({ apps, user, onAppUpdated, onFixInDesign, selectedAppId, pha
           onMovePhase={onMovePhase}
           user={user}
         />
+      )}
+
+      {selectedApp && (selectedApp.is_published || selectedApp.live_version) && (
+        <PublishedVersions key={`versions-${selectedApp.id}-${selectedApp.live_version ?? ''}`} app={selectedApp} onAppUpdated={onAppUpdated} />
       )}
 
       {/* API Keys */}

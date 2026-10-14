@@ -3,6 +3,7 @@ import ast
 import csv
 import html as html_lib
 import hashlib
+import hmac
 from functools import partial
 import io
 import ipaddress
@@ -610,6 +611,7 @@ class ApiCaller:
     workspace_id: Optional[str] = None             # active workspace (key's, or X-Workspace-Id)
     app_ids: list = field(default_factory=list)   # non-empty = key restricted to these apps
     via_key: bool = False
+    live: bool = False                             # run the live version even if it can edit (inbound triggers)
 
 
 async def resolve_api_caller(request: Request, *, required: bool = False) -> ApiCaller:
@@ -1527,7 +1529,7 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
     is_editor = await can_edit_app(app_row, caller) if app_row else False
     # End users run the app's production version (set by promoting); editors
     # run the draft. Apps never promoted run as they are.
-    prod = app_row.get("prod_snapshot") if (app_row and not is_editor and isinstance(app_row.get("prod_snapshot"), dict)) else None
+    prod = app_row.get("prod_snapshot") if (app_row and (not is_editor or caller.live) and isinstance(app_row.get("prod_snapshot"), dict)) else None
     if prod:
         app_row = {**app_row, **{k: prod[k] for k in DRAFT_FIELDS if k in prod}}
 
@@ -1655,7 +1657,7 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
 
     # ── App's daily run quota (apps.max_runs_per_day), across all end users
     # and visitors; the developer's own runs don't count. ──────────────────
-    if app_row and not is_editor and app_row.get("max_runs_per_day"):
+    if app_row and (not is_editor or caller.live) and app_row.get("max_runs_per_day"):
         if not await claim_app_daily_run(app_row["id"], int(app_row["max_runs_per_day"])):
             return JSONResponse(status_code=429, content={"code": "app_quota", "error": (
                 "This app has reached its run limit for today. Try again tomorrow (resets at midnight UTC).")})
@@ -1988,7 +1990,7 @@ async def live_view(app_row: dict, caller: "ApiCaller") -> tuple[dict, dict]:
     """(app, blueprint) as this caller runs it: editors the draft, everyone
     else the production version (when the app has been promoted)."""
     prod = app_row.get("prod_snapshot")
-    if not isinstance(prod, dict) or await can_edit_app(app_row, caller):
+    if not isinstance(prod, dict) or (not caller.live and await can_edit_app(app_row, caller)):
         return app_row, await fetch_app_blueprint(app_row["id"])
     return {**app_row, **{k: prod[k] for k in DRAFT_FIELDS if k in prod}}, prod.get("blueprint") or {}
 
@@ -2061,6 +2063,10 @@ async def run_published_app_api(app_id: str, req: ApiRunRequest, request: Reques
     into parts, analysed, and combined. "stream": false returns one JSON body.
     """
     caller = await resolve_api_caller(request)
+    return await _run_app_api(app_id, req, request, caller)
+
+
+async def _run_app_api(app_id: str, req: ApiRunRequest, request: Request, caller: ApiCaller):
     app_data = await _load_api_app(app_id, caller)
     app_data, blueprint = await live_view(app_data, caller)
 
@@ -3077,20 +3083,35 @@ async def get_credits(request: Request):
     }
 
 
+def webhook_secret(app_id: str) -> str:
+    """The app's webhook signing secret. Derived, not stored: same app, same
+    secret, and nothing in a table end users can read."""
+    master = os.getenv("WEBHOOK_SIGNING_KEY") or SUPABASE_SERVICE_ROLE_KEY or ""
+    return "whsec_" + hmac.new(master.encode(), f"app-webhook:{app_id}".encode(), hashlib.sha256).hexdigest()[:40]
+
+
+async def _post_webhook(webhook_url: str, app_id: str, payload: dict) -> int:
+    """POSTs the payload signed with the app's secret: header
+    X-Aistrix-Signature = "t=<unix time>,v1=<hex HMAC-SHA256 of '<t>.<body>'>"."""
+    assert_public_url(webhook_url)
+    body = json.dumps(payload, ensure_ascii=False).encode()
+    ts = str(int(time.time()))
+    sig = hmac.new(webhook_secret(app_id).encode(), ts.encode() + b"." + body, hashlib.sha256).hexdigest()
+    async with httpx.AsyncClient(timeout=10) as client:
+        res = await client.post(webhook_url, content=body, headers={
+            "Content-Type": "application/json", "User-Agent": "Aistrix-Webhook/1.0",
+            "X-Aistrix-Signature": f"t={ts},v1={sig}"})
+    return res.status_code
+
+
+def _webhook_payload(event: str, app_id: str, user_input: str, result: str, provider: str, model: str) -> dict:
+    return {"event": event, "app_id": app_id, "input": user_input, "result": result,
+            "provider": provider, "model": model, "timestamp": datetime.now(timezone.utc).isoformat()}
+
+
 async def _fire_webhook(webhook_url: str, app_id: str, user_input: str, result: str, provider: str, model: str):
-    payload = {
-        "event": "run.completed",
-        "app_id": app_id,
-        "input": user_input,
-        "result": result,
-        "provider": provider,
-        "model": model,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    }
     try:
-        assert_public_url(webhook_url)
-        async with httpx.AsyncClient(timeout=10) as client:
-            await client.post(webhook_url, json=payload, headers={"Content-Type": "application/json", "User-Agent": "Aistrix-Webhook/1.0"})
+        await _post_webhook(webhook_url, app_id, _webhook_payload("run.completed", app_id, user_input, result, provider, model))
     except Exception as e:
         print(f"Webhook failed: {e}")
 
@@ -4401,6 +4422,31 @@ async def scrape_website(body: ScrapeRequest, request: Request):
         raise HTTPException(status_code=502, detail="Could not fetch that URL.")
 
 
+async def _trigger_app(token: str, request: Request):
+    """An app's inbound trigger link: runs the live version as its developer
+    (their key and limits). Body: {"input": "..."} and/or {"fields": {...}}."""
+    try:
+        res = await db(_service_client().table("app_triggers").select("app_id").eq("token", token).maybe_single())
+    except Exception:
+        res = None
+    if not (res and res.data):
+        raise HTTPException(status_code=404, detail="Trigger not found or turned off")
+    app_row = await load_app_row(res.data["app_id"])
+    if not (app_row and app_row.get("is_published")):
+        raise HTTPException(status_code=409, detail="The app isn't live. Publish it to use its trigger link.")
+    try:
+        body = json.loads(await request.body() or b"{}")
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail='Send JSON: {"input": "..."}')
+    if not isinstance(body, dict):
+        body = {"input": str(body)}
+    req = ApiRunRequest(input=body.get("input") if isinstance(body.get("input"), str) else None,
+                        fields=body.get("fields") if isinstance(body.get("fields"), dict) else None, stream=False)
+    owner = app_row.get("created_by")
+    caller = ApiCaller(user_id=owner, workspace_id=app_row.get("workspace_id") or await personal_workspace_id(owner), live=True)
+    return await _run_app_api(app_row["id"], req, request, caller)
+
+
 @app.post("/webhooks/{token}")
 async def trigger_via_webhook(token: str, request: Request):
     """Trigger a workflow via its unique webhook token. No user auth required — the token IS the credential."""
@@ -4411,10 +4457,14 @@ async def trigger_via_webhook(token: str, request: Request):
         raise HTTPException(status_code=503, detail="Server not configured for webhook triggers")
 
     sb_service = _service_client()
-    result = await db(sb_service.table("flows").select("*").eq("webhook_token", token).maybe_single())
-    flow = result.data
+    try:
+        uuid.UUID(token)   # flow tokens are UUIDs; app trigger tokens (trg_…) aren't
+        result = await db(sb_service.table("flows").select("*").eq("webhook_token", token).maybe_single())
+    except ValueError:
+        result = None
+    flow = result.data if result else None
     if not flow:
-        raise HTTPException(status_code=404, detail="Workflow not found or webhook not enabled")
+        return await _trigger_app(token, request)
 
     # Parse seed input from request body
     seed_input = ""
@@ -4970,6 +5020,84 @@ async def _save_published_version(sb, app_row: dict, state: dict, tests: dict, u
     except Exception as e:
         print(f"version not saved: {type(e).__name__}: {str(e)[:200]}")
         return None
+
+
+@app.get("/v1/apps/{app_id}/trigger")
+async def get_app_trigger(app_id: str, request: Request):
+    await _editable_app(app_id, request)
+    try:
+        res = await db(_service_client().table("app_triggers").select("token").eq("app_id", app_id).maybe_single())
+    except Exception as e:
+        if "app_triggers" in str(e):
+            return {"token": None, "setup_required": True}
+        raise
+    return {"token": res.data["token"] if res and res.data else None}
+
+
+@app.post("/v1/apps/{app_id}/trigger")
+async def create_app_trigger(app_id: str, request: Request):
+    """Creates the trigger link, or replaces it (the old link stops working)."""
+    await _editable_app(app_id, request)
+    token = "trg_" + secrets.token_urlsafe(24)
+    await db(_service_client().table("app_triggers").upsert(
+        {"app_id": app_id, "token": token, "created_at": datetime.now(timezone.utc).isoformat()}, on_conflict="app_id"))
+    return {"token": token}
+
+
+@app.delete("/v1/apps/{app_id}/trigger")
+async def delete_app_trigger(app_id: str, request: Request):
+    await _editable_app(app_id, request)
+    await db(_service_client().table("app_triggers").delete().eq("app_id", app_id))
+    return {"token": None}
+
+
+@app.get("/v1/apps/{app_id}/webhook/secret")
+async def get_webhook_secret(app_id: str, request: Request):
+    await _editable_app(app_id, request)
+    return {"secret": webhook_secret(app_id)}
+
+
+@app.post("/v1/apps/{app_id}/webhook/test")
+async def send_test_webhook(app_id: str, request: Request):
+    """Sends a signed sample payload (event "test") to the saved webhook URL."""
+    _, app_row = await _editable_app(app_id, request)
+    url = (app_row.get("webhook_url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="Save a webhook URL first")
+    payload = _webhook_payload("test", app_id, "Sample input", "Sample output from a test send.",
+                               app_row.get("ai_provider") or "claude", app_row.get("ai_model") or "")
+    try:
+        status = await _post_webhook(url, app_id, payload)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except httpx.HTTPError as e:
+        return {"ok": False, "status": None, "error": f"Couldn't reach the URL ({e.__class__.__name__})"}
+    return {"ok": 200 <= status < 300, "status": status}
+
+
+@app.get("/v1/apps/{app_id}/stats")
+async def app_run_stats(app_id: str, request: Request):
+    """Runs of this app by everyone (Deploy → Run history). Website visitors
+    without an account aren't in run history, so they aren't counted."""
+    await _editable_app(app_id, request)
+    sb = _service_client()
+    total_res, rows_res = await asyncio.gather(
+        db(sb.table("run_history").select("id", count="exact", head=True).eq("app_id", app_id)),
+        db(sb.table("run_history").select("created_at, user_id, input_tokens, output_tokens, rating_value")
+           .eq("app_id", app_id).order("created_at", desc=True).limit(500)))
+    rows = rows_res.data or []
+    rated = [r for r in rows if r.get("rating_value") is not None]
+    tokens = [r for r in rows if r.get("input_tokens")]
+    return {
+        "total": total_res.count or 0,
+        "users": len({r["user_id"] for r in rows if r.get("user_id")}),
+        "rated": len(rated),
+        "satisfaction": round(100 * sum(1 for r in rated if r["rating_value"] == 1) / len(rated)) if rated else None,
+        "avg_in": round(sum(r["input_tokens"] for r in tokens) / len(tokens)) if tokens else None,
+        "avg_out": round(sum(r.get("output_tokens") or 0 for r in tokens) / len(tokens)) if tokens else None,
+        "last_run": rows[0]["created_at"] if rows else None,
+        "sample": len(rows),
+    }
 
 
 @app.get("/v1/apps/{app_id}/versions")

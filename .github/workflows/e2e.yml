@@ -1,0 +1,38 @@
+name: E2E (Build flow)
+
+# Browser test of Design → Test → Deploy against a running site (staging).
+# Run it by hand from the Actions tab. It needs repository secrets for a
+# dedicated test account: E2E_BASE_URL, E2E_EMAIL, E2E_PASSWORD and
+# (optionally) E2E_APP_NAME — an app of that account that is in Deploy.
+on:
+  workflow_dispatch:
+
+jobs:
+  e2e:
+    name: Build flow in the browser
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: aistrix-frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: aistrix-frontend/package-lock.json
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+        env:
+          E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+          E2E_EMAIL: ${{ secrets.E2E_EMAIL }}
+          E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+          E2E_APP_NAME: ${{ secrets.E2E_APP_NAME }}
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: playwright-report
+          path: aistrix-frontend/playwright-report
+          retention-days: 7

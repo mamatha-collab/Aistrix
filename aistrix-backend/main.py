@@ -461,8 +461,12 @@ async def load_app_row(app_id: Optional[str]) -> Optional[dict]:
         res = await db(sb.table("apps").select("*").eq("id", app_id).maybe_single())
         return res.data if res and res.data else None
     except Exception as e:
-        print(f"load_app_row error: {e}")
-        return None
+        if "22P02" in str(e):   # not a valid id → no such app
+            return None
+        # A failed lookup must not read as "App not found".
+        print(f"load_app_row error: {type(e).__name__}: {str(e)[:200]}")
+        sentry_sdk.capture_exception(e)
+        raise HTTPException(status_code=503, detail="Couldn't load the app right now. Please try again.")
 
 
 async def app_member_role(app_id: str, user_id: Optional[str]) -> Optional[str]:
@@ -472,14 +476,29 @@ async def app_member_role(app_id: str, user_id: Optional[str]) -> Optional[str]:
     try:
         res = await db(sb.table("app_members").select("role").eq("app_id", app_id).eq("user_id", user_id).limit(1))
         return res.data[0]["role"] if res and res.data else None
-    except Exception:
-        return None   # table may not exist on older deployments
+    except Exception as e:
+        if _missing_table(e):
+            return None   # table may not exist on older deployments
+        raise _access_check_failed(e)
 
 
 BUILD_ROLES = ("owner", "admin", "developer")     # build/edit apps, tools, keys
 MANAGE_ROLES = ("owner", "admin")                 # people, settings, everyone's activity
 BILLING_ROLES = ("owner", "admin", "billing")     # purchases
 _UUID_RE = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+
+def _missing_table(e: Exception) -> bool:
+    """Table/column not migrated yet (older deployments) — as opposed to a
+    real failure (network, timeout), which must not read as "no access"."""
+    text = str(e)
+    return any(code in text for code in ("PGRST205", "42P01", "42703", "PGRST204")) or "does not exist" in text
+
+
+def _access_check_failed(e: Exception):
+    print(f"access check failed: {type(e).__name__}: {str(e)[:200]}")
+    sentry_sdk.capture_exception(e)
+    return HTTPException(status_code=503, detail="Couldn't check your access right now. Please try again.")
 
 
 async def workspace_role(workspace_id: Optional[str], user_id: Optional[str]) -> Optional[str]:
@@ -490,8 +509,10 @@ async def workspace_role(workspace_id: Optional[str], user_id: Optional[str]) ->
         res = await db(sb.table("workspace_members").select("role")
                        .eq("workspace_id", workspace_id).eq("user_id", user_id).limit(1))
         return res.data[0]["role"] if res and res.data else None
-    except Exception:
-        return None   # workspaces not migrated yet
+    except Exception as e:
+        if _missing_table(e):
+            return None   # workspaces not migrated yet
+        raise _access_check_failed(e)
 
 
 async def personal_workspace_id(user_id: Optional[str]) -> Optional[str]:
@@ -501,8 +522,10 @@ async def personal_workspace_id(user_id: Optional[str]) -> Optional[str]:
     try:
         res = await db(sb.table("workspaces").select("id").eq("personal_owner_id", user_id).limit(1))
         return res.data[0]["id"] if res and res.data else None
-    except Exception:
-        return None
+    except Exception as e:
+        if _missing_table(e):
+            return None
+        raise _access_check_failed(e)
 
 
 async def resolve_user_workspace(user_id: str, requested: Optional[str]) -> Optional[str]:

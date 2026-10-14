@@ -51,6 +51,8 @@ async def fake_stream(system, user_input, model, api_key=None, max_tokens=4096, 
 
 main.load_app_row = load_app_row
 main.app_member_role = app_member_role
+main.workspace_role = none          # no workspaces in this check (lookups must not reach a real database)
+main.personal_workspace_id = none
 main.verify_user_jwt = verify
 main.find_active_entitlement = find_ent
 main.fetch_user_api_key = none

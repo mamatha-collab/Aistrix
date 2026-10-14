@@ -1302,34 +1302,39 @@ function outputRulesSatisfied(app, oc) {
   return outputContractHasRules(oc) || (app?.app_type === 'chatbot' && !!oc.format)
 }
 
+// The same rules the server applies before publishing
+// (validate_app_publish_ready), checked live while editing.
+const FIELD_NAME_RE = /^[a-z][a-z0-9_]*$/
 function readinessChecks(app, bp) {
   const oc = bp.output_contract || {}
   const hasValidInputs = validInputFields(bp).length > 0 && invalidInputFields(bp).length === 0
   const hasFormatRules = outputRulesSatisfied(app, oc)
   const mismatch = outputContractMismatch(app, bp)
+  const outFields = getOutputSchemaFields(bp)
+  const jsonFieldsOk = oc.format !== 'json' || (outFields.length > 0 && outFields.every(f => FIELD_NAME_RE.test((f.field || f.name || '').trim()) && f.type))
   return [
     { key: 'business', label: 'Business',   ok: !!(bp.business_problem?.trim() && bp.audience?.trim()) },
     { key: 'inputs',   label: 'Inputs',     ok: hasValidInputs },
-    { key: 'output',   label: 'Output',     ok: !!(oc.format && hasFormatRules && !mismatch) },
-    { key: 'prompt',   label: 'Prompt',     ok: !!(app?.system_prompt?.length > 200) },
+    { key: 'output',   label: 'Output',     ok: !!(oc.format && hasFormatRules && !mismatch && jsonFieldsOk) },
+    { key: 'prompt',   label: 'Prompt',     ok: !!(app?.system_prompt?.trim()?.length > 200) },
+    { key: 'details',  label: 'Description & model', ok: !!(app?.description?.trim() && app?.ai_model && (!app?.is_paid || app?.price_per_run != null)) },
     { key: 'perms',    label: 'Permissions',ok: bp.permissions !== undefined },
   ]
 }
 
+const READINESS_WEIGHTS = { business: 15, inputs: 20, output: 20, prompt: 20, details: 15, perms: 10 }
 function calcReadiness(app, bp) {
-  const checks = readinessChecks(app, bp)
-  const weights = { business: 20, inputs: 20, output: 25, prompt: 25, perms: 10 }
-  return checks.reduce((s, c) => s + (c.ok ? weights[c.key] : 0), 0)
+  return readinessChecks(app, bp).reduce((s, c) => s + (c.ok ? READINESS_WEIGHTS[c.key] : 0), 0)
 }
 
-function ReadinessBar({ app, bp }) {
+// serverProblems: the server's publish check on the last saved version
+// (null while loading). Shown under the bar so Design never says "ready"
+// when publishing would be blocked.
+function ReadinessBar({ app, bp, serverProblems }) {
   const checks = readinessChecks(app, bp)
-  const score  = checks.reduce((s, c) => {
-    const weights = { business: 20, inputs: 20, output: 25, prompt: 25, perms: 10 }
-    return s + (c.ok ? weights[c.key] : 0)
-  }, 0)
-  const color = score >= 70 ? '#00B894' : score >= 40 ? '#FDCB6E' : '#E84393'
-  const label = score >= 70 ? 'Ready to test' : score >= 40 ? 'Needs work' : 'Incomplete'
+  const score  = calcReadiness(app, bp)
+  const color = score >= 100 ? '#00B894' : score >= 60 ? '#FDCB6E' : '#E84393'
+  const label = score >= 100 ? 'Ready to test and publish' : score >= 60 ? 'Almost there' : 'Incomplete'
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between">
@@ -1347,12 +1352,19 @@ function ReadinessBar({ app, bp }) {
           </div>
         ))}
       </div>
+      {serverProblems && (
+        <p className={`text-[11px] pt-1 ${serverProblems.length ? 'text-amber-300/90' : 'text-emerald-400/90'}`}>
+          {serverProblems.length
+            ? `Publish check on the saved version: ${serverProblems.length} to fix — ${serverProblems.join(' · ')}`
+            : 'Publish check on the saved version: all design checks pass'}
+        </p>
+      )}
     </div>
   )
 }
 
 // Design → Test handoff card
-function DesignTestHandoff({ app, bp, isDirty, saving, onSave, onGoToTest }) {
+function DesignTestHandoff({ app, bp, isDirty, saving, onSave, onGoToTest, serverProblems }) {
   const oc = bp?.output_contract || {}
   const validInputs = validInputFields(bp)
   const invalidInputs = invalidInputFields(bp)
@@ -1393,6 +1405,11 @@ function DesignTestHandoff({ app, bp, isDirty, saving, onSave, onGoToTest }) {
           </div>
         ))}
       </div>
+      {allGood && serverProblems?.length > 0 && (
+        <p className="text-[11px] text-amber-300/90 leading-relaxed">
+          You can test now. Before publishing, also fix: {serverProblems.join(' · ')}
+        </p>
+      )}
       {allGood && (
         <div className="flex items-center justify-between gap-3 pt-1">
           <p className="text-[11px] text-emerald-400">
@@ -1979,9 +1996,15 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
   const [generating, setGenerating] = useState(false)
   const [copilotOutput, setCopilotOutput] = useState('')
   const [copilotSuggestions, setCopilotSuggestions] = useState(null)
+  const [serverProblems, setServerProblems] = useState(null)
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
-  useEffect(() => { loadBlueprint() }, [app.id])  // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loadBlueprint(); loadServerChecks() }, [app.id])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The server's publish checks (not tests: those belong to the Test step).
+  function loadServerChecks() {
+    getRelease(app.id).then(r => setServerProblems(r.checks || [])).catch(() => setServerProblems(null))
+  }
 
   async function loadBlueprint() {
     const { data, error } = await supabase.from('app_blueprints')
@@ -2026,6 +2049,7 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
     setBp(normalized)
     setSavedBp(normalized)
     toast('Blueprint saved', 'success', 2000)
+    loadServerChecks()
     return true
   }
 
@@ -2046,6 +2070,7 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
     if (error) { toast(error.message, 'error'); return }
     onAppUpdated?.({ ...app, ...next })
     toast('Model settings saved', 'success', 2000)
+    loadServerChecks()
   }
 
   // Picking a Design output format also sets what the app actually returns.
@@ -2235,7 +2260,7 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
       {/* Readiness */}
       <SafeCard name="Readiness">{() => (
       <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5">
-        <ReadinessBar app={app} bp={bp} />
+        <ReadinessBar app={app} bp={bp} serverProblems={serverProblems} />
       </div>
       )}</SafeCard>
 
@@ -2665,6 +2690,7 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
         saving={saving}
         onSave={() => save(bp)}
         onGoToTest={() => onGoToTest?.(app.id)}
+        serverProblems={serverProblems}
       />
       </SafeCard>
 

@@ -16,6 +16,7 @@ import { PROVIDER_STYLE, modelOptions, providerById, useProviders, useProviderSt
 import { VersionSetupCard } from '../components/VersionManager'
 import PublishedVersions from '../components/PublishedVersions'
 import ConfirmDialog from '../components/ConfirmDialog'
+import SafeCard from '../components/SafeCard'
 import { getTrigger, createTrigger, deleteTrigger, getWebhookSecret, sendTestWebhook, getAppStats, getLivePreview } from '../lib/deploy'
 import { useVersions } from '../hooks/useVersions'
 import ApiKeysManager from '../components/ApiKeysManager'
@@ -2232,9 +2233,11 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
       </div>
 
       {/* Readiness */}
+      <SafeCard name="Readiness">{() => (
       <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5">
         <ReadinessBar app={app} bp={bp} />
       </div>
+      )}</SafeCard>
 
       {(mismatch || invalidInputs.length > 0) && (
         <div className="bg-amber-500/8 border border-amber-500/20 rounded-2xl p-4 space-y-2">
@@ -2258,6 +2261,7 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
       )}
 
       {/* Copilot */}
+      <SafeCard name="Blueprint copilot">{() => (
       <div className="bg-[#171B33] border border-[#6C5CE7]/20 rounded-2xl p-5 space-y-3">
         <p className="text-xs font-semibold text-[#A29BFE] uppercase tracking-wider">✦ Aistrix Copilot</p>
         <p className="text-[11px] text-slate-300">Describe your app idea and Copilot will fill the blueprint for you.</p>
@@ -2299,8 +2303,10 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
           </div>
         )}
       </div>
+      )}</SafeCard>
 
       {/* Input Schema */}
+      <SafeCard name="Input schema">{() => (
       <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5 space-y-3">
         <div className="flex items-center justify-between">
           <p className="text-xs font-bold text-white uppercase tracking-wider">Input Schema</p>
@@ -2357,8 +2363,10 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
           </div>
         )}
       </div>
+      )}</SafeCard>
 
       {/* Output Contract */}
+      <SafeCard name="Output contract">{() => (
       <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5 space-y-3">
         <p className="text-xs font-bold text-white uppercase tracking-wider">Output Contract</p>
         <div className="space-y-1">
@@ -2488,8 +2496,10 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
           <FormatRulesEditor label="Required sections" hint="e.g. Executive Summary, Analysis, Appendix" rulesKey="sections" bp={bp} setBp={setBp} />
         )}
       </div>
+      )}</SafeCard>
 
       {/* AI Behavior */}
+      <SafeCard name="AI behavior">{() => (
       <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5 space-y-3">
         <div className="flex items-center justify-between">
           <p className="text-xs font-bold text-white uppercase tracking-wider">AI Behavior</p>
@@ -2611,8 +2621,10 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
           </div>
         )}
       </div>
+      )}</SafeCard>
 
       {/* Permissions */}
+      <SafeCard name="Permissions">{() => (
       <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5 space-y-3">
         <p className="text-xs font-bold text-white uppercase tracking-wider">Permissions & Risk</p>
         <div className="space-y-2">
@@ -2634,14 +2646,18 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
           })}
         </div>
       </div>
+      )}</SafeCard>
 
       {/* Tools */}
+      <SafeCard name="Tools">{() => (
       <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5 space-y-3">
         <p className="text-xs font-bold text-white uppercase tracking-wider">Tools & Capabilities</p>
         <ToolsEditor appId={app.id} />
       </div>
+      )}</SafeCard>
 
       {/* Design → Test handoff */}
+      <SafeCard name="Test handoff">
       <DesignTestHandoff
         app={app}
         bp={bp}
@@ -2650,8 +2666,10 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
         onSave={() => save(bp)}
         onGoToTest={() => onGoToTest?.(app.id)}
       />
+      </SafeCard>
 
       {/* App planning — collapsed by default */}
+      <SafeCard name="App planning">{() => (
       <details className="group">
         <summary className="flex items-center justify-between px-4 py-3 bg-[#171B33] border border-white/5 rounded-2xl cursor-pointer hover:bg-[#1A2040] transition-colors list-none">
           <span className="text-xs font-semibold text-slate-400">App planning <span className="text-slate-600 font-normal">(business context, modules, deployment)</span></span>
@@ -2682,6 +2700,7 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
           <DeploymentBlueprintPanel app={app} bp={bp} setBp={setBp} />
         </div>
       </details>
+      )}</SafeCard>
 
       {/* Save footer */}
       <div className="flex justify-end pt-2 pb-6">
@@ -2889,6 +2908,7 @@ function DesignTab({ apps, allApps = apps, loading, onOpenCreate, user, onAppUpd
 
 
         {studioApp && (
+          <SafeCard name="Prompt Studio" resetKey={studioApp.id}>
           <Suspense fallback={null}>
             <PromptStudio
               mode="inline"
@@ -2898,6 +2918,7 @@ function DesignTab({ apps, allApps = apps, loading, onOpenCreate, user, onAppUpd
               onSaved={updated => { onAppUpdated?.(updated); setStudioApp(updated) }}
             />
           </Suspense>
+          </SafeCard>
         )}
 
         {app ? (
@@ -3290,7 +3311,9 @@ function DeployCard({ icon, title, subtitle, right, cardRef, children }) {
         </div>
         {right}
       </div>
-      {children}
+      {/* Content is a function so it renders inside the boundary: a crash
+          here shows an error in this card only. */}
+      <SafeCard name={title}>{children}</SafeCard>
     </div>
   )
 }
@@ -3312,7 +3335,7 @@ function LivePreviewCard({ appId, hasChanges, liveUrl }) {
 
   return (
     <DeployCard icon="👀" title="What users will see" subtitle={caption}
-      right={<a href={liveUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-slate-400 hover:text-white shrink-0">Open app page ↗</a>}>
+      right={<a href={liveUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-slate-400 hover:text-white shrink-0">Open app page ↗</a>}>{() => (<>
       {error && <p className="text-xs text-amber-300">{error}</p>}
       {!view && !error && <p className="text-xs text-slate-500">Loading preview…</p>}
       {view && (
@@ -3349,7 +3372,7 @@ function LivePreviewCard({ appId, hasChanges, liveUrl }) {
           </div>
         </div>
       )}
-    </DeployCard>
+    </>)}</DeployCard>
   )
 }
 
@@ -3692,6 +3715,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
     <div className="space-y-4">
 
       {/* 1 · Launch command center */}
+      <SafeCard name="Launch status">{() => (
       <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5 overflow-hidden relative space-y-4">
         <div className="absolute inset-x-0 top-0 h-0.5" style={{ background: '#00B894' }} />
         <div className="flex items-center gap-3">
@@ -3738,6 +3762,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
           {publishing && !live ? 'Publishing…' : action.label}
         </button>
       </div>
+      )}</SafeCard>
 
       {/* 4 · Success right after going live; a slim link row after that */}
       {live && justLive && (
@@ -3767,7 +3792,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
       )}
 
       {/* Publish */}
-      <DeployCard cardRef={publishRef} icon="🚀" title="Publish" subtitle="Everything the server checks before this draft can go live.">
+      <DeployCard cardRef={publishRef} icon="🚀" title="Publish" subtitle="Everything the server checks before this draft can go live.">{() => (<>
         {!release ? (
           <p className="text-xs text-slate-500">{releaseError ? 'Checklist unavailable.' : 'Checking this draft…'}</p>
         ) : (
@@ -3800,11 +3825,11 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
             {publishing ? 'Unpublishing…' : '⏸ Unpublish (set to draft)'}
           </button>
         )}
-      </DeployCard>
+      </>)}</DeployCard>
 
       {/* Health after launch */}
       <DeployCard icon="📈" title="Health after launch"
-        subtitle="Everyone who used the live app: signed-in users, website visitors and API calls. Your own draft and test runs aren't counted.">
+        subtitle="Everyone who used the live app: signed-in users, website visitors and API calls. Your own draft and test runs aren't counted.">{() => (<>
         {!runStats ? (
           <p className="text-xs text-slate-500">No run data yet.</p>
         ) : runStats.total === 0 ? (
@@ -3831,13 +3856,13 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
             )}
           </>
         )}
-      </DeployCard>
+      </>)}</DeployCard>
 
       {/* 5 · What users will see */}
-      <LivePreviewCard appId={app.id} hasChanges={hasChanges} liveUrl={liveUrl} />
+      <SafeCard name="What users will see"><LivePreviewCard appId={app.id} hasChanges={hasChanges} liveUrl={liveUrl} /></SafeCard>
 
       {/* Share */}
-      <DeployCard icon="🔗" title="Share" subtitle={live ? 'Send people straight to the app.' : 'The link works once the app is published.'}>
+      <DeployCard icon="🔗" title="Share" subtitle={live ? 'Send people straight to the app.' : 'The link works once the app is published.'}>{() => (<>
         <div className="flex items-center gap-2 bg-[#0E1424] rounded-lg px-3 py-2 min-w-0">
           <div className="flex-1 min-w-0">
             <p className="text-[9px] text-slate-500 uppercase">App page{!live && inactiveTag}</p>
@@ -3846,10 +3871,10 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
           <a href={liveUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-slate-500 hover:text-white shrink-0">↗</a>
           <button onClick={() => copy(liveUrl, 'App link')} className="text-slate-500 hover:text-white transition-colors text-xs shrink-0">📋</button>
         </div>
-      </DeployCard>
+      </>)}</DeployCard>
 
       {/* Embed */}
-      <DeployCard cardRef={embedRef} icon="⬡" title="Embed" subtitle="Put the app on your own website.">
+      <DeployCard cardRef={embedRef} icon="⬡" title="Embed" subtitle="Put the app on your own website.">{() => (<>
         <div className="flex gap-1 bg-[#0E1424] p-0.5 rounded-lg w-fit">
           {['iframe', 'js'].map(t => (
             <button key={t} onClick={() => setEmbedTab(t)}
@@ -3890,10 +3915,10 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
             </button>
           </div>
         </div>
-      </DeployCard>
+      </>)}</DeployCard>
 
       {/* API / Trigger */}
-      <DeployCard icon="🔌" title="API & trigger" subtitle="Run the live app from code, Zapier or Make. API keys and code samples are further down.">
+      <DeployCard icon="🔌" title="API & trigger" subtitle="Run the live app from code, Zapier or Make. API keys and code samples are further down.">{() => (<>
         <div className="flex items-center gap-2 bg-[#0E1424] rounded-lg px-3 py-2 min-w-0">
           <div className="flex-1 min-w-0">
             <p className="text-[9px] text-slate-500 uppercase">API endpoint{!live && inactiveTag}</p>
@@ -3925,10 +3950,10 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
             </div>
           )}
         </div>
-      </DeployCard>
+      </>)}</DeployCard>
 
       {/* Webhook */}
-      <DeployCard icon="🔔" title="Webhook" subtitle="Aistrix POSTs the result to your URL after every successful run. Useful for Zapier, Make, or your own backend.">
+      <DeployCard icon="🔔" title="Webhook" subtitle="Aistrix POSTs the result to your URL after every successful run. Useful for Zapier, Make, or your own backend.">{() => (<>
         <div className="flex gap-2">
           <input
             value={webhookUrl}
@@ -3973,10 +3998,10 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
             </div>
           </div>
         )}
-      </DeployCard>
+      </>)}</DeployCard>
 
       {/* Limits & access */}
-      <DeployCard icon="👥" title="Limits & access" subtitle="Who can use the app, who pays for the AI, and how much it can run.">
+      <DeployCard icon="👥" title="Limits & access" subtitle="Who can use the app, who pays for the AI, and how much it can run.">{() => (<>
         <div className="space-y-1.5">
           {[
             { label: 'Who can open it', value: !live ? 'Only you and your workspace (not live)'
@@ -4039,7 +4064,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
             )
           })}
         </div>
-      </DeployCard>
+      </>)}</DeployCard>
 
       {confirmTrigger && (
         <ConfirmDialog
@@ -4172,14 +4197,16 @@ function DeployTab({ apps, user, onAppUpdated, onFixInDesign, selectedAppId, onM
       )}
 
       {selectedApp && (selectedApp.is_published || selectedApp.live_version) && (
-        <PublishedVersions key={`versions-${selectedApp.id}-${selectedApp.live_version ?? ''}`} app={selectedApp} onAppUpdated={onAppUpdated} />
+        <SafeCard name="Published versions" resetKey={selectedApp.id}>
+          <PublishedVersions key={`versions-${selectedApp.id}-${selectedApp.live_version ?? ''}`} app={selectedApp} onAppUpdated={onAppUpdated} />
+        </SafeCard>
       )}
 
       {/* API Keys */}
-      <ApiKeySection user={user} />
+      <SafeCard name="API keys"><ApiKeySection user={user} /></SafeCard>
 
       {/* SDK / Integration snippets */}
-      {selectedApp && <SdkSnippets app={selectedApp} />}
+      {selectedApp && <SafeCard name="Integration snippets" resetKey={selectedApp.id}><SdkSnippets app={selectedApp} /></SafeCard>}
     </div>
   )
 }
@@ -6991,6 +7018,8 @@ export default function DevStudioPage({
                 })()
               )
             ) : null}
+            {!['design','test','deploy'].includes(tab) && (
+            <ErrorBoundary compact title={`${LIFECYCLE_TABS.find(t => t.id === tab)?.label || "This"} section couldn't load`} resetKey={`${tab}:${activeAppId}`}>
             {tab === 'sell'     && <SellTab     apps={apps} user={user} onAppUpdated={updateAppInState} />}
             {tab === 'monitor'  && <MonitorTab  apps={apps} appStats={appStats} loading={loading} totalStats={totalStats} runs={runs} entitlements={entitlements} user={user} />}
             {tab === 'evaluate' && <EvaluateTab apps={apps} appStats={appStats} runs={runs} user={user} />}
@@ -6998,11 +7027,14 @@ export default function DevStudioPage({
             {tab === 'version'  && <VersionTab  apps={apps} user={user} onAppUpdated={updateAppInState} selectedAppId={activeAppId} onSelectApp={setActiveAppId} />}
             {tab === 'monetize' && <MonetizeTab apps={apps} runs={runs} loading={loading} user={user} />}
             {tab === 'secrets'  && <SecretsTab  apps={apps} user={user} selectedAppId={activeAppId} onSelectApp={setActiveAppId} />}
+            </ErrorBoundary>
+            )}
           </div>
 
           {/* ── Right: App navigator ── */}
           {['design','test','deploy','improve','version','secrets'].includes(tab) && (
             <div className="shrink-0 overflow-y-auto border-l border-white/5 w-[340px]">
+              <ErrorBoundary variant="card" title="The app list couldn't load" resetKey={tab}>
               <AppNavigator
                 apps={visibleApps}
                 phaseByAppId={phaseByAppId}
@@ -7013,6 +7045,7 @@ export default function DevStudioPage({
                 onMovePhase={moveAppPhase}
                 onCreateApp={onOpenCreate}
               />
+              </ErrorBoundary>
             </div>
           )}
 

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import SafeCard from './SafeCard'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { runAppTest } from '../lib/appTests'
@@ -337,6 +338,7 @@ export default function SimpleTestPanel({ app, user, onMovePhase, onOpenKeys }) 
 
   return (
     <div className="space-y-4">
+      <SafeCard name="Test results" resetKey={app.id}>{() => (
       <div className="bg-[#171B33] border border-white/8 rounded-2xl p-5 space-y-4">
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div className="flex items-center gap-3 min-w-0">
@@ -442,6 +444,7 @@ export default function SimpleTestPanel({ app, user, onMovePhase, onOpenKeys }) 
           ) : null}
         </div>
       </div>
+      )}</SafeCard>
 
       <div className="bg-[#171B33] border border-white/8 rounded-2xl">
         <button onClick={() => { if (showCustomize) load(); setShowCustomize(v => !v) }}
@@ -451,7 +454,9 @@ export default function SimpleTestPanel({ app, user, onMovePhase, onOpenKeys }) 
         </button>
         {showCustomize && (
           <div className="px-4 pb-4">
-            <TestSuite key={`${app.id}:${cases.length}:${status?.draft_hash || ''}`} apps={[app]} user={user} selectedAppId={app.id} compact />
+            <SafeCard name="Test editor" resetKey={app.id}>
+              <TestSuite key={`${app.id}:${cases.length}:${status?.draft_hash || ''}`} apps={[app]} user={user} selectedAppId={app.id} compact />
+            </SafeCard>
           </div>
         )}
       </div>

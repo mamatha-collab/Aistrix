@@ -6,6 +6,7 @@ import TopBar from './components/TopBarClean'
 import AppGrid from './components/AppGrid'
 import DetailPanel from './components/DetailPanel'
 import Auth from './components/Auth'
+import ErrorBoundary from './components/ErrorBoundary'
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom'
 import { identify, resetIdentity } from './lib/analytics'
 import { getUserRole, isAdmin, isModerator } from './utils/roles'
@@ -442,12 +443,15 @@ export default function App() {
                 <div className={`absolute inset-0 flex overflow-hidden ${(activeView === 'flows' || activeView === 'apps') ? '' : 'hidden'}`}>
                   {/* AI Workflows layer */}
                   <div className={activeView === 'flows' ? 'page-layer-active' : 'page-layer-hidden'}>
-                    <Suspense fallback={null}>
-                      <FlowsPage user={session.user} onShowHistory={() => setShowHistory(true)} />
-                    </Suspense>
+                    <ErrorBoundary compact title="AI Workflows couldn't load">
+                      <Suspense fallback={null}>
+                        <FlowsPage user={session.user} onShowHistory={() => setShowHistory(true)} />
+                      </Suspense>
+                    </ErrorBoundary>
                   </div>
                   {/* AI Apps layer */}
                   <div className={activeView === 'apps' ? 'page-layer-active' : 'page-layer-hidden'}>
+                    <ErrorBoundary compact title="AI Apps couldn't load">
                     <AppGrid
                       onSelectApp={setSelectedApp}
                       selectedApp={selectedApp}
@@ -460,7 +464,9 @@ export default function App() {
                       createdApp={createdApp}
                       onCreatedAppConsumed={() => setCreatedApp(null)}
                     />
+                    </ErrorBoundary>
                     {selectedApp && (
+                      <ErrorBoundary variant="overlay" title="This app's panel couldn't load" resetKey={selectedApp.id} onClose={() => setSelectedApp(null)}>
                       <DetailPanel
                         app={selectedApp}
                         user={session.user}
@@ -468,6 +474,7 @@ export default function App() {
                         onRun={handleRunComplete}
                         onDeleted={appId => { setDeletedAppId(appId); setSelectedApp(null) }}
                       />
+                      </ErrorBoundary>
                     )}
                   </div>
                 </div>
@@ -475,9 +482,11 @@ export default function App() {
               {/* All other views */}
               {activePage && activeView !== 'flows' && activeView !== 'apps' && (
                 <div className="flex flex-1 overflow-hidden">
-                  <Suspense fallback={<div className="flex-1 flex items-center justify-center text-slate-500 text-sm">Loading...</div>}>
-                    {activePage}
-                  </Suspense>
+                  <ErrorBoundary compact title="This page couldn't load" resetKey={activeView}>
+                    <Suspense fallback={<div className="flex-1 flex items-center justify-center text-slate-500 text-sm">Loading...</div>}>
+                      {activePage}
+                    </Suspense>
+                  </ErrorBoundary>
                 </div>
               )}
             </main>
@@ -487,6 +496,7 @@ export default function App() {
             // One Suspense boundary for the picker and the builders: choosing
             // a type is a transition, so the picker stays on screen until the
             // builder has loaded, then hides behind it (kept mounted).
+            <ErrorBoundary variant="overlay" title="The app builder couldn't load" onClose={closeBuildFlow}>
             <Suspense fallback={null}>
               <AppTypeSelector
                 hidden={showAIBuilder || showCreate}
@@ -535,6 +545,7 @@ export default function App() {
                 />
               )}
             </Suspense>
+            </ErrorBoundary>
           )}
           {workspaceRecoApp && (
             <Suspense fallback={null}>
@@ -565,10 +576,11 @@ export default function App() {
             ))}
           </nav>
 
-          {showHistory    && <Suspense fallback={null}><RunHistory     user={session.user} onClose={() => setShowHistory(false)} /></Suspense>}
-          {showSettings   && <Suspense fallback={null}><ApiKeySettings  user={session.user} onClose={() => setShowSettings(false)}
-            {...(noKeys ? { title: 'Add an AI key', subtitle: "You haven't added an AI provider key yet. Add a Claude, OpenAI or Gemini key to build apps — it's checked and stored encrypted." } : {})} /></Suspense>}
+          {showHistory    && <ErrorBoundary variant="overlay" title="Run history couldn't load" onClose={() => setShowHistory(false)}><Suspense fallback={null}><RunHistory     user={session.user} onClose={() => setShowHistory(false)} /></Suspense></ErrorBoundary>}
+          {showSettings   && <ErrorBoundary variant="overlay" title="Key settings couldn't load" onClose={() => setShowSettings(false)}><Suspense fallback={null}><ApiKeySettings  user={session.user} onClose={() => setShowSettings(false)}
+            {...(noKeys ? { title: 'Add an AI key', subtitle: "You haven't added an AI provider key yet. Add a Claude, OpenAI or Gemini key to build apps — it's checked and stored encrypted." } : {})} /></Suspense></ErrorBoundary>}
           {keyGateType && (
+            <ErrorBoundary variant="overlay" title="Key settings couldn't load" onClose={() => setKeyGateType(null)}>
             <Suspense fallback={null}>
               <ApiKeySettings
                 title="Add an AI key to start building"
@@ -577,8 +589,9 @@ export default function App() {
                 onContinue={() => { const type = keyGateType; setKeyGateType(null); openBuilder(type) }}
               />
             </Suspense>
+            </ErrorBoundary>
           )}
-          {showProfile    && <Suspense fallback={null}><UserProfile     user={session.user} onClose={() => setShowProfile(false)} /></Suspense>}
+          {showProfile    && <ErrorBoundary variant="overlay" title="Your profile couldn't load" onClose={() => setShowProfile(false)}><Suspense fallback={null}><UserProfile     user={session.user} onClose={() => setShowProfile(false)} /></Suspense></ErrorBoundary>}
           {showOnboarding && (
             <Suspense fallback={null}>
               <OnboardingWizard

@@ -111,6 +111,41 @@ def jsonable_errors(errors: list) -> list:
     return [{k: (v if isinstance(v, (str, int, float, bool, list, type(None))) else str(v))
              for k, v in e.items() if k != "ctx"} for e in errors]
 
+class CatchServerErrors:
+    """Turns an unexpected exception into a readable JSON 500.
+
+    Added before CORSMiddleware so CORS wraps it: without this, Starlette's
+    outermost error handler answers with no CORS headers and the browser only
+    says "Failed to fetch". Errors after a response has started (mid-stream)
+    can't be replaced and are re-raised."""
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        started = False
+
+        async def tracking_send(message):
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        try:
+            await self.app(scope, receive, tracking_send)
+        except Exception as e:
+            if started:
+                raise
+            sentry_sdk.capture_exception(e)
+            print(f"Unhandled error on {scope.get('method')} {scope.get('path')}: {type(e).__name__}: {e}")
+            await JSONResponse(status_code=500, content={
+                "error": "Server error — something went wrong on our side. Please try again.",
+                "type": type(e).__name__})(scope, receive, send)
+
+
+app.add_middleware(CatchServerErrors)
+
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
 app.add_middleware(
     CORSMiddleware,

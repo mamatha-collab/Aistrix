@@ -324,7 +324,6 @@ ok("no invites into personal workspaces (422)", http("POST", f"/v1/workspaces/{W
 http("POST", f"/v1/workspaces/{TEAM}/invites", "jwt-owner", json={"email": "new@acme.com", "role": "member"})
 ok("re-invite replaces the open invite", len([i for i in SB.db["workspace_invites"] if i["email"] == "new@acme.com"]) == 1)
 
-server.should_exit = True
 ok("metering rows written server-side", len(SB.db.get("run_events", [])) > 10)
 SB.db["run_history"] = []   # user clears their history...
 try:
@@ -333,4 +332,5 @@ try:
 except Exception as e:
     ok("clearing history doesn't reset limit", "Rate limit" in str(e))
 main.HOURLY_LIMIT = 1000
+server.should_exit = True   # after the last request: stopping earlier raced it
 finish()

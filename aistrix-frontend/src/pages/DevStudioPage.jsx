@@ -3559,7 +3559,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
             </button>
             <button onClick={togglePublish} disabled={publishing}
               className="w-full text-xs py-2 rounded-xl bg-white/4 hover:bg-white/8 text-slate-400 border border-white/8 transition-colors disabled:opacity-40">
-              {publishing ? '…' : '⏸ Unpublish (set to draft)'}
+              {publishing ? 'Unpublishing…' : '⏸ Unpublish (set to draft)'}
             </button>
           </div>
         ) : (
@@ -3744,12 +3744,12 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
             <div className="bg-[#0E1424] rounded-lg px-3 py-2">
               <p className="text-[9px] text-slate-500 uppercase font-semibold mb-1">Payload sent on each run</p>
               <pre className="text-[10px] text-slate-300 leading-relaxed">{`{
+  "event": "run.completed",
   "app_id": "${app.id}",
-  "app_name": "${app.name}",
   "input": "<user input>",
-  "output": "<AI output>",
-  "run_id": "<uuid>",
-  "user_id": "<end user id>",
+  "result": "<AI output>",
+  "provider": "<AI provider>",
+  "model": "<model>",
   "timestamp": "<ISO 8601>"
 }`}</pre>
             </div>

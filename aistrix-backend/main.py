@@ -694,6 +694,19 @@ async def dev_key_runs_today(user_id: str, app_id: str) -> int:
     return res.count or 0
 
 
+async def claim_app_daily_run(app_id: str, limit: int) -> bool:
+    """Counts an end-user run against the app's daily quota; False once it's used up."""
+    sb = _service_client()
+    if not sb:
+        return True
+    try:
+        res = await db(sb.rpc("claim_app_daily_run", {"p_app_id": app_id, "p_limit": limit}))
+        return bool(res.data)
+    except Exception as e:
+        print(f"app quota check failed: {e}")   # migration not applied yet: don't block runs
+        return True
+
+
 async def record_metered_run(user_id: str, app_id: Optional[str], source: str, workspace_id: Optional[str] = None) -> None:
     sb = _service_client()
     if not sb:
@@ -1639,6 +1652,13 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
         if caller_id:
             # Counted when the run starts: failed runs still spend platform tokens.
             await record_metered_run(caller_id, req.app_id, "api" if not user_jwt else "app", caller.workspace_id)
+
+    # ── App's daily run quota (apps.max_runs_per_day), across all end users
+    # and visitors; the developer's own runs don't count. ──────────────────
+    if app_row and not is_editor and app_row.get("max_runs_per_day"):
+        if not await claim_app_daily_run(app_row["id"], int(app_row["max_runs_per_day"])):
+            return JSONResponse(status_code=429, content={"code": "app_quota", "error": (
+                "This app has reached its run limit for today. Try again tomorrow (resets at midnight UTC).")})
 
     # ── System prompt ────────────────────────────────────────────────────────
     base_system = (req.system_prompt or "You are a helpful AI assistant.") + RUN_MODE_SUFFIX.get(req.run_mode or "", "")

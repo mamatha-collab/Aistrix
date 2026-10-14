@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { track, EVENTS } from '../lib/analytics'
 import { useToast } from '../hooks/useToast'
 import { listVersions, rollbackVersion } from '../lib/release'
 import { timeAgo } from '../utils'
@@ -24,6 +25,7 @@ export default function PublishedVersions({ app, onAppUpdated }) {
     try {
       const res = await rollbackVersion(app.id, num)
       toast(`v${num} is live again`, 'success', 3000)
+      track(EVENTS.BUILD_ROLLED_BACK, { app_id: app.id, version: num })
       onAppUpdated?.({ ...app, live_version: res.live_version, is_published: true, promoted_at: res.promoted_at })
       await load()
     } catch (e) {

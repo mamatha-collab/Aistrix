@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { track, EVENTS } from '../../lib/analytics'
 import { supabase } from '../../supabase'
 import { useToast } from '../../hooks/useToast'
 import { publishApp, unpublishApp, getRelease } from '../../lib/release'
@@ -55,6 +56,7 @@ function PromoteModal({ app, onClose, onPromoted }) {
     try {
       const res = await publishApp(app.id)
       toast('🚀 Changes promoted to production', 'success', 3000)
+      track(EVENTS.BUILD_PROMOTED, { app_id: app.id, version: res.version ?? null })
       onPromoted?.({ ...app, has_draft_changes: false, is_published: true, promoted_at: res.promoted_at, change_note: null, ...(res.version ? { live_version: res.version } : {}) })
       onClose()
     } catch (e) {
@@ -391,9 +393,11 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
       setApp(updated)
       onUpdate?.(updated)
       setJustLive(next ? { version: res?.version || app.live_version || null, again: !!res?.unchanged } : null)
+      if (next) track(EVENTS.BUILD_PUBLISHED, { app_id: app.id, version: res?.version ?? null, back_online: !!res?.unchanged })
       if (!next) toast('App set to draft', 'info', 3000)
     } catch (e) {
       toast(`Publish blocked: ${e.message}`, 'error', 9000)
+      track(EVENTS.BUILD_PUBLISH_BLOCKED, { app_id: app.id, problems: e.errors?.length || 1 })
     } finally {
       setPublishing(false)
       loadRelease()

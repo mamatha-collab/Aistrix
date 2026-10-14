@@ -1,4 +1,5 @@
 import { useState, useEffect, lazy, Suspense } from 'react'
+import { track, EVENTS } from '../lib/analytics'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import ErrorBoundary from '../components/ErrorBoundary'
@@ -157,7 +158,7 @@ export default function DevStudioPage({
     setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))
   }
 
-  async function moveAppPhase(appId, newPhase, { confirmed = false } = {}) {
+  async function moveAppPhase(appId, newPhase, { confirmed = false, tracked = false } = {}) {
     const phase = normalizeDevPhase(newPhase) || 'design'
     const app = apps.find(a => a.id === appId)
     // Leaving Deploy: warn about the live version and ask why (MoveBackModal).
@@ -165,6 +166,7 @@ export default function DevStudioPage({
       setMoveBack({ app, phase })
       return
     }
+    if (!tracked) track(EVENTS.BUILD_PHASE_MOVED, { app_id: appId, from: app ? getDevPhase(app, phaseByAppId) : null, to: phase })
     setPhaseByAppId(prev => ({ ...prev, [appId]: phase }))
     // A live app stays live while it's changed: end users keep running the
     // published version until a new one passes its tests and is published.
@@ -188,7 +190,8 @@ export default function DevStudioPage({
     if (error) { toast(error.message, 'error'); return }
     updateAppInState({ ...app, change_note: note })
     setMoveBack(null)
-    await moveAppPhase(app.id, phase, { confirmed: true })
+    track(EVENTS.BUILD_PHASE_MOVED, { app_id: app.id, from: 'deploy', to: phase, reason: note.reason, live: !!app.is_published })
+    await moveAppPhase(app.id, phase, { confirmed: true, tracked: true })
   }
 
   function returnToDesignForPublishFix(appId, reason) {

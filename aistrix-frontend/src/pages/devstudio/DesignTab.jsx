@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, Suspense } from 'react'
+import { track, EVENTS } from '../../lib/analytics'
 import { supabase } from '../../supabase'
 import { useToast } from '../../hooks/useToast'
 import ToolsEditor from '../../components/ToolsEditor'
@@ -1191,6 +1192,7 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
     setBp(normalized)
     setSavedBp(normalized)
     toast('Blueprint saved', 'success', 2000)
+    track(EVENTS.BUILD_DESIGN_SAVED, { app_id: app.id, readiness: score, overwrote_newer: force })
     loadServerChecks()
     return true
   }

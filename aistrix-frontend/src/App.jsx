@@ -8,7 +8,7 @@ import DetailPanel from './components/DetailPanel'
 import Auth from './components/Auth'
 import ErrorBoundary from './components/ErrorBoundary'
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom'
-import { identify, resetIdentity } from './lib/analytics'
+import { identify, resetIdentity, track, EVENTS } from './lib/analytics'
 import { getUserRole, isAdmin, isModerator } from './utils/roles'
 import { useKeyboard } from './hooks/useKeyboard'
 import { useMediaQuery } from './hooks/useMediaQuery'
@@ -518,6 +518,7 @@ export default function App() {
                   onBack={() => setShowAIBuilder(false)}
                   onCreated={newApp => {
                     closeBuildFlow()
+                    track(EVENTS.BUILD_APP_CREATED, { app_id: newApp.id, app_type: newApp.app_type, via: 'build_with_ai' })
                     setCreatedApp(newApp)
                     if (activeView !== 'developer') {
                       navigateToView('apps')
@@ -536,6 +537,7 @@ export default function App() {
                   onBack={() => setShowCreate(false)}
                   onCreated={newApp => {
                     closeBuildFlow()
+                    track(EVENTS.BUILD_APP_CREATED, { app_id: newApp.id, app_type: newApp.app_type, via: selectedAppType })
                     setCreatedApp(newApp)
                     if (activeView !== 'developer') {
                       navigateToView('apps')

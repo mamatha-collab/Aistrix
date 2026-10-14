@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { track, EVENTS } from '../lib/analytics'
 import SafeCard from './SafeCard'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
@@ -189,6 +190,7 @@ export default function SimpleTestPanel({ app, user, onMovePhase, onOpenKeys }) 
       await load()
       setRunning(null)
       if (abortRef.current === ctrl) abortRef.current = null
+      track(EVENTS.BUILD_TESTS_RUN, { app_id: app.id, problems: problems.length, refused, stopped: ctrl.signal.aborted })
     }
     // Same problem on every run (e.g. no AI key) → say it once.
     if (problems.length) {

@@ -148,7 +148,7 @@ function AppNavigator({ apps, phaseByAppId, activeAppId, activeTab, onSelectApp,
   const activeApp = apps.find(a => a.id === activeAppId)
 
   return (
-    <div className="w-[340px] shrink-0 px-4 py-5 space-y-5">
+    <div className="w-[340px] max-w-full shrink-0 px-4 py-5 space-y-5">
       <div className="rounded-2xl border border-white/8 bg-[#111827] p-4 space-y-4">
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -6638,6 +6638,12 @@ export default function DevStudioPage({
   onCreatedAppConsumed,
 }) {
   const [tab, setTab] = useState('design')
+  // Below 1280px the app list is a slide-in panel instead of a fixed column.
+  const [appsDrawer, setAppsDrawer] = useState(false)
+  const [smallScreenNote, setSmallScreenNote] = useState(() => {
+    try { return localStorage.getItem('aistrix_small_screen_note') !== 'dismissed' } catch { return true }
+  })
+  const NAVIGATOR_TABS = ['design','test','deploy','improve','version','secrets']
   const [activeAppId, setActiveAppId] = useState(null)
   const [deployFixReason, setDeployFixReason] = useState('')
   const [apps, setApps] = useState([])
@@ -6805,8 +6811,8 @@ export default function DevStudioPage({
       <div className="sticky top-0 z-30 bg-[#09101F] border-b border-white/5">
         {(loading || apps.length > 0) && (
           <>
-            <div className="h-[72px] px-6 bg-[#111827] border-b border-white/5 grid grid-cols-[260px_minmax(0,1fr)_auto] items-center gap-3">
-              <div className="min-w-0">
+            <div className="h-[72px] px-4 xl:px-6 bg-[#111827] border-b border-white/5 grid grid-cols-1 md:grid-cols-[minmax(0,1fr)_auto] xl:grid-cols-[260px_minmax(0,1fr)_auto] items-center gap-3">
+              <div className="min-w-0 hidden md:block">
                 <div className="flex items-center gap-2">
                   <span className="w-8 h-8 rounded-xl bg-[#6C5CE7]/18 border border-[#6C5CE7]/30 flex items-center justify-center text-sm">{activeTabMeta.icon}</span>
                   <div className="min-w-0">
@@ -6819,10 +6825,16 @@ export default function DevStudioPage({
                 </div>
               </div>
 
-              <div />
+              <div className="hidden xl:block" />
 
-              <div className="flex items-center gap-2 shrink-0 justify-self-end">
-                <div className="hidden md:flex items-center gap-2 bg-[#0E1424] border border-white/8 rounded-xl px-3 h-10 text-sm text-slate-300 w-48 lg:w-56">
+              <div className="flex items-center gap-2 shrink-0 justify-self-end max-w-full overflow-x-auto">
+                {NAVIGATOR_TABS.includes(tab) && (
+                  <button onClick={() => setAppsDrawer(true)} aria-label="Open the app list"
+                    className="xl:hidden h-10 px-3 rounded-xl bg-[#0E1424] border border-white/8 text-sm text-slate-300 hover:text-white transition-colors whitespace-nowrap">
+                    ☰ Apps
+                  </button>
+                )}
+                <div className="hidden xl:flex items-center gap-2 bg-[#0E1424] border border-white/8 rounded-xl px-3 h-10 text-sm text-slate-300 w-48 2xl:w-56">
                   <Search size={15} className="shrink-0 text-slate-500" />
                   <input
                     type="text"
@@ -6875,9 +6887,16 @@ export default function DevStudioPage({
               </div>
             </div>
 
-            <div className="h-[92px] bg-[#1A2038] grid grid-cols-[minmax(0,1fr)_340px] overflow-hidden">
+            {smallScreenNote && (
+              <div className="md:hidden flex items-start gap-2 px-4 py-2 bg-amber-500/10 border-b border-amber-500/20 text-[11px] text-amber-200">
+                <span className="flex-1">Dev Studio works best on a larger screen. You can still check on your apps here.</span>
+                <button aria-label="Dismiss" className="text-amber-200/70 hover:text-white px-1"
+                  onClick={() => { setSmallScreenNote(false); try { localStorage.setItem('aistrix_small_screen_note', 'dismissed') } catch { /* private mode */ } }}>×</button>
+              </div>
+            )}
+            <div className="min-h-[92px] bg-[#1A2038] grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_340px] overflow-x-auto overflow-y-hidden">
               <div className="min-w-0 px-4 py-3">
-                <div className="grid grid-cols-[0.9fr_1.18fr_0.9fr] gap-2 h-full">
+                <div className="grid grid-cols-[0.9fr_1.18fr_0.9fr] gap-2 h-full min-w-[640px]">
                   {LIFECYCLE_GROUPS.map(group => (
                     <div key={group.id} className="min-w-0 rounded-2xl bg-[#111827]/60 border border-white/8 p-2 h-[68px]">
                       <p className="px-2 pb-1.5 text-[9px] text-slate-500 uppercase font-bold tracking-wider leading-none truncate">{group.label}</p>
@@ -6905,7 +6924,7 @@ export default function DevStudioPage({
                   ))}
                 </div>
               </div>
-              <div className="border-l border-white/5 px-4 py-3">
+              <div className="hidden xl:block border-l border-white/5 px-4 py-3">
                 <div className="h-[68px] rounded-2xl bg-[#111827]/60 border border-white/8 p-2 grid grid-cols-3 gap-2">
                   <div className="rounded-xl bg-[#0E1424] border border-white/5 px-2 py-2">
                     <p className="text-[9px] text-slate-500 uppercase font-bold tracking-wider leading-none">Apps</p>
@@ -7058,8 +7077,8 @@ export default function DevStudioPage({
           </div>
 
           {/* ── Right: App navigator ── */}
-          {['design','test','deploy','improve','version','secrets'].includes(tab) && (
-            <div className="shrink-0 overflow-y-auto border-l border-white/5 w-[340px]">
+          {NAVIGATOR_TABS.includes(tab) && (
+            <div className="hidden xl:block shrink-0 overflow-y-auto border-l border-white/5 w-[340px]">
               <ErrorBoundary variant="card" title="The app list couldn't load" resetKey={tab}>
               <AppNavigator
                 apps={visibleApps}
@@ -7072,6 +7091,28 @@ export default function DevStudioPage({
                 onCreateApp={onOpenCreate}
               />
               </ErrorBoundary>
+            </div>
+          )}
+          {NAVIGATOR_TABS.includes(tab) && appsDrawer && (
+            <div className="xl:hidden fixed inset-0 z-40 flex justify-end bg-black/50" onClick={() => setAppsDrawer(false)}>
+              <div role="dialog" aria-label="App list" className="h-full max-w-[90vw] overflow-y-auto bg-[#0F1225] border-l border-white/10 shadow-2xl"
+                onClick={e => e.stopPropagation()}>
+                <div className="flex justify-end px-4 pt-3">
+                  <button onClick={() => setAppsDrawer(false)} aria-label="Close the app list" className="text-slate-400 hover:text-white text-lg px-1">×</button>
+                </div>
+                <ErrorBoundary variant="card" title="The app list couldn't load" resetKey={tab}>
+                <AppNavigator
+                  apps={visibleApps}
+                  phaseByAppId={phaseByAppId}
+                  activeAppId={activeAppId}
+                  activeTab={tab}
+                  onSelectApp={id => { setActiveAppId(id); setAppsDrawer(false) }}
+                  onSwitchTab={t => { setTab(t); setAppsDrawer(false) }}
+                  onMovePhase={moveAppPhase}
+                  onCreateApp={() => { setAppsDrawer(false); onOpenCreate?.() }}
+                />
+                </ErrorBoundary>
+              </div>
             </div>
           )}
 

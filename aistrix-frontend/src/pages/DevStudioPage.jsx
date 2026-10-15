@@ -65,11 +65,21 @@ export default function DevStudioPage({
   const localNavigationGuardRef = useRef(null)
   const navigationGuardRef = sharedNavigationGuardRef || localNavigationGuardRef
   const [tab, setTabState] = useState('design')
+  // Runs a navigation now, or — when the Design editor has unsaved edits —
+  // after the developer chooses to discard or save them (its dialog).
+  function guarded(action) {
+    const guard = navigationGuardRef.current
+    if (guard && !guard(action)) return false
+    action()
+    return true
+  }
   function setTab(next) {
     if (next === tab) return true
-    if (navigationGuardRef.current && !navigationGuardRef.current()) return false
-    setTabState(next)
-    return true
+    return guarded(() => setTabState(next))
+  }
+  function openTab(id) {
+    if (id === tab) return
+    guarded(() => { setTabState(id); if (['design','test','deploy'].includes(id)) setActiveAppIdState(null) })
   }
   // Below 1280px the app list is a slide-in panel instead of a fixed column.
   const [appsDrawer, setAppsDrawer] = useState(false)
@@ -88,7 +98,8 @@ export default function DevStudioPage({
   }, [tab])
   const [activeAppId, setActiveAppIdState] = useState(null)
   function setActiveAppId(next) {
-    if (typeof next === 'function' || next === activeAppId || !navigationGuardRef.current || navigationGuardRef.current()) setActiveAppIdState(next)
+    if (typeof next === 'function' || next === activeAppId) setActiveAppIdState(next)
+    else guarded(() => setActiveAppIdState(next))
   }
   const [deployFixReason, setDeployFixReason] = useState('')
   const [apps, setApps] = useState([])
@@ -107,8 +118,11 @@ export default function DevStudioPage({
   useEffect(() => {
     if (!createdApp) return
     setApps(prev => prev.some(a => a.id === createdApp.id) ? prev : [createdApp, ...prev])
-    setActiveAppId(createdApp.id)
-    setTab('design')
+    // "Save for Test" in Build with AI puts the new app straight into Test.
+    const phase = normalizeDevPhase(createdApp.dev_phase) || 'design'
+    setPhaseByAppId(prev => ({ ...prev, [createdApp.id]: phase }))
+    setActiveAppIdState(createdApp.id)
+    setTabState(phase)
     onCreatedAppConsumed?.()
   }, [createdApp]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -187,7 +201,8 @@ export default function DevStudioPage({
   }
 
   async function moveAppPhase(appId, newPhase, { confirmed = false, tracked = false } = {}) {
-    if (navigationGuardRef.current && !navigationGuardRef.current()) return
+    const guard = navigationGuardRef.current
+    if (guard && !guard(() => moveAppPhase(appId, newPhase, { confirmed, tracked }))) return
     const phase = normalizeDevPhase(newPhase) || 'design'
     const app = apps.find(a => a.id === appId)
     // Leaving Deploy: warn about the live version and ask why (MoveBackModal).
@@ -535,7 +550,7 @@ export default function DevStudioPage({
                   {LIFECYCLE_TABS.map(t => {
                     const active = tab === t.id
                     return (
-                      <button key={t.id} onClick={() => { if (t.id !== tab && setTab(t.id) && ['design','test','deploy'].includes(t.id)) setActiveAppIdState(null) }}
+                      <button key={t.id} onClick={() => openTab(t.id)}
                         className={`snap-start shrink-0 h-11 px-3 rounded-xl flex items-center gap-2 border transition-all ${
                           active
                             ? 'bg-[#6C5CE7] border-[#8A7DFF] text-white shadow-md shadow-[#6C5CE7]/25'
@@ -576,7 +591,7 @@ export default function DevStudioPage({
                         {LIFECYCLE_TABS.filter(t => t.group === group.id).map(t => {
                           const active = tab === t.id
                           return (
-                            <button key={t.id} onClick={() => { if (t.id !== tab && setTab(t.id) && ['design','test','deploy'].includes(t.id)) setActiveAppIdState(null) }}
+                            <button key={t.id} onClick={() => openTab(t.id)}
                               title={`${t.label}: ${t.desc}`}
                               className={`flex-1 min-w-0 h-[42px] px-1 md:px-1.5 py-1.5 rounded-xl transition-all text-left ${
                                 active

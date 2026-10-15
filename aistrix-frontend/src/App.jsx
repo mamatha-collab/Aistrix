@@ -215,7 +215,8 @@ export default function App() {
 
 
   const navigateToView = useCallback((view) => {
-    if (view !== 'developer' && buildNavigationGuardRef.current && !buildNavigationGuardRef.current()) return false
+    const guard = buildNavigationGuardRef.current
+    if (view !== 'developer' && guard && !guard(() => navigateToView(view))) return false
     setActiveView(view)
     if (view === 'flows' || view === 'apps') setBuildMounted(true)
     const path = VIEW_PATH_MAP[view]
@@ -224,6 +225,9 @@ export default function App() {
   }, [navigate, location.pathname])
 
   const changeView = useCallback((view) => {
+    // Unsaved Design edits: the guard asks first and continues this change after.
+    const guard = buildNavigationGuardRef.current
+    if (view !== 'developer' && guard && !guard(() => changeView(view))) return false
     if (!navigateToView(view)) return false
     setSelectedApp(null)
     setShowMobileSidebar(false)
@@ -391,7 +395,11 @@ export default function App() {
                 activeView={activeView}
                 onNavChange={changeView}
                 mode={mode}
-                onModeChange={next => {
+                onModeChange={function switchMode(next) {
+                  // Leaving Dev Studio with unsaved Design edits: finish the
+                  // whole switch after the developer answers the dialog.
+                  const guard = buildNavigationGuardRef.current
+                  if (next !== 'developer' && guard && !guard(() => switchMode(next))) return
                   if (!changeView(next === 'developer' ? 'developer' : 'flows')) return
                   setMode(next)
                   localStorage.setItem('aistrix_mode', next)

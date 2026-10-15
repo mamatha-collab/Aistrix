@@ -131,3 +131,19 @@ Before production sign-off, use disposable apps in staging to verify:
 Do not call the module 95% production ready until these staging checks have
 recorded passing results. Local mocked checks establish regression protection,
 not proof of deployed infrastructure behavior.
+
+## Production release order
+
+Publishing now refuses to go live if it cannot record the version history
+(`app_versions.version_num`), so the database must be migrated **before** the new
+backend serves traffic:
+
+1. Apply the migrations `20261013030000` through `20261013090000` to production
+   (`supabase db push` against the production project).
+2. Deploy the backend.
+3. Deploy the frontend.
+4. Smoke-check: open Dev Studio, publish or promote a test app, confirm a new
+   version appears under Deploy → Published versions.
+
+If step 2 goes out before step 1, every publish and promote fails with
+"Could not save the release version. The live app was not changed."

@@ -1204,8 +1204,20 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
   const [conflict, setConflict] = useState(null)   // { at, byMe } — someone else saved since we loaded
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
   const isDirty = !!savedBp && JSON.stringify(bp) !== JSON.stringify(savedBp)
+  // Leaving with unsaved edits: ask in Aistrix's own dialog. The guard gets
+  // the navigation to continue with ("proceed") and returns false while it asks.
+  const [leavePrompt, setLeavePrompt] = useState(null)   // { proceed }
+  const bypassGuardRef = useRef(false)
+  function continueLeaving(proceed) {
+    bypassGuardRef.current = true
+    try { proceed?.() } finally { bypassGuardRef.current = false }
+  }
   useEffect(() => {
-    const guard = () => !isDirty || window.confirm('You have unsaved design changes. Discard them and leave? Cancel to stay and save.')
+    const guard = proceed => {
+      if (!isDirty || bypassGuardRef.current) return true
+      setLeavePrompt({ proceed })
+      return false
+    }
     if (navigationGuardRef) navigationGuardRef.current = guard
     const beforeUnload = event => {
       if (isDirty) { event.preventDefault(); event.returnValue = '' }
@@ -1457,6 +1469,21 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
 
   return (
     <div className="space-y-5">
+      {leavePrompt && (
+        <ConfirmDialog
+          title="Leave without saving?"
+          subtitle={`${app.emoji || ''} ${app.name}`.trim()}
+          confirmLabel="Discard changes" busyLabel="Leaving…" danger
+          onCancel={() => setLeavePrompt(null)}
+          onConfirm={() => { const { proceed } = leavePrompt; setLeavePrompt(null); continueLeaving(proceed) }}>
+          You have unsaved design changes. Leaving now discards them.
+          <button type="button" disabled={saving}
+            onClick={async () => { const { proceed } = leavePrompt; if (await save(bp)) { setLeavePrompt(null); continueLeaving(proceed) } }}
+            className="block mt-2 text-[11px] font-semibold text-[#A29BFE] hover:text-white disabled:opacity-40">
+            {saving ? 'Saving…' : 'Save changes, then continue →'}
+          </button>
+        </ConfirmDialog>
+      )}
       {conflict && (
         <ConfirmDialog
           title="This design changed since you opened it"

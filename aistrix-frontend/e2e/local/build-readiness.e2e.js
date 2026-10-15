@@ -46,14 +46,25 @@ test('save failure keeps edits available for a successful retry', async ({ page 
   expect(await page.evaluate(() => window.buildFixture.tables.app_blueprints[0].blueprint.ai_behavior.fallback_behavior)).toBe('Ask the user for a company name.')
 })
 
+test('leaving with unsaved edits can save them first, then continue', async ({ page }) => {
+  await open(page)
+  await fallback(page).fill('Save me before leaving.')
+  await stage(page, 'Test')
+  await page.getByRole('dialog').filter({ hasText: 'Leave without saving?' })
+    .getByRole('button', { name: /Save changes, then continue/ }).click()
+  await expect(page.getByText(/Still designing — blueprint may be incomplete/)).toBeVisible()
+  expect(await page.evaluate(() => window.buildFixture.tables.app_blueprints[0].blueprint.ai_behavior.fallback_behavior)).toBe('Save me before leaving.')
+})
+
 test('stage navigation can be cancelled without discarding edits', async ({ page }) => {
   await open(page)
   await fallback(page).fill('Keep this unsaved change.')
-  page.once('dialog', dialog => dialog.dismiss())
   await stage(page, 'Test')
+  const leave = page.getByRole('dialog').filter({ hasText: 'Leave without saving?' })
+  await leave.getByRole('button', { name: 'Cancel', exact: true }).click()
   await expect(fallback(page)).toHaveValue('Keep this unsaved change.')
-  page.once('dialog', dialog => dialog.accept())
   await stage(page, 'Test')
+  await leave.getByRole('button', { name: 'Discard changes', exact: true }).click()
   await expect(page.getByText(/Still designing — blueprint may be incomplete/)).toBeVisible()
   expect(await page.evaluate(() => window.buildFixture.tables.app_blueprints[0].blueprint.ai_behavior.fallback_behavior)).toBe('Ask for the missing task.')
 })

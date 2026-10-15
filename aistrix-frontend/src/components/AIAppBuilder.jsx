@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import { persistBlueprintPhase } from '../lib/blueprintStorage'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { useFocusTrap } from '../hooks/useFocusTrap'
@@ -9,7 +10,6 @@ import { fieldKeyFromLabel, outputFieldsErrors } from '../utils/schemaContracts'
 import { saveStarterBlueprint } from '../utils/appContracts'
 import { TypeGuideSteps } from './TypeBuilderGuide'
 import { DEFAULT_PROVIDERS, PROVIDER_STYLE, defaultAppProvider, loadProviders } from '../lib/providers'
-import { publishApp } from '../lib/release'
 import OutputRenderer from './OutputRenderer'
 
 const QUESTIONS_SYSTEM_PROMPT = `You are an expert AI app architect on a platform called Aistrix.
@@ -415,7 +415,7 @@ function AppPreview({ config, onSaveDraft, onPublish, onBack, saving }) {
         </button>
         <button onClick={onPublish} disabled={!!saving}
           className="flex-1 bg-[#6C5CE7] hover:bg-[#7D6FF0] disabled:opacity-40 text-white text-sm py-2.5 rounded-xl font-medium transition-colors">
-          {saving === 'publish' ? 'Saving…' : 'Save for Test →'}
+          {saving === 'test' ? 'Saving…' : 'Save for Test →'}
         </button>
       </div>
     </div>
@@ -501,9 +501,11 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGui
     }
   }
 
-  async function handleSave(publish) {
+  // forTest: save and put the app in Dev Studio's Test step. Nothing is
+  // published here — publishing needs passing tests (Deploy).
+  async function handleSave(forTest) {
     if (!generatedConfig) return
-    setSaving(publish ? 'publish' : 'draft')
+    setSaving(forTest ? 'test' : 'draft')
     try {
       const cfg = generatedConfig
       const chatbot = cfg.app_type === 'chatbot'
@@ -550,20 +552,23 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGui
         if (error) problems.push(`design blueprint: ${error.message}`)
       }
 
-      // The app itself saved even if a follow-up insert failed — say so
-      // instead of a plain success toast.
-      // Publishing needs the publish checks and passing tests, so a brand-new
-      // app is usually saved as a draft first.
-      let published = false
-      if (publish && !problems.length) {
-        try { await publishApp(data.id); published = true; data.is_published = true } catch { /* tests first */ }
+      let inTest = false
+      if (forTest && !problems.length) {
+        try {
+          await persistBlueprintPhase(supabase, data.id, row => ({
+            app_id: data.id, user_id: user.id, readiness_score: row?.readiness_score ?? 0,
+            blueprint: { ...(row?.blueprint || {}), dev_phase: 'test' },
+          }))
+          inTest = true
+          data.dev_phase = 'test'   // Dev Studio opens it in Test
+        } catch (e) { problems.push(`Test step: ${e.message}`) }
       }
+      // The app itself saved even if a follow-up step failed — say so
+      // instead of a plain success toast.
       if (problems.length) {
         toast(`"${data.name}" saved, but not its ${problems.join('; ')}`, 'error', 7000)
-      } else if (published) {
-        toast(`🌐 "${data.name}" published`, 'success', 4000)
-      } else if (publish) {
-        toast(`⚫ "${data.name}" saved as a draft — run its tests in Dev Studio → Test, then publish from Deploy.`, 'info', 8000)
+      } else if (inTest) {
+        toast(`🧪 "${data.name}" saved — run its tests in Dev Studio → Test, then publish from Deploy.`, 'success', 6000)
       } else {
         toast(`⚫ "${data.name}" saved as draft`, 'success', 4000)
       }

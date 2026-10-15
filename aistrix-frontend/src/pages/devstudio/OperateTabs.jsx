@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, Suspense } from 'react'
 import { supabase } from '../../supabase'
+import { loadDeveloperSettings as loadSettingsFrom, saveDeveloperSetting as saveSettingTo } from '../../lib/developerSettings'
 import { useToast } from '../../hooks/useToast'
 import { track, EVENTS } from '../../lib/analytics'
 import { timeAgo } from '../../utils'
@@ -25,15 +26,8 @@ const STATUS_COLORS = {
   rejected:  'bg-red-500/10 text-red-400',
 }
 
-async function loadDeveloperSettings(userId) {
-  const { data, error } = await supabase
-    .from('developer_settings')
-    .select('settings')
-    .eq('user_id', userId)
-    .maybeSingle()
-  if (error) throw error
-  return data?.settings || {}
-}
+const loadDeveloperSettings = userId => loadSettingsFrom(supabase, userId)
+const saveDeveloperSetting = (userId, key, vals) => saveSettingTo(supabase, userId, key, vals)
 
 function ListingSetupCard({ onRetry }) {
   return (
@@ -563,11 +557,8 @@ export function MonitorTab({ apps, appStats, loading, totalStats, runs, entitlem
   }
 
   async function saveIntegration(key, vals) {
-    const merged = { ...(integrations || {}), [key]: vals }
-    const { error } = await supabase.from('developer_settings')
-      .upsert({ user_id: user.id, settings: merged }, { onConflict: 'user_id' })
-    if (error) { toast(error.message, 'error'); return }
-    setIntegrations(merged)
+    try { setIntegrations(await saveDeveloperSetting(user.id, key, vals)) }
+    catch (error) { toast(error.message, 'error', 6000) }
   }
 
   async function refreshBadges() {
@@ -933,11 +924,8 @@ export function EvaluateTab({ apps, appStats, runs, user }) {
   }
 
   async function saveIntegration(key, vals) {
-    const merged = { ...(integrations || {}), [key]: vals }
-    const { error } = await supabase.from('developer_settings')
-      .upsert({ user_id: user.id, settings: merged }, { onConflict: 'user_id' })
-    if (error) { toast(error.message, 'error'); return }
-    setIntegrations(merged)
+    try { setIntegrations(await saveDeveloperSetting(user.id, key, vals)) }
+    catch (error) { toast(error.message, 'error', 6000) }
   }
 
   // Per-app quality score (0-100): 70% satisfaction + 30% test pass rate (if available)
@@ -1593,11 +1581,8 @@ export function VersionTab({ apps, user, onAppUpdated, selectedAppId }) {
   }
 
   async function saveIntegration(key, vals) {
-    const merged = { ...(integrations || {}), [key]: vals }
-    const { error } = await supabase.from('developer_settings')
-      .upsert({ user_id: user.id, settings: merged }, { onConflict: 'user_id' })
-    if (error) { toast(error.message, 'error'); return }
-    setIntegrations(merged)
+    try { setIntegrations(await saveDeveloperSetting(user.id, key, vals)) }
+    catch (error) { toast(error.message, 'error', 6000) }
   }
 
   return (
@@ -1698,12 +1683,10 @@ function StripeCard({ user }) {
   }, [user.id])
 
   async function save(vals) {
-    const merged = { ...(integrations || {}), stripe: vals }
-    const { error } = await supabase.from('developer_settings')
-      .upsert({ user_id: user.id, settings: merged }, { onConflict: 'user_id' })
-    if (error) { toast(error.message, 'error'); return }
-    setIntegrations(merged)
-    toast('Stripe keys saved', 'success', 2000)
+    try {
+      setIntegrations(await saveDeveloperSetting(user.id, 'stripe', vals))
+      toast('Stripe keys saved', 'success', 2000)
+    } catch (error) { toast(error.message, 'error', 6000) }
   }
 
   const stripe = integrations?.stripe || {}

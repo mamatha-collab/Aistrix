@@ -235,3 +235,65 @@ describe('app prompts and private settings stay private', () => {
     expect(ok.rows[0].r.ok).toBe(true)
   })
 })
+
+describe('the rest of what Build touches', () => {
+  const SCRATCH = '00000000-0000-0000-0000-0000000000c9'
+  beforeAll(async () => {
+    await db.query(`insert into apps (id, name, created_by, workspace_id) values ($1, 'Scratch', $2, $3)`, [SCRATCH, U.owner, WS])
+    await db.query(`insert into app_test_runs (app_id, user_id, draft_hash, source, case_ref, passed)
+                    select $1, $2, 'h', 'suite', 'c1', true`, [APP, U.owner])
+    await db.query(`insert into app_versions (app_id, user_id, version_data, version_num) values ($1, $2, '{}', 1)`, [APP, U.owner])
+    await db.query(`insert into run_history (user_id, app_id, app_name, workspace_id, input, output) values ($1, $2, 'Pitch', $3, 'in', 'out')`, [U.owner, APP, WS])
+  })
+
+  it.each(['developer', 'appEditor', 'member', 'outsider'])('%s cannot delete an app they do not own', async who => {
+    const r = await as(who, `delete from apps where id = $1 returning id`, [SCRATCH])
+    expect(r.rows).toHaveLength(0)
+  })
+
+  it('the owner can delete their app', async () => {
+    const r = await as('owner', `delete from apps where id = $1 returning id`, [SCRATCH])
+    expect(r.rows).toHaveLength(1)
+  })
+
+  it.each(['owner', 'admin'])('%s (app owner or workspace admin) can add a collaborator', async who => {
+    const r = await as(who, `insert into app_members (app_id, user_id, role) values ($1, $2, 'viewer') returning id`, [APP, U.billing])
+    expect(r.error).toBeNull()
+    await db.query(`delete from app_members where app_id = $1 and user_id = $2`, [APP, U.billing])
+  })
+
+  it.each(['developer', 'appEditor', 'member'])('%s cannot add collaborators or promote themselves', async who => {
+    expect((await as(who, `insert into app_members (app_id, user_id, role) values ($1, $2, 'editor')`, [APP, U.outsider])).error).not.toBeNull()
+    const promote = await as(who, `update app_members set role = 'owner' where app_id = $1 returning id`, [APP])
+    expect(promote.rows).toHaveLength(0)
+  })
+
+  it.each(['member', 'appViewer', 'outsider'])('%s cannot read test results or version history', async who => {
+    expect((await as(who, `select id from app_test_runs where app_id = $1`, [APP])).rows).toHaveLength(0)
+    expect((await as(who, `select id from app_versions where app_id = $1`, [APP])).rows).toHaveLength(0)
+  })
+
+  it('editors can read test results and version history (so the checks above are meaningful)', async () => {
+    expect((await as('owner', `select id from app_test_runs where app_id = $1`, [APP])).rows.length).toBeGreaterThan(0)
+    expect((await as('developer', `select id from app_versions where app_id = $1`, [APP])).rows.length).toBeGreaterThan(0)
+  })
+
+  it('test results are recorded by the server only', async () => {
+    const r = await as('owner', `insert into app_test_runs (app_id, user_id, draft_hash, source, case_ref, passed) values ($1, $2, 'h', 'suite', 'forged', true)`, [APP, U.owner])
+    expect(r.error).not.toBeNull()
+  })
+
+  it("a developer cannot read the owner's run history; a workspace admin can", async () => {
+    expect((await as('developer', `select id from run_history where user_id = $1`, [U.owner])).rows).toHaveLength(0)
+    expect((await as('admin', `select id from run_history where user_id = $1`, [U.owner])).rows.length).toBeGreaterThan(0)
+  })
+
+  it('knowledge base: editors only', async () => {
+    expect((await as('developer', `insert into app_knowledge (app_id, title, content) values ($1, 'Doc', 'x') returning id`, [APP])).error).toBeNull()
+    expect((await as('member', `insert into app_knowledge (app_id, title, content) values ($1, 'Doc', 'x')`, [APP])).error).not.toBeNull()
+  })
+
+  it('app secrets are never readable from the browser, even by the owner', async () => {
+    expect((await as('owner', `select * from app_secrets`)).rows).toHaveLength(0)
+  })
+})

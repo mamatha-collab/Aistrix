@@ -122,18 +122,41 @@ function status(id) {
   }))
   return { requirements, all_passed: requirements.every(r => r.passed), total: runs.length,
     passed: runs.filter(run => run.passed).length, failed: [], required_total: 4,
+    // Every test's latest result, like the server's tests/status (used by the Test PDF report).
+    cases: runs.map(run => ({ label: run.label || run.case_ref || run.category, source: run.source || 'suite', category: run.category,
+      passed: !!run.passed, errors: run.errors || [], input: run.input || '', output: run.output || '' })),
     required_passed: requirements.filter(r => r.passed).length, profile: { runs: runs.filter(r => r.category === 'performance').length } }
 }
 
 const nativeFetch = window.fetch.bind(window)
+const scenario = new URLSearchParams(location.search).get('scenario') || ''
+
+// Build with AI: the two model calls (follow-up questions, then the app
+// config), streamed the way /run streams them.
+function fakeModelReply(body) {
+  const config = body.input?.includes('Requirements:')
+  const json = config
+    ? { name: 'Invoice Checker', emoji: '🧾', description: 'Checks invoices for missing fields.',
+        system_prompt: 'You review invoices for a finance team. List missing fields, totals that do not add up, and duplicates. '.repeat(3),
+        app_type: 'prompt', output_type: 'markdown', tools: [], tags: ['finance'], notes: 'Ready to test.' }
+    : { questions: [{ id: 'q1', question: 'Who will use it?', options: ['Finance team', 'Freelancers'] }] }
+  const events = [JSON.stringify({ token: JSON.stringify(json) }), JSON.stringify({ done: true, provider: 'openai', model: 'gpt-4o' })]
+  return new Response(events.map(e => `data: ${e}\n\n`).join(''), { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+}
+
 window.fetch = async (input, init = {}) => {
   const url = new URL(typeof input === 'string' ? input : input.url, location.href)
+  if (url.pathname === '/run') {
+    state.requests.push({ path: '/run', method: 'POST' })
+    return fakeModelReply(JSON.parse(init.body || '{}'))
+  }
   if (!url.pathname.startsWith('/v1/')) return nativeFetch(input, init)
   const path = url.pathname
   state.requests.push({ path, method: init.method || 'GET' })
   const response = (body, code = 200) => new Response(JSON.stringify(body), { status: code, headers: { 'Content-Type': 'application/json' } })
   if (state.failures[path]) return response({ error: state.failures[path], detail: state.failures[path] }, 503)
-  if (path === '/v1/providers') return response({ providers: [{ id: 'openai', label: 'OpenAI', connected: true, default_model: 'gpt-4o', models: [{ id: 'gpt-4o', label: 'GPT-4o' }] }] })
+  // scenario=…nokey: the developer has no OpenAI key saved.
+  if (path === '/v1/providers') return response({ providers: [{ id: 'openai', label: 'OpenAI', connected: !scenario.includes('nokey'), default_model: 'gpt-4o', models: [{ id: 'gpt-4o', label: 'GPT-4o' }] }] })
   if (path === '/v1/usage') return response({ daily: { used: 0, limit: 100 }, has_keys: true })
   const id = path.split('/')[3]
   const current = state.tables.apps.find(row => row.id === id)

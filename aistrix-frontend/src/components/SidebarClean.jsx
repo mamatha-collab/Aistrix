@@ -1,4 +1,5 @@
 import AistrixWordmark from './AistrixWordmark'
+import { signOutOnPurpose } from '../lib/session'
 import { useState, useEffect } from 'react'
 import ConfirmDialog from './ConfirmDialog'
 import {
@@ -109,7 +110,7 @@ export default function SidebarClean({ user, userRole, onClose, onShowProfile, a
 
   // Signing out drops unsaved edits in any open editor: ask first.
   const [confirmSignOut, setConfirmSignOut] = useState(false)
-  async function signOut() { await supabase.auth.signOut() }
+  async function signOut() { await signOutOnPurpose(supabase) }
 
   return (
     <aside className={`app-sidebar ${isDeveloperMode ? 'w-60 !border-r-0' : 'w-52'} bg-[#0E1424] flex flex-col shrink-0 h-full relative`}>

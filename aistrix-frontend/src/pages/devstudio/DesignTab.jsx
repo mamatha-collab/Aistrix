@@ -1,4 +1,5 @@
 import { readBlueprintRecord, saveBlueprintRecord, BlueprintConflictError } from '../../lib/blueprintStorage'
+import { clearLocalDraft, readLocalDraft, saveLocalDraft } from '../../lib/localDraft'
 import { saveAppFields } from '../../lib/appFields'
 import { useState, useEffect, useRef, Suspense } from 'react'
 import { track, EVENTS } from '../../lib/analytics'
@@ -1189,6 +1190,7 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
   const [, setBpProd]         = useState(null)   // last promoted snapshot
   const [tableNeeded, setTableNeeded] = useState(false)
   const [loadError, setLoadError] = useState('')
+  const [restoreOffer, setRestoreOffer] = useState(null)   // unsaved edits found in this browser
   const [saving, setSaving]   = useState(false)
   const [savingModel, setSavingModel] = useState(false)
   const providers = useProviders()
@@ -1232,6 +1234,15 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
 
   useEffect(() => { loadBlueprint(); loadServerChecks() }, [app.id])  // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Keep unsaved edits in this browser (debounced) so a reload or an expired
+  // session doesn't lose them; drop the copy once they're saved or reverted.
+  useEffect(() => {
+    if (!savedBp || restoreOffer) return undefined
+    if (!isDirty) { clearLocalDraft('design', app.id); return undefined }
+    const t = setTimeout(() => saveLocalDraft('design', app.id, bp, savedAtRef.current), 400)
+    return () => clearTimeout(t)
+  }, [bp, savedBp, isDirty, restoreOffer, app.id])
+
   // The server's publish checks (not tests: those belong to the Test step).
   function loadServerChecks() {
     getRelease(app.id).then(r => setServerProblems(r.checks || [])).catch(() => setServerProblems(null))
@@ -1248,6 +1259,11 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
       setBp(next)
       setSavedBp(next)
       if (data?.blueprint_prod) setBpProd(migrateBlueprint({ ...EMPTY_BP, ...data.blueprint_prod }))
+      // Unsaved edits left in this browser (reload, crash, expired session)?
+      const local = readLocalDraft('design', app.id)
+      if (local && JSON.stringify(migrateBlueprint(local.value)) !== JSON.stringify(next)) {
+        setRestoreOffer({ ...local, savedCopyChanged: !!local.base && local.base !== (data?.updated_at || null) })
+      } else if (local) clearLocalDraft('design', app.id)
     } catch (error) {
       if (isMissingBlueprintTable(error)) { setTableNeeded(true); return }
       setLoadError(error.message || 'Could not load your saved design.')
@@ -1473,13 +1489,34 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
 
   return (
     <div className="space-y-5">
+      {restoreOffer && (
+        <div role="status" className="bg-amber-500/8 border border-amber-500/25 rounded-2xl px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-3">
+          <div className="flex-1 min-w-0">
+            <p className="text-amber-200 text-sm font-semibold">Restore your unsaved changes?</p>
+            <p className="text-slate-400 text-xs mt-0.5">
+              You left unsaved design changes on this browser {new Date(restoreOffer.savedAt).toLocaleString()}.
+              {restoreOffer.savedCopyChanged && ' The saved design has changed since — restoring and saving will replace those changes.'}
+            </p>
+          </div>
+          <div className="flex gap-2 shrink-0">
+            <button onClick={() => { clearLocalDraft('design', app.id); setRestoreOffer(null) }}
+              className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 border border-white/10 transition-colors">
+              Discard
+            </button>
+            <button onClick={() => { setBp(migrateBlueprint({ ...EMPTY_BP, ...restoreOffer.value })); setRestoreOffer(null) }}
+              className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors">
+              Restore my changes
+            </button>
+          </div>
+        </div>
+      )}
       {leavePrompt && (
         <ConfirmDialog
           title="Leave without saving?"
           subtitle={`${app.emoji || ''} ${app.name}`.trim()}
           confirmLabel="Discard changes" busyLabel="Leaving…" danger
           onCancel={() => setLeavePrompt(null)}
-          onConfirm={() => { const { proceed } = leavePrompt; setLeavePrompt(null); continueLeaving(proceed) }}>
+          onConfirm={() => { const { proceed } = leavePrompt; setLeavePrompt(null); clearLocalDraft('design', app.id); continueLeaving(proceed) }}>
           You have unsaved design changes. Leaving now discards them.
           <button type="button" disabled={saving}
             onClick={async () => { const { proceed } = leavePrompt; if (await save(bp)) { setLeavePrompt(null); continueLeaving(proceed) } }}
@@ -1497,7 +1534,7 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
           onConfirm={async () => { await save(bp, { force: true }); setConflict(null) }}>
           {conflict.byMe ? 'You saved it in another tab or window' : 'A teammate saved it'} at {new Date(conflict.at).toLocaleTimeString()}.
           Saving now replaces those changes with yours.
-          <button type="button" onClick={async () => { setConflict(null); await loadBlueprint(); loadServerChecks() }}
+          <button type="button" onClick={async () => { setConflict(null); clearLocalDraft('design', app.id); await loadBlueprint(); loadServerChecks() }}
             className="block mt-2 text-[11px] font-semibold text-[#A29BFE] hover:text-white">
             Load their version instead (your unsaved edits are discarded) →
           </button>

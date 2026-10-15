@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { clearLocalDraft, readLocalDraft, saveLocalDraft } from '../lib/localDraft'
 import { createPortal } from 'react-dom'
 import Editor from '@monaco-editor/react'
 import { supabase } from '../supabase'
@@ -178,6 +179,17 @@ export default function PromptStudio({ app: initialApp, onClose, onSaved, mode =
   const savedPromptRef = useRef(initialApp.system_prompt ?? null)
   const [conflict, setConflict]   = useState(null)    // { theirs } — a teammate saved first
   const [confirmClose, setConfirmClose] = useState(false)
+  // Unsaved prompt edits left in this browser (reload, crash, expired session).
+  const [restoreOffer, setRestoreOffer] = useState(() => {
+    const local = readLocalDraft('prompt', initialApp.id)
+    return local && local.value !== (initialApp.system_prompt || '') ? local : null
+  })
+  useEffect(() => {
+    if (restoreOffer) return undefined
+    if (!dirty) { clearLocalDraft('prompt', initialApp.id); return undefined }
+    const t = setTimeout(() => saveLocalDraft('prompt', initialApp.id, prompt, savedPromptRef.current), 400)
+    return () => clearTimeout(t)
+  }, [prompt, dirty, restoreOffer, initialApp.id])
 
   // Live preview
   const [sampleInput, setSampleInput] = useState('')
@@ -293,6 +305,7 @@ export default function PromptStudio({ app: initialApp, onClose, onSaved, mode =
   }
 
   function loadTheirs() {
+    clearLocalDraft('prompt', initialApp.id)
     const theirs = conflict.theirs
     savedPromptRef.current = theirs
     setPrompt(theirs)
@@ -330,6 +343,19 @@ export default function PromptStudio({ app: initialApp, onClose, onSaved, mode =
     <div className={`${mode === 'inline'
       ? 'h-[72vh] min-h-[560px] flex flex-col bg-[#09101F] border border-[#6C5CE7]/20 rounded-2xl overflow-hidden'
       : 'fixed inset-0 z-50 flex flex-col bg-[#09101F]'}`}>
+      {restoreOffer && (
+        <div role="status" className="shrink-0 bg-amber-500/10 border-b border-amber-500/25 px-4 py-2.5 flex flex-col sm:flex-row sm:items-center gap-2">
+          <p className="flex-1 text-xs text-amber-200">
+            Restore your unsaved prompt from {new Date(restoreOffer.savedAt).toLocaleString()}? It was left on this browser.
+          </p>
+          <div className="flex gap-2 shrink-0">
+            <button onClick={() => { clearLocalDraft('prompt', initialApp.id); setRestoreOffer(null) }}
+              className="text-xs font-semibold px-3 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 border border-white/10">Discard</button>
+            <button onClick={() => { setPrompt(restoreOffer.value); editorRef.current?.setValue?.(restoreOffer.value); setDirty(true); setRestoreOffer(null) }}
+              className="text-xs font-semibold px-3 py-1 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white">Restore</button>
+          </div>
+        </div>
+      )}
       {conflict && (
         <ConfirmDialog title="The prompt changed since you opened it" subtitle={`${initialApp.emoji || ''} ${initialApp.name}`.trim()}
           confirmLabel="Save mine anyway" busyLabel="Saving…" danger
@@ -344,7 +370,7 @@ export default function PromptStudio({ app: initialApp, onClose, onSaved, mode =
       {confirmClose && (
         <ConfirmDialog title="Close without saving?" subtitle={`${initialApp.emoji || ''} ${initialApp.name}`.trim()}
           confirmLabel="Discard changes" danger
-          onCancel={() => setConfirmClose(false)} onConfirm={() => { setConfirmClose(false); closeNow() }}>
+          onCancel={() => setConfirmClose(false)} onConfirm={() => { setConfirmClose(false); clearLocalDraft('prompt', initialApp.id); closeNow() }}>
           Your prompt changes haven't been saved. Closing now discards them.
         </ConfirmDialog>
       )}

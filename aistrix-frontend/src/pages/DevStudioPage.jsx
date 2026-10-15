@@ -1,4 +1,5 @@
 import { persistBlueprintPhase } from '../lib/blueprintStorage'
+import { signOutOnPurpose } from '../lib/session'
 import { APP_PUBLIC_SELECT, withPrivateFields } from '../lib/appColumns'
 import { saveAppFields } from '../lib/appFields'
 import AistrixWordmark from '../components/AistrixWordmark'
@@ -251,7 +252,7 @@ export default function DevStudioPage({
   const [confirmSignOut, setConfirmSignOut] = useState(false)
   async function signOut() {
     setAccountOpen(false)
-    await supabase.auth.signOut()
+    await signOutOnPurpose(supabase)
   }
 
   function toggleTheme() {

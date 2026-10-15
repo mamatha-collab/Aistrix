@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, lazy, Suspense, startTransition } from 'react'
+import { noteAuthEvent } from './lib/session'
 import { supabase } from './supabase'
 import { loadProviders, useProviderStatus } from './lib/providers'
 import Sidebar from './components/SidebarClean'
@@ -245,6 +246,7 @@ export default function App() {
     })
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      noteAuthEvent(event)   // an unexpected sign-out = expired session (Auth explains it)
       setSession(session)
       if (session) identify(session.user.id, { email: session.user.email })
       else if (event === 'SIGNED_OUT') resetIdentity()

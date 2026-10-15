@@ -1,4 +1,5 @@
 import AistrixWordmark from './AistrixWordmark'
+import { sessionExpired } from '../lib/session'
 import { useState } from 'react'
 import { supabase } from '../supabase'
 
@@ -84,6 +85,11 @@ export default function Auth() {
           <span className="text-white font-semibold text-lg"><AistrixWordmark /></span>
         </div>
 
+        {isLogin && sessionExpired() && (
+          <div role="status" className="mb-4 rounded-xl bg-amber-500/10 border border-amber-500/25 px-3 py-2.5 text-xs text-amber-200 leading-relaxed">
+            Your session expired. Sign in again — any unsaved design or prompt changes on this browser will be offered back.
+          </div>
+        )}
         <h1 className="text-white text-xl font-semibold mb-1">
           {isReset ? 'Reset your password' : isLogin ? 'Welcome back' : 'Create an account'}
         </h1>

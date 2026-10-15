@@ -1,3 +1,4 @@
+import AistrixWordmark from '../components/AistrixWordmark'
 import { useState, useEffect } from 'react'
 import { supabase } from '../supabase'
 import { useNavigate } from 'react-router-dom'
@@ -35,7 +36,7 @@ export default function Gallery() {
         <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="w-7 h-7 rounded-lg bg-[#6C5CE7] flex items-center justify-center text-white font-bold text-sm">A</div>
-            <span className="text-white font-semibold">Aistrix</span>
+            <span className="text-white font-semibold"><AistrixWordmark /></span>
             <span className="text-slate-600 mx-2">/</span>
             <span className="text-slate-400 text-sm">App Gallery</span>
           </div>

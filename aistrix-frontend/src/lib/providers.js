@@ -4,7 +4,7 @@
 // provider and stores them encrypted — the browser never writes key rows.
 import { useEffect, useState } from 'react'
 import { supabase } from '../supabase'
-import { errorFromResponse } from './runStream'
+import { errorFromResponse } from './runErrors'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 

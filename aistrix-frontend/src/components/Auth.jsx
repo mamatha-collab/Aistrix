@@ -1,3 +1,4 @@
+import AistrixWordmark from './AistrixWordmark'
 import { useState } from 'react'
 import { supabase } from '../supabase'
 
@@ -80,7 +81,7 @@ export default function Auth() {
       <div className="bg-[#171B33] border border-white/10 rounded-2xl p-5 sm:p-8 w-full max-w-sm">
         <div className="flex items-center gap-2 mb-8">
           <div className="w-8 h-8 rounded-lg bg-[#6C5CE7] flex items-center justify-center text-white font-bold">A</div>
-          <span className="text-white font-semibold text-lg">Aistrix</span>
+          <span className="text-white font-semibold text-lg"><AistrixWordmark /></span>
         </div>
 
         <h1 className="text-white text-xl font-semibold mb-1">

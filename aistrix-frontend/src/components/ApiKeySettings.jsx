@@ -4,10 +4,13 @@ import { PROVIDER_STYLE, removeProviderKey, saveProviderKey, useProviders } from
 
 // onContinue: shown before building (no key saved yet) — saving the first
 // key continues straight into the chosen app type.
-export default function ApiKeySettings({ onClose, onContinue, title = 'API Key Settings',
+export default function ApiKeySettings({ user, onClose, onContinue, title = 'API Key Settings',
   subtitle = 'Use your own keys — sent securely and never returned to the browser after saving' }) {
   const providers = useProviders()
-  const PROVIDERS = providers.map(p => ({ ...p, ...PROVIDER_STYLE[p.id] }))
+  const PROVIDERS = providers.map(p => {
+    const style = PROVIDER_STYLE[p.id] || {}
+    return { ...p, ...style, name: style.name || p.name || p.label || p.id, color: style.color || '#6C5CE7', placeholder: style.placeholder || 'Paste provider API key' }
+  })
   const keys = Object.fromEntries(providers.filter(p => p.connected).map(p => [p.id, p]))
   const [inputs, setInputs] = useState({})
   const [saving, setSaving] = useState({})
@@ -28,7 +31,7 @@ export default function ApiKeySettings({ onClose, onContinue, title = 'API Key S
       await saveProviderKey(provider, raw)
       setSaved(prev => ({ ...prev, [provider]: true }))
       setInputs(prev => ({ ...prev, [provider]: '' }))
-      toast(`${p.name} key saved`, 'success')
+      toast(`${p?.name || provider} key saved`, 'success')
       setTimeout(() => setSaved(prev => ({ ...prev, [provider]: false })), 2000)
       onContinue?.()
     } catch (e) {
@@ -42,7 +45,7 @@ export default function ApiKeySettings({ onClose, onContinue, title = 'API Key S
     const p = PROVIDERS.find(p => p.id === provider)
     try {
       await removeProviderKey(provider)
-      toast(`${p.name} key removed`, 'info')
+      toast(`${p?.name || provider} key removed`, 'info')
     } catch (e) { toast(e.message, 'error') }
   }
 
@@ -87,9 +90,18 @@ export default function ApiKeySettings({ onClose, onContinue, title = 'API Key S
 
               {!keys[p.id] && (
                 <form onSubmit={e => { e.preventDefault(); saveKey(p.id) }} autoComplete="off">
+                  <input
+                    type="text"
+                    name="username"
+                    autoComplete="username"
+                    value={user?.email || `aistrix-${p.id}-key`}
+                    readOnly
+                    hidden
+                  />
                   <div className="flex gap-2">
                     <div className="flex-1 relative">
                       <input
+                        name={`${p.id}-api-key`}
                         type={showKey[p.id] ? 'text' : 'password'}
                         autoComplete="new-password"
                         autoCorrect="off"

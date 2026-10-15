@@ -282,9 +282,58 @@ function TestRunPanel({ config }) {
 
 function AppPreview({ config, onSaveDraft, onPublish, onBack, saving }) {
   const [showTest, setShowTest] = useState(false)
+  const generatedItems = [
+    ['App type', TYPE_NAMES[config.app_type] || 'AI app', true],
+    ['Prompt', config.system_prompt?.length > 120 ? 'Detailed system prompt generated' : 'Prompt needs review', !!config.system_prompt],
+    ['Inputs', config.app_type === 'native' ? `${config.form_schema?.length || 0} form fields` : 'Single prompt input', true],
+    ['Output', config.output_type || 'markdown', true],
+    ['Model', `${(PROVIDER_STYLE[config.ai_provider] || PROVIDER_STYLE.claude).name} · ${config.ai_model || 'default'}`, !!config.ai_model],
+    ['Tools', config.tools?.length ? `${config.tools.length} tool${config.tools.length !== 1 ? 's' : ''}` : 'No external tools', true],
+  ]
+  const reviewItems = [
+    !config.description?.trim() && 'Add a business-facing description',
+    (config.system_prompt || '').length < 200 && 'Strengthen the system prompt before production',
+    config.app_type === 'native' && !(config.form_schema || []).length && 'Add form fields so users do not rely on a blank prompt',
+    (config.tools || []).length > 0 && 'Check required secrets for generated tools',
+    'Run generated functional, edge-case, safety, performance, and contract tests',
+  ].filter(Boolean)
 
   return (
     <div className="space-y-4">
+      <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-2xl p-4 space-y-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-xs font-bold text-emerald-300 uppercase tracking-wider">AI generation review</p>
+            <p className="text-[11px] text-slate-400 mt-1">Aistrix generated the first blueprint. Review these items, then save into Design and run tests before Deploy.</p>
+          </div>
+          <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
+            Draft confidence
+          </span>
+        </div>
+        <div className="grid md:grid-cols-3 gap-2">
+          {generatedItems.map(([label, value, ok]) => (
+            <div key={label} className="bg-[#0F1225] border border-white/5 rounded-xl px-3 py-2">
+              <p className="text-[9px] text-slate-600 uppercase font-semibold">{label}</p>
+              <p className={`text-[11px] mt-0.5 ${ok ? 'text-slate-300' : 'text-amber-300'}`}>{value}</p>
+            </div>
+          ))}
+        </div>
+        <div className="grid md:grid-cols-2 gap-2">
+          <div className="bg-[#0F1225] border border-white/5 rounded-xl p-3">
+            <p className="text-[10px] text-slate-500 uppercase font-semibold mb-1.5">Needs developer review</p>
+            {reviewItems.map(item => (
+              <p key={item} className="text-[11px] text-slate-400 leading-relaxed">○ {item}</p>
+            ))}
+          </div>
+          <div className="bg-[#0F1225] border border-white/5 rounded-xl p-3">
+            <p className="text-[10px] text-slate-500 uppercase font-semibold mb-1.5">Tests Aistrix will create</p>
+            {['Normal use', 'Incomplete input', 'Prompt/key leakage', 'Speed and cost', config.output_type === 'json' ? 'JSON contract' : 'Output quality'].map(item => (
+              <p key={item} className="text-[11px] text-slate-400 leading-relaxed">✓ {item}</p>
+            ))}
+          </div>
+        </div>
+      </div>
+
       <div className="bg-[#1F2444] border border-[#6C5CE7]/30 rounded-2xl p-5">
         <div className="flex items-center gap-3 mb-4">
           <div className="w-12 h-12 rounded-xl bg-[#6C5CE7]/20 flex items-center justify-center text-2xl">{config.emoji}</div>
@@ -366,7 +415,7 @@ function AppPreview({ config, onSaveDraft, onPublish, onBack, saving }) {
         </button>
         <button onClick={onPublish} disabled={!!saving}
           className="flex-1 bg-[#6C5CE7] hover:bg-[#7D6FF0] disabled:opacity-40 text-white text-sm py-2.5 rounded-xl font-medium transition-colors">
-          {saving === 'publish' ? 'Publishing…' : '🌐 Publish'}
+          {saving === 'publish' ? 'Saving…' : 'Save for Test →'}
         </button>
       </div>
     </div>
@@ -566,7 +615,7 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGui
         ) : (<>
         {/* Progress bar */}
         <div className="flex gap-0 px-5 pt-4 pb-1">
-          {['Describe', 'Configure', 'Preview & Save'].map((label, i) => (
+          {['Describe', 'Configure', 'Review & Save'].map((label, i) => (
             <div key={label} className="flex-1 flex flex-col items-center gap-1">
               <div className={`h-1 w-full rounded-full transition-all ${i <= stepIdx ? 'bg-[#6C5CE7]' : 'bg-white/8'}`} />
               <span className={`text-[9px] font-medium ${i === stepIdx ? 'text-[#A29BFE]' : i < stepIdx ? 'text-slate-500' : 'text-slate-700'}`}>{label}</span>
@@ -639,7 +688,7 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGui
             <div className="space-y-3">
               <div className="flex items-center gap-2">
                 <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[#6C5CE7] to-[#E84393] flex items-center justify-center text-white text-xs font-bold shrink-0">✦</div>
-                <p className="text-slate-400 text-sm">Here's what I'll build for you — test it, then save or publish:</p>
+                <p className="text-slate-400 text-sm">Here's the generated draft. Review what AI created, save it into Design, then run tests before Deploy:</p>
               </div>
               <AppPreview
                 config={generatedConfig}

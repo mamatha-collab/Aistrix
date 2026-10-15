@@ -12,7 +12,8 @@
     "smoke:dev-lifecycle": "node scripts/smoke-dev-lifecycle.mjs",
     "test": "vitest run",
     "preview": "vite preview",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:local": "playwright test --config playwright.local.config.js"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",

@@ -51,3 +51,29 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
+
+  build-browser:
+    name: Build desktop and mobile journeys
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: aistrix-frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: aistrix-frontend/package-lock.json
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e:local
+        env:
+          E2E_BROWSER_CHANNEL: chromium
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: build-browser-failures
+          path: aistrix-frontend/test-results
+          retention-days: 7

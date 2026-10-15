@@ -16,11 +16,12 @@ async function expectNoCrash(page) {
 }
 
 async function signIn(page) {
+  await page.addInitScript(() => localStorage.setItem('aistrix_mode', 'developer'))
   await page.goto('/')
   await page.getByPlaceholder('you@example.com').fill(EMAIL)
   await page.locator('input[type="password"]').fill(PASSWORD)
   await page.getByRole('button', { name: 'Sign in', exact: true }).click()
-  await expect(page.getByText('AI Apps').first()).toBeVisible()
+  await expect(page.locator('input[type="password"]')).toHaveCount(0)
 }
 
 async function openStage(page, label) {

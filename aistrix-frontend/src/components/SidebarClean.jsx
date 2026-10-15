@@ -1,3 +1,4 @@
+import AistrixWordmark from './AistrixWordmark'
 import { useState, useEffect } from 'react'
 import ConfirmDialog from './ConfirmDialog'
 import {
@@ -8,7 +9,6 @@ import {
   ChartColumn,
   ChevronDown,
   CircleDot,
-  Code2,
   Database,
   History,
   Link,
@@ -28,14 +28,7 @@ import { applyTheme } from '../utils/theme'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
-const DEVELOPER_NAV = [
-  { label: 'STUDIO', alwaysOpen: true, items: [
-    { icon: Code2,    label: 'Dev Studio',      view: 'developer' },
-  ]},
-  { label: 'MANAGE', items: [
-    { icon: Settings, label: 'Settings', view: 'settings' },
-  ]},
-]
+const DEVELOPER_NAV = []
 
 const BUSINESS_NAV = [
   { label: 'BUILD', alwaysOpen: true, items: [
@@ -66,6 +59,7 @@ export default function SidebarClean({ user, userRole, onClose, onShowProfile, a
   const [theme, setTheme] = useState(() => localStorage.getItem('aistrix_theme') || 'dark')
 
   const navGroups = mode === 'developer' ? DEVELOPER_NAV : BUSINESS_NAV
+  const isDeveloperMode = mode === 'developer'
 
   const [expanded, setExpanded] = useState(() => {
     const active = new Set()
@@ -118,7 +112,8 @@ export default function SidebarClean({ user, userRole, onClose, onShowProfile, a
   async function signOut() { await supabase.auth.signOut() }
 
   return (
-    <aside className="app-sidebar w-52 bg-[#0E1424] flex flex-col shrink-0 h-full relative">
+    <aside className={`app-sidebar ${isDeveloperMode ? 'w-60 !border-r-0' : 'w-52'} bg-[#0E1424] flex flex-col shrink-0 h-full relative`}>
+      {isDeveloperMode && <div aria-hidden="true" className="pointer-events-none absolute right-0 top-[72px] bottom-0 border-r border-white/5" />}
       {onClose && (
         <button aria-label="Close" onClick={onClose}
           className="md:hidden absolute top-4 right-4 text-slate-300 hover:text-white z-10">
@@ -126,21 +121,39 @@ export default function SidebarClean({ user, userRole, onClose, onShowProfile, a
         </button>
       )}
 
-      <button
-        onClick={() => onNavChange?.(mode === 'developer' ? 'developer' : 'flows')}
-        className="px-5 pt-5 pb-3 flex flex-col gap-0.5 hover:opacity-80 transition-opacity w-full text-left"
-      >
-        <div className="flex items-center gap-2">
-          <div className="brand-mark w-7 h-7 rounded-lg bg-[#6C5CE7] flex items-center justify-center text-white text-sm font-bold shrink-0">A</div>
-          <span className="font-semibold text-white text-base">Aistrix</span>
-        </div>
-        <p className="text-[10px] text-slate-500 pl-9 leading-tight">
-          {mode === 'developer' ? 'Developer platform' : 'AI workflows for your business'}
-        </p>
-      </button>
+      {!isDeveloperMode && (
+        <button
+          onClick={() => onNavChange?.('flows')}
+          className="px-5 pt-5 pb-3 flex flex-col gap-0.5 hover:opacity-80 transition-opacity w-full text-left"
+        >
+          <div className="flex items-center gap-1">
+            <img src="/aistrix-logo.svg" alt="" className="w-7 h-7 shrink-0" />
+            <span className="font-semibold text-white text-base"><AistrixWordmark /></span>
+          </div>
+          <p className="text-[10px] text-slate-500 pl-8 leading-tight">
+            AI workflows for your business
+          </p>
+        </button>
+      )}
 
       {/* Mode switcher */}
-      <div className="px-3 pb-3">
+      <div className={isDeveloperMode
+        ? 'h-[72px] px-4 flex items-center border-b border-white/5 bg-[#111827]'
+        : 'px-3 pb-3'}>
+        {isDeveloperMode ? (
+        <button
+          onClick={() => onNavChange?.('developer')}
+          className="flex items-center gap-1 min-w-0 w-full text-left hover:opacity-85 transition-opacity"
+        >
+          <img src="/aistrix-logo.svg" alt="" className="w-7 h-7 shrink-0" />
+          <span className="min-w-0 flex-1">
+            <span className="flex items-center gap-1.5 min-w-0 whitespace-nowrap">
+              <span className="text-white font-bold text-lg leading-tight shrink-0"><AistrixWordmark /></span>
+              <span className="px-1.5 py-0.5 rounded-full bg-[#00D4AA]/10 border border-[#00D4AA]/20 text-[#00D4AA] text-[8px] font-bold uppercase tracking-wide shrink-0">Developer</span>
+            </span>
+          </span>
+        </button>
+        ) : (
         <div className="flex bg-[#09101F] rounded-lg p-0.5 gap-0.5">
           <button
             onClick={() => onModeChange?.('business')}
@@ -155,6 +168,7 @@ export default function SidebarClean({ user, userRole, onClose, onShowProfile, a
             Developer
           </button>
         </div>
+        )}
       </div>
 
       {(userRole === 'admin' || userRole === 'moderator') && (
@@ -174,7 +188,17 @@ export default function SidebarClean({ user, userRole, onClose, onShowProfile, a
         </div>
       )}
 
-      <nav className="flex-1 px-3 overflow-y-auto pt-1 pb-2">
+      <nav className={`flex-1 px-3 overflow-y-auto pb-2 ${isDeveloperMode ? 'pt-3' : 'pt-1'}`}>
+        {isDeveloperMode && (
+          <div className="flex bg-[#09101F] rounded-lg p-0.5 gap-0.5">
+            {['business', 'developer'].map(next => (
+              <button key={next} onClick={() => onModeChange?.(next)}
+                className={`flex-1 text-[10px] font-semibold py-1.5 rounded-md transition-all ${mode === next ? 'bg-[#6C5CE7] text-white shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}>
+                {next === 'business' ? 'Business' : 'Developer'}
+              </button>
+            ))}
+          </div>
+        )}
         {navGroups.map(({ label, items, alwaysOpen }) => {
           const isOpen = alwaysOpen || expanded.has(label)
           const hasActive = items.some(item => item.view === activeView)
@@ -230,6 +254,7 @@ export default function SidebarClean({ user, userRole, onClose, onShowProfile, a
           </span>
         </div>
 
+        {!isDeveloperMode ? (
         <div className="flex items-center gap-2">
           <button onClick={onShowProfile}
             className="w-7 h-7 rounded-full flex items-center justify-center text-xs text-white shrink-0 hover:opacity-80 transition-opacity"
@@ -249,6 +274,7 @@ export default function SidebarClean({ user, userRole, onClose, onShowProfile, a
             <LogOut size={14} />
           </button>
         </div>
+        ) : null}
       </div>
       {confirmSignOut && (
         <ConfirmDialog title="Sign out of Aistrix?" subtitle={user?.email}

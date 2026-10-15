@@ -75,6 +75,13 @@ ok("API runs are validated against the live contract", r.status_code == 422)
 UPDATES = []
 class _T:
     def __init__(self, name): self.name = name; self.patch = None
+    def select(self, *a): return self
+    def insert(self, row): self.patch = row; return self
+    @property
+    def not_(self): return self
+    def is_(self, *a): return self
+    def order(self, *a, **k): return self
+    def limit(self, *a): return self
     def update(self, patch): self.patch = patch; return self
     def eq(self, *a): return self
     def execute(self): UPDATES.append((self.name, self.patch)); return NS(data=[])
@@ -172,5 +179,18 @@ ok("rollback: unknown version → 404", c.post("/v1/apps/app-1/versions/9/rollba
 ok("rollback/history: only editors (404)", c.post("/v1/apps/app-1/versions/1/rollback", headers={"Authorization": "Bearer tok-user"}).status_code == 404
    and c.get("/v1/apps/app-1/versions", headers={"Authorization": "Bearer tok-user"}).status_code == 404)
 ok("change summary ignores the workflow phase", main.describe_changes({"blueprint": {"dev_phase": "test"}}, {"blueprint": {}}) == "Republished (no changes)")
+
+# A failed history write must never publish an unrecoverable live version.
+class BrokenVersions(_Q):
+    def execute(self):
+        if self.name == "app_versions":
+            raise RuntimeError("database unavailable")
+        return super().execute()
+main._service_client = lambda: NS(table=lambda t: BrokenVersions(t))
+UPDATES.clear()
+APP["system_prompt"] = "A new draft after rollback"
+r = c.post("/v1/apps/app-1/promote", headers=owner)
+ok("failed version storage blocks publication and preserves the live app",
+   r.status_code == 503 and not any(t == "apps" for t, _ in UPDATES))
 
 finish()

@@ -1,3 +1,4 @@
+import { PROVIDER_REFUSAL, isBlockingRunProblem } from '../lib/testRunErrors'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { track, EVENTS } from '../lib/analytics'
 import SafeCard from './SafeCard'
@@ -37,16 +38,6 @@ function profileRuns(cases) {
 function labelFor(req, app) {
   return req.id === 'app_specific' ? (APP_SPECIFIC[appTypeOf(app)] || 'Does what this app type should') : (LABELS[req.id] || req.label)
 }
-
-function isBlockingRunProblem(message = '') {
-  return /rate limit|api key|provider|timed out|quota|allowance|could not reach|network|out of credit|refused this run/i.test(message)
-}
-
-// The server's own messages for a run the AI provider refused (no credit,
-// rate limit, bad key, provider down, timeout). Every later test would fail
-// the same way, each after the provider's retries, so the run stops there.
-// Ordinary failed checks don't match these.
-const PROVIDER_REFUSAL = /out of credit|turned this run away|Rate limit reached|API key — check Settings|does not have permission for this model|No \w+ API key is available|runs on your own \w+ API key|service error — try again|Request timed out/i
 
 // Where to add credit for each provider's own account.
 const BILLING_URL = {

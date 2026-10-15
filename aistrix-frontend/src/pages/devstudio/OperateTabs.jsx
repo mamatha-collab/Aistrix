@@ -25,6 +25,16 @@ const STATUS_COLORS = {
   rejected:  'bg-red-500/10 text-red-400',
 }
 
+async function loadDeveloperSettings(userId) {
+  const { data, error } = await supabase
+    .from('developer_settings')
+    .select('settings')
+    .eq('user_id', userId)
+    .maybeSingle()
+  if (error) throw error
+  return data?.settings || {}
+}
+
 function ListingSetupCard({ onRetry }) {
   return (
     <div className="bg-[#171B33] border border-[#6C5CE7]/20 rounded-2xl p-6 space-y-4 text-center">
@@ -544,17 +554,12 @@ export function MonitorTab({ apps, appStats, loading, totalStats, runs, entitlem
   useEffect(() => { loadIntegrations() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
   async function loadIntegrations() {
-    const { data, error } = await supabase
-      .from('developer_settings')
-      .select('settings')
-      .eq('user_id', user.id)
-      .single()
-    if (error) {
-      if (error.code === 'PGRST116') { setIntegrations({}); return }  // no row yet
+    try {
+      setIntegrations(await loadDeveloperSettings(user.id))
+    } catch (error) {
       if (error.code === '42P01') { setIntSetupNeeded(true); return }
-      return
+      setIntegrations({})
     }
-    setIntegrations(data?.settings || {})
   }
 
   async function saveIntegration(key, vals) {
@@ -920,10 +925,11 @@ export function EvaluateTab({ apps, appStats, runs, user }) {
   useEffect(() => { loadIntegrations() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
   async function loadIntegrations() {
-    const { data, error } = await supabase
-      .from('developer_settings').select('settings').eq('user_id', user.id).single()
-    if (error) { setIntegrations({}); return }
-    setIntegrations(data?.settings || {})
+    try {
+      setIntegrations(await loadDeveloperSettings(user.id))
+    } catch {
+      setIntegrations({})
+    }
   }
 
   async function saveIntegration(key, vals) {
@@ -1194,8 +1200,7 @@ export function ImproveTab({ apps, user, runs, selectedAppId }) {
   useEffect(() => { loadSettings() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
   async function loadSettings() {
-    const { data } = await supabase.from('developer_settings').select('settings').eq('user_id', user.id).single()
-    const s = data?.settings || {}
+    const s = await loadDeveloperSettings(user.id).catch(() => ({}))
     setIntegrations(s)
     if (s.github?.token) { setGhToken(s.github.token); setGhRepo(s.github.repo || ''); setGhConnected(true) }
   }
@@ -1584,8 +1589,7 @@ export function VersionTab({ apps, user, onAppUpdated, selectedAppId }) {
   useEffect(() => { loadIntegrations() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
   async function loadIntegrations() {
-    const { data } = await supabase.from('developer_settings').select('settings').eq('user_id', user.id).single()
-    setIntegrations(data?.settings || {})
+    setIntegrations(await loadDeveloperSettings(user.id).catch(() => ({})))
   }
 
   async function saveIntegration(key, vals) {
@@ -1690,8 +1694,7 @@ function StripeCard({ user }) {
   const toast = useToast()
 
   useEffect(() => {
-    supabase.from('developer_settings').select('settings').eq('user_id', user.id).single()
-      .then(({ data }) => setIntegrations(data?.settings || {}))
+    loadDeveloperSettings(user.id).then(setIntegrations).catch(() => setIntegrations({}))
   }, [user.id])
 
   async function save(vals) {

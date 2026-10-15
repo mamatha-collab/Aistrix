@@ -26,7 +26,8 @@ export default function PublishedVersions({ app, onAppUpdated }) {
       const res = await rollbackVersion(app.id, num)
       toast(`v${num} is live again`, 'success', 3000)
       track(EVENTS.BUILD_ROLLED_BACK, { app_id: app.id, version: num })
-      onAppUpdated?.({ ...app, live_version: res.live_version, is_published: true, promoted_at: res.promoted_at })
+      onAppUpdated?.({ ...app, live_version: res.live_version, is_published: true, promoted_at: res.promoted_at,
+        has_draft_changes: res.has_draft_changes ?? true })
       await load()
     } catch (e) {
       toast(e.message, 'error', 6000)

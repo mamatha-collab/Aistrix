@@ -293,10 +293,18 @@ export default function AppTypeSelector({ onSelect, onClose, hidden = false }) {
           <div className="flex items-start justify-between mb-1">
             <div>
               <p className="text-white font-bold text-xl leading-snug">What do you want to automate?</p>
-              <p className="text-slate-400 text-sm mt-1">Describe it in plain language — we'll pick the right type for you.</p>
+              <p className="text-slate-400 text-sm mt-1">One Build path: choose a type, configure the blueprint, save, then test the same draft.</p>
             </div>
             <button aria-label="Close" onClick={onClose}
               className="text-slate-500 hover:text-white transition-colors p-1 shrink-0 ml-4">✕</button>
+          </div>
+          <div className="grid grid-cols-4 gap-2 mt-4">
+            {['Choose type', 'Configure blueprint', 'Save draft', 'Test before Deploy'].map((step, i) => (
+              <div key={step} className="rounded-lg bg-[#0F1225] border border-white/6 px-3 py-2">
+                <p className="text-[9px] text-[#A29BFE] font-bold uppercase">Step {i + 1}</p>
+                <p className="text-[11px] text-slate-300 mt-0.5">{step}</p>
+              </div>
+            ))}
           </div>
         </div>
 

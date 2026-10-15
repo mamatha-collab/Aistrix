@@ -44,7 +44,10 @@ export default function SettingsPage({ user }) {
   const [keyShow, setKeyShow] = useState({})
 
   const providers = useProviders()
-  const PROVIDERS = providers.map(p => ({ ...p, ...PROVIDER_STYLE[p.id] }))
+  const PROVIDERS = providers.map(p => {
+    const style = PROVIDER_STYLE[p.id] || {}
+    return { ...p, ...style, name: style.name || p.name || p.label || p.id, color: style.color || '#6C5CE7', placeholder: style.placeholder || 'Paste provider API key' }
+  })
   const keys = Object.fromEntries(providers.filter(p => p.connected).map(p => [p.id, p]))
 
   async function saveProfile() {
@@ -73,6 +76,10 @@ export default function SettingsPage({ user }) {
   }
 
   async function requestNotifications() {
+    if (typeof Notification === 'undefined') {
+      toast('Browser notifications are not available in this environment.', 'info')
+      return
+    }
     const result = await Notification.requestPermission()
     setNotifPermission(result)
     toast(result === 'granted' ? 'Notifications enabled' : 'Permission denied', result === 'granted' ? 'success' : 'error')
@@ -264,8 +271,17 @@ export default function SettingsPage({ user }) {
               </div>
               {!keys[p.id] && (
                 <div className="flex gap-2">
+                  <input
+                    type="text"
+                    name="username"
+                    autoComplete="username"
+                    value={user?.email || `aistrix-${p.id}-key`}
+                    readOnly
+                    hidden
+                  />
                   <div className="flex-1 relative">
                     <input
+                      name={`${p.id}-api-key`}
                       type={keyShow[p.id] ? 'text' : 'password'}
                       autoComplete="new-password"
                       value={keyInputs[p.id] || ''}

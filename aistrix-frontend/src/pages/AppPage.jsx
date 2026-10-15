@@ -1,3 +1,4 @@
+import AistrixWordmark from '../components/AistrixWordmark'
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { useState, useEffect, lazy, Suspense } from 'react'
 import { supabase } from '../supabase'
@@ -99,7 +100,7 @@ export default function AppPage() {
         </button>
         <div className="flex items-center gap-2 ml-4">
           <div className="w-7 h-7 rounded-lg bg-[#6C5CE7] flex items-center justify-center text-white font-bold text-sm">A</div>
-          <span className="text-white font-semibold">Aistrix</span>
+          <span className="text-white font-semibold"><AistrixWordmark /></span>
         </div>
       </header>
 

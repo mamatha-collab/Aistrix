@@ -1,3 +1,4 @@
+import { readBlueprintRecord, saveBlueprintRecord, BlueprintConflictError } from '../../lib/blueprintStorage'
 import { useState, useEffect, useRef, Suspense } from 'react'
 import { track, EVENTS } from '../../lib/analytics'
 import { downloadReport, designReport } from '../../lib/reports'
@@ -9,7 +10,7 @@ import { getRelease } from '../../lib/release'
 import { PROVIDER_STYLE, modelOptions, providerById, useProviders } from '../../lib/providers'
 import ConfirmDialog from '../../components/ConfirmDialog'
 import SafeCard from '../../components/SafeCard'
-import { ALL_FIELD_TYPES, AppEmojiWithType, COMMON_SECRET_TEMPLATES, DEV_PHASES, EMPTY_BP, MODEL_HINTS, PromptStudio, RUNTIME_TYPES, appOutputTypeFor, calcReadiness, estimateMonthlyCost, getDevPhase, getInputSchemaFields, getOutputSchemaFields, inputsToSchema, invalidInputFields, isMissingBlueprintTable, migrateBlueprint, mismatchLabel, moduleIds, normalizeDeployment, outputContractMismatch, outputRulesSatisfied, readinessChecks, validInputFields } from './shared'
+import { ALL_FIELD_TYPES, AppEmojiWithType, getAppTypeLabel, COMMON_SECRET_TEMPLATES, DEV_PHASES, EMPTY_BP, MODEL_HINTS, PromptStudio, RUNTIME_TYPES, appOutputTypeFor, calcReadiness, estimateMonthlyCost, getDevPhase, getInputSchemaFields, getOutputSchemaFields, inputsToSchema, invalidInputFields, isMissingBlueprintTable, migrateBlueprint, mismatchLabel, moduleIds, normalizeDeployment, outputContractMismatch, outputRulesSatisfied, readinessChecks, validInputFields } from './shared'
 
 
 // ─── Tab: Design — Aistrix Blueprint Studio ──────────────────────────────────
@@ -476,7 +477,8 @@ function ReadinessBar({ app, bp, serverProblems }) {
   const checks = readinessChecks(app, bp)
   const score  = calcReadiness(app, bp)
   const color = score >= 100 ? '#00B894' : score >= 60 ? '#FDCB6E' : '#E84393'
-  const label = score >= 100 ? 'Ready to test and publish' : score >= 60 ? 'Almost there' : 'Incomplete'
+  const deployBlocked = Array.isArray(serverProblems) && serverProblems.length > 0
+  const label = score >= 100 ? (deployBlocked ? 'Ready for Test' : 'Ready for Test and Deploy') : score >= 60 ? 'Almost there' : 'Incomplete'
   return (
     <div className="space-y-1.5">
       <div className="flex items-center justify-between">
@@ -497,10 +499,44 @@ function ReadinessBar({ app, bp, serverProblems }) {
       {serverProblems && (
         <p className={`text-[11px] pt-1 ${serverProblems.length ? 'text-amber-300/90' : 'text-emerald-400/90'}`}>
           {serverProblems.length
-            ? `Publish check on the saved version: ${serverProblems.length} to fix — ${serverProblems.join(' · ')}`
-            : 'Publish check on the saved version: all design checks pass'}
+            ? `Deploy will still block this saved version: ${serverProblems.length} to fix - ${serverProblems.join(' · ')}`
+            : 'Deploy uses the same saved-version checks: all design checks pass'}
         </p>
       )}
+    </div>
+  )
+}
+
+function BuildFlowGuide({ app, bp, isDirty, serverProblems }) {
+  const score = calcReadiness(app, bp)
+  const steps = [
+    { label: 'Choose type', desc: getAppTypeLabel(app) || 'AI app', ok: true },
+    { label: 'Configure blueprint', desc: `${validInputFields(bp).length} input fields · ${getOutputSchemaFields(bp).length} output fields`, ok: score >= 60 },
+    { label: 'Save design', desc: isDirty ? 'Unsaved changes' : 'Saved version is current', ok: !isDirty },
+    { label: 'Test', desc: 'Generate validation tests next', ok: score >= 100 && !isDirty },
+  ]
+  return (
+    <div className="bg-[#171B33] border border-white/5 rounded-2xl p-4 space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-xs font-bold text-white uppercase tracking-wider">Build flow</p>
+          <p className="text-[11px] text-slate-400 mt-1">One path for every app: choose type, configure the blueprint, save it, then test the same draft.</p>
+        </div>
+        <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full border ${serverProblems?.length ? 'text-amber-300 bg-amber-500/10 border-amber-500/20' : 'text-emerald-300 bg-emerald-500/10 border-emerald-500/20'}`}>
+          {serverProblems?.length ? 'Deploy checks pending' : 'Deploy-aligned'}
+        </span>
+      </div>
+      <div className="grid md:grid-cols-4 gap-2">
+        {steps.map((s, i) => (
+          <div key={s.label} className={`rounded-xl border px-3 py-2 ${s.ok ? 'bg-emerald-500/5 border-emerald-500/15' : 'bg-[#0E1424] border-white/5'}`}>
+            <div className="flex items-center gap-2">
+              <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${s.ok ? 'bg-emerald-500/15 text-emerald-300' : 'bg-white/6 text-slate-500'}`}>{i + 1}</span>
+              <p className="text-xs font-semibold text-slate-200">{s.label}</p>
+            </div>
+            <p className="text-[10px] text-slate-500 mt-1 leading-relaxed">{s.desc}</p>
+          </div>
+        ))}
+      </div>
     </div>
   )
 }
@@ -581,7 +617,22 @@ function ProductionModulePlanner({ app, bp, setBp }) {
   const missing = selectedModules.filter(m => m.aistrix === 'missing')
   const partial = selectedModules.filter(m => m.aistrix === 'partial')
   const available = selectedModules.filter(m => m.aistrix === 'available')
-  const groups = [...new Set(PRODUCTION_MODULES.map(m => m.group))]
+  const simpleCapabilities = [
+    { id: 'files', label: 'Files', desc: 'Accept uploads, use media inputs, and create downloadable outputs.', modules: ['uploaded_media', 'stock_media', 'export'] },
+    { id: 'secrets', label: 'Secrets', desc: 'List external API keys this app needs without exposing values to users.', modules: ['api_keys'] },
+    { id: 'runtime', label: 'Runtime', desc: 'Choose whether this is prompt-only, API-backed, CLI-ready, or needs a container.', modules: ['api_service', 'cli', 'container'] },
+    { id: 'jobs', label: 'Background jobs', desc: 'Run longer tasks like batches, rendering, enrichment, and retries outside the browser tab.', modules: ['render_job', 'batch', 'task_history'] },
+    { id: 'outputs', label: 'Outputs', desc: 'Define what the app returns: documents, subtitles, video, API results, or downloadable files.', modules: ['export', 'subtitles', 'video_composer'] },
+    { id: 'cost', label: 'Cost', desc: 'Plan pricing and usage before the app reaches Deploy.', modules: ['publisher', 'api_service'] },
+  ]
+  const moduleById = new Map(PRODUCTION_MODULES.map(m => [m.id, m]))
+  const toggleMany = ids => {
+    const allActive = ids.every(id => selected.has(id))
+    const next = allActive
+      ? selectedIds.filter(id => !ids.includes(id))
+      : [...new Set([...selectedIds, ...ids])]
+    setBp({ ...bp, production_modules: next })
+  }
 
   function toggle(id) {
     const next = selected.has(id)
@@ -649,15 +700,35 @@ function ProductionModulePlanner({ app, bp, setBp }) {
     <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5 space-y-4">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <p className="text-xs font-bold text-white uppercase tracking-wider">Production Modules</p>
+          <p className="text-xs font-bold text-white uppercase tracking-wider">Build capabilities</p>
           <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
-            Design compound AI apps as smaller modules: script, media, voice, subtitles, render jobs, container runtime, and publishing.
+            Pick what the app needs in plain language. Aistrix turns these choices into the technical modules and deployment blueprint.
           </p>
         </div>
         <button onClick={applyShortVideoTemplate}
           className="text-xs font-semibold px-3 py-2 rounded-xl bg-[#6C5CE7]/15 hover:bg-[#6C5CE7]/25 text-[#A29BFE] border border-[#6C5CE7]/25 transition-colors shrink-0">
           Apply short-video template
         </button>
+      </div>
+
+      <div className="grid md:grid-cols-3 gap-2">
+        {simpleCapabilities.map(cap => {
+          const activeCount = cap.modules.filter(id => selected.has(id)).length
+          const active = activeCount > 0
+          return (
+            <button key={cap.id} type="button" onClick={() => toggleMany(cap.modules)}
+              className={`text-left rounded-xl border p-3 transition-all ${active ? 'bg-[#6C5CE7]/10 border-[#6C5CE7]/35' : 'bg-[#0E1424] border-white/5 hover:border-white/15'}`}>
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-sm font-semibold text-white">{cap.label}</p>
+                <span className={`text-[10px] ${active ? 'text-[#A29BFE]' : 'text-slate-600'}`}>{activeCount}/{cap.modules.length}</span>
+              </div>
+              <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">{cap.desc}</p>
+              <p className="text-[10px] text-slate-600 mt-2 truncate">
+                {cap.modules.map(id => moduleById.get(id)?.name || id).join(' · ')}
+              </p>
+            </button>
+          )
+        })}
       </div>
 
       <div className="grid grid-cols-3 gap-2">
@@ -676,7 +747,7 @@ function ProductionModulePlanner({ app, bp, setBp }) {
       </div>
 
       <div className="space-y-4">
-        {groups.map(group => (
+        {[...new Set(PRODUCTION_MODULES.map(m => m.group))].map(group => (
           <div key={group} className="space-y-2">
             <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">{group}</p>
             <div className="grid md:grid-cols-2 gap-2">
@@ -794,9 +865,9 @@ function DeploymentBlueprintPanel({ app, bp, setBp }) {
     <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5 space-y-4">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <p className="text-xs font-bold text-white uppercase tracking-wider">Deployment Blueprint</p>
+          <p className="text-xs font-bold text-white uppercase tracking-wider">Runtime, files, secrets, outputs and cost</p>
           <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
-            Define how this app will run after Design: runtime, jobs, files, secrets, resources, and deploy manifest.
+            Plain-language settings for how this app will run after Build. Advanced users can still export the Aistrix manifest below.
           </p>
         </div>
         <div className="text-right shrink-0">
@@ -807,7 +878,7 @@ function DeploymentBlueprintPanel({ app, bp, setBp }) {
       </div>
 
       <div className="space-y-2">
-        <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Runtime type</p>
+        <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Runtime</p>
         <div className="grid md:grid-cols-3 gap-2">
           {RUNTIME_TYPES.map(rt => {
             const active = deployment.runtime_type === rt.id
@@ -824,7 +895,7 @@ function DeploymentBlueprintPanel({ app, bp, setBp }) {
 
       <div className="grid lg:grid-cols-2 gap-3">
         <div className="bg-[#0E1424] border border-white/5 rounded-xl p-4 space-y-3">
-          <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Runtime details</p>
+          <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wider">Background jobs and resources</p>
           <div className="grid grid-cols-2 gap-2">
             <div className="space-y-1">
               <label className="text-[9px] text-slate-600 uppercase font-semibold">Entrypoint</label>
@@ -1110,12 +1181,13 @@ create policy "Developers can delete own app blueprints"
     )
   );`
 
-function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTest }) {
+function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTest, navigationGuardRef }) {
   const toast   = useToast()
   const [bp, setBp]           = useState(null)   // null = loading
   const [savedBp, setSavedBp] = useState(null)
   const [, setBpProd]         = useState(null)   // last promoted snapshot
   const [tableNeeded, setTableNeeded] = useState(false)
+  const [loadError, setLoadError] = useState('')
   const [saving, setSaving]   = useState(false)
   const [savingModel, setSavingModel] = useState(false)
   const providers = useProviders()
@@ -1131,6 +1203,19 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
   const savedAtRef = useRef(null)
   const [conflict, setConflict] = useState(null)   // { at, byMe } — someone else saved since we loaded
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+  const isDirty = !!savedBp && JSON.stringify(bp) !== JSON.stringify(savedBp)
+  useEffect(() => {
+    const guard = () => !isDirty || window.confirm('You have unsaved design changes. Discard them and leave? Cancel to stay and save.')
+    if (navigationGuardRef) navigationGuardRef.current = guard
+    const beforeUnload = event => {
+      if (isDirty) { event.preventDefault(); event.returnValue = '' }
+    }
+    window.addEventListener('beforeunload', beforeUnload)
+    return () => {
+      if (navigationGuardRef?.current === guard) navigationGuardRef.current = null
+      window.removeEventListener('beforeunload', beforeUnload)
+    }
+  }, [isDirty, navigationGuardRef])
 
   useEffect(() => { loadBlueprint(); loadServerChecks() }, [app.id])  // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1140,63 +1225,48 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
   }
 
   async function loadBlueprint() {
-    const { data, error } = await supabase.from('app_blueprints')
-      .select('blueprint, blueprint_prod, updated_at').eq('app_id', app.id).maybeSingle()
-    if (error?.code === '42703' || error?.message?.includes('blueprint_prod')) {
-      // blueprint_prod column not added yet — fall back to blueprint only
-      const { data: d2, error: e2 } = await supabase.from('app_blueprints')
-        .select('blueprint, updated_at').eq('app_id', app.id).maybeSingle()
-      savedAtRef.current = d2?.updated_at || null
-      if (isMissingBlueprintTable(e2)) { setTableNeeded(true); return }
-      const raw2 = d2?.blueprint ? { ...EMPTY_BP, ...d2.blueprint } : { ...EMPTY_BP }
-      const next2 = migrateBlueprint(raw2)
-      setBp(next2); setSavedBp(next2)
-      return
+    setLoadError('')
+    setTableNeeded(false)
+    try {
+      const data = await readBlueprintRecord(supabase, app.id, { includeLive: true })
+      savedAtRef.current = data?.updated_at || null
+      const raw  = data?.blueprint ? { ...EMPTY_BP, ...data.blueprint } : { ...EMPTY_BP }
+      const next = migrateBlueprint(raw)
+      setBp(next)
+      setSavedBp(next)
+      if (data?.blueprint_prod) setBpProd(migrateBlueprint({ ...EMPTY_BP, ...data.blueprint_prod }))
+    } catch (error) {
+      if (isMissingBlueprintTable(error)) { setTableNeeded(true); return }
+      setLoadError(error.message || 'Could not load your saved design.')
     }
-    if (isMissingBlueprintTable(error)) { setTableNeeded(true); return }
-    savedAtRef.current = data?.updated_at || null
-    const raw  = data?.blueprint ? { ...EMPTY_BP, ...data.blueprint } : { ...EMPTY_BP }
-    const next = migrateBlueprint(raw)
-    setBp(next)
-    setSavedBp(next)
-    if (data?.blueprint_prod) setBpProd(migrateBlueprint({ ...EMPTY_BP, ...data.blueprint_prod }))
   }
 
   async function save(next, { force = false } = {}) {
+    if (loadError || !savedBp) { toast('Load your saved design before saving.', 'error'); return false }
     setSaving(true)
-    if (!force && savedAtRef.current) {
-      const { data: current } = await supabase.from('app_blueprints').select('updated_at, user_id').eq('app_id', app.id).maybeSingle()
-      if (current?.updated_at && new Date(current.updated_at).getTime() !== new Date(savedAtRef.current).getTime()) {
-        setSaving(false)
-        setConflict({ at: current.updated_at, byMe: current.user_id === user.id })
+    try {
+      const expectedAt = force ? (await readBlueprintRecord(supabase, app.id))?.updated_at : savedAtRef.current
+      const normalized = migrateBlueprint(next)
+      const score = calcReadiness(app, normalized)
+      savedAtRef.current = await saveBlueprintRecord(supabase,
+        { app_id: app.id, user_id: user.id, blueprint: normalized, readiness_score: score }, expectedAt)
+      if (app.is_published) onAppUpdated?.({ ...app, has_draft_changes: true })
+      setBp(normalized)
+      setSavedBp(normalized)
+      toast('Blueprint saved', 'success', 2000)
+      track(EVENTS.BUILD_DESIGN_SAVED, { app_id: app.id, readiness: score, overwrote_newer: force })
+      loadServerChecks()
+      return true
+    } catch (error) {
+      if (error instanceof BlueprintConflictError) {
+        setConflict({ at: error.record?.updated_at || new Date().toISOString(), byMe: error.record?.user_id === user.id })
         return false
       }
-    }
-    const normalized = migrateBlueprint(next)
-    const score = calcReadiness(app, normalized)
-    const savedAt = new Date().toISOString()
-    const { error } = await supabase.from('app_blueprints').upsert(
-      { app_id: app.id, user_id: user.id, blueprint: normalized, readiness_score: score, updated_at: savedAt },
-      { onConflict: 'app_id' }
-    )
-    if (!error) savedAtRef.current = savedAt
-    if (!error && app.is_published) {
-      const { error: dcErr } = await supabase.from('apps').update({ has_draft_changes: true }).eq('id', app.id)
-      if (!dcErr) onAppUpdated?.({ ...app, has_draft_changes: true })
-    }
-    setSaving(false)
-    if (isMissingBlueprintTable(error)) {
-      setTableNeeded(true)
-      toast('Blueprint table is not set up yet', 'error')
+      toast(error.message || 'Could not save your design.', 'error')
       return false
+    } finally {
+      setSaving(false)
     }
-    if (error) { toast(error.message, 'error'); return false }
-    setBp(normalized)
-    setSavedBp(normalized)
-    toast('Blueprint saved', 'success', 2000)
-    track(EVENTS.BUILD_DESIGN_SAVED, { app_id: app.id, readiness: score, overwrote_newer: force })
-    loadServerChecks()
-    return true
   }
 
   function update(patch) {
@@ -1362,9 +1432,14 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
     </div>
   )
 
+  if (loadError) return (
+    <div role="alert" className="rounded-2xl border border-red-500/20 p-6 text-sm text-slate-300">
+      <p>Could not load your saved design: {loadError}</p>
+      <button onClick={loadBlueprint} className="mt-3 text-[#A29BFE] font-semibold">Retry loading design</button>
+    </div>
+  )
   if (!bp) return <p className="text-slate-500 text-sm py-6 text-center">Loading blueprint…</p>
 
-  const isDirty = !!savedBp && JSON.stringify(bp) !== JSON.stringify(savedBp)
   const mismatch = outputContractMismatch(app, bp)
   const invalidInputs = invalidInputFields(bp)
   const openPromptStudio = () => onOpenPromptStudio(app)
@@ -1434,6 +1509,10 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
       </div>
 
       {/* Readiness */}
+      <SafeCard name="Build flow">{() => (
+        <BuildFlowGuide app={app} bp={bp} isDirty={isDirty} serverProblems={serverProblems} />
+      )}</SafeCard>
+
       <SafeCard name="Readiness">{() => (
       <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5">
         <ReadinessBar app={app} bp={bp} serverProblems={serverProblems} />
@@ -2040,7 +2119,7 @@ function SchemaExportPanel({ inputFields, outputFields }) {
 
 // ─── Tab: Design ──────────────────────────────────────────────────────────────
 
-export function DesignTab({ apps, allApps = apps, loading, onOpenCreate, user, onAppUpdated, onGoToTest, selectedAppId, onSelectApp, deployFixReason, phaseByAppId = {} }) {
+export function DesignTab({ apps, allApps = apps, loading, onOpenCreate, user, onAppUpdated, onGoToTest, selectedAppId, onSelectApp, deployFixReason, phaseByAppId = {}, navigationGuardRef }) {
   const [studioApp, setStudioApp]     = useState(null)
 
   const app = apps.find(a => a.id === selectedAppId) || apps[0] || null
@@ -2125,6 +2204,7 @@ export function DesignTab({ apps, allApps = apps, loading, onOpenCreate, user, o
 
         {app ? (
           <BlueprintEditor
+            navigationGuardRef={navigationGuardRef}
             key={app.id}
             app={app}
             user={user}

@@ -272,7 +272,7 @@ function LocalToolBuilder({ tools, onChange }) {
               </div>
               <div>
                 <label className="text-[10px] text-slate-400 block mb-1">SMTP / SendGrid key</label>
-                <input className={inCls} placeholder="API key or smtp://..." type="password"
+                <input className={inCls} placeholder="API key or smtp://..." type="password" name="email-tool-api-key" autoComplete="new-password"
                   value={config.api_key || ''} onChange={e => setConfig(c => ({ ...c, api_key: e.target.value }))} />
               </div>
             </div>
@@ -286,7 +286,7 @@ function LocalToolBuilder({ tools, onChange }) {
           {type === 'calendar' && (
             <div>
               <label className="text-[10px] text-slate-400 block mb-1">Calendar API key / OAuth</label>
-              <input className={inCls} placeholder="Google Calendar API key" type="password" autoComplete="new-password"
+              <input className={inCls} placeholder="Google Calendar API key" type="password" name="calendar-api-key" autoComplete="new-password"
                 value={config.api_key || ''} onChange={e => setConfig(c => ({ ...c, api_key: e.target.value }))} />
             </div>
           )}

@@ -5100,8 +5100,7 @@ def change_note_text(note) -> str:
 
 
 async def _save_published_version(sb, app_row: dict, state: dict, tests: dict, user_id: Optional[str]) -> Optional[int]:
-    """Record a publish as the app's next version. Returns its number (None if
-    the versions table isn't migrated yet — publishing still succeeds)."""
+    """Record the next recoverable version before changing the live app."""
     try:
         last = await db(sb.table("app_versions").select("version_num").eq("app_id", app_row["id"])
                         .not_.is_("version_num", "null").order("version_num", desc=True).limit(1))
@@ -5118,7 +5117,7 @@ async def _save_published_version(sb, app_row: dict, state: dict, tests: dict, u
         return num
     except Exception as e:
         print(f"version not saved: {type(e).__name__}: {str(e)[:200]}")
-        return None
+        raise HTTPException(status_code=503, detail="Could not save the release version. The live app was not changed. Try publishing again.") from e
 
 
 @app.get("/v1/apps/{app_id}/live-preview")
@@ -5260,7 +5259,8 @@ async def rollback_version(app_id: str, version_num: int, request: Request):
         await db(sb.table("app_blueprints").update({"blueprint_prod": snapshot.get("blueprint")}).eq("app_id", app_id))
     except Exception as e:
         print(f"blueprint_prod update skipped: {type(e).__name__}")
-    return {"ok": True, "live_version": version_num, "promoted_at": now, "is_published": True}
+    return {"ok": True, "live_version": version_num, "promoted_at": now, "is_published": True,
+            "has_draft_changes": not same_as_live(snapshot, state)}
 
 
 @app.get("/v1/apps/{app_id}/release")

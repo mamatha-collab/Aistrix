@@ -3,6 +3,7 @@ import { track, EVENTS } from '../../lib/analytics'
 import { supabase } from '../../supabase'
 import { useToast } from '../../hooks/useToast'
 import { publishApp, unpublishApp, getRelease, listVersions } from '../../lib/release'
+import { PROMOTE_FIELDS, TOOL_FIELDS, reviewState, sameReviewValue } from '../../lib/promotionReview'
 import { downloadReport, deployReport } from '../../lib/reports'
 import { PROVIDER_STYLE, providerById, useProviderStatus } from '../../lib/providers'
 import PublishedVersions from '../../components/PublishedVersions'
@@ -27,13 +28,13 @@ function diffSnippet(value, other) {
 }
 
 // What end users run, compared field by field when promoting (see backend DRAFT_FIELDS).
-const PROMOTE_FIELDS = ['system_prompt', 'ai_provider', 'ai_model', 'output_type', 'form_schema', 'tone', 'greeting', 'input_placeholder', 'app_type', 'has_memory']
 
 function PromoteModal({ app, onClose, onPromoted }) {
   const toast = useToast()
   const [step, setStep] = useState('diff')   // 'diff' | 'confirm'
   const [promoting, setPromoting] = useState(false)
   const [bpDiff, setBpDiff] = useState(null)
+  const [reviewError, setReviewError] = useState('')
 
   // The draft vs the live version end users run (apps.prod_snapshot): the
   // same fields the server compares, so a prompt or model change shows up.
@@ -41,13 +42,18 @@ function PromoteModal({ app, onClose, onPromoted }) {
     Promise.all([
       supabase.from('apps').select(`prod_snapshot, ${PROMOTE_FIELDS.join(', ')}`).eq('id', app.id).maybeSingle(),
       supabase.from('app_blueprints').select('blueprint').eq('app_id', app.id).maybeSingle(),
-    ]).then(([{ data: row }, { data: bp }]) => {
-      const withoutPhase = b => { const { dev_phase: _phase, ...rest } = b || {}; return rest }
-      const current = row ? { ...Object.fromEntries(PROMOTE_FIELDS.map(k => [k, row[k] ?? null])), blueprint: withoutPhase(bp?.blueprint) } : null
+      supabase.from('app_tools').select(TOOL_FIELDS.join(', ')).eq('app_id', app.id),
+    ]).then(([appResult, bpResult, toolsResult]) => {
+      const error = appResult.error || bpResult.error || toolsResult.error
+      if (error) throw error
+      const row = appResult.data
+      const bp = bpResult.data
+      if (!row) throw new Error('The app could not be loaded. Close this review and try again.')
+      const current = reviewState(row, bp?.blueprint, toolsResult.data)
       const live = row?.prod_snapshot
-      const prod = live ? { ...Object.fromEntries(PROMOTE_FIELDS.map(k => [k, live[k] ?? null])), blueprint: withoutPhase(live.blueprint) } : null
+      const prod = live ? reviewState(live, live.blueprint, live.tools) : null
       setBpDiff({ current, prod })
-    })
+    }).catch(error => setReviewError(error.message || 'Could not load the release review.'))
   }, [app.id])
 
   // The backend checks the app and its tests for this draft, then saves it
@@ -67,10 +73,12 @@ function PromoteModal({ app, onClose, onPromoted }) {
     }
   }
 
-  const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
+  const same = sameReviewValue
   const diffFields = bpDiff?.current && bpDiff?.prod ? [
     ...PROMOTE_FIELDS.filter(k => !same(bpDiff.current[k], bpDiff.prod[k]))
       .map(k => ({ key: k, from: bpDiff.prod[k], to: bpDiff.current[k] })),
+    ...(!same(bpDiff.current.tools, bpDiff.prod.tools) ? [{ key: 'tools', from: null,
+      to: `Tools changed. Current tools: ${bpDiff.current.tools.map(tool => tool.name).join(', ') || 'none'}` }] : []),
     // The design is large: name the parts that changed instead of dumping it.
     ...(() => {
       const keys = [...new Set([...Object.keys(bpDiff.current.blueprint), ...Object.keys(bpDiff.prod.blueprint)])]
@@ -80,7 +88,7 @@ function PromoteModal({ app, onClose, onPromoted }) {
   ] : []
 
   const FIELD_LABEL = { system_prompt: 'System prompt', ai_provider: 'AI provider', ai_model: 'Model', output_type: 'Output format', form_schema: 'Form fields',
-    tone: 'Tone', greeting: 'Greeting', input_placeholder: 'Input hint', app_type: 'App type', has_memory: 'Memory', blueprint: 'Design' }
+    tone: 'Tone', greeting: 'Greeting', input_placeholder: 'Input hint', app_type: 'App type', has_memory: 'Memory', blueprint: 'Design', pages: 'Pages', tools: 'Tools' }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4">
@@ -106,7 +114,7 @@ function PromoteModal({ app, onClose, onPromoted }) {
 
         <div className="px-5 py-4 max-h-96 overflow-y-auto">
           {step === 'diff' && (
-            bpDiff === null ? (
+            reviewError ? <p role="alert" className="text-red-300 text-sm">{reviewError}</p> : bpDiff === null ? (
               <p className="text-slate-500 text-sm text-center py-6">Loading…</p>
             ) : diffFields.length === 0 && bpDiff.prod ? (
               <div className="text-center py-6">
@@ -154,8 +162,8 @@ function PromoteModal({ app, onClose, onPromoted }) {
         <div className="flex items-center justify-between px-5 py-3 border-t border-white/8">
           <button onClick={onClose} className="text-xs text-slate-500 hover:text-white transition-colors">Cancel</button>
           {step === 'diff' && (
-            <button onClick={() => setStep('confirm')}
-              className="text-xs font-semibold px-4 py-2 rounded-xl bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors">
+            <button onClick={() => setStep('confirm')} disabled={!bpDiff || !!reviewError || (!!bpDiff.prod && diffFields.length === 0)}
+              className="text-xs font-semibold px-4 py-2 rounded-xl bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
               Next →
             </button>
           )}
@@ -194,12 +202,17 @@ function DeployCard({ icon, title, subtitle, right, cardRef, children }) {
 
 // What end users see: the live version's page, drawn from the server's copy
 // of it (the real app page would show you, the developer, the draft).
-function LivePreviewCard({ appId, hasChanges, liveUrl }) {
+function LivePreviewCard({ appId, hasChanges, liveUrl, isPublished, liveVersion, promotedAt }) {
   const [view, setView] = useState(null)
   const [error, setError] = useState('')
   useEffect(() => {
-    getLivePreview(appId).then(setView).catch(e => setError(e.message))
-  }, [appId, hasChanges])
+    let active = true
+    setError('')
+    getLivePreview(appId).then(next => {
+      if (active) { setView(next); setError('') }
+    }).catch(e => { if (active) setError(e.message) })
+    return () => { active = false }
+  }, [appId, hasChanges, isPublished, liveVersion, promotedAt])
 
   const fields = view?.app_type === 'native' ? (view.form_schema || []).filter(f => f.label) : []
   const caption = !view ? '' : view.source === 'live'
@@ -772,7 +785,8 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
       </>)}</DeployCard>
 
       {/* 5 · What users will see */}
-      <SafeCard name="What users will see"><LivePreviewCard appId={app.id} hasChanges={hasChanges} liveUrl={liveUrl} /></SafeCard>
+      <SafeCard name="What users will see"><LivePreviewCard appId={app.id} hasChanges={hasChanges} liveUrl={liveUrl}
+        isPublished={app.is_published} liveVersion={app.live_version} promotedAt={app.promoted_at} /></SafeCard>
 
       {/* Share */}
       <DeployCard icon="🔗" title="Share" subtitle={live ? 'Send people straight to the app.' : 'The link works once the app is published.'}>{() => (<>

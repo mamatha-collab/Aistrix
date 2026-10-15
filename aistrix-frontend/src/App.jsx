@@ -13,7 +13,7 @@ import { getUserRole, isAdmin, isModerator } from './utils/roles'
 import { useKeyboard } from './hooks/useKeyboard'
 import { useMediaQuery } from './hooks/useMediaQuery'
 import { useWorkspaces } from './hooks/useWorkspaces'
-import { History, LayoutGrid, Settings, Workflow } from 'lucide-react'
+import { Code2, History, LayoutGrid, Settings, User, Workflow } from 'lucide-react'
 
 // Lazy-load heavy pages — only downloaded when first visited
 const Gallery         = lazy(() => import('./pages/Gallery'))
@@ -141,6 +141,7 @@ export default function App() {
     return localStorage.getItem('aistrix_mode') !== 'developer'
   })
   const searchInputRef = useRef(null)
+  const buildNavigationGuardRef = useRef(null)
   const isDesktopNav = useMediaQuery('(min-width: 768px)')
   const navigate = useNavigate()
   const location = useLocation()
@@ -214,16 +215,19 @@ export default function App() {
 
 
   const navigateToView = useCallback((view) => {
+    if (view !== 'developer' && buildNavigationGuardRef.current && !buildNavigationGuardRef.current()) return false
     setActiveView(view)
     if (view === 'flows' || view === 'apps') setBuildMounted(true)
     const path = VIEW_PATH_MAP[view]
     if (path && path !== location.pathname) navigate(path)
+    return true
   }, [navigate, location.pathname])
 
   const changeView = useCallback((view) => {
-    navigateToView(view)
+    if (!navigateToView(view)) return false
     setSelectedApp(null)
     setShowMobileSidebar(false)
+    return true
   }, [navigateToView])
 
   useEffect(() => {
@@ -343,7 +347,7 @@ export default function App() {
     reports:     <ReportsPage     user={session.user} />,
     settings:    <SettingsPage    user={session.user} />,
     alerts:      <AlertsPage      user={session.user} />,
-    developer:   <DevStudioPage user={session.user} onOpenCreate={() => setShowTypeSelector(true)} onShowHistory={() => setShowHistory(true)} onShowSettings={() => setShowSettings(true)} noKeys={noKeys} onNavChange={changeView} search={search} onSearch={setSearch} searchRef={searchInputRef} createdApp={createdApp} onCreatedAppConsumed={() => setCreatedApp(null)} />,
+    developer:   <DevStudioPage navigationGuardRef={buildNavigationGuardRef} user={session.user} onOpenCreate={() => setShowTypeSelector(true)} onShowHistory={() => setShowHistory(true)} onShowSettings={() => setShowSettings(true)} onShowProfile={() => setShowProfile(true)} noKeys={noKeys} onNavChange={changeView} search={search} onSearch={setSearch} searchRef={searchInputRef} createdApp={createdApp} onCreatedAppConsumed={() => setCreatedApp(null)} />,
     data_sources:<DataSourcesPage user={session.user} />,
     integrations:<IntegrationsPage user={session.user} />,
     admin:          isAdmin(userRole)     ? <AdminPage          user={session.user} /> : null,
@@ -388,13 +392,13 @@ export default function App() {
                 onNavChange={changeView}
                 mode={mode}
                 onModeChange={next => {
+                  if (!changeView(next === 'developer' ? 'developer' : 'flows')) return
                   setMode(next)
                   localStorage.setItem('aistrix_mode', next)
                   if (next === 'developer') {
                     setShowOnboarding(false)
                     setShowAppOnboarding(false)
                   }
-                  changeView(next === 'developer' ? 'developer' : 'flows')
                 }}
               />
             </div>
@@ -560,12 +564,17 @@ export default function App() {
           )}
           {/* ── Mobile bottom nav ── */}
           <nav className="app-topbar fixed bottom-0 left-0 right-0 bg-[#121829] border-t border-white/8 flex md:hidden z-40">
-            {[
-              { view: 'apps',     Icon: LayoutGrid, label: 'Apps' },
-              { view: 'flows',    Icon: Workflow,   label: 'Workflows' },
-              { view: 'history',  Icon: History,    label: 'History',  action: () => setShowHistory(true) },
-              { view: 'settings', Icon: Settings,   label: 'Settings' },
-            ].map(({ view, Icon, label, action }) => (
+            {(mode === 'developer' ? [
+              { view: 'developer', Icon: Code2,    label: 'Studio',   action: () => changeView('developer') },
+              { view: 'keys',      Icon: Settings, label: 'Keys',     action: () => setShowSettings(true) },
+              { view: 'history',   Icon: History,  label: 'Runs',     action: () => setShowHistory(true) },
+              { view: 'account',   Icon: User,     label: 'Account',  action: () => setShowProfile(true) },
+            ] : [
+              { view: 'apps',      Icon: LayoutGrid, label: 'Apps' },
+              { view: 'flows',     Icon: Workflow,   label: 'Workflows' },
+              { view: 'history',   Icon: History,    label: 'History',  action: () => setShowHistory(true) },
+              { view: 'settings',  Icon: Settings,   label: 'Settings' },
+            ]).map(({ view, Icon, label, action }) => (
               <button key={view}
                 onClick={() => action ? action() : changeView(view)}
                 className={`flex-1 flex flex-col items-center py-2 gap-0.5 text-xs transition-colors

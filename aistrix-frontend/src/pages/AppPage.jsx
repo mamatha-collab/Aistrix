@@ -1,4 +1,5 @@
 import AistrixWordmark from '../components/AistrixWordmark'
+import { APP_PUBLIC_SELECT, withPrivateField } from '../lib/appColumns'
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { useState, useEffect, lazy, Suspense } from 'react'
 import { supabase } from '../supabase'
@@ -44,11 +45,11 @@ export default function AppPage() {
   async function fetchApp() {
     const { data } = await supabase
       .from('apps')
-      .select('*, domains(name, emoji, color)')
+      .select(`${APP_PUBLIC_SELECT}, domains(name, emoji, color)`)
       .eq('id', id)
       .eq('is_published', true)
       .single()
-    setApp(data)
+    setApp(data ? await withPrivateField(supabase, data) : data)
     setLoading(false)
   }
 

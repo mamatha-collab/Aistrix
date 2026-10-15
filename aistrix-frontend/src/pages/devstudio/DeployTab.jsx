@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { APP_PRIVATE_COLUMNS, withPrivateField } from '../../lib/appColumns'
 import { saveAppFields } from '../../lib/appFields'
 import { track, EVENTS } from '../../lib/analytics'
 import { supabase } from '../../supabase'
@@ -41,7 +42,9 @@ function PromoteModal({ app, onClose, onPromoted }) {
   // same fields the server compares, so a prompt or model change shows up.
   useEffect(() => {
     Promise.all([
-      supabase.from('apps').select(`prod_snapshot, ${PROMOTE_FIELDS.join(', ')}`).eq('id', app.id).maybeSingle(),
+      // Prompt, pages and the live snapshot are private columns: editors read them separately.
+      supabase.from('apps').select(['id', ...PROMOTE_FIELDS.filter(k => !APP_PRIVATE_COLUMNS.includes(k))].join(', ')).eq('id', app.id).maybeSingle()
+        .then(async res => (res.data ? { ...res, data: await withPrivateField(supabase, res.data) } : res)),
       supabase.from('app_blueprints').select('blueprint').eq('app_id', app.id).maybeSingle(),
       supabase.from('app_tools').select(TOOL_FIELDS.join(', ')).eq('app_id', app.id),
     ]).then(([appResult, bpResult, toolsResult]) => {

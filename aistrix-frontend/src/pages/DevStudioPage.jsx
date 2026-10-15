@@ -1,4 +1,5 @@
 import { persistBlueprintPhase } from '../lib/blueprintStorage'
+import { APP_PUBLIC_SELECT, withPrivateFields } from '../lib/appColumns'
 import { saveAppFields } from '../lib/appFields'
 import AistrixWordmark from '../components/AistrixWordmark'
 import { useState, useEffect, useRef, lazy, Suspense } from 'react'
@@ -143,9 +144,11 @@ export default function DevStudioPage({
 
   async function load() {
     setLoading(true)
-    const { data: myApps } = await scopeToWorkspace(supabase.from('apps').select('*'), user, 'created_by')
+    const { data: rows } = await scopeToWorkspace(supabase.from('apps').select(APP_PUBLIC_SELECT), user, 'created_by')
       .order('total_runs', { ascending: false })
-    if (!myApps?.length) { setLoading(false); return }
+    if (!rows?.length) { setLoading(false); return }
+    // Prompts and other private fields come separately, for apps this user can edit.
+    const myApps = await withPrivateFields(supabase, rows)
     setApps(myApps)
     setActiveAppId(prev => myApps.some(a => a.id === prev) ? prev : null)
 

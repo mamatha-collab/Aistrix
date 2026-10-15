@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import { APP_PUBLIC_SELECT } from '../lib/appColumns'
 import { persistBlueprintPhase } from '../lib/blueprintStorage'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
@@ -527,7 +528,8 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGui
         created_by: user.id,
         workflow_order: 999,
         total_runs: 0,
-      }).select('*, domains(name, emoji, color, slug)').single()
+      }).select(`${APP_PUBLIC_SELECT}, domains(name, emoji, color, slug)`).single()
+        .then(res => (res.data ? { ...res, data: { ...res.data, system_prompt: cfg.system_prompt } } : res))
 
       if (err) throw err
 

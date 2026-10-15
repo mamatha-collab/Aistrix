@@ -1,4 +1,5 @@
 import { useState, useEffect, lazy, Suspense } from 'react'
+import { APP_PUBLIC_SELECT, asPublicApp } from '../lib/appColumns'
 import { useParams, useSearchParams } from 'react-router-dom'
 import { supabase } from '../supabase'
 import { applyTheme } from '../utils/theme'
@@ -50,7 +51,8 @@ export default function AppEmbedPage() {
     applyTheme(theme)
 
     Promise.all([
-      supabase.from('apps').select('*').eq('id', id).eq('is_published', true).single(),
+      supabase.from('apps').select(APP_PUBLIC_SELECT).eq('id', id).eq('is_published', true).single()
+        .then(res => ({ ...res, data: asPublicApp(res.data) })),
       supabase.auth.getSession(),
     ]).then(([{ data: appData }, { data: { session } }]) => {
       setApp(appData)

@@ -1,4 +1,5 @@
 import { supabase } from '../supabase'
+import { APP_PUBLIC_SELECT } from '../lib/appColumns'
 
 // Clones an app's core configuration into a new app owned by the current
 // user — the "Save as reusable template" next-best-action shown after a run.
@@ -27,7 +28,8 @@ export async function duplicateApp(app, userId) {
     workflow_order: 999,
     total_runs: 0,
   }
-  return supabase.from('apps').insert(payload).select('*, domains(name, emoji, color, slug)').single()
+  const res = await supabase.from('apps').insert(payload).select(`${APP_PUBLIC_SELECT}, domains(name, emoji, color, slug)`).single()
+  return res.data ? { ...res, data: { ...res.data, system_prompt: payload.system_prompt } } : res
 }
 
 // Turns a raw thrown error (often a browser-native string like "Failed to

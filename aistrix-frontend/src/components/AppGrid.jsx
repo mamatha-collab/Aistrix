@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
+import { APP_PUBLIC_SELECT, withPrivateFields } from '../lib/appColumns'
 import { publishApp, unpublishApp } from '../lib/release'
 import { supabase } from '../supabase'
 import AppCard, { AppTab } from './AppCard'
@@ -284,11 +285,11 @@ export default function AppGrid({ onSelectApp, selectedApp, user, search, runCou
   async function fetchApps() {
     const { data } = await supabase
       .from('apps')
-      .select('*, domains(name, emoji, color, slug)')
+      .select(`${APP_PUBLIC_SELECT}, domains(name, emoji, color, slug)`)
       .eq('is_published', true)
       .order('workflow_order')
     if (data) {
-      setApps(data)
+      setApps(await withPrivateFields(supabase, data))
     }
     setLoading(false)
   }
@@ -297,9 +298,9 @@ export default function AppGrid({ onSelectApp, selectedApp, user, search, runCou
     if (!user) return
     const { data } = await scopeToWorkspace(supabase
       .from('apps')
-      .select('*, domains(name, emoji, color, slug)'), user, 'created_by')
+      .select(`${APP_PUBLIC_SELECT}, domains(name, emoji, color, slug)`), user, 'created_by')
       .order('created_at', { ascending: false })
-    if (data) setMyApps(data)
+    if (data) setMyApps(await withPrivateFields(supabase, data))
   }
 
   async function fetchSharedApps() {
@@ -312,8 +313,8 @@ export default function AppGrid({ onSelectApp, selectedApp, user, search, runCou
     for (const m of memberships || []) roles[m.app_id] = m.role
     setSharedRoles(roles)
     if (!ids.length) { setSharedApps([]); setLoadingShared(false); return }
-    const { data } = await supabase.from('apps').select('*, domains(name, emoji, color, slug)').in('id', ids)
-    setSharedApps(data || [])
+    const { data } = await supabase.from('apps').select(`${APP_PUBLIC_SELECT}, domains(name, emoji, color, slug)`).in('id', ids)
+    setSharedApps(await withPrivateFields(supabase, data || []))
     setLoadingShared(false)
   }
 

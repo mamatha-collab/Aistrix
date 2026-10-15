@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { APP_PUBLIC_SELECT, asPublicApp } from '../lib/appColumns'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { supabase } from '../supabase'
 import { track, EVENTS } from '../lib/analytics'
@@ -197,13 +198,14 @@ export function MarketplaceAppPage({ appId }) {
   async function load() {
     const { data } = await supabase
       .from('marketplace_listings')
-      .select('*, apps(*)')
+      .select(`*, apps(${APP_PUBLIC_SELECT})`)
       .eq('app_id', id)
       .eq('status', 'live')
       .single()
     if (!data) {
       // Fallback: try loading published app directly
-      const { data: appData } = await supabase.from('apps').select('*').eq('id', id).eq('is_published', true).single()
+      const { data: appRow } = await supabase.from('apps').select(APP_PUBLIC_SELECT).eq('id', id).eq('is_published', true).single()
+      const appData = asPublicApp(appRow)
       if (!appData) { setNotFound(true); return }
       setListing({ title: appData.name, tagline: appData.description, description: appData.description, tags: [], category: null, user_id: appData.created_by, developer_profiles: null })
       setApp(appData)

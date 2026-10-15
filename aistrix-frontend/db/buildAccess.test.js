@@ -175,3 +175,63 @@ describe('draft tracking', () => {
     expect((await db.query(`select has_draft_changes from apps where id = $1`, [APP])).rows[0].has_draft_changes).toBe(false)
   })
 })
+
+describe('app prompts and private settings stay private', () => {
+  const PUB = '00000000-0000-0000-0000-0000000000c2'
+  beforeAll(async () => {
+    await db.query(`insert into apps (id, name, created_by, workspace_id, system_prompt, webhook_url, custom_model_url, pages, is_published, visibility)
+                    values ($1, 'Public app', $2, $3, 'SECRET PROMPT', 'https://hooks.example/secret', 'https://model.example', $4, false, 'public')`,
+      [PUB, U.owner, WS, JSON.stringify([{ name: 'Intro', fields: [{ label: 'Topic' }], system_prompt: 'PAGE SECRET' }])])
+    await db.query(`update apps set is_published = true where id = $1`, [PUB])
+  })
+
+  async function asAnon(sql, params = []) {
+    try {
+      const rows = await db.transaction(async tx => { await tx.exec('set local role anon'); return (await tx.query(sql, params)).rows })
+      return { rows, error: null }
+    } catch (error) { return { rows: [], error } }
+  }
+
+  it.each(['system_prompt', 'prod_snapshot', 'webhook_url', 'custom_model_url', 'pages', 'change_note', 'review_notes'])(
+    'nobody can read %s of a published app directly (signed out or in)', async column => {
+      expect((await asAnon(`select ${column} from apps where id = $1`, [PUB])).error?.message).toMatch(/permission denied/)
+      expect((await as('outsider', `select ${column} from apps where id = $1`, [PUB])).error?.message).toMatch(/permission denied/)
+      expect((await as('owner', `select ${column} from apps where id = $1`, [PUB])).error?.message).toMatch(/permission denied/)
+    })
+
+  it('everyone can still read what end users need, and page prompts are stripped', async () => {
+    const { rows, error } = await asAnon(`select name, form_schema, is_paid, pages_public from apps where id = $1`, [PUB])
+    expect(error).toBeNull()
+    expect(rows[0].name).toBe('Public app')
+    expect(rows[0].pages_public).toEqual([{ name: 'Intro', fields: [{ label: 'Topic' }] }])
+  })
+
+  it.each(['owner', 'developer', 'appEditor'])('%s (an editor) reads the private fields through app_private_fields', async who => {
+    const app = who === 'appEditor' ? APP : PUB
+    const { rows, error } = await as(who, `select * from app_private_fields($1)`, [[app]])
+    expect(error).toBeNull()
+    expect(rows).toHaveLength(1)
+    expect(rows[0].system_prompt).toBeTruthy()
+  })
+
+  it.each(['member', 'billing', 'outsider', 'appViewer'])('%s gets nothing from app_private_fields', async who => {
+    const { rows } = await as(who, `select * from app_private_fields($1)`, [[APP, PUB]])
+    expect(rows).toHaveLength(0)
+  })
+
+  it('signed-out visitors cannot call the private-fields function at all', async () => {
+    expect((await asAnon(`select * from app_private_fields($1)`, [[PUB]])).error).not.toBeNull()
+    expect((await asAnon(`select app_row_for_editor($1)`, [PUB])).error).not.toBeNull()
+  })
+
+  it('a non-editor cannot read the row through app_row_for_editor', async () => {
+    const { rows } = await as('outsider', `select app_row_for_editor($1) r`, [PUB])
+    expect(rows[0].r).toBeNull()
+  })
+
+  it('editors can still save prompts and webhooks with conflict checks', async () => {
+    const ok = await as('developer', `select update_app_fields($1, $2, $3) r`, [PUB, { webhook_url: 'https://hooks.example/new' }, { webhook_url: 'https://hooks.example/secret' }])
+    expect(ok.error).toBeNull()
+    expect(ok.rows[0].r.ok).toBe(true)
+  })
+})

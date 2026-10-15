@@ -142,9 +142,9 @@ Only include apps from the available list. Choose 2-5 steps. Match app names exa
       const { data: { session } } = await supabase.auth.getSession()
       const firstStep = suggestion.steps[0]
       if (!firstStep?.app_id) { setRunOutput('No runnable step found.'); setRunning(false); return }
-      const { data: appData } = await supabase.from('apps').select('*').eq('id', firstStep.app_id).single()
+      const { data: appData } = await supabase.from('apps').select('ai_provider, ai_model').eq('id', firstStep.app_id).single()
       await streamRun({
-        system_prompt: appData?.system_prompt || '',
+        app_id: firstStep.app_id,   // the server runs the app's own (private) prompt
         input: suggestion.sampleInput || goal,
         provider: appData?.ai_provider || 'claude',
         model: appData?.ai_model || null,

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { APP_PUBLIC_SELECT, asPublicApp } from '../lib/appColumns'
 import { supabase } from '../supabase'
 import { useParams, useNavigate } from 'react-router-dom'
 import { fieldKeyFromLabel } from '../utils/schemaContracts'
@@ -42,8 +43,8 @@ export default function AppDocsPage() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    supabase.from('apps').select('*').eq('id', id).eq('is_published', true).single()
-      .then(({ data }) => { setApp(data); setLoading(false) })
+    supabase.from('apps').select(APP_PUBLIC_SELECT).eq('id', id).eq('is_published', true).single()
+      .then(({ data }) => { setApp(asPublicApp(data)); setLoading(false) })
     fetch(`${API_BASE}/apps/${id}`).then(r => (r.ok ? r.json() : null)).then(setContract).catch(() => {})
   }, [id])
 

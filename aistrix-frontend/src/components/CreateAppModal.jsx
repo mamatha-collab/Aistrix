@@ -1,4 +1,7 @@
 import { useState, useEffect, useTransition, useRef } from 'react'
+import { APP_PUBLIC_SELECT, APP_PRIVATE_COLUMNS, withPrivateField } from '../lib/appColumns'
+// The private fields this form just wrote (the insert can't read them back).
+const pickPrivate = p => Object.fromEntries(APP_PRIVATE_COLUMNS.filter(k => k in p).map(k => [k, p[k]]))
 import { saveAppFields } from '../lib/appFields'
 import { supabase } from '../supabase'
 import { useFocusTrap } from '../hooks/useFocusTrap'
@@ -638,9 +641,10 @@ Return ONLY valid JSON with these fields:
         const { error: saveErr } = await saveAppFields(supabase, existingApp, changed)
         if (saveErr) { setSaving(false); setError(saveErr.message); return }
       }
-      const { data, error: err } = await supabase.from('apps')
-        .select('*, domains(name, emoji, color, slug)').eq('id', existingApp.id).single()
+      const { data: row, error: err } = await supabase.from('apps')
+        .select(`${APP_PUBLIC_SELECT}, domains(name, emoji, color, slug)`).eq('id', existingApp.id).single()
       if (err) { setSaving(false); setError(err.message); return }
+      const data = await withPrivateField(supabase, row)
       const bpErr = await saveBlueprint(existingApp.id)
       setSaving(false)
       if (bpErr) toast(`Saved, but the input/output contract wasn't: ${bpErr.message}`, 'error', 8000)
@@ -648,7 +652,8 @@ Return ONLY valid JSON with these fields:
     } else {
       const { data, error: err } = await supabase.from('apps')
         .insert({ ...payload, is_published: false, created_by: user.id, workflow_order: 999, total_runs: 0 })
-        .select('*, domains(name, emoji, color, slug)').single()
+        .select(`${APP_PUBLIC_SELECT}, domains(name, emoji, color, slug)`).single()
+        .then(res => (res.data ? { ...res, data: { ...res.data, ...pickPrivate(payload) } } : res))
       if (err) { setSaving(false); setError(err.message); return }
       // First Design blueprint from what this wizard knows (inputs, output
       // contract, business problem; audience/fallback from the site generator).

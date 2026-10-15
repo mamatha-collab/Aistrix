@@ -138,7 +138,7 @@ Publishing now refuses to go live if it cannot record the version history
 (`app_versions.version_num`), so the database must be migrated **before** the new
 backend serves traffic:
 
-1. Apply the migrations `20261013030000` through `20261014020000` to production
+1. Apply the migrations `20261013030000` through `20261014030000` to production
    (`supabase db push` against the production project).
 2. Deploy the backend.
 3. Deploy the frontend.
@@ -147,3 +147,9 @@ backend serves traffic:
 
 If step 2 goes out before step 1, every publish and promote fails with
 "Could not save the release version. The live app was not changed."
+
+**Private app columns (`20261014030000`) and the frontend must ship together.**
+After this migration browsers can no longer `select('*')` from `apps`, so an
+older frontend cannot load apps; the new frontend reads `pages_public`, which
+older databases don't have. Apply the migration, then deploy the frontend
+straight away (the backend can go first — it uses the service role).

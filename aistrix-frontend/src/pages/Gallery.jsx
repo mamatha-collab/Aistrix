@@ -1,4 +1,5 @@
 import AistrixWordmark from '../components/AistrixWordmark'
+import { APP_PUBLIC_SELECT, asPublicApp } from '../lib/appColumns'
 import { useState, useEffect } from 'react'
 import { supabase } from '../supabase'
 import { useNavigate } from 'react-router-dom'
@@ -13,7 +14,8 @@ export default function Gallery() {
 
   useEffect(() => {
     Promise.all([
-      supabase.from('apps').select('*, domains(name, emoji, color)').eq('is_published', true).order('total_runs', { ascending: false }),
+      supabase.from('apps').select(`${APP_PUBLIC_SELECT}, domains(name, emoji, color)`).eq('is_published', true).order('total_runs', { ascending: false })
+        .then(res => ({ ...res, data: res.data?.map(asPublicApp) })),
       supabase.from('domains').select('*').order('order_index'),
     ]).then(([{ data: appData }, { data: domainData }]) => {
       if (appData) setApps(appData)

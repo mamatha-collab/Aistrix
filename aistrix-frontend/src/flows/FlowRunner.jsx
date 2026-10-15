@@ -80,8 +80,9 @@ export default function FlowRunner({ flow, user, onClose, onShowHistory, onRunCo
 
   useEffect(() => {
     if (!current?.app_id || stepAppData[stepIndex]) return
+    // The prompt is private: the server runs the app's own (app_id is sent).
     supabase.from('apps')
-      .select('system_prompt, ai_provider, ai_model, app_type, form_schema')
+      .select('ai_provider, ai_model, app_type, form_schema')
       .eq('id', current.app_id).single()
       .then(({ data }) => { if (data) setStepAppData(p => ({ ...p, [stepIndex]: data })) })
     // eslint-disable-next-line react-hooks/exhaustive-deps -- stepAppData is read as a cache check, not a trigger
@@ -284,7 +285,7 @@ export default function FlowRunner({ flow, user, onClose, onShowHistory, onRunCo
     try {
       const { data: { session } } = await supabase.auth.getSession()
       const appData = currentApp
-        || (await supabase.from('apps').select('system_prompt, ai_provider, ai_model, app_type, form_schema').eq('id', current.app_id).single()).data
+        || (await supabase.from('apps').select('ai_provider, ai_model, app_type, form_schema').eq('id', current.app_id).single()).data
 
       const workspaceProvider = flow.default_provider || 'auto'
       let chosenProvider = appData?.ai_provider || 'claude'

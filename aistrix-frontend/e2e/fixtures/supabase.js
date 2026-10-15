@@ -88,6 +88,13 @@ export const supabase = {
       const current = state.tables.apps.find(row => row.id === args.p_app_id)
       if (current) current.is_published = args.p_publish
     }
+    if (name === 'app_private_fields') {
+      // The fixture user edits every app: return their private columns.
+      const keys = ['system_prompt', 'pages', 'prod_snapshot', 'webhook_url', 'custom_model_url', 'custom_model_name', 'change_note', 'review_notes']
+      const rows = state.tables.apps.filter(row => (args.p_app_ids || []).includes(row.id))
+        .map(row => ({ id: row.id, ...Object.fromEntries(keys.map(k => [k, row[k] ?? null])) }))
+      return { data: rows, error: null }
+    }
     if (name === 'update_app_fields') {
       // Same contract as the database function: write only if the changed
       // fields still hold the values the screen loaded.

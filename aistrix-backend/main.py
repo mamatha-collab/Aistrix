@@ -1621,6 +1621,18 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
         req.ai_model = app_row.get("ai_model")
         req.custom_model_url = None
         req.custom_model_name = None
+    elif app_row and not (req.system_prompt or "").strip():
+        # Editors running their app from a screen that doesn't load prompts
+        # (prompts are private columns: app grid, app page, flows): run the
+        # saved draft instead of an empty prompt.
+        base_prompt = app_row.get("system_prompt")
+        pages = app_row.get("pages")
+        if req.page_index is not None and isinstance(pages, list) and req.page_index < len(pages):
+            base_prompt = (pages[req.page_index] or {}).get("system_prompt") or base_prompt
+        req.system_prompt = base_prompt
+        if not req.custom_model_url and app_row.get("custom_model_url"):
+            req.custom_model_url = app_row.get("custom_model_url")
+            req.custom_model_name = app_row.get("custom_model_name")
     elif not caller_id:
         # Anonymous callers with no app context can't pick custom endpoints.
         req.custom_model_url = None

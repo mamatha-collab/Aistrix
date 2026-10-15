@@ -1,4 +1,5 @@
 import { persistBlueprintPhase } from '../lib/blueprintStorage'
+import { saveAppFields } from '../lib/appFields'
 import AistrixWordmark from '../components/AistrixWordmark'
 import { useState, useEffect, useRef, lazy, Suspense } from 'react'
 import { track, EVENTS } from '../lib/analytics'
@@ -230,8 +231,8 @@ export default function DevStudioPage({
 
   async function confirmMoveBack(note) {
     const { app, phase } = moveBack
-    const { error } = await supabase.from('apps').update({ change_note: note }).eq('id', app.id)
-    if (error) { toast(error.message, 'error'); return }
+    const { error } = await saveAppFields(supabase, app, { change_note: note })
+    if (error) { if (error.current) updateAppInState({ ...app, ...error.current }); toast(error.message, 'error', 7000); return }
     updateAppInState({ ...app, change_note: note })
     setMoveBack(null)
     track(EVENTS.BUILD_PHASE_MOVED, { app_id: app.id, from: 'deploy', to: phase, reason: note.reason, live: !!app.is_published })

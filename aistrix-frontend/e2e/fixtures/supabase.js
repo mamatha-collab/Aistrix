@@ -88,6 +88,19 @@ export const supabase = {
       const current = state.tables.apps.find(row => row.id === args.p_app_id)
       if (current) current.is_published = args.p_publish
     }
+    if (name === 'update_app_fields') {
+      // Same contract as the database function: write only if the changed
+      // fields still hold the values the screen loaded.
+      const current = state.tables.apps.find(row => row.id === args.p_app_id)
+      if (!current) return { data: null, error: { code: 'P0002', message: 'App not found' } }
+      const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
+      const conflicts = Object.keys(args.p_expected || {}).filter(k => !same(current[k], args.p_expected[k])).sort()
+      if (conflicts.length) {
+        return { data: { ok: false, conflicts, current: Object.fromEntries(conflicts.map(k => [k, current[k] ?? null])) }, error: null }
+      }
+      Object.assign(current, args.p_patch)
+      return { data: { ok: true }, error: null }
+    }
     return { data: [{ ok: true }], error: null }
   },
 }

@@ -184,3 +184,23 @@ test('unpublishing refreshes the preview to show that the app is offline', async
   await expect(page.getByText('Unpublished — this is the last live version', { exact: true })).toBeVisible()
   expect(await page.evaluate(() => window.buildFixture.tables.apps[0].is_published)).toBe(false)
 })
+
+test('app settings: a save based on the current value goes through', async ({ page }) => {
+  await open(page, '?scenario=live')
+  const box = page.getByPlaceholder('Explain what this app does, who it helps, and what result it produces.')
+  await box.fill('Summarises meeting notes for busy teams.')
+  await box.locator('xpath=..').getByRole('button', { name: 'Save', exact: true }).click()
+  await expect.poll(() => page.evaluate(() => window.buildFixture.tables.apps[0].description)).toBe('Summarises meeting notes for busy teams.')
+})
+
+test("app settings: a teammate's newer change is never overwritten", async ({ page }) => {
+  await open(page, '?scenario=live')
+  // A teammate saves a different description after this page loaded.
+  await page.evaluate(() => { window.buildFixture.tables.apps[0].description = 'Teammate wrote this.' })
+  const box = page.getByPlaceholder('Explain what this app does, who it helps, and what result it produces.')
+  await box.fill('My stale edit.')
+  await box.locator('xpath=..').getByRole('button', { name: 'Save', exact: true }).click()
+  await expect(page.getByText(/Someone else changed the description/)).toBeVisible()
+  await expect(box).toHaveValue('Teammate wrote this.')
+  expect(await page.evaluate(() => window.buildFixture.tables.apps[0].description)).toBe('Teammate wrote this.')
+})

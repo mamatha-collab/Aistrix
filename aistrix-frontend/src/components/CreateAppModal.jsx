@@ -1,4 +1,5 @@
 import { useState, useEffect, useTransition, useRef } from 'react'
+import { saveAppFields } from '../lib/appFields'
 import { supabase } from '../supabase'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { confirmDiscard } from '../lib/confirmDiscard'
@@ -629,8 +630,16 @@ Return ONLY valid JSON with these fields:
       })
       // Non-fatal — the edit itself still proceeds, but flag the gap in version history.
       if (versionErr) toast(`Couldn't snapshot the previous version: ${versionErr.message}`, 'error')
-      const { data, error: err } = await supabase.from('apps').update(payload)
-        .eq('id', existingApp.id).select('*, domains(name, emoji, color, slug)').single()
+      // Save only what changed here, and only if nobody else changed those
+      // same fields since this form opened (a teammate's other edits stay).
+      const changed = Object.fromEntries(Object.entries(payload)
+        .filter(([k, v]) => JSON.stringify(v ?? null) !== JSON.stringify(existingApp[k] ?? null)))
+      if (Object.keys(changed).length) {
+        const { error: saveErr } = await saveAppFields(supabase, existingApp, changed)
+        if (saveErr) { setSaving(false); setError(saveErr.message); return }
+      }
+      const { data, error: err } = await supabase.from('apps')
+        .select('*, domains(name, emoji, color, slug)').eq('id', existingApp.id).single()
       if (err) { setSaving(false); setError(err.message); return }
       const bpErr = await saveBlueprint(existingApp.id)
       setSaving(false)

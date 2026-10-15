@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react'
+import { saveAppFields } from '../lib/appFields'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 
@@ -50,11 +51,16 @@ export default function EmbedCodeModal({ app, onClose }) {
       toast('Add at least one allowed domain before enabling visitor access', 'error'); return
     }
     setSavingAccess(true)
-    const { error } = await supabase.from('apps')
-      .update({ embed_public: visitorAccess && !app.is_paid, embed_allowed_domains: domains })
-      .eq('id', app.id)
+    const { error } = await saveAppFields(supabase, app, { embed_public: visitorAccess && !app.is_paid, embed_allowed_domains: domains })
     setSavingAccess(false)
-    if (error) { toast(`Could not save: ${error.message}`, 'error'); return }
+    if (error) {
+      if (error.current) {
+        Object.assign(app, error.current)
+        if ('embed_public' in error.current) setVisitorAccess(!!error.current.embed_public)
+        if ('embed_allowed_domains' in error.current) setDomainsText((error.current.embed_allowed_domains || []).join('\n'))
+      }
+      toast(error.current ? error.message : `Could not save: ${error.message}`, 'error', 7000); return
+    }
     app.embed_public = visitorAccess && !app.is_paid
     app.embed_allowed_domains = domains
     setDomainsText(domains.join('\n'))

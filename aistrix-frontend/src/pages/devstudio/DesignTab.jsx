@@ -1,4 +1,5 @@
 import { readBlueprintRecord, saveBlueprintRecord, BlueprintConflictError } from '../../lib/blueprintStorage'
+import { saveAppFields } from '../../lib/appFields'
 import { useState, useEffect, useRef, Suspense } from 'react'
 import { track, EVENTS } from '../../lib/analytics'
 import { downloadReport, designReport } from '../../lib/reports'
@@ -1293,9 +1294,9 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
       ai_model: patch.ai_model || (patch.ai_provider ? firstModel : app.ai_model || firstModel),
     }
     setSavingModel(true)
-    const { error } = await supabase.from('apps').update(next).eq('id', app.id)
+    const { error } = await saveAppFields(supabase, app, next)
     setSavingModel(false)
-    if (error) { toast(error.message, 'error'); return }
+    if (error) { if (error.current) onAppUpdated?.({ ...app, ...error.current }); toast(error.message, 'error', 7000); return }
     onAppUpdated?.({ ...app, ...next })
     toast('Model settings saved', 'success', 2000)
     loadServerChecks()
@@ -1306,17 +1307,20 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
     setBp({ ...bp, output_contract: { ...bp.output_contract, format } })
     const outputType = appOutputTypeFor(format, app.output_type)
     if (outputType === app.output_type) return
-    const { error } = await supabase.from('apps').update({ output_type: outputType }).eq('id', app.id)
-    if (error) { toast(error.message, 'error'); return }
+    const { error } = await saveAppFields(supabase, app, { output_type: outputType })
+    if (error) { if (error.current) onAppUpdated?.({ ...app, ...error.current }); toast(error.message, 'error', 7000); return }
     onAppUpdated?.({ ...app, output_type: outputType })
   }
 
   // Who pays when end users run the app (see BillingModeHint).
   async function updateBilling(patch) {
     setSavingModel(true)
-    const { error } = await supabase.from('apps').update(patch).eq('id', app.id)
+    const { error } = await saveAppFields(supabase, app, patch)
     setSavingModel(false)
-    if (error) { toast(error.message, 'error'); return }
+    if (error) {
+      if (error.current) { onAppUpdated?.({ ...app, ...error.current }); if ('free_runs_per_user_day' in error.current) setFreeRunsDraft(error.current.free_runs_per_user_day ?? '') }
+      toast(error.message, 'error', 7000); return
+    }
     onAppUpdated?.({ ...app, ...patch })
     toast('Billing settings saved', 'success', 2000)
   }

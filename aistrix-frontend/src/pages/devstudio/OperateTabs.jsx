@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, Suspense } from 'react'
+import { saveAppFields } from '../../lib/appFields'
 import { supabase } from '../../supabase'
 import { loadDeveloperSettings as loadSettingsFrom, saveDeveloperSetting as saveSettingTo } from '../../lib/developerSettings'
 import { useToast } from '../../hooks/useToast'
@@ -283,13 +284,13 @@ export function SellTab({ apps, user, onAppUpdated }) {
       return
     }
     setSaving(prev => ({ ...prev, [app.id]: true }))
-    const { data, error } = await supabase.from('apps')
-      .update({ is_paid: d.is_paid, price_per_run: price })
-      .eq('id', app.id)
-      .select().single()
+    const { error } = await saveAppFields(supabase, app, { is_paid: d.is_paid, price_per_run: price })
     setSaving(prev => ({ ...prev, [app.id]: false }))
-    if (error) { toast(error.message, 'error'); return }
-    onAppUpdated?.(data)
+    if (error) {
+      if (error.current) { onAppUpdated?.({ ...app, ...error.current }); setDrafts(prev => { const n = { ...prev }; delete n[app.id]; return n }) }
+      toast(error.message, 'error', 7000); return
+    }
+    onAppUpdated?.({ ...app, is_paid: d.is_paid, price_per_run: price })
     toast('Pricing saved', 'success', 2000)
     setDrafts(prev => { const n = { ...prev }; delete n[app.id]; return n })
   }

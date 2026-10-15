@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { saveAppFields } from '../../lib/appFields'
 import { track, EVENTS } from '../../lib/analytics'
 import { supabase } from '../../supabase'
 import { useToast } from '../../hooks/useToast'
@@ -419,13 +420,20 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
     }
   }
 
+  // A teammate changed a setting first: show their values instead of ours.
+  function takeTheirs(current) {
+    const updated = { ...app, ...current }
+    setApp(updated)
+    onUpdate?.(updated)
+  }
+
   async function saveDescription() {
     const clean = description.trim()
     if (!clean) { toast('Description is required before publishing', 'error'); return }
     setSavingDescription(true)
-    const { error } = await supabase.from('apps').update({ description: clean }).eq('id', app.id)
+    const { error } = await saveAppFields(supabase, app, { description: clean })
     setSavingDescription(false)
-    if (error) { toast(error.message, 'error'); return }
+    if (error) { if (error.current) { takeTheirs(error.current); setDescription(error.current.description || '') } toast(error.message, 'error', 7000); return }
     const updated = { ...app, description: clean }
     setApp(updated)
     onUpdate?.(updated)
@@ -436,8 +444,8 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
   async function toggleContext(id) {
     const ctx = app.required_context || []
     const next = ctx.includes(id) ? ctx.filter(c => c !== id) : [...ctx, id]
-    const { error } = await supabase.from('apps').update({ required_context: next }).eq('id', app.id)
-    if (error) { toast(error.message, 'error'); return }
+    const { error } = await saveAppFields(supabase, app, { required_context: next })
+    if (error) { if (error.current) takeTheirs(error.current); toast(error.message, 'error', 7000); return }
     const updated = { ...app, required_context: next }
     setApp(updated)
     onUpdate?.(updated)
@@ -446,10 +454,9 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
   // ── Webhook ────────────────────────────────────────────────────────────────
   async function saveWebhook() {
     setSavingWebhook(true)
-    const { error } = await supabase.from('apps')
-      .update({ webhook_url: webhookUrl.trim() || null }).eq('id', app.id)
+    const { error } = await saveAppFields(supabase, app, { webhook_url: webhookUrl.trim() || null })
     setSavingWebhook(false)
-    if (error) { toast(error.message, 'error'); return }
+    if (error) { if (error.current) { takeTheirs(error.current); setWebhookUrl(error.current.webhook_url || '') } toast(error.message, 'error', 7000); return }
     const updated = { ...app, webhook_url: webhookUrl.trim() || null }
     setApp(updated)
     onUpdate?.(updated)
@@ -499,9 +506,16 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
     }
     setSavingAccess(true)
     const patch = { embed_public: visitorAccess && !app.is_paid, embed_allowed_domains: domains }
-    const { error } = await supabase.from('apps').update(patch).eq('id', app.id)
+    const { error } = await saveAppFields(supabase, app, patch)
     setSavingAccess(false)
-    if (error) { toast(`Could not save: ${error.message}`, 'error'); return }
+    if (error) {
+      if (error.current) {
+        takeTheirs(error.current)
+        if ('embed_public' in error.current) setVisitorAccess(!!error.current.embed_public)
+        if ('embed_allowed_domains' in error.current) setDomainsText((error.current.embed_allowed_domains || []).join('\n'))
+      }
+      toast(error.current ? error.message : `Could not save: ${error.message}`, 'error', 7000); return
+    }
     const updated = { ...app, ...patch }
     setApp(updated)
     onUpdate?.(updated)
@@ -514,9 +528,9 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
     const val = maxRuns === '' ? null : parseInt(maxRuns, 10)
     if (maxRuns !== '' && (isNaN(val) || val < 1)) { toast('Enter a valid number', 'error'); return }
     setSavingQuota(true)
-    const { error } = await supabase.from('apps')
-      .update({ max_runs_per_day: val }).eq('id', app.id)
+    const { error } = await saveAppFields(supabase, app, { max_runs_per_day: val })
     setSavingQuota(false)
+    if (error?.current) { takeTheirs(error.current); setMaxRuns(error.current.max_runs_per_day || ''); toast(error.message, 'error', 7000); return }
     if (error?.message?.includes('column') || error?.code === '42703') {
       toast('max_runs_per_day column not found — add it via Supabase SQL editor', 'error', 5000)
       return

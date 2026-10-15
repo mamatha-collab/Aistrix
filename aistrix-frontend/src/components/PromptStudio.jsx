@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom'
 import Editor from '@monaco-editor/react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
+import { saveAppFields } from '../lib/appFields'
+import ConfirmDialog from './ConfirmDialog'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -172,6 +174,10 @@ export default function PromptStudio({ app: initialApp, onClose, onSaved, mode =
   const [prompt, setPrompt]       = useState(initialApp.system_prompt || '')
   const [saving, setSaving]       = useState(false)
   const [dirty, setDirty]         = useState(false)
+  // The prompt as last loaded or saved here: saving checks nobody changed it since.
+  const savedPromptRef = useRef(initialApp.system_prompt ?? null)
+  const [conflict, setConflict]   = useState(null)    // { theirs } — a teammate saved first
+  const [confirmClose, setConfirmClose] = useState(false)
 
   // Live preview
   const [sampleInput, setSampleInput] = useState('')
@@ -271,23 +277,39 @@ export default function PromptStudio({ app: initialApp, onClose, onSaved, mode =
     }
   }
 
-  async function save() {
+  // overwrite: save even though a teammate changed the prompt (their version is `expected`).
+  async function save({ overwrite } = {}) {
     setSaving(true)
-    const { error } = await supabase.from('apps')
-      .update({ system_prompt: prompt })
-      .eq('id', initialApp.id)
+    const expected = { system_prompt: overwrite ?? savedPromptRef.current }
+    const { error } = await saveAppFields(supabase, initialApp, { system_prompt: prompt }, { expected })
     setSaving(false)
+    if (error?.current) { setConflict({ theirs: error.current.system_prompt ?? '' }); return }
     if (error) { toast(error.message, 'error'); return }
+    savedPromptRef.current = prompt
     setDirty(false)
+    setConflict(null)
     toast('Prompt saved', 'success', 2000)
     onSaved?.({ ...initialApp, system_prompt: prompt })
   }
 
+  function loadTheirs() {
+    const theirs = conflict.theirs
+    savedPromptRef.current = theirs
+    setPrompt(theirs)
+    editorRef.current?.setValue?.(theirs)
+    setDirty(false)
+    setConflict(null)
+    onSaved?.({ ...initialApp, system_prompt: theirs })
+  }
+
   // Warn on close if unsaved
-  function handleClose() {
-    if (dirty && !window.confirm('You have unsaved changes. Close anyway?')) return
+  function closeNow() {
     abortRef.current?.abort()
     onClose()
+  }
+  function handleClose() {
+    if (dirty) { setConfirmClose(true); return }
+    closeNow()
   }
 
   useEffect(() => {
@@ -308,6 +330,24 @@ export default function PromptStudio({ app: initialApp, onClose, onSaved, mode =
     <div className={`${mode === 'inline'
       ? 'h-[72vh] min-h-[560px] flex flex-col bg-[#09101F] border border-[#6C5CE7]/20 rounded-2xl overflow-hidden'
       : 'fixed inset-0 z-50 flex flex-col bg-[#09101F]'}`}>
+      {conflict && (
+        <ConfirmDialog title="The prompt changed since you opened it" subtitle={`${initialApp.emoji || ''} ${initialApp.name}`.trim()}
+          confirmLabel="Save mine anyway" busyLabel="Saving…" danger
+          onCancel={() => setConflict(null)} onConfirm={() => save({ overwrite: conflict.theirs })}>
+          A teammate (or you, in another tab) saved a different prompt. Saving yours replaces it.
+          <button type="button" onClick={loadTheirs}
+            className="block mt-2 text-[11px] font-semibold text-[#A29BFE] hover:text-white">
+            Load their prompt instead (your edits here are discarded) →
+          </button>
+        </ConfirmDialog>
+      )}
+      {confirmClose && (
+        <ConfirmDialog title="Close without saving?" subtitle={`${initialApp.emoji || ''} ${initialApp.name}`.trim()}
+          confirmLabel="Discard changes" danger
+          onCancel={() => setConfirmClose(false)} onConfirm={() => { setConfirmClose(false); closeNow() }}>
+          Your prompt changes haven't been saved. Closing now discards them.
+        </ConfirmDialog>
+      )}
 
       {/* Header */}
       <div className="flex items-center gap-3 px-5 py-3 border-b border-white/8 bg-[#0E1424] shrink-0">

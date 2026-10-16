@@ -77,6 +77,12 @@ body {
   box-shadow: 14px 0 34px var(--t-shadow);
 }
 
+/* Let the workspace backdrop continue through the left pane below the rows. */
+.app-sidebar.app-sidebar-developer {
+  background: transparent;
+  box-shadow: none;
+}
+
 .app-field,
 .app-chrome-button,
 .app-build-menu {

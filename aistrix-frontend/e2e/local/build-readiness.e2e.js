@@ -1,5 +1,9 @@
 import { test, expect } from '@playwright/test'
 
+test.beforeEach(({ isMobile }) => {
+  test.skip(!!isMobile, 'Phones use the monitoring workspace; Build and regression authoring are tested on desktop.')
+})
+
 async function stage(page, label) {
   await page.getByRole('button', { name: new RegExp(`^\\W*${label}(\\s+(Blueprint|Validate|Publish))?$`) }).first().click()
 }

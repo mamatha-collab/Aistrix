@@ -3,6 +3,7 @@ import { noteAuthEvent } from './lib/session'
 import { supabase } from './supabase'
 import { loadProviders, useProviderStatus } from './lib/providers'
 import Sidebar from './components/SidebarClean'
+import DeveloperShell, { DeveloperLoading } from './components/DeveloperShell'
 import TopBar from './components/TopBarClean'
 import AppGrid from './components/AppGrid'
 import DetailPanel from './components/DetailPanel'
@@ -202,12 +203,13 @@ export default function App() {
   const handleEscape = useCallback(() => {
     if (showHistory)       { setShowHistory(false);       return }
     if (showSettings)      { setShowSettings(false);      return }
+    if (activeView === 'developer' && showTypeSelector) return
     if (showCreate)        { setShowCreate(false);        return }
     if (showOnboarding)    { setShowOnboarding(false);    return }
     if (showMobileSidebar) { setShowMobileSidebar(false); return }
     if (selectedApp)       { setSelectedApp(null);        return }
     if (search)            { setSearch('');               return }
-  }, [showHistory, showSettings, showCreate, showOnboarding, showMobileSidebar, selectedApp, search])
+  }, [showHistory, showSettings, showCreate, showOnboarding, showMobileSidebar, selectedApp, search, activeView, showTypeSelector])
 
   useKeyboard({
     onSearch: () => searchInputRef.current?.focus(),
@@ -311,13 +313,15 @@ export default function App() {
     )
   }
 
+  if (loading && activeView === 'developer') return <DeveloperLoading />
+
   if (loading) return (
     <div className="min-h-screen bg-[#09101F] flex items-center justify-center">
       <div className="text-slate-400 text-sm">Loading...</div>
     </div>
   )
 
-  if (!session) return <Auth />
+  if (!session) return <Auth developer={activeView === 'developer'} />
 
   // Invite links: signed-out visitors log in first (the path is remembered
   // above and restored after login), then the invite is accepted here.
@@ -328,6 +332,8 @@ export default function App() {
       </Routes>
     )
   }
+
+  if (workspaces.loading && activeView === 'developer') return <DeveloperLoading />
 
   if (workspaces.loading) return (
     <div className="min-h-screen bg-[#09101F] flex items-center justify-center">
@@ -342,6 +348,64 @@ export default function App() {
   }
 
   // Lookup table for non-apps views — avoids a wall of conditionals
+  const creationFlow = showTypeSelector ? (
+            <ErrorBoundary variant={activeView === 'developer' ? 'card' : 'overlay'} title="The app builder couldn't load" onClose={closeBuildFlow}>
+            <Suspense fallback={null}>
+              <AppTypeSelector
+                presentation={activeView === 'developer' ? 'inline' : 'modal'} navigationGuardRef={buildNavigationGuardRef} onLeave={closeBuildFlow}
+                hidden={showAIBuilder || showCreate}
+                onClose={closeBuildFlow}
+                onSelect={async type => {
+                  // Building needs the developer's own AI key: ask for one
+                  // first (continues into this type once it's saved). If the
+                  // key status can't be loaded, don't block building.
+                  const providers = await loadProviders().catch(() => null)
+                  if (providers && !providers.some(p => p.connected)) { setKeyGateType(type); return }
+                  openBuilder(type)
+                }}
+              />
+              {showAIBuilder && (
+                <AIAppBuilder
+                  presentation={activeView === 'developer' ? 'inline' : 'modal'} navigationGuardRef={buildNavigationGuardRef} onLeave={closeBuildFlow}
+                  user={session.user}
+                  withGuide
+                  onClose={() => setShowAIBuilder(false)}
+                  onBack={() => setShowAIBuilder(false)}
+                  onCreated={newApp => {
+                    closeBuildFlow()
+                    track(EVENTS.BUILD_APP_CREATED, { app_id: newApp.id, app_type: newApp.app_type, via: 'build_with_ai' })
+                    setCreatedApp(newApp)
+                    if (activeView !== 'developer') {
+                      navigateToView('apps')
+                      setSelectedApp(newApp)
+                      setWorkspaceRecoApp(newApp)
+                    }
+                  }}
+                />
+              )}
+              {showCreate && (
+                <CreateAppModal
+                  presentation={activeView === 'developer' ? 'inline' : 'modal'} navigationGuardRef={buildNavigationGuardRef} onLeave={closeBuildFlow}
+                  user={session.user}
+                  initialType={selectedAppType}
+                  withGuide
+                  onClose={() => setShowCreate(false)}
+                  onBack={() => setShowCreate(false)}
+                  onCreated={newApp => {
+                    closeBuildFlow()
+                    track(EVENTS.BUILD_APP_CREATED, { app_id: newApp.id, app_type: newApp.app_type, via: selectedAppType })
+                    setCreatedApp(newApp)
+                    if (activeView !== 'developer') {
+                      navigateToView('apps')
+                      setWorkspaceRecoApp(newApp)
+                    }
+                  }}
+                />
+              )}
+            </Suspense>
+            </ErrorBoundary>
+  ) : null
+
   const viewMap = {
     overview:    <OverviewPage    user={session.user} onSelectApp={app => { setSelectedApp(app); navigateToView('apps') }} />,
     profiles:    <ProfilesPage    user={session.user} />,
@@ -353,7 +417,7 @@ export default function App() {
     reports:     <ReportsPage     user={session.user} />,
     settings:    <SettingsPage    user={session.user} />,
     alerts:      <AlertsPage      user={session.user} />,
-    developer:   <DevStudioPage navigationGuardRef={buildNavigationGuardRef} user={session.user} onOpenCreate={() => setShowTypeSelector(true)} onShowHistory={() => setShowHistory(true)} onShowSettings={() => setShowSettings(true)} onShowProfile={() => setShowProfile(true)} noKeys={noKeys} onNavChange={changeView} search={search} onSearch={setSearch} searchRef={searchInputRef} createdApp={createdApp} onCreatedAppConsumed={() => setCreatedApp(null)} />,
+    developer:   <DevStudioPage creationContent={creationFlow} navigationGuardRef={buildNavigationGuardRef} user={session.user} onOpenCreate={() => setShowTypeSelector(true)} onShowHistory={() => setShowHistory(true)} onShowSettings={() => setShowSettings(true)} onShowProfile={() => setShowProfile(true)} noKeys={noKeys} onNavChange={changeView} search={search} onSearch={setSearch} searchRef={searchInputRef} createdApp={createdApp} onCreatedAppConsumed={() => setCreatedApp(null)} />,
     data_sources:<DataSourcesPage user={session.user} />,
     integrations:<IntegrationsPage user={session.user} />,
     admin:          isAdmin(userRole)     ? <AdminPage          user={session.user} /> : null,
@@ -376,7 +440,7 @@ export default function App() {
       <Route path="/*" element={
         // Keyed by workspace: switching remounts the shell so every page
         // reloads its data for the newly active workspace.
-        <div key={workspaces.active?.id || 'no-workspace'} className="app-shell flex h-screen overflow-hidden bg-[#09101F]">
+        <DeveloperShell active={activeView === 'developer'} key={workspaces.active?.id || 'no-workspace'} className="app-shell flex h-dvh overflow-hidden bg-[#09101F]">
 
           {showMobileSidebar && (
             <div className="fixed inset-0 bg-black/50 z-30 md:hidden" onClick={() => setShowMobileSidebar(false)} />
@@ -451,7 +515,7 @@ export default function App() {
                 />
               </Suspense>
             )}
-            <main className="relative flex flex-1 overflow-hidden pb-14 md:pb-0" onClick={() => activeView === 'apps' && setSelectedApp(null)}>
+            <main className={`relative flex flex-1 overflow-hidden ${activeView === 'developer' ? '' : 'pb-14 md:pb-0'}`} onClick={() => activeView === 'apps' && setSelectedApp(null)}>
               {/* Shared build container — flows + apps stay mounted; only the active layer animates in */}
               {buildMounted && (
                 <div className={`absolute inset-0 flex overflow-hidden ${(activeView === 'flows' || activeView === 'apps') ? '' : 'hidden'}`}>
@@ -506,63 +570,7 @@ export default function App() {
             </main>
           </div>
 
-          {showTypeSelector && (
-            // One Suspense boundary for the picker and the builders: choosing
-            // a type is a transition, so the picker stays on screen until the
-            // builder has loaded, then hides behind it (kept mounted).
-            <ErrorBoundary variant="overlay" title="The app builder couldn't load" onClose={closeBuildFlow}>
-            <Suspense fallback={null}>
-              <AppTypeSelector
-                hidden={showAIBuilder || showCreate}
-                onClose={closeBuildFlow}
-                onSelect={async type => {
-                  // Building needs the developer's own AI key: ask for one
-                  // first (continues into this type once it's saved). If the
-                  // key status can't be loaded, don't block building.
-                  const providers = await loadProviders().catch(() => null)
-                  if (providers && !providers.some(p => p.connected)) { setKeyGateType(type); return }
-                  openBuilder(type)
-                }}
-              />
-              {showAIBuilder && (
-                <AIAppBuilder
-                  user={session.user}
-                  withGuide
-                  onClose={() => setShowAIBuilder(false)}
-                  onBack={() => setShowAIBuilder(false)}
-                  onCreated={newApp => {
-                    closeBuildFlow()
-                    track(EVENTS.BUILD_APP_CREATED, { app_id: newApp.id, app_type: newApp.app_type, via: 'build_with_ai' })
-                    setCreatedApp(newApp)
-                    if (activeView !== 'developer') {
-                      navigateToView('apps')
-                      setSelectedApp(newApp)
-                      setWorkspaceRecoApp(newApp)
-                    }
-                  }}
-                />
-              )}
-              {showCreate && (
-                <CreateAppModal
-                  user={session.user}
-                  initialType={selectedAppType}
-                  withGuide
-                  onClose={() => setShowCreate(false)}
-                  onBack={() => setShowCreate(false)}
-                  onCreated={newApp => {
-                    closeBuildFlow()
-                    track(EVENTS.BUILD_APP_CREATED, { app_id: newApp.id, app_type: newApp.app_type, via: selectedAppType })
-                    setCreatedApp(newApp)
-                    if (activeView !== 'developer') {
-                      navigateToView('apps')
-                      setWorkspaceRecoApp(newApp)
-                    }
-                  }}
-                />
-              )}
-            </Suspense>
-            </ErrorBoundary>
-          )}
+          {activeView !== 'developer' && creationFlow}
           {workspaceRecoApp && (
             <Suspense fallback={null}>
               <WorkspaceRecommendations
@@ -573,7 +581,7 @@ export default function App() {
             </Suspense>
           )}
           {/* ── Mobile bottom nav ── */}
-          <nav className="app-topbar fixed bottom-0 left-0 right-0 bg-[#121829] border-t border-white/8 flex md:hidden z-40">
+          {activeView !== 'developer' && <nav className="app-topbar fixed bottom-0 left-0 right-0 bg-[#121829] border-t border-white/8 flex md:hidden z-40">
             {(mode === 'developer' ? [
               { view: 'developer', Icon: Code2,    label: 'Studio',   action: () => changeView('developer') },
               { view: 'keys',      Icon: Settings, label: 'Keys',     action: () => setShowSettings(true) },
@@ -595,7 +603,7 @@ export default function App() {
                 <span>{label}</span>
               </button>
             ))}
-          </nav>
+          </nav>}
 
           {showHistory    && <ErrorBoundary variant="overlay" title="Run history couldn't load" onClose={() => setShowHistory(false)}><Suspense fallback={null}><RunHistory     user={session.user} onClose={() => setShowHistory(false)} /></Suspense></ErrorBoundary>}
           {showSettings   && <ErrorBoundary variant="overlay" title="Key settings couldn't load" onClose={() => setShowSettings(false)}><Suspense fallback={null}><ApiKeySettings  user={session.user} onClose={() => setShowSettings(false)}
@@ -630,7 +638,7 @@ export default function App() {
               />
             </Suspense>
           )}
-        </div>
+        </DeveloperShell>
       } />
     </Routes>
   )

@@ -22,6 +22,10 @@ export const state = window.buildFixture = {
   },
   failures: {}, requests: [], testRuns: [], toasts: [],
 }
+if (new URLSearchParams(location.search).get('scenario') === 'empty') {
+  state.tables.apps = []
+  state.tables.app_blueprints = []
+}
 if (new URLSearchParams(location.search).get('scenario') === 'read-failure') {
   state.failures['app_blueprints:select'] = 'Saved design temporarily unavailable'
 }
@@ -63,7 +67,7 @@ class Query {
       const incoming = (Array.isArray(this.value) ? this.value : [this.value]).map(copy)
       for (const row of incoming) {
         if (!row.id && this.table !== 'app_blueprints') row.id = `fixture-${rows.length + 1}`
-        const existing = this.table === 'app_blueprints' && rows.find(r => r.app_id === row.app_id)
+        const existing = this.table === 'app_blueprints' ? rows.find(r => r.app_id === row.app_id) : rows.find(r => r.id === row.id)
         if (existing && this.op === 'insert') return { data: null, error: { code: '23505', message: 'Duplicate blueprint' } }
         if (existing) Object.assign(existing, row)
         else rows.push(row)
@@ -84,6 +88,7 @@ export const supabase = {
     signOut: async () => ({}),
   },
   rpc: async (name, args) => {
+    if (state.failures[`rpc:${name}`]) return { data: null, error: { message: state.failures[`rpc:${name}`] } }
     if (name === 'set_app_published_with_gate') {
       const current = state.tables.apps.find(row => row.id === args.p_app_id)
       if (current) current.is_published = args.p_publish
@@ -130,6 +135,15 @@ function status(id) {
 
 const nativeFetch = window.fetch.bind(window)
 const scenario = new URLSearchParams(location.search).get('scenario') || ''
+if (scenario === 'operations') {
+  const now = new Date().toISOString()
+  state.tables.run_history = [
+    { id: 'run-invoice', app_id: 'app-1', app_name: 'Fixture Assistant', user_id: 'fixture-user', created_at: now, rating_value: -1, feedback_text: 'The answer invented an invoice number.', input: 'Check invoice with no invoice number.', output: 'Invoice 123 is complete.' },
+    { id: 'run-other', app_id: 'app-2', app_name: 'Second Assistant', user_id: 'fixture-user', created_at: now, rating_value: -1, feedback_text: 'The translation ignored the glossary.', input: 'Translate the receipt.', output: 'Incorrect translation.' },
+  ]
+  Object.assign(app, { is_published: true, live_version: 1, prod_snapshot: snapshot(app) })
+  state.tables.app_blueprints[0].blueprint.dev_phase = 'deploy'
+}
 
 // Build with AI: the two model calls (follow-up questions, then the app
 // config), streamed the way /run streams them.
@@ -149,6 +163,29 @@ window.fetch = async (input, init = {}) => {
   if (url.pathname === '/run') {
     state.requests.push({ path: '/run', method: 'POST' })
     return fakeModelReply(JSON.parse(init.body || '{}'))
+  }
+  if (url.pathname === '/stripe/earnings' || url.pathname === '/stripe/connect/status' || /^\/apps\/[^/]+\/secrets(?:\/[^/]+)?$/.test(url.pathname)) {
+    const path = url.pathname
+    state.requests.push({ path, method: init.method || 'GET', authorized: init.headers?.Authorization === 'Bearer fixture-token' })
+    const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
+    if (state.failures[path]) return json({ detail: state.failures[path] }, 503)
+    if (path === '/stripe/earnings') return json(state.earnings || { total_gross: 0, total_dev_share: 0, total_pending: 0, platform_fee_pct: 20, by_app: [], recent: [] })
+    if (path === '/stripe/connect/status') return json({ connected: false, details_submitted: false, payouts_enabled: false })
+    const appId = path.split('/')[2]
+    state.secretsByApp ||= {}
+    const secrets = state.secretsByApp[appId] ||= []
+    if (init.method === 'DELETE') {
+      state.secretsByApp[appId] = secrets.filter(s => s.key !== decodeURIComponent(path.split('/')[4]))
+      return json({ ok: true })
+    }
+    if (init.method === 'PUT') {
+      const { key } = JSON.parse(init.body)
+      const existing = secrets.find(s => s.key === key)
+      if (existing) existing.updated_at = new Date().toISOString()
+      else secrets.push({ key, updated_at: new Date().toISOString() })
+      return json({ key })
+    }
+    return json({ secrets })
   }
   if (!url.pathname.startsWith('/v1/')) return nativeFetch(input, init)
   const path = url.pathname

@@ -5,6 +5,7 @@ const pickPrivate = p => Object.fromEntries(APP_PRIVATE_COLUMNS.filter(k => k in
 import { saveAppFields } from '../lib/appFields'
 import { supabase } from '../supabase'
 import { useFocusTrap } from '../hooks/useFocusTrap'
+import { useBuilderNavigation } from '../hooks/useBuilderNavigation'
 import { confirmDiscard } from '../lib/confirmDiscard'
 import { PROVIDER_STYLE, defaultAppProvider, modelOptions, providerById, useProviders } from '../lib/providers'
 import BillingModeHint from './BillingModeHint'
@@ -366,7 +367,7 @@ function QualityScore({ form, appType, formSchema }) {
 // ─── Main modal ───────────────────────────────────────────────────────────────
 // `withGuide`: start on the type guide ("Start building →" moves on to
 // step 1), so creating an app stays in this one popup.
-export default function CreateAppModal({ user, onClose, onBack, onCreated, onUpdated, existingApp, initialType = 'prompt', websitePrefilled, withGuide = false }) {
+export default function CreateAppModal({ user, onClose, onBack, onCreated, onUpdated, existingApp, initialType = 'prompt', websitePrefilled, withGuide = false, presentation = 'modal', navigationGuardRef, onLeave }) {
   const modalRef = useRef(null)
   const toast = useToast()
   const providers = useProviders()
@@ -452,7 +453,8 @@ export default function CreateAppModal({ user, onClose, onBack, onCreated, onUpd
   }
 
   const showTopBack = !existingApp && !intro && step === 1 && (withGuide || !!onBack)
-  useFocusTrap(modalRef, { onEscape: closeWithWarning })
+  useFocusTrap(modalRef, { onEscape: closeWithWarning, enabled: presentation !== 'inline' })
+  useBuilderNavigation({ enabled: presentation === 'inline', navigationGuardRef, hasChanges, busy: saving || generating || websiteScraping || previewRunning, onLeave })
 
   async function scrapeWebsite() {
     const url = normaliseUrl(websiteUrl)
@@ -1231,6 +1233,8 @@ Return ONLY valid JSON with these fields:
         </>)}
     </>
   )
+  if (presentation === 'inline') return <section ref={modalRef} aria-label={isEdit ? `Edit ${typeLabel}` : `New ${typeLabel}`}
+    className="developer-inline-builder bg-[#171B33] border border-white/10 rounded-xl w-full flex flex-col min-h-[600px] overflow-hidden">{content}</section>
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
       <div ref={modalRef} role="dialog" aria-modal="true" aria-label={isEdit ? `Edit ${typeLabel}` : `New ${typeLabel}`}

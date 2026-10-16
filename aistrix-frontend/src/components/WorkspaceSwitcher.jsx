@@ -14,9 +14,9 @@ export default function WorkspaceSwitcher({ workspaces, active, onSwitch, onCrea
     if (!open) return
     const close = e => { if (!ref.current?.contains(e.target)) setOpen(false) }
     const esc = e => { if (e.key === 'Escape') setOpen(false) }
-    document.addEventListener('mousedown', close)
+    document.addEventListener('pointerdown', close, true)
     document.addEventListener('keydown', esc)
-    return () => { document.removeEventListener('mousedown', close); document.removeEventListener('keydown', esc) }
+    return () => { document.removeEventListener('pointerdown', close, true); document.removeEventListener('keydown', esc) }
   }, [open])
 
   if (!active) return null

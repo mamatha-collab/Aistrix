@@ -1,4 +1,5 @@
 import AistrixWordmark from './AistrixWordmark'
+import { DeveloperRowSection, DeveloperSidebarBrand, DeveloperSidebarSlot } from './DeveloperShell'
 import { signOutOnPurpose } from '../lib/session'
 import { useState, useEffect } from 'react'
 import ConfirmDialog from './ConfirmDialog'
@@ -113,7 +114,7 @@ export default function SidebarClean({ user, userRole, onClose, onShowProfile, a
   async function signOut() { await signOutOnPurpose(supabase) }
 
   return (
-    <aside className={`app-sidebar ${isDeveloperMode ? 'w-60 !border-r-0' : 'w-52'} bg-[#0E1424] flex flex-col shrink-0 h-full relative`}>
+    <aside className={`app-sidebar ${isDeveloperMode ? 'app-sidebar-developer w-56' : 'w-52'} bg-[#0E1424] flex flex-col shrink-0 h-full relative`}>
       {isDeveloperMode && <div aria-hidden="true" className="pointer-events-none absolute right-0 top-[72px] bottom-0 border-r border-white/5" />}
       {onClose && (
         <button aria-label="Close" onClick={onClose}
@@ -138,8 +139,9 @@ export default function SidebarClean({ user, userRole, onClose, onShowProfile, a
       )}
 
       {/* Mode switcher */}
+      <DeveloperSidebarBrand>
       <div className={isDeveloperMode
-        ? 'h-[72px] px-4 flex items-center border-b border-white/5 bg-[#111827]'
+        ? 'h-[72px] shrink-0 px-4 flex items-center border-b border-white/5 bg-[#111827]'
         : 'px-3 pb-3'}>
         {isDeveloperMode ? (
         <button
@@ -172,6 +174,8 @@ export default function SidebarClean({ user, userRole, onClose, onShowProfile, a
         )}
       </div>
 
+      </DeveloperSidebarBrand>
+
       {(userRole === 'admin' || userRole === 'moderator') && (
         <div className="px-3 pb-2 space-y-0.5">
           <div className="h-px bg-white/5 mx-2 mb-2" />
@@ -189,17 +193,22 @@ export default function SidebarClean({ user, userRole, onClose, onShowProfile, a
         </div>
       )}
 
-      <nav className={`flex-1 px-3 overflow-y-auto pb-2 ${isDeveloperMode ? 'pt-3' : 'pt-1'}`}>
-        {isDeveloperMode && (
-          <div className="flex bg-[#09101F] rounded-lg p-0.5 gap-0.5">
+      {isDeveloperMode && (
+        <DeveloperRowSection side="left">
+        <div className="w-full py-3 flex items-center bg-[#1A2038]">
+          <div className="flex w-full bg-[#0E1424] border border-white/10 rounded-lg p-1 gap-1">
             {['business', 'developer'].map(next => (
-              <button key={next} onClick={() => onModeChange?.(next)}
-                className={`flex-1 text-[10px] font-semibold py-1.5 rounded-md transition-all ${mode === next ? 'bg-[#6C5CE7] text-white shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}>
+              <button key={next} onClick={() => onModeChange?.(next)} aria-pressed={mode === next}
+                className={`flex-1 text-xs py-2 rounded-md transition-colors ${mode === next ? 'bg-[#6C5CE7]/25 text-white font-semibold' : 'text-slate-400 font-medium hover:text-white hover:bg-white/5'}`}>
                 {next === 'business' ? 'Business' : 'Developer'}
               </button>
             ))}
           </div>
-        )}
+        </div>
+        </DeveloperRowSection>
+      )}
+      <nav className={`flex-1 px-3 overflow-y-auto pb-2 ${isDeveloperMode ? 'pt-3' : 'pt-1'}`}>
+        {isDeveloperMode && <DeveloperSidebarSlot />}
         {navGroups.map(({ label, items, alwaysOpen }) => {
           const isOpen = alwaysOpen || expanded.has(label)
           const hasActive = items.some(item => item.view === activeView)

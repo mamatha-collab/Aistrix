@@ -18,7 +18,10 @@ function Section({ title, description, children }) {
   )
 }
 
-export default function SettingsPage({ user }) {
+// `developer`: the one Settings page in the Developer workspace. It leaves out
+// Business-only sections (AI Memory is used when running apps as a business
+// user).
+export default function SettingsPage({ user, developer = false }) {
   const toast = useToast()
 
   // Profile
@@ -31,7 +34,6 @@ export default function SettingsPage({ user }) {
   const [theme, setTheme] = useState(() => localStorage.getItem('aistrix_theme') || 'dark')
 
   // Daily run limit
-  const [dailyLimit, setDailyLimit] = useState(() => parseInt(localStorage.getItem('aistrix_daily_limit') || '50'))
 
   // Notifications
   const [notifPermission, setNotifPermission] = useState(() =>
@@ -67,12 +69,6 @@ export default function SettingsPage({ user }) {
     localStorage.setItem('aistrix_theme', next)
     applyTheme(next)
     setTimeout(() => document.documentElement.classList.remove('theme-transitioning'), 350)
-  }
-
-  function saveDailyLimit(val) {
-    setDailyLimit(val)
-    localStorage.setItem('aistrix_daily_limit', String(val))
-    toast(`Daily limit set to ${val} runs`, 'success', 2000)
   }
 
   async function requestNotifications() {
@@ -152,12 +148,14 @@ export default function SettingsPage({ user }) {
   const inputCls = 'w-full bg-[#1F2444] border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-[#6C5CE7] transition-colors'
 
   return (
-    <div className="flex-1 overflow-y-auto px-6 py-6 space-y-5 max-w-2xl">
+    <div className="flex-1 overflow-y-auto px-6 py-6 space-y-5 max-w-6xl">
       <div>
         <h1 className="text-white text-xl font-semibold">Settings</h1>
-        <p className="text-slate-400 text-sm mt-0.5">Manage your account and preferences.</p>
+        <p className="text-slate-400 text-sm mt-0.5">{developer ? 'Your profile, appearance, notifications and AI keys.' : 'Manage your account and preferences.'}</p>
       </div>
 
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
+      <div className="space-y-5 min-w-0">
       {/* Profile */}
       <Section title="Profile" description="Your public name and avatar shown throughout Aistrix.">
         <div className="flex items-center gap-5 mb-5">
@@ -202,51 +200,8 @@ export default function SettingsPage({ user }) {
         </div>
       </Section>
 
-      {/* Usage */}
-      <Section title="Usage limits" description="Control how many runs you use from Aistrix's quota per day.">
-        <div className="space-y-3">
-          <div className="flex items-center justify-between text-sm">
-            <span className="text-slate-300">Daily run limit</span>
-            <span className="text-white font-medium">{dailyLimit} runs</span>
-          </div>
-          <input type="range" min="10" max="200" step="10" value={dailyLimit}
-            onChange={e => setDailyLimit(Number(e.target.value))}
-            onMouseUp={e => saveDailyLimit(Number(e.target.value))}
-            onTouchEnd={e => saveDailyLimit(Number(e.target.value))}
-            className="w-full accent-[#6C5CE7]" />
-          <div className="flex justify-between text-[10px] text-slate-600">
-            <span>10</span><span>100</span><span>200</span>
-          </div>
-          <p className="text-xs text-slate-500">Add your own API keys to bypass this limit entirely.</p>
-        </div>
-      </Section>
-
-      {/* Notifications */}
-      <Section title="Notifications" description="Get notified when long-running apps finish.">
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm text-white">Browser notifications</p>
-            <p className="text-xs text-slate-400 mt-0.5">
-              {notifPermission === 'granted' ? '✓ Enabled — you\'ll be notified when runs complete'
-                : notifPermission === 'denied' ? '✕ Blocked in browser settings'
-                : 'Not yet enabled'}
-            </p>
-          </div>
-          {notifPermission !== 'granted' && notifPermission !== 'denied' && (
-            <button onClick={requestNotifications}
-              className="bg-[#6C5CE7] hover:bg-[#7D6FF0] text-white text-sm px-4 py-2 rounded-xl transition-colors">
-              Enable
-            </button>
-          )}
-          {notifPermission === 'granted' && (
-            <span className="text-xs text-green-400 bg-green-400/10 px-3 py-1.5 rounded-xl">✓ Active</span>
-          )}
-          {notifPermission === 'denied' && (
-            <span className="text-xs text-slate-400">Update in browser settings</span>
-          )}
-        </div>
-      </Section>
-
+      </div>
+      <div className="space-y-5 min-w-0">
       {/* API Keys */}
       <Section title="API Keys" description="Use your own keys — they never leave the server and don't count against your quota.">
         <div className="space-y-4">
@@ -308,8 +263,34 @@ export default function SettingsPage({ user }) {
         </div>
       </Section>
 
+      {/* Notifications */}
+      <Section title="Notifications" description="Get notified when long-running apps finish.">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm text-white">Browser notifications</p>
+            <p className="text-xs text-slate-400 mt-0.5">
+              {notifPermission === 'granted' ? '✓ Enabled — you\'ll be notified when runs complete'
+                : notifPermission === 'denied' ? '✕ Blocked in browser settings'
+                : 'Not yet enabled'}
+            </p>
+          </div>
+          {notifPermission !== 'granted' && notifPermission !== 'denied' && (
+            <button onClick={requestNotifications}
+              className="bg-[#6C5CE7] hover:bg-[#7D6FF0] text-white text-sm px-4 py-2 rounded-xl transition-colors">
+              Enable
+            </button>
+          )}
+          {notifPermission === 'granted' && (
+            <span className="text-xs text-green-400 bg-green-400/10 px-3 py-1.5 rounded-xl">✓ Active</span>
+          )}
+          {notifPermission === 'denied' && (
+            <span className="text-xs text-slate-400">Update in browser settings</span>
+          )}
+        </div>
+      </Section>
+
       {/* AI Memory */}
-      <Section title="AI Memory" description="Things you want every app to know about you. Toggle memory on in the app runner to inject these automatically.">
+      {!developer && <Section title="AI Memory" description="Things you want every app to know about you. Toggle memory on in the app runner to inject these automatically.">
         <div className="space-y-3">
           {PRESET_MEMORY.map(({ key, placeholder }) => {
             const existing = memory.find(m => m.key === key)
@@ -354,7 +335,9 @@ export default function SettingsPage({ user }) {
             </div>
           </div>
         </div>
-      </Section>
+      </Section>}
+      </div>
+      </div>
     </div>
   )
 }

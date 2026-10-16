@@ -1,0 +1,150 @@
+/* Presentation only: keep the existing Developer workflow and grouped ribbon. */
+.developer-app-list { width: 100%; }
+.developer-app-navigator .group\/app > button { font-size: 12px; }
+.developer-app-navigator .group\/app > button > .truncate { padding-right: 0; font-size: 12px; }
+.developer-app-navigator .group\/app:hover > button > .truncate { padding-right: 2.5rem; }
+.developer-workspace-summary[open] > div { margin-top: -12px; }
+.developer-app-navigator { display: flex; flex-direction: column; }
+.developer-app-navigator > details { order: 2; }
+.developer-prompt-input { min-height: clamp(240px, 32vh, 380px); }
+[data-theme="light"] .developer-inline-builder button[class*="from-[#6C5CE7]"] {
+  background-image: none;
+  background-color: #7052b8;
+  color: #fff !important;
+}
+
+[data-theme="light"] :is(.developer-workspace, .developer-content) {
+  --t-bg: #f7f8fb;
+  --t-shell: #f7f8fb;
+  --t-surface: #ffffff;
+  --t-raised: #ffffff;
+  --t-hover: #f0edf8;
+  --t-text: #242333;
+  --t-muted: #5d6072;
+  --t-faint: #6c7082;
+  --t-border: #e5e5ed;
+  --t-border2: #d8d9e4;
+  --t-accent: #7052b8;
+  --t-accent-2: #7052b8;
+  --t-accent-3: #7052b8;
+  --t-shadow: rgba(36, 35, 51, 0.04);
+  background: var(--t-bg);
+  color: var(--t-text);
+}
+
+[data-theme="light"] .developer-workspace [aria-label="Developer header"] {
+  background: #fff !important;
+}
+
+[data-theme="light"] .developer-workspace [aria-label="Developer navigation"],
+[data-theme="light"] .developer-workspace [data-section="lifecycle"] > div {
+  background: #f7f8fb !important;
+}
+
+[data-theme="light"] :is(.developer-workspace, .developer-content) :is(
+  [class~="bg-[#111827]"], [class~="bg-[#111827]/60"],
+  [class~="bg-[#0A0E1A]"], [class~="bg-[#0F1225]"], [class~="bg-[#141828]"]
+) { background-color: var(--t-surface) !important; }
+
+/* Small neutral surfaces stay visible against the white panels. */
+[data-theme="light"] :is(.developer-workspace, .developer-content) :is(
+  [class~="bg-white/5"], [class~="bg-white/6"], [class~="bg-white/8"], [class~="bg-white/10"]
+) { background-color: #f0f1f6 !important; }
+
+[data-theme="light"] :is(.developer-workspace, .developer-content) .developer-lifecycle-box {
+  background: #fff !important;
+  border-color: var(--t-border) !important;
+}
+[data-theme="light"] :is(.developer-workspace, .developer-content) .developer-lifecycle-box > * + * {
+  border-color: var(--t-border) !important;
+}
+
+/* Navigation uses a light selection; solid purple is reserved for actions. */
+[data-theme="light"] :is(.developer-workspace, .developer-content) .developer-lifecycle-group [aria-current="step"],
+[data-theme="light"] :is(.developer-workspace, .developer-content) .developer-lifecycle-group [aria-current="step"]:hover,
+[data-theme="light"] :is(.developer-workspace, .developer-content) .developer-lifecycle-group [aria-current="step"] * {
+  background-color: #eee8f8 !important;
+  color: #59399b !important;
+  box-shadow: none !important;
+}
+
+[data-theme="light"] :is(.developer-workspace, .developer-content) :is(
+  [class~="bg-[#6C5CE7]"], [class~="bg-purple"]
+) {
+  background-color: var(--t-accent) !important;
+  color: #fff !important;
+  box-shadow: none;
+}
+
+[data-theme="light"] :is(.developer-workspace, .developer-content) :is(
+  [class~="bg-[#6C5CE7]"], [class~="bg-purple"]
+):hover { background-color: #60439f !important; }
+
+[data-theme="light"] :is(.developer-workspace, .developer-content) :is(
+  [class~="bg-[#6C5CE7]"], [class~="bg-purple"]
+) .text-white { color: #fff !important; }
+
+[data-theme="light"] :is(.developer-workspace, .developer-content) [class*="bg-[#6C5CE7]/"] {
+  background-color: #eee8f8 !important;
+  color: #59399b !important;
+}
+
+[data-theme="light"] :is(.developer-workspace, .developer-content) :is(
+  [class~="text-[#A29BFE]"], [class~="text-[#a89af7]"],
+  [class~="text-purple-300"], [class~="text-purple-400"], [class~="text-violet-300"]
+) { color: #6443a6 !important; }
+
+[data-theme="light"] :is(.developer-workspace, .developer-content) .text-slate-600 {
+  color: var(--t-faint) !important;
+}
+
+/* Preserve semantic status colors, with readable light-mode contrast. */
+[data-theme="light"] :is(.developer-workspace, .developer-content) :is(
+  .text-emerald-200, .text-emerald-300, .text-emerald-400,
+  .text-green-200, .text-green-300, .text-green-400
+) { color: #16734c !important; }
+
+[data-theme="light"] :is(.developer-workspace, .developer-content) :is(
+  .text-amber-200, .text-amber-300, .text-amber-400, .text-yellow-300, .text-yellow-400
+) { color: #92600a !important; }
+
+[data-theme="light"] :is(.developer-workspace, .developer-content) :is(
+  .text-red-200, .text-red-300, .text-red-400
+) { color: #b4233c !important; }
+
+[data-theme="light"] :is(.developer-workspace, .developer-content) :is(
+  [class~="text-white/70"], [class~="text-white/60"]
+) { color: var(--t-muted) !important; }
+
+[data-theme="light"] :is(.developer-workspace, .developer-content) :is(input, textarea, select) {
+  border-color: var(--t-border2);
+  accent-color: var(--t-accent);
+}
+
+[data-theme="light"] :is(.developer-workspace, .developer-content) :is(button, a, input, textarea, select, summary):focus-visible {
+  outline: 2px solid var(--t-accent);
+  outline-offset: 3px;
+}
+
+[data-theme="light"] :is(.developer-workspace, .developer-content) :is(
+  .app-field, .app-chrome-button, .section-tabs, .section-tab-active,
+  .workflow-action-button, .workflow-action-button-muted, .nav-item-active,
+  [class~="shadow-lg"], [class~="shadow-md"]
+) { box-shadow: none; }
+
+[data-theme="light"] :is(.developer-workspace, .developer-content) .section-tab-active {
+  background: #eee8f8;
+  border-color: #d8ccef;
+}
+
+[data-theme="light"] :is(.developer-workspace, .developer-content) [class*="hover:bg-white/"]:hover {
+  background-color: #f0edf8 !important;
+}
+
+/* Developer header: the bell is a plain icon button like Runs, Keys and Guide. */
+.developer-workspace [aria-label="Developer header"] .app-chrome-button:not(:hover) {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+.developer-workspace [aria-label="Developer header"] .app-chrome-button { box-shadow: none !important; }

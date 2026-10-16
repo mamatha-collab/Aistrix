@@ -4,6 +4,7 @@ import { persistBlueprintPhase } from '../lib/blueprintStorage'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { useFocusTrap } from '../hooks/useFocusTrap'
+import { useBuilderNavigation } from '../hooks/useBuilderNavigation'
 import { confirmDiscard } from '../lib/confirmDiscard'
 import { generateJSON, streamRun } from '../lib/runStream'
 import { TOOL_DEFAULT_SCHEMAS } from '../utils/toolTypes'
@@ -425,7 +426,7 @@ function AppPreview({ config, onSaveDraft, onPublish, onBack, saving }) {
 
 // `withGuide`: start on the type guide ("Start building →" moves on to
 // Describe), so the whole Build with AI flow stays in this one popup.
-export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGuide = false }) {
+export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGuide = false, presentation = 'modal', navigationGuardRef, onLeave }) {
   const panelRef = useRef(null)
   const [phase, setPhase] = useState(withGuide ? 'intro' : 'describe')
   const [description, setDescription] = useState('')
@@ -455,7 +456,9 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGui
   }
 
   const canGoBack = phase !== 'intro' && (phase !== 'describe' || withGuide || !!onBack)
-  useFocusTrap(panelRef, { onEscape: closeWithWarning })
+  useFocusTrap(panelRef, { onEscape: closeWithWarning, enabled: presentation !== 'inline' })
+  useBuilderNavigation({ enabled: presentation === 'inline', navigationGuardRef,
+    hasChanges: !!(description.trim() || questions.length || Object.keys(answers).length || generatedConfig), busy: loading || !!saving, onLeave })
 
   async function handleDescribe() {
     if (!description.trim()) return
@@ -721,6 +724,7 @@ export default function AIAppBuilder({ user, onClose, onBack, onCreated, withGui
         </>)}
     </>
   )
+  if (presentation === 'inline') return <section ref={panelRef} aria-label="Build with AI" className="developer-inline-builder bg-[#171B33] border border-white/10 rounded-xl w-full flex flex-col min-h-[600px] overflow-hidden">{content}</section>
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
       <div ref={panelRef} role="dialog" aria-modal="true" aria-label="Build with AI"

@@ -1,0 +1,10 @@
+.developer-type-picker { display: flex; flex-direction: column; gap: 24px; max-width: 1120px; margin: 0 auto; padding: 4px 0 24px; }
+.developer-type-picker[hidden] { display: none; }
+.type-picker-intent { padding: 20px; border: 1px solid var(--t-border); border-radius: 12px; background: var(--t-surface); }
+.type-picker-example { font-size: 11px; color: var(--t-muted); border: 1px solid var(--t-border); border-radius: 6px; padding: 5px 9px; background: var(--t-surface); }
+.type-picker-example:hover { border-color: var(--t-accent); color: var(--t-text); }
+.type-picker-recommendation { padding: 16px; border: 1px solid color-mix(in srgb, var(--t-accent) 25%, var(--t-border)); border-radius: 12px; background: color-mix(in srgb, var(--t-accent) 5%, var(--t-surface)); }
+.type-picker-families { border-bottom: 1px solid var(--t-border); padding-bottom: 10px; }
+.type-picker-card { padding: 18px; border: 1px solid var(--t-border); border-radius: 10px; background: var(--t-surface); transition: border-color 140ms, background-color 140ms; }
+.type-picker-card:not(:disabled):hover { border-color: var(--t-accent); background: color-mix(in srgb, var(--t-accent) 3%, var(--t-surface)); }
+.type-picker-icon { width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; border-radius: 7px; background: var(--t-bg); font-size: 18px; }

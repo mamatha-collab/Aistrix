@@ -1,5 +1,7 @@
 import { useRef, useState } from 'react'
 import { useFocusTrap } from '../hooks/useFocusTrap'
+import { useBuilderNavigation } from '../hooks/useBuilderNavigation'
+import '../type-picker.css'
 
 const TYPES = [
   {
@@ -256,13 +258,14 @@ const TYPE_REASON = {
 
 // `hidden`: a type's builder is open on top. The picker stays mounted (its
 // search and selection kept) so closing the builder brings it straight back.
-export default function AppTypeSelector({ onSelect, onClose, hidden = false }) {
+export default function AppTypeSelector({ onSelect, onClose, hidden = false, presentation = 'modal', navigationGuardRef, onLeave }) {
   const panelRef = useRef(null)
   const [intent, setIntent] = useState('')
   const [suggestion, setSuggestion] = useState(null)
   const [activeGroup, setActiveGroup] = useState(TYPE_GROUPS[0].id)
   const [showExamples, setShowExamples] = useState(false)
-  useFocusTrap(panelRef, { onEscape: onClose })
+  useFocusTrap(panelRef, { onEscape: onClose, enabled: presentation !== 'inline' && !hidden })
+  useBuilderNavigation({ enabled: presentation === 'inline' && !hidden, navigationGuardRef, hasChanges: !!intent.trim(), onLeave })
   const selectedGroup = TYPE_GROUPS.find(group => group.id === activeGroup) || TYPE_GROUPS[0]
   const selectedTypes = selectedGroup.typeIds.map(typeId => TYPES.find(type => type.id === typeId)).filter(Boolean)
 
@@ -280,12 +283,55 @@ export default function AppTypeSelector({ onSelect, onClose, hidden = false }) {
     setActiveGroup(findTypeGroup(ex.type).id)
   }
 
+  if (presentation === 'inline') return <section ref={panelRef} aria-label="What do you want to automate?" className="developer-type-picker" hidden={hidden}>
+    <header className="flex items-start justify-between gap-4">
+      <div><h1 className="text-2xl font-semibold text-white">Create an AI app</h1><p className="text-sm text-slate-400 mt-2">Describe your idea, or choose an app type to get started.</p></div>
+      <button onClick={onClose} aria-label="Close" className="text-xs text-slate-400 border border-white/10 rounded-lg px-3 py-2">Cancel</button>
+    </header>
+    <ol className="flex flex-wrap gap-x-5 gap-y-2 text-xs text-slate-500" aria-label="App creation steps">
+      {['Choose type', 'Configure', 'Save draft', 'Test & deploy'].map((label, i) => <li key={label} className={i === 0 ? 'font-semibold text-[#A29BFE]' : ''}><span className="mr-2">{i + 1}.</span>{label}</li>)}
+    </ol>
+    <div className="type-picker-intent">
+      <form onSubmit={handleIntentSubmit} className="flex flex-col sm:flex-row items-stretch gap-3">
+        <label className="flex-1 min-w-0"><span className="block text-xs font-semibold text-slate-300 mb-2">What would you like your app to do?</span>
+          <textarea value={intent} onChange={e => { setIntent(e.target.value); setSuggestion(null) }}
+            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleIntentSubmit() } }}
+            placeholder="e.g. I want to qualify sales leads, write personalised emails, and log notes to my CRM…" rows={2}
+            className="w-full bg-[#171B33] border border-white/10 rounded-lg px-3 py-3 text-sm text-white resize-y min-h-20 focus:outline-none" />
+        </label>
+        <button type="submit" disabled={!intent.trim()} className="sm:self-end sm:mb-1 shrink-0 bg-[#6C5CE7] text-white rounded-lg px-5 py-3 text-xs font-semibold disabled:opacity-40">Suggest app type →</button>
+      </form>
+      <div className="flex flex-wrap items-center gap-2 mt-3"><span className="text-xs text-slate-500 mr-1">Try an example:</span>
+        {(showExamples ? EXAMPLES : EXAMPLES.slice(0, 3)).map(ex => <button key={ex.label} onClick={() => pickExample(ex)} className="type-picker-example">{ex.label}</button>)}
+        <button onClick={() => setShowExamples(v => !v)} className="text-xs text-[#A29BFE] px-2 py-1">{showExamples ? 'Fewer examples' : 'More examples'}</button>
+      </div>
+    </div>
+    {suggestion && <div className="type-picker-recommendation flex flex-wrap items-center gap-4">
+      <span className="text-xl" aria-hidden="true">{suggestion.icon}</span><div className="flex-1 min-w-48"><p className="text-xs text-[#A29BFE] mb-1">Recommended for your idea</p><p className="text-sm font-semibold text-white">{suggestion.label}</p><p className="text-xs text-slate-400 mt-1">{TYPE_REASON[suggestion.id]}</p></div>
+      <button disabled={suggestion.status === 'soon'} onClick={() => onSelect(suggestion.id)} className="bg-[#6C5CE7] text-white px-4 py-2 rounded-lg text-xs font-semibold disabled:opacity-40">{suggestion.status === 'soon' ? 'Coming soon' : 'Start building →'}</button>
+      <button onClick={() => setSuggestion(null)} className="text-xs text-slate-400">Dismiss</button>
+    </div>}
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-base font-semibold text-white">Choose an app type</h2><span className="text-xs text-slate-500">All types follow the same Build workflow</span></div>
+      <div className="type-picker-families flex flex-wrap gap-1" aria-label="App families">
+        {TYPE_GROUPS.map(group => <button key={group.id} onClick={() => setActiveGroup(group.id)} aria-pressed={group.id === selectedGroup.id} className={`px-4 py-2 text-xs rounded-lg font-medium ${group.id === selectedGroup.id ? 'bg-[#6C5CE7]/10 text-[#A29BFE]' : 'text-slate-400'}`}>{group.short}</button>)}
+      </div>
+      <p className="text-xs text-slate-400 leading-relaxed">{selectedGroup.desc}</p>
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+        {selectedTypes.map(t => <button key={t.id} disabled={t.status === 'soon'} onClick={() => onSelect(t.id)} title={`Best for: ${t.bestFor}`} className="type-picker-card text-left disabled:opacity-60 disabled:cursor-not-allowed">
+          <div className="flex items-center gap-3"><span className="type-picker-icon" style={{ color: t.color }} aria-hidden="true">{t.icon}</span><span className="flex-1 text-sm font-semibold text-white">{t.label}</span>{t.status !== 'ready' && <span className="text-[10px] text-slate-500">{STATUS_META[t.status || 'preview'].label}</span>}<span className="text-slate-500" aria-hidden="true">↗</span></div>
+          <p className="text-xs text-slate-400 leading-relaxed mt-3">{t.desc}</p>
+        </button>)}
+      </div>
+    </div>
+  </section>
+
   return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4" onClick={onClose}
+    <div className={presentation === 'inline' ? 'developer-inline-builder w-full' : 'fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4'} onClick={presentation === 'inline' ? undefined : onClose}
       style={hidden ? { display: 'none' } : undefined}>
-      <div ref={panelRef} role="dialog" aria-modal="true" aria-label="What do you want to automate?"
+      <div ref={panelRef} role={presentation === 'inline' ? 'region' : 'dialog'} aria-modal={presentation === 'inline' ? undefined : true} aria-label="What do you want to automate?"
         className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-6xl flex flex-col overflow-hidden"
-        style={{ height: 'min(94vh, 840px)' }}
+        style={presentation === 'inline' ? { minHeight: 600 } : { height: 'min(94vh, 840px)' }}
         onClick={e => e.stopPropagation()}>
 
         {/* Header */}

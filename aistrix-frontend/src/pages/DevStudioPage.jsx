@@ -2,7 +2,10 @@ import { persistBlueprintPhase } from '../lib/blueprintStorage'
 import { signOutOnPurpose } from '../lib/session'
 import { APP_PUBLIC_SELECT, withPrivateFields } from '../lib/appColumns'
 import { saveAppFields } from '../lib/appFields'
-import AistrixWordmark from '../components/AistrixWordmark'
+import MobileDeveloper from './devstudio/MobileDeveloper'
+import { useMediaQuery } from '../hooks/useMediaQuery'
+import OperationsWorkflow from './devstudio/OperationsWorkflow'
+import { DeveloperAppList, DeveloperRowSection } from '../components/DeveloperShell'
 import { useState, useEffect, useRef, lazy, Suspense } from 'react'
 import { track, EVENTS } from '../lib/analytics'
 import { supabase } from '../supabase'
@@ -11,13 +14,14 @@ import ErrorBoundary from '../components/ErrorBoundary'
 import ConfirmDialog from '../components/ConfirmDialog'
 import { scopeToWorkspace } from '../lib/workspace'
 import NotificationsPanel from '../components/NotificationsPanel'
-import { LogOut, Moon, Search, Settings, Sun, User, X } from 'lucide-react'
+import { ChartNoAxesColumn, ChevronDown, CircleHelp, CirclePlay, ClipboardCheck, Database, History, KeyRound, LockKeyhole, LogOut, Megaphone, Moon, PenLine, Play, Plus, Search, Send, Settings, Sun, TrendingUp, X } from 'lucide-react'
 import { applyTheme } from '../utils/theme'
-import { AppEmojiWithType, AppNavigator, DEV_PHASES, EMPTY_BP, HelpPanel, MoveBackModal, TAB_NOTES, TabNoteFolderTab, WelcomeScreen, calcReadiness, getDevPhase, migrateBlueprint, normalizeDevPhase } from './devstudio/shared'
+import { AppEmojiWithType, AppNavigator, DEV_PHASES, EMPTY_BP, HelpPanel, MoveBackModal, WelcomeScreen, calcReadiness, getDevPhase, migrateBlueprint, normalizeDevPhase } from './devstudio/shared'
 
 // Each step loads when it is opened (keeps the first Dev Studio load small).
 const TAB_LOADING = <div className="py-16 text-center text-slate-500 text-sm">Loading…</div>
 const DeployTab = lazy(() => import('./devstudio/DeployTab').then(m => ({ default: m.DeployTab })))
+const SettingsPage = lazy(() => import('./SettingsPage'))
 const DesignTab = lazy(() => import('./devstudio/DesignTab').then(m => ({ default: m.DesignTab })))
 const EvaluateTab = lazy(() => import('./devstudio/OperateTabs').then(m => ({ default: m.EvaluateTab })))
 const ImproveTab = lazy(() => import('./devstudio/OperateTabs').then(m => ({ default: m.ImproveTab })))
@@ -32,16 +36,16 @@ const TestTab = lazy(() => import('./devstudio/TestTab').then(m => ({ default: m
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 const LIFECYCLE_TABS = [
-  { id: 'design',   label: 'Design',      icon: '✏️',  desc: 'Blueprint', group: 'build' },
-  { id: 'test',     label: 'Test',        icon: '🧪',  desc: 'Validate',  group: 'build' },
-  { id: 'deploy',   label: 'Deploy',      icon: '🚀',  desc: 'Publish',   group: 'build' },
-  { id: 'sell',     label: 'Marketplace', short: 'Market', icon: '🛒',  desc: 'List',      group: 'grow' },
-  { id: 'monitor',  label: 'Monitor',     icon: '📡',  desc: 'Usage',     group: 'grow' },
-  { id: 'evaluate', label: 'Evaluate',    short: 'Eval', icon: '🎯',  desc: 'Quality',   group: 'grow' },
-  { id: 'improve',  label: 'Improve',     icon: '🔬',  desc: 'Iterate',   group: 'grow' },
-  { id: 'version',  label: 'Version',     icon: '📦',  desc: 'History',   group: 'manage' },
-  { id: 'monetize', label: 'Revenue',     icon: '💰',  desc: 'Profit',    group: 'manage' },
-  { id: 'secrets',  label: 'Secrets',     icon: '🔐',  desc: 'Env vars',  group: 'manage' },
+  { id: 'design',   label: 'Design',      Icon: PenLine,           desc: 'Blueprint', group: 'build' },
+  { id: 'test',     label: 'Test',        Icon: CirclePlay,        desc: 'Validate',  group: 'build' },
+  { id: 'deploy',   label: 'Deploy',      Icon: Send,              desc: 'Publish',   group: 'build' },
+  { id: 'monitor',  label: 'Monitor',     Icon: ChartNoAxesColumn, desc: 'Usage',     group: 'grow' },
+  { id: 'evaluate', label: 'Evaluate',    short: 'Eval', Icon: ClipboardCheck, desc: 'Quality', group: 'grow' },
+  { id: 'improve',  label: 'Improve',     Icon: TrendingUp,        desc: 'Iterate',   group: 'grow' },
+  { id: 'sell',     label: 'Marketplace', short: 'Market', Icon: Megaphone, desc: 'List', group: 'grow' },
+  { id: 'version',  label: 'Version',     Icon: History,           desc: 'History',   group: 'manage' },
+  { id: 'monetize', label: 'Revenue',     Icon: Database,          desc: 'Profit',    group: 'manage' },
+  { id: 'secrets',  label: 'Secrets',     Icon: LockKeyhole,       desc: 'Env vars',  group: 'manage' },
 ]
 
 const LIFECYCLE_GROUPS = [
@@ -52,7 +56,8 @@ const LIFECYCLE_GROUPS = [
 
 export default function DevStudioPage({
   user,
-  onOpenCreate,
+  onOpenCreate: requestCreate,
+  creationContent = null,
   onShowHistory,
   onShowSettings,
   onShowProfile,
@@ -65,6 +70,7 @@ export default function DevStudioPage({
   onCreatedAppConsumed,
   navigationGuardRef: sharedNavigationGuardRef,
 }) {
+  const isPhone = useMediaQuery('(max-width: 767px)')
   const localNavigationGuardRef = useRef(null)
   const navigationGuardRef = sharedNavigationGuardRef || localNavigationGuardRef
   const [tab, setTabState] = useState('design')
@@ -76,20 +82,17 @@ export default function DevStudioPage({
     action()
     return true
   }
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  function openSettings() { guarded(() => setSettingsOpen(true)) }
+  function onOpenCreate() { guarded(() => { setSettingsOpen(false); setTabState('design'); requestCreate?.() }) }
   function setTab(next) {
-    if (next === tab) return true
-    return guarded(() => setTabState(next))
+    if (next === tab && !pageContent) return true
+    return guarded(() => { setSettingsOpen(false); setTabState(next) })
   }
   function openTab(id) {
-    if (id === tab) return
-    guarded(() => { setTabState(id); if (['design','test','deploy'].includes(id)) setActiveAppIdState(null) })
+    if (id === tab && !pageContent) return
+    guarded(() => { setSettingsOpen(false); setTabState(id); if (['design','test','deploy'].includes(id)) setActiveAppIdState(null) })
   }
-  // Below 1280px the app list is a slide-in panel instead of a fixed column.
-  const [appsDrawer, setAppsDrawer] = useState(false)
-  const [smallScreenNote, setSmallScreenNote] = useState(() => {
-    try { return localStorage.getItem('aistrix_small_screen_note') !== 'dismissed' } catch { return true }
-  })
-  const NAVIGATOR_TABS = ['design','test','deploy','improve','version','secrets']
   // Phones: keep the open tab's group (Build / Operate / Manage) in view.
   const ribbonRef = useRef(null)
   useEffect(() => {
@@ -107,12 +110,36 @@ export default function DevStudioPage({
   const [deployFixReason, setDeployFixReason] = useState('')
   const [apps, setApps] = useState([])
   const [runs, setRuns] = useState([])
+  const [feedbackError, setFeedbackError] = useState('')
+  const [selectedRunId, setSelectedRunId] = useState(null)
+  const [loadError, setLoadError] = useState('')
   const [appStats, setAppStats] = useState({})
   const [totalStats, setTotalStats] = useState({ runs: 0, users: 0, satisfaction: null })
   const [entitlements, setEntitlements] = useState([])
   const [loading, setLoading] = useState(true)
   const [showHelp, setShowHelp] = useState(false)
   const [accountOpen, setAccountOpen] = useState(false)
+  const accountMenuRef = useRef(null)
+  const workspaceMenuRef = useRef(null)
+  useEffect(() => {
+    const outside = event => {
+      if (!accountMenuRef.current?.contains(event.target)) setAccountOpen(false)
+      if (workspaceMenuRef.current && !workspaceMenuRef.current.contains(event.target)) workspaceMenuRef.current.open = false
+    }
+    const escape = event => {
+      if (event.key !== 'Escape' || (!accountOpen && !workspaceMenuRef.current?.open)) return
+      event.preventDefault()
+      event.stopPropagation()
+      if (accountOpen) { setAccountOpen(false); accountMenuRef.current?.querySelector('button')?.focus() }
+      if (workspaceMenuRef.current?.open) { workspaceMenuRef.current.open = false; workspaceMenuRef.current.querySelector('summary')?.focus() }
+    }
+    document.addEventListener('pointerdown', outside, true)
+    document.addEventListener('keydown', escape, true)
+    return () => {
+      document.removeEventListener('pointerdown', outside, true)
+      document.removeEventListener('keydown', escape, true)
+    }
+  }, [accountOpen])
   const [theme, setTheme] = useState(() => localStorage.getItem('aistrix_theme') || 'dark')
   const [phaseByAppId, setPhaseByAppId] = useState({})  // explicit phase overrides per app
   const [moveBack, setMoveBack] = useState(null)        // { app, phase } while asking why a deployed app goes back
@@ -145,9 +172,12 @@ export default function DevStudioPage({
 
   async function load() {
     setLoading(true)
-    const { data: rows } = await scopeToWorkspace(supabase.from('apps').select(APP_PUBLIC_SELECT), user, 'created_by')
+    setLoadError('')
+    try {
+    const { data: rows, error: appsError } = await scopeToWorkspace(supabase.from('apps').select(APP_PUBLIC_SELECT), user, 'created_by')
       .order('total_runs', { ascending: false })
-    if (!rows?.length) { setLoading(false); return }
+    if (appsError) { setLoadError(appsError.message); setLoading(false); return }
+    if (!rows?.length) { setApps([]); setRuns([]); setLoading(false); return }
     // Prompts and other private fields come separately, for apps this user can edit.
     const myApps = await withPrivateFields(supabase, rows)
     setApps(myApps)
@@ -165,14 +195,15 @@ export default function DevStudioPage({
       setPhaseByAppId(phases)
     }
 
-    const [{ data: runData }, { data: entData }] = await Promise.all([
+    const [{ data: runData, error: runError }, { data: entData }] = await Promise.all([
       supabase.from('run_history')
-        .select('id, app_id, app_name, created_at, rating_value, user_id, input_tokens, output_tokens, input, output')
-        .in('app_id', myApps.map(a => a.id)),
+        .select('id, app_id, app_name, created_at, rating_value, user_id, input_tokens, output_tokens, input, output, feedback_text')
+        .in('app_id', myApps.map(a => a.id)).order('created_at', { ascending: false }).limit(500),
       supabase.from('app_entitlements')
         .select('id, app_id, user_id, plan, status, runs_this_period, run_quota, current_period_end, created_at')
         .in('app_id', myApps.map(a => a.id)),
     ])
+    setFeedbackError(runError ? `Run history could not be loaded: ${runError.message}` : '')
     const allRuns = runData || []
     setRuns(allRuns)
     setEntitlements(entData || [])
@@ -187,19 +218,22 @@ export default function DevStudioPage({
         const next = new Date(d); next.setDate(next.getDate() + 1)
         return recent.filter(r => new Date(r.created_at) >= d && new Date(r.created_at) < next).length
       })
-      const rated = appRuns.filter(r => r.rating_value != null)
+      const rated = appRuns.filter(r => (r.rating_value === 1 || r.rating_value === -1))
       statsMap[app.id] = { uniqueUsers: new Set(appRuns.map(r => r.user_id)).size, thumbsUp: rated.filter(r => r.rating_value === 1).length, rated: rated.length, daily }
     })
     setAppStats(statsMap)
 
-    const allRated = allRuns.filter(r => r.rating_value != null)
+    const allRated = allRuns.filter(r => (r.rating_value === 1 || r.rating_value === -1))
     setTotalStats({
       runs: allRuns.length,
       users: new Set(allRuns.map(r => r.user_id)).size,
       satisfaction: allRated.length > 0 ? Math.round((allRated.filter(r => r.rating_value === 1).length / allRated.length) * 100) : null,
     })
-    setLoading(false)
+    } catch (error) {
+      setLoadError(error.message || 'Please try again.')
+    } finally { setLoading(false) }
   }
+
 
   function updateAppInState(updated) {
     setApps(prev => prev.map(a => a.id === updated.id ? { ...a, ...updated } : a))
@@ -248,6 +282,33 @@ export default function DevStudioPage({
     moveAppPhase(appId, 'design')
   }
 
+  function navigateOperations(target, appId) {
+    const app = apps.find(a => a.id === appId)
+    if (!app) return
+    guarded(() => {
+      if (['design', 'test', 'deploy'].includes(target) && getDevPhase(app, phaseByAppId) !== target) {
+        moveAppPhase(appId, target)
+      } else {
+        setActiveAppIdState(appId)
+        setTabState(target)
+      }
+    })
+  }
+
+  async function startOperationalFix(appId, run, testCase) {
+    const app = apps.find(a => a.id === appId)
+    if (!app) return
+    const note = { reason: 'User feedback', note: `Investigate ${run ? `run ${run.id}` : 'app feedback'}.${testCase ? ` Regression: ${testCase.id}.` : ''} ${run?.feedback_text || 'Improve the answer, then validate in Test before publishing.'}`.slice(0, 500) }
+    if (getDevPhase(app, phaseByAppId) === 'deploy') {
+      setMoveBack({ app, phase: 'design', initialNote: note })
+      return
+    }
+    const { error } = await saveAppFields(supabase, app, { change_note: note })
+    if (error) { toast(`Could not start draft fix: ${error.message}`, 'error'); return }
+    updateAppInState({ ...app, change_note: note })
+    await moveAppPhase(appId, 'design', { confirmed: true })
+  }
+
   // Same confirmation as the sidebar: signing out drops unsaved editor changes.
   const [confirmSignOut, setConfirmSignOut] = useState(false)
   async function signOut() {
@@ -288,9 +349,20 @@ export default function DevStudioPage({
     ? null
     : activeAppId
 
+  const pageContent = creationContent || (settingsOpen ? (
+    <ErrorBoundary compact title="Settings couldn't load" resetKey="settings">
+      <Suspense fallback={TAB_LOADING}><SettingsPage user={user} developer /></Suspense>
+    </ErrorBoundary>
+  ) : null)
+
+  if (isPhone) return <MobileDeveloper user={user} apps={apps} runs={runs} phaseByAppId={phaseByAppId} loading={loading}
+    error={loadError || feedbackError} onRefresh={load} onAppUpdated={updateAppInState}
+    onShowProfile={onShowProfile} onShowSettings={onShowSettings} onShowHistory={onShowHistory}
+    onSignOut={signOut} onToggleTheme={toggleTheme} />
+
   return (
-    <div className="flex-1 min-w-0 flex flex-col overflow-hidden">
-      {moveBack && <MoveBackModal app={moveBack.app} phase={moveBack.phase} onCancel={() => setMoveBack(null)} onConfirm={confirmMoveBack} />}
+    <div className="developer-content flex-1 min-w-0 flex flex-col overflow-hidden">
+      {moveBack && <MoveBackModal app={moveBack.app} phase={moveBack.phase} initialNote={moveBack.initialNote} onCancel={() => setMoveBack(null)} onConfirm={confirmMoveBack} />}
       {confirmSignOut && (
         <ConfirmDialog title="Sign out of Aistrix?" subtitle={user?.email}
           confirmLabel="Sign out" busyLabel="Signing out…" danger
@@ -300,42 +372,22 @@ export default function DevStudioPage({
       )}
 
       {/* ── Sticky top bar: tab ribbon + guide + tab note folder tab ── */}
-      <div className="sticky top-0 z-30 bg-[#09101F] border-b border-white/5">
-        {(loading || apps.length > 0) && (
-          <>
-            <div className="min-h-[112px] md:hidden px-3 sm:px-4 py-3 bg-[#111827] border-b border-white/5 grid grid-cols-1 items-center gap-3">
-              <div className="min-w-0 md:hidden flex items-center justify-between gap-3">
-                <div className="min-w-0 flex items-center gap-1">
-                  <img src="/aistrix-logo.svg" alt="" className="w-7 h-7 shrink-0" />
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <p className="text-white font-bold text-lg leading-tight truncate"><AistrixWordmark /></p>
-                      <span className="px-2 py-0.5 rounded-full bg-[#00D4AA]/10 border border-[#00D4AA]/20 text-[#00D4AA] text-[9px] font-bold uppercase tracking-wider shrink-0">Developer</span>
-                    </div>
-                  </div>
-                </div>
-                <button onClick={onOpenCreate}
-                  className="bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white text-xs font-bold px-3.5 py-2.5 rounded-xl transition-colors shadow-lg shadow-[#6C5CE7]/20 whitespace-nowrap shrink-0">
-                  + App
-                </button>
-              </div>
-              <div className="flex flex-wrap items-center gap-1.5 min-w-0 justify-self-stretch max-w-full overflow-visible md:col-start-2">
-                {NAVIGATOR_TABS.includes(tab) && (
-                  <button onClick={() => setAppsDrawer(true)} aria-label="Open the app list"
-                    className="xl:hidden h-10 px-3 rounded-xl bg-[#0E1424] border border-white/8 text-sm text-slate-300 hover:text-white transition-colors whitespace-nowrap shrink-0">
-                    ☰ Apps
-                  </button>
-                )}
-                <div className="hidden xl:flex items-center gap-2 bg-[#0E1424] border border-white/8 rounded-xl px-3 h-10 text-sm text-slate-300 w-48 2xl:w-56">
-                  <Search size={15} className="shrink-0 text-slate-500" />
+      <div className="sticky top-0 z-30 pointer-events-none">
+            <DeveloperRowSection side="header">
+            <div className="pointer-events-auto hidden md:flex h-[71px] items-center justify-end gap-4">
+              <div className="flex items-center gap-2 min-w-0">
+                <div className="hidden lg:flex items-center gap-2 bg-[#0E1424] border border-white/10 rounded-lg px-3 h-9 text-sm text-slate-300 w-56 xl:w-72 focus-within:border-[#6C5CE7]/60 transition-colors">
+                  <Search size={16} strokeWidth={1.75} className="shrink-0 text-slate-500" aria-hidden="true" />
                   <input
-                    type="text"
+                    type="search"
                     value={search}
                     onChange={e => onSearch?.(e.target.value)}
-                    placeholder="Search"
-                    aria-label="Search developer apps, runs, and versions"
+                    onKeyDown={e => { if (e.key === 'Escape' && search) { e.preventDefault(); e.stopPropagation(); onSearch?.('') } }}
+                    placeholder="Search apps"
+                    aria-label="Search apps by name, description, type or stage"
+                    title="Filters the app list by name, description, type or stage"
                     ref={searchRef}
-                    className="flex-1 min-w-0 bg-transparent text-sm text-white placeholder-slate-500 focus:outline-none"
+                    className="flex-1 min-w-0 bg-transparent text-sm text-white placeholder-slate-500 focus:outline-none [&::-webkit-search-cancel-button]:hidden"
                   />
                   {search && (
                     <button onClick={() => onSearch?.('')} aria-label="Clear search" className="text-slate-500 hover:text-white transition-colors shrink-0">
@@ -343,46 +395,42 @@ export default function DevStudioPage({
                     </button>
                   )}
                 </div>
-                <div className="flex items-center gap-1 rounded-xl bg-[#0E1424] border border-white/8 p-1">
+                <div className="flex items-center gap-1">
                   <NotificationsPanel user={user} onNavChange={onNavChange} />
-                  <button
-                    onClick={onShowHistory}
-                    className="hover:bg-[#1A2038] text-slate-200 text-xs font-semibold px-2.5 py-2 rounded-lg transition-colors whitespace-nowrap"
-                  >
-                    <span className="md:hidden">Runs</span><span className="hidden md:inline">History</span>
+                  <button onClick={onShowHistory}
+                    title="Run history"
+                    className="inline-flex items-center gap-2 h-9 px-3 rounded-lg text-sm text-slate-200 hover:text-white hover:bg-white/5 transition-colors whitespace-nowrap">
+                    <Play size={16} strokeWidth={1.75} aria-hidden="true" /> Runs
                   </button>
                   <button
                     onClick={onShowSettings}
                     aria-label={noKeys ? 'Keys — no AI key added yet' : undefined}
                     title={noKeys ? 'No AI key added — add one to build apps' : undefined}
-                    className="relative hover:bg-[#1A2038] text-slate-200 text-xs font-semibold px-2.5 py-2 rounded-lg transition-colors whitespace-nowrap"
+                    className="relative inline-flex items-center gap-2 h-9 px-3 rounded-lg text-sm text-slate-200 hover:text-white hover:bg-white/5 transition-colors whitespace-nowrap"
                   >
-                    Keys
-                    {noKeys && <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-amber-500 text-[#0F1225] text-[10px] font-bold flex items-center justify-center" aria-hidden="true">!</span>}
+                    <KeyRound size={16} strokeWidth={1.75} aria-hidden="true" /> Keys
+                    {noKeys && <span className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-amber-500 text-[#0F1225] text-[10px] font-bold flex items-center justify-center" aria-hidden="true">!</span>}
                   </button>
-                </div>
-                <button onClick={onOpenCreate}
-                  className="hidden md:inline-flex bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white text-xs font-bold px-3 py-2.5 rounded-xl transition-colors shadow-lg shadow-[#6C5CE7]/20 whitespace-nowrap">
-                  + App
-                </button>
-                <div className="flex items-center gap-1 rounded-xl bg-[#0E1424] border border-white/8 p-1">
-                  {TAB_NOTES[tab] && <TabNoteFolderTab id={tab} />}
                   <button
                     onClick={() => setShowHelp(true)}
                     title="Guide"
                     aria-label="Guide"
-                    className="group w-9 h-9 rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-[#1A2038] transition-colors duration-300"
+                    className="w-9 h-9 rounded-lg flex items-center justify-center text-slate-400 hover:text-white hover:bg-white/5 transition-colors shrink-0"
                   >
-                    <span className="aistrix-guide-bulb relative w-7 h-7 rounded-full bg-[#6C5CE7]/25 text-[#A29BFE] text-xs font-bold flex items-center justify-center transition-all duration-300 group-hover:scale-110 group-hover:bg-[#6C5CE7]/35 group-hover:text-white group-active:scale-95">?</span>
+                    <CircleHelp size={17} strokeWidth={1.75} aria-hidden="true" />
                   </button>
                 </div>
-                <div className="relative shrink-0">
+                <button onClick={onOpenCreate} aria-label="+ App"
+                  className="inline-flex items-center gap-1.5 h-9 px-4 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white text-sm font-semibold transition-colors whitespace-nowrap">
+                  <Plus size={16} strokeWidth={2} aria-hidden="true" /> App
+                </button>
+                <div ref={accountMenuRef} className="relative shrink-0">
                   <button
                     onClick={() => setAccountOpen(v => !v)}
                     aria-label="Account menu"
                     aria-haspopup="menu"
                     aria-expanded={accountOpen}
-                    className="w-10 h-10 rounded-xl bg-[#0E1424] border border-white/8 text-white text-xs font-bold flex items-center justify-center hover:bg-[#1A2038] transition-colors"
+                    className="w-9 h-9 rounded-full bg-[#6C5CE7]/15 text-[#A29BFE] text-sm font-semibold flex items-center justify-center hover:bg-[#6C5CE7]/25 transition-colors"
                     style={{ background: user?.user_metadata?.avatar_color || undefined }}
                   >
                     {(user?.user_metadata?.display_name || user?.email || '?')[0].toUpperCase()}
@@ -394,145 +442,13 @@ export default function DevStudioPage({
                         <p className="text-slate-500 text-[11px] truncate">{user?.email}</p>
                       </div>
                       <button
-                        onClick={() => { setAccountOpen(false); onShowProfile?.() }}
+                        onClick={() => { setAccountOpen(false); openSettings() }}
                         className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-sm text-slate-300 hover:bg-white/5 hover:text-white transition-colors"
                       >
-                        <User size={15} /> User settings
+                        <Settings size={15} /> Settings
                       </button>
                       <button
-                        onClick={() => { setAccountOpen(false); onNavChange?.('settings') }}
-                        className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-sm text-slate-300 hover:bg-white/5 hover:text-white transition-colors"
-                      >
-                        <Settings size={15} /> App settings
-                      </button>
-                      <button
-                        onClick={toggleTheme}
-                        className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-sm text-slate-300 hover:bg-white/5 hover:text-white transition-colors"
-                      >
-                        {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
-                        {theme === 'dark' ? 'Light mode' : 'Dark mode'}
-                      </button>
-                      <button
-                        onClick={() => { setAccountOpen(false); setConfirmSignOut(true) }}
-                        className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-sm text-red-300 hover:bg-red-500/10 hover:text-red-200 transition-colors"
-                      >
-                        <LogOut size={15} /> Sign out
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
-              <div className="md:hidden flex items-center gap-2 bg-[#0E1424] border border-white/8 rounded-xl px-3 h-10 text-sm text-slate-300 w-full">
-                <Search size={15} className="shrink-0 text-slate-500" />
-                <input
-                  type="text"
-                  value={search}
-                  onChange={e => onSearch?.(e.target.value)}
-                  placeholder="Search apps, phases, runs…"
-                  aria-label="Search developer apps, phases, and runs"
-                  ref={searchRef}
-                  className="flex-1 min-w-0 bg-transparent text-sm text-white placeholder-slate-500 focus:outline-none"
-                />
-                {search && (
-                  <button onClick={() => onSearch?.('')} aria-label="Clear search" className="text-slate-500 hover:text-white transition-colors shrink-0">
-                    <X size={14} />
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {smallScreenNote && (
-              <div className="md:hidden flex items-start gap-2 px-4 py-2 bg-amber-500/10 border-b border-amber-500/20 text-[11px] text-amber-200">
-                <span className="flex-1">Mobile view is optimized for quick checks, phase changes, and light edits.</span>
-                <button aria-label="Dismiss" className="text-amber-200/70 hover:text-white px-1"
-                  onClick={() => { setSmallScreenNote(false); try { localStorage.setItem('aistrix_small_screen_note', 'dismissed') } catch { /* private mode */ } }}>×</button>
-              </div>
-            )}
-            <div className="hidden md:flex h-[72px] items-center justify-end gap-4 px-4 bg-[#111827] border-b border-white/5">
-              <div className="flex items-center gap-2 min-w-0">
-                {NAVIGATOR_TABS.includes(tab) && (
-                  <button onClick={() => setAppsDrawer(true)} aria-label="Open the app list"
-                    className="xl:hidden h-10 px-3 rounded-xl bg-[#0E1424] border border-white/8 text-sm text-slate-300 hover:text-white transition-colors whitespace-nowrap shrink-0">
-                    ☰ Apps
-                  </button>
-                )}
-                <div className="hidden lg:flex items-center gap-2 bg-[#0E1424] border border-white/8 rounded-xl px-3 h-10 text-sm text-slate-300 w-52 xl:w-64">
-                  <Search size={15} className="shrink-0 text-slate-500" />
-                  <input
-                    type="text"
-                    value={search}
-                    onChange={e => onSearch?.(e.target.value)}
-                    placeholder="Search apps, tests, deploys"
-                    aria-label="Search developer apps, runs, and versions"
-                    ref={searchRef}
-                    className="flex-1 min-w-0 bg-transparent text-sm text-white placeholder-slate-500 focus:outline-none"
-                  />
-                  {search && (
-                    <button onClick={() => onSearch?.('')} aria-label="Clear search" className="text-slate-500 hover:text-white transition-colors shrink-0">
-                      <X size={14} />
-                    </button>
-                  )}
-                </div>
-                <div className="flex items-center gap-1 rounded-xl bg-[#0E1424] border border-white/8 p-1">
-                  <NotificationsPanel user={user} onNavChange={onNavChange} />
-                  <button onClick={onShowHistory}
-                    title="Run history"
-                    className="hover:bg-[#1A2038] text-slate-200 text-xs font-semibold px-2.5 py-2 rounded-lg transition-colors whitespace-nowrap">
-                    Runs
-                  </button>
-                  <button
-                    onClick={onShowSettings}
-                    aria-label={noKeys ? 'Keys — no AI key added yet' : undefined}
-                    title={noKeys ? 'No AI key added — add one to build apps' : undefined}
-                    className="relative hover:bg-[#1A2038] text-slate-200 text-xs font-semibold px-2.5 py-2 rounded-lg transition-colors whitespace-nowrap"
-                  >
-                    Keys
-                    {noKeys && <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-amber-500 text-[#0F1225] text-[10px] font-bold flex items-center justify-center" aria-hidden="true">!</span>}
-                  </button>
-                </div>
-                <button onClick={onOpenCreate}
-                  className="bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white text-xs font-bold px-3 py-2.5 rounded-xl transition-colors shadow-lg shadow-[#6C5CE7]/20 whitespace-nowrap">
-                  + App
-                </button>
-                <button
-                  onClick={() => setShowHelp(true)}
-                  title="Guide"
-                  aria-label="Guide"
-                  className="group w-10 h-10 rounded-xl bg-[#0E1424] border border-white/8 flex items-center justify-center text-slate-400 hover:text-white hover:bg-[#1A2038] transition-colors duration-300 shrink-0"
-                >
-                  <span className="aistrix-guide-bulb relative w-7 h-7 rounded-full bg-[#6C5CE7]/25 text-[#A29BFE] text-xs font-bold flex items-center justify-center transition-all duration-300 group-hover:scale-110 group-hover:bg-[#6C5CE7]/35 group-hover:text-white group-active:scale-95">?</span>
-                </button>
-                <div className="relative shrink-0">
-                  <button
-                    onClick={() => setAccountOpen(v => !v)}
-                    aria-label="Account menu"
-                    aria-haspopup="menu"
-                    aria-expanded={accountOpen}
-                    className="w-10 h-10 rounded-xl bg-[#0E1424] border border-white/8 text-white text-xs font-bold flex items-center justify-center hover:bg-[#1A2038] transition-colors"
-                    style={{ background: user?.user_metadata?.avatar_color || undefined }}
-                  >
-                    {(user?.user_metadata?.display_name || user?.email || '?')[0].toUpperCase()}
-                  </button>
-                  {accountOpen && (
-                    <div role="menu" className="absolute right-0 top-full mt-2 w-52 rounded-2xl bg-[#111827] border border-white/10 shadow-2xl overflow-hidden z-50">
-                      <div className="px-3 py-3 border-b border-white/5">
-                        <p className="text-white text-sm font-semibold truncate">{user?.user_metadata?.display_name || user?.email?.split('@')[0] || 'Account'}</p>
-                        <p className="text-slate-500 text-[11px] truncate">{user?.email}</p>
-                      </div>
-                      <button
-                        onClick={() => { setAccountOpen(false); onShowProfile?.() }}
-                        className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-sm text-slate-300 hover:bg-white/5 hover:text-white transition-colors"
-                      >
-                        <User size={15} /> User settings
-                      </button>
-                      <button
-                        onClick={() => { setAccountOpen(false); onNavChange?.('settings') }}
-                        className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-sm text-slate-300 hover:bg-white/5 hover:text-white transition-colors"
-                      >
-                        <Settings size={15} /> App settings
-                      </button>
-                      <button
-                        onClick={toggleTheme}
+                        onClick={() => { setAccountOpen(false); toggleTheme() }}
                         className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-sm text-slate-300 hover:bg-white/5 hover:text-white transition-colors"
                       >
                         {theme === 'dark' ? <Sun size={15} /> : <Moon size={15} />}
@@ -549,65 +465,37 @@ export default function DevStudioPage({
                 </div>
               </div>
             </div>
-            <div className="bg-[#1A2038] grid grid-cols-1 2xl:grid-cols-[minmax(0,1fr)_340px] md:overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-              <div className="md:hidden px-3 py-2 border-b border-white/5">
-                <div className="flex gap-2 overflow-x-auto no-scrollbar snap-x snap-mandatory">
-                  {LIFECYCLE_TABS.map(t => {
-                    const active = tab === t.id
-                    return (
-                      <button key={t.id} onClick={() => openTab(t.id)}
-                        className={`snap-start shrink-0 h-11 px-3 rounded-xl flex items-center gap-2 border transition-all ${
-                          active
-                            ? 'bg-[#6C5CE7] border-[#8A7DFF] text-white shadow-md shadow-[#6C5CE7]/25'
-                            : 'bg-[#111827]/70 border-white/8 text-slate-400'
-                        }`}
-                        aria-current={active ? 'page' : undefined}>
-                        <span className="text-sm leading-none">{t.icon}</span>
-                        <span className="text-xs font-bold whitespace-nowrap">{t.short || t.label}</span>
-                      </button>
-                    )
-                  })}
-                </div>
-                <div className="grid grid-cols-3 gap-2 mt-2">
-                  <div className="rounded-xl bg-[#111827]/70 border border-white/8 px-3 py-2">
-                    <p className="text-[9px] text-slate-500 uppercase font-bold tracking-wider leading-none">Apps</p>
-                    <p className="text-white text-base font-bold mt-1 leading-none">{apps.length}</p>
-                  </div>
-                  <div className="rounded-xl bg-[#111827]/70 border border-white/8 px-3 py-2">
-                    <p className="text-[9px] text-slate-500 uppercase font-bold tracking-wider leading-none">Runs</p>
-                    <p className="text-white text-base font-bold mt-1 leading-none">{totalStats.runs}</p>
-                  </div>
-                  <div className="rounded-xl bg-[#111827]/70 border border-white/8 px-3 py-2">
-                    <p className="text-[9px] text-slate-500 uppercase font-bold tracking-wider leading-none">Useful</p>
-                    <p className="text-white text-base font-bold mt-1 leading-none">{totalStats.satisfaction ?? '—'}{totalStats.satisfaction != null ? '%' : ''}</p>
-                  </div>
-                </div>
-              </div>
+            </DeveloperRowSection>
+        <DeveloperRowSection side="content">
+            <div className="pointer-events-auto bg-[#1A2038] grid grid-cols-1 md:overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               <div className="hidden md:flex min-w-0 pl-0 pr-4 py-3 items-center gap-3 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                 {/* Phones: one group fills the width and the next one peeks in;
                     swipe to the next group (snaps). md+: all three side by side. */}
                 <div ref={ribbonRef}
-                  className="w-full min-w-[760px] flex md:grid md:grid-cols-[0.9fr_1.18fr_0.9fr] gap-2 h-full overflow-x-auto md:overflow-visible snap-x snap-mandatory md:snap-none [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                  className="w-full min-w-[760px] flex md:grid md:grid-cols-[3fr_4fr_3fr] gap-4 h-full overflow-x-auto md:overflow-visible snap-x snap-mandatory md:snap-none [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                   {LIFECYCLE_GROUPS.map(group => (
                     <div key={group.id} data-group={group.id}
-                      className={`${LIFECYCLE_TABS.filter(t => t.group === group.id).length > 3 ? 'w-[94%]' : 'w-[85%]'} shrink-0 snap-start md:w-auto md:shrink min-w-0 rounded-2xl bg-[#111827]/60 border border-white/8 p-2 h-[68px]`}>
-                      <p className="px-2 pb-1.5 text-[9px] text-slate-500 uppercase font-bold tracking-wider leading-none truncate">{group.label}</p>
-                      <div className="flex gap-1 min-w-0">
+                      className={`developer-lifecycle-group ${LIFECYCLE_TABS.filter(t => t.group === group.id).length > 3 ? 'w-[94%]' : 'w-[85%]'} shrink-0 snap-start md:w-auto md:shrink min-w-0`}>
+                      <p className="px-0.5 pb-1.5 text-[10px] text-slate-400 uppercase font-semibold tracking-wider leading-none truncate">{group.label}</p>
+                      <div className="developer-lifecycle-box flex min-w-0 h-[48px] rounded-lg border border-white/10 bg-[#111827] overflow-hidden divide-x divide-white/10">
                         {LIFECYCLE_TABS.filter(t => t.group === group.id).map(t => {
                           const active = tab === t.id
                           return (
                             <button key={t.id} onClick={() => openTab(t.id)}
                               title={`${t.label}: ${t.desc}`}
-                              className={`flex-1 min-w-0 h-[42px] px-1 md:px-1.5 py-1.5 rounded-xl transition-all text-left ${
+                              aria-current={active ? 'step' : undefined}
+                              className={`flex-1 min-w-0 flex items-center gap-2.5 px-2 min-[1440px]:px-3 text-left transition-colors ${
                                 active
-                                  ? 'bg-[#6C5CE7] text-white shadow-md shadow-[#6C5CE7]/25'
-                                  : 'text-slate-400 hover:text-white hover:bg-white/5'
+                                  ? 'bg-[#6C5CE7]/25 text-white'
+                                  : 'text-slate-300 hover:text-white hover:bg-white/5'
                               }`}>
-                              <span className="flex items-center gap-1 min-w-0">
-                                <span className="text-sm leading-none shrink-0">{t.icon}</span>
-                                <span className="text-[10px] font-bold leading-none whitespace-nowrap truncate">{t.short || t.label}</span>
+                              {/* Icons only where there's room (1440px+), so labels are never cut off */}
+                              <t.Icon size={18} strokeWidth={1.75} aria-hidden="true"
+                                className={`hidden min-[1440px]:block shrink-0 ${active ? 'text-[#A29BFE]' : 'text-slate-400'}`} />
+                              <span className="min-w-0">
+                                <span data-tab-label className="block text-[11px] font-semibold leading-tight whitespace-nowrap truncate">{t.short || t.label}</span>
+                                <span className="block text-[10px] leading-tight mt-0.5 whitespace-nowrap truncate text-slate-500">{t.desc || ' '}</span>
                               </span>
-                              <span className={`block text-[9px] leading-none mt-1 whitespace-nowrap truncate ${active ? 'text-white/70' : 'text-slate-600'}`}>{t.desc || ' '}</span>
                             </button>
                           )
                         })}
@@ -616,8 +504,14 @@ export default function DevStudioPage({
                   ))}
                 </div>
               </div>
-              <div className="hidden 2xl:block border-l border-white/5 px-4 py-3">
-                <div className="h-[68px] rounded-2xl bg-[#111827]/60 border border-white/8 p-2 grid grid-cols-3 gap-2">
+            </div>
+        </DeveloperRowSection>
+        <DeveloperRowSection side="stats">
+              <details ref={workspaceMenuRef} className="developer-workspace-summary hidden xl:block relative px-3 pt-[29px]">
+                <summary className="cursor-pointer list-none inline-flex items-center justify-between gap-2 w-full h-10 px-3 rounded-lg border border-white/10 bg-[#111827] text-xs font-medium text-slate-200 hover:bg-white/5">
+                  Workspace <ChevronDown size={14} strokeWidth={1.75} aria-hidden="true" className="text-slate-400" />
+                </summary>
+                <div className="absolute right-3 top-full z-40 w-72 rounded-2xl bg-[#111827] border border-white/8 p-2 grid grid-cols-3 gap-2 shadow-lg">
                   <div className="rounded-xl bg-[#0E1424] border border-white/5 px-2 py-2">
                     <p className="text-[9px] text-slate-500 uppercase font-bold tracking-wider leading-none">Apps</p>
                     <p className="text-white text-lg font-bold mt-1 leading-none">{apps.length}</p>
@@ -631,25 +525,26 @@ export default function DevStudioPage({
                     <p className="text-white text-lg font-bold mt-1 leading-none">{totalStats.satisfaction ?? '—'}{totalStats.satisfaction != null ? '%' : ''}</p>
                   </div>
                 </div>
-              </div>
-            </div>
-          </>
-        )}
+              </details>
+
+        </DeveloperRowSection>
       </div>
 
+      {loadError && <div role="alert" className="p-4 text-amber-300 text-sm">Could not load your apps: {loadError} <button onClick={load} className="underline">Retry</button></div>}
+      {pageContent && <div className="flex-1 min-h-0 overflow-y-auto p-4 lg:p-6" data-testid={creationContent ? 'developer-creation' : 'developer-settings'}>{pageContent}</div>}
       {/* ── Body: content + right panes ── */}
       {/* First-time welcome screen (scrolls on its own; the top bar above doesn't) */}
-      {!loading && apps.length === 0 && (
+      {!pageContent && !loading && !loadError && apps.length === 0 && (
         <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 pt-4 sm:pt-6">
           <WelcomeScreen onCreateApp={onOpenCreate} />
         </div>
       )}
 
-      {(loading || apps.length > 0) && (
-        <div className="flex flex-1 min-h-0 overflow-hidden">
+      {(loading || apps.length > 0 || pageContent) && (
+        <div className={pageContent ? 'contents' : 'flex flex-1 min-h-0 overflow-hidden'}>
 
           {/* Main content */}
-          <div className="flex-1 min-w-0 overflow-y-auto px-4 sm:px-5 lg:px-6 py-4 md:py-6 space-y-5">
+          {!pageContent && <div className="flex-1 min-w-0 overflow-y-auto px-4 sm:px-5 lg:px-6 py-4 md:py-6 space-y-5">
             {/* Tab content */}
             {['design','test','deploy'].includes(tab) ? (
               phaseScopedActiveAppId ? (
@@ -657,7 +552,7 @@ export default function DevStudioPage({
                   <Suspense fallback={TAB_LOADING}>
                   {tab === 'design' && <DesignTab   navigationGuardRef={navigationGuardRef} apps={activePhaseApps} allApps={apps} loading={loading} onOpenCreate={onOpenCreate} user={user} onAppUpdated={updateAppInState} onGoToTest={appId => { moveAppPhase(appId, 'test'); setDeployFixReason('') }} selectedAppId={phaseScopedActiveAppId} onSelectApp={setActiveAppId} deployFixReason={deployFixReason} phaseByAppId={phaseByAppId} />}
                   {tab === 'test'   && <TestTab     apps={activePhaseApps} allApps={apps} user={user} selectedAppId={phaseScopedActiveAppId} phaseByAppId={phaseByAppId} onMovePhase={moveAppPhase} onOpenKeys={onShowSettings} />}
-                  {tab === 'deploy' && <DeployTab   apps={activePhaseApps} user={user} onAppUpdated={updateAppInState} onFixInDesign={returnToDesignForPublishFix} selectedAppId={phaseScopedActiveAppId} onSelectApp={setActiveAppId} onMovePhase={moveAppPhase} onOpenKeys={onShowSettings} />}
+                  {tab === 'deploy' && <DeployTab   apps={activePhaseApps} user={user} onAppUpdated={updateAppInState} onFixInDesign={returnToDesignForPublishFix} onMonitor={appId => navigateOperations('monitor', appId)} selectedAppId={phaseScopedActiveAppId} onSelectApp={setActiveAppId} onMovePhase={moveAppPhase} onOpenKeys={onShowSettings} />}
                   </Suspense>
                 </ErrorBoundary>
               ) : (
@@ -757,13 +652,16 @@ export default function DevStudioPage({
                 })()
               )
             ) : null}
+            {['monitor','evaluate','improve','sell'].includes(tab) && <OperationsWorkflow stage={tab} apps={apps} runs={runs} user={user}
+              selectedAppId={activeAppId} onSelectApp={setActiveAppId} selectedRunId={selectedRunId} onSelectRun={setSelectedRunId}
+              onNavigate={navigateOperations} onFix={startOperationalFix} loading={loading} error={feedbackError} onRefresh={load} />}
             {!['design','test','deploy'].includes(tab) && (
             <ErrorBoundary compact title={`${LIFECYCLE_TABS.find(t => t.id === tab)?.label || "This"} section couldn't load`} resetKey={`${tab}:${activeAppId}`}>
             <Suspense fallback={TAB_LOADING}>
             {tab === 'sell'     && <SellTab     apps={apps} user={user} onAppUpdated={updateAppInState} />}
-            {tab === 'monitor'  && <MonitorTab  apps={apps} appStats={appStats} loading={loading} totalStats={totalStats} runs={runs} entitlements={entitlements} user={user} />}
-            {tab === 'evaluate' && <EvaluateTab apps={apps} appStats={appStats} runs={runs} user={user} />}
-            {tab === 'improve'  && <ImproveTab  apps={apps} user={user} runs={runs} selectedAppId={activeAppId} onSelectApp={setActiveAppId} />}
+            {!feedbackError && tab === 'monitor'  && <MonitorTab  apps={apps} appStats={appStats} loading={loading} totalStats={totalStats} runs={runs} entitlements={entitlements} user={user} />}
+            {!feedbackError && tab === 'evaluate' && <EvaluateTab apps={apps} appStats={appStats} runs={runs} user={user} selectedAppId={activeAppId || apps[0]?.id} onSelectApp={setActiveAppId} />}
+            {tab === 'improve'  && <ImproveTab  apps={apps} user={user} runs={runs} selectedAppId={activeAppId || apps[0]?.id} onSelectApp={setActiveAppId} />}
             {tab === 'version'  && <VersionTab  apps={apps} user={user} onAppUpdated={updateAppInState} selectedAppId={activeAppId} onSelectApp={setActiveAppId} />}
             {tab === 'monetize' && <MonetizeTab apps={apps} runs={runs} loading={loading} user={user} />}
             {tab === 'secrets'  && <SecretsTab  apps={apps} user={user} selectedAppId={activeAppId} onSelectApp={setActiveAppId} />}
@@ -772,9 +670,15 @@ export default function DevStudioPage({
             )}
           </div>
 
-          {/* ── Right: App navigator ── */}
-          {NAVIGATOR_TABS.includes(tab) && (
-            <div className="hidden xl:block shrink-0 overflow-y-auto border-l border-white/5 w-[340px]">
+          }
+          {/* ── Left: App navigator ── */}
+          <DeveloperAppList>
+            <div className="developer-app-list hidden md:block shrink-0 overflow-y-auto w-56">
+              {searchNeedle && !visibleApps.length && (
+                <div role="status" className="mx-3 mt-3 rounded-lg border border-white/10 px-3 py-2 text-xs text-slate-400">
+                  No apps match “{search.trim()}”. <button onClick={() => onSearch?.('')} className="text-[#A29BFE] hover:underline">Clear search</button>
+                </div>
+              )}
               <ErrorBoundary variant="card" title="The app list couldn't load" resetKey={tab}>
               <AppNavigator
                 apps={visibleApps}
@@ -785,32 +689,12 @@ export default function DevStudioPage({
                 onSwitchTab={setTab}
                 onMovePhase={moveAppPhase}
                 onCreateApp={onOpenCreate}
+                compact
+                onOpenApp={(id, phase) => guarded(() => { setActiveAppIdState(id); setTabState(phase) })}
               />
               </ErrorBoundary>
             </div>
-          )}
-          {NAVIGATOR_TABS.includes(tab) && appsDrawer && (
-            <div className="xl:hidden fixed inset-0 z-40 flex justify-end bg-black/50" onClick={() => setAppsDrawer(false)}>
-              <div role="dialog" aria-label="App list" className="h-full w-[min(92vw,360px)] overflow-y-auto bg-[#0F1225] border-l border-white/10 shadow-2xl"
-                onClick={e => e.stopPropagation()}>
-                <div className="flex justify-end px-4 pt-3">
-                  <button onClick={() => setAppsDrawer(false)} aria-label="Close the app list" className="text-slate-400 hover:text-white text-lg px-1">×</button>
-                </div>
-                <ErrorBoundary variant="card" title="The app list couldn't load" resetKey={tab}>
-                <AppNavigator
-                  apps={visibleApps}
-                  phaseByAppId={phaseByAppId}
-                  activeAppId={activeAppId}
-                  activeTab={tab}
-                  onSelectApp={id => { setActiveAppId(id); setAppsDrawer(false) }}
-                  onSwitchTab={t => { setTab(t); setAppsDrawer(false) }}
-                  onMovePhase={moveAppPhase}
-                  onCreateApp={() => { setAppsDrawer(false); onOpenCreate?.() }}
-                />
-                </ErrorBoundary>
-              </div>
-            </div>
-          )}
+          </DeveloperAppList>
 
 
         </div>

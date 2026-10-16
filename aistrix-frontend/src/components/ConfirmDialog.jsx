@@ -14,7 +14,7 @@ export default function ConfirmDialog({ title, subtitle, children, confirmLabel,
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm px-4">
-      <div role="dialog" aria-modal="true" className="bg-[#141828] border border-white/10 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden">
+      <div role="dialog" aria-modal="true" aria-label={title} className="bg-[#141828] border border-white/10 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden">
         <div className="flex items-center justify-between px-5 py-4 border-b border-white/8">
           <div>
             <p className="text-white font-semibold text-sm">{title}</p>

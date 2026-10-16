@@ -4,6 +4,10 @@
 import fs from 'node:fs'
 import { expect, test } from '@playwright/test'
 
+test.beforeEach(({ isMobile }) => {
+  test.skip(!!isMobile, 'Phones use the monitoring workspace; Build and regression authoring are tested on desktop.')
+})
+
 async function stage(page, label) {
   await page.getByRole('button', { name: new RegExp(`^\\W*${label}(\\s+(Blueprint|Validate|Publish))?$`) }).first().click()
 }
@@ -121,14 +125,4 @@ test('Build with AI: "Save for Test" saves the app straight into the Test step w
   expect(created).toEqual({ published: false, phase: 'test' })
   expect(await page.evaluate(() => window.buildFixture.requests.some(r => r.path.endsWith('/promote')))).toBe(false)
   await expect(page.getByText('Testing Invoice Checker')).toBeVisible()
-})
-
-test('phones: the stage bar switches tabs and keeps the open tab visible', async ({ page }, testInfo) => {
-  test.skip(testInfo.project.name !== 'mobile', 'phone layout only')
-  await open(page)
-  const bar = page.getByRole('button', { name: '📡 Monitor', exact: true }).filter({ visible: true })
-  await bar.scrollIntoViewIfNeeded()
-  await bar.click()
-  await expect(bar).toHaveAttribute('aria-current', 'page')
-  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 })

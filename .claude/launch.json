@@ -46,6 +46,23 @@
       ],
       "cwd": "aistrix-backend",
       "port": 8000
+    },
+    {
+      "name": "Aistrix fixture (no account)",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "node_modules/vite/bin/vite.js",
+        "--config",
+        "e2e/fixtures/vite.config.js",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "4174",
+        "--strictPort"
+      ],
+      "cwd": "aistrix-frontend",
+      "port": 4174,
+      "url": "http://127.0.0.1:4174"
     }
   ]
 }

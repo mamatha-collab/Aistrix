@@ -1567,7 +1567,7 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
           </button>
           <button onClick={openPromptStudio}
             className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-[#6C5CE7]/15 hover:bg-[#6C5CE7]/25 text-[#A29BFE] border border-[#6C5CE7]/25 transition-colors">
-            ✏️ Prompt Studio
+            ✏️ Edit prompt ↑
           </button>
           <button onClick={() => save(bp)} disabled={saving}
             className="text-xs font-semibold px-4 py-1.5 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors disabled:opacity-40">
@@ -1637,7 +1637,7 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
               <div className="space-y-1">
                 <p className="text-[10px] text-slate-500 uppercase font-semibold">Prompt hint</p>
                 <p className="text-xs text-slate-300 leading-relaxed">{copilotSuggestions.system_prompt_hint}</p>
-                <button onClick={openPromptStudio} className="text-[11px] text-[#A29BFE] hover:underline">Apply in Prompt Studio →</button>
+                <button onClick={openPromptStudio} className="text-[11px] text-[#A29BFE] hover:underline">Apply in the prompt ↑</button>
               </div>
             )}
             {copilotSuggestions.marketplace_tagline && (
@@ -1853,7 +1853,7 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
           <p className="text-xs font-bold text-white uppercase tracking-wider">AI Behavior</p>
           <button onClick={openPromptStudio}
             className="text-[11px] text-[#A29BFE] hover:text-white transition-colors">
-            Edit full prompt →
+            Edit prompt ↑
           </button>
         </div>
         <div className="grid md:grid-cols-2 gap-3">
@@ -2188,13 +2188,21 @@ function SchemaExportPanel({ inputFields, outputFields }) {
 // ─── Tab: Design ──────────────────────────────────────────────────────────────
 
 export function DesignTab({ apps, allApps = apps, loading, onOpenCreate, user, onAppUpdated, onGoToTest, selectedAppId, onSelectApp, deployFixReason, phaseByAppId = {}, navigationGuardRef }) {
-  const [studioApp, setStudioApp]     = useState(null)
-
-  const app = apps.find(a => a.id === selectedAppId) || apps[0] || null
+  const blueprintGuardRef = useRef(null)
+  const promptGuardRef = useRef(null)
 
   useEffect(() => {
-    if (studioApp && studioApp.id !== app?.id) setStudioApp(null)
-  }, [app?.id, studioApp])
+    if (!navigationGuardRef) return undefined
+    const guard = proceed => {
+      const afterBlueprint = () => { if (!promptGuardRef.current || promptGuardRef.current(proceed)) proceed() }
+      if (blueprintGuardRef.current && !blueprintGuardRef.current(afterBlueprint)) return false
+      return !promptGuardRef.current || promptGuardRef.current(proceed)
+    }
+    navigationGuardRef.current = guard
+    return () => { if (navigationGuardRef.current === guard) navigationGuardRef.current = null }
+  }, [navigationGuardRef])
+
+  const app = apps.find(a => a.id === selectedAppId) || apps[0] || null
 
   if (loading) return <p className="text-slate-500 text-sm py-10 text-center">Loading…</p>
 
@@ -2229,6 +2237,7 @@ export function DesignTab({ apps, allApps = apps, loading, onOpenCreate, user, o
   return (
     <>
       <div className="space-y-4">
+        {app && <div><div className="flex items-center gap-3"><h1 className="text-2xl font-semibold text-white">{app.name}</h1><span className="text-xs px-3 py-1 rounded-full bg-white/5 text-slate-400">{app.is_published ? 'Live + draft' : 'Draft'}</span></div><p className="text-sm text-slate-400 mt-2">Configure your AI app, define its behavior, and test the response.</p></div>}
         {deployFixReason && app?.id === selectedAppId && (
           <div className="bg-[#6C5CE7]/10 border border-[#6C5CE7]/30 rounded-2xl px-4 py-3 flex items-start gap-3">
             <span className="text-[#A29BFE] text-sm mt-0.5">↩</span>
@@ -2255,29 +2264,26 @@ export function DesignTab({ apps, allApps = apps, loading, onOpenCreate, user, o
           </div>
         )}
 
+        {app && <SafeCard name="Prompt workspace" resetKey={app.id}><Suspense fallback={<p className="text-slate-400 text-sm">Loading prompt workspace…</p>}>
+          <PromptStudio key={app.id} mode="workspace" app={app} user={user} navigationGuardRef={promptGuardRef}
+            onSaved={onAppUpdated} onGoToTest={() => onGoToTest?.(app.id)} />
+        </Suspense></SafeCard>}
 
-        {studioApp && (
-          <SafeCard name="Prompt Studio" resetKey={studioApp.id}>
-          <Suspense fallback={null}>
-            <PromptStudio
-              mode="inline"
-              app={studioApp}
-              user={user}
-              onClose={() => setStudioApp(null)}
-              onSaved={updated => { onAppUpdated?.(updated); setStudioApp(updated) }}
-            />
-          </Suspense>
-          </SafeCard>
-        )}
 
+        <div id="design-advanced" className="scroll-mt-4 space-y-4 pt-5 border-t border-white/8">
+        <div><h2 className="text-lg font-semibold text-white">Blueprint & app settings</h2><p className="text-xs text-slate-400 mt-1">Requirements, models, schemas, permissions, readiness, and production configuration.</p></div>
         {app ? (
           <BlueprintEditor
-            navigationGuardRef={navigationGuardRef}
+            navigationGuardRef={blueprintGuardRef}
             key={app.id}
             app={app}
             user={user}
             onAppUpdated={onAppUpdated}
-            onOpenPromptStudio={a => setStudioApp(a)}
+            onOpenPromptStudio={a => {
+              const field = document.getElementById(`prompt-${a.id}`)
+              field?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+              field?.focus({ preventScroll: true })
+            }}
             onGoToTest={onGoToTest}
           />
         ) : (
@@ -2285,6 +2291,7 @@ export function DesignTab({ apps, allApps = apps, loading, onOpenCreate, user, o
             <p className="text-slate-400 text-sm">Select an app above to open its Blueprint Studio.</p>
           </div>
         )}
+        </div>
       </div>
     </>
   )

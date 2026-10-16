@@ -60,7 +60,6 @@ export default function DevStudioPage({
   creationContent = null,
   onShowHistory,
   onShowSettings,
-  onShowProfile,
   noKeys = false,
   onNavChange,
   search = '',
@@ -83,7 +82,7 @@ export default function DevStudioPage({
     return true
   }
   const [settingsOpen, setSettingsOpen] = useState(false)
-  function openSettings() { guarded(() => setSettingsOpen(true)) }
+  function openSettings(focus = 'top') { guarded(() => setSettingsOpen(focus)) }
   function onOpenCreate() { guarded(() => { setSettingsOpen(false); setTabState('design'); requestCreate?.() }) }
   function setTab(next) {
     if (next === tab && !pageContent) return true
@@ -333,13 +332,43 @@ export default function DevStudioPage({
       app.name,
       app.description,
       app.type,
+      app.app_type,
       app.domain,
       app.category,
       app.status,
+      ...(Array.isArray(app.tags) ? app.tags : []),
+      app.system_prompt,
       getDevPhase(app, phaseByAppId),
     ].filter(Boolean).join(' ').toLowerCase().includes(searchNeedle)
   }
   const visibleApps = searchNeedle ? apps.filter(appMatchesSearch) : apps
+
+  // Results under the search box: apps, runs, pages and the guide.
+  const [searchOpen, setSearchOpen] = useState(false)
+  const searchResults = !searchNeedle ? [] : [
+    ...visibleApps.slice(0, 5).map(app => {
+      const phase = getDevPhase(app, phaseByAppId)
+      const byPrompt = !`${app.name} ${app.description || ''}`.toLowerCase().includes(searchNeedle) && (app.system_prompt || '').toLowerCase().includes(searchNeedle)
+      return { id: `app:${app.id}`, kind: 'App', label: app.name, detail: byPrompt ? 'Prompt matches' : `${phase[0].toUpperCase()}${phase.slice(1)}`,
+        open: () => guarded(() => { setSettingsOpen(false); setActiveAppIdState(app.id); setTabState(phase) }) }
+    }),
+    ...runs.filter(r => [r.input, r.output, r.feedback_text].some(t => typeof t === 'string' && t.toLowerCase().includes(searchNeedle))).slice(0, 5).map(r => ({
+      id: `run:${r.id}`, kind: 'Run', label: String(r.feedback_text || r.input || 'Run').slice(0, 80),
+      detail: `${r.app_name || 'App'} · ${r.rating_value === -1 ? 'Not useful' : r.rating_value === 1 ? 'Useful' : 'Unrated'} · ${new Date(r.created_at).toLocaleDateString()}`,
+      open: () => { setSelectedRunId(r.id); setSettingsOpen(false); navigateOperations('evaluate', r.app_id) },
+    })),
+    ...[
+      ...LIFECYCLE_TABS.map(t => ({ id: `tab:${t.id}`, words: `${t.label} ${t.short || ''} ${t.desc}`, label: t.label, detail: t.desc, open: () => openTab(t.id) })),
+      { id: 'settings', words: 'settings profile account appearance theme notifications', label: 'Settings', detail: 'Profile, appearance, notifications', open: () => openSettings('top') },
+      { id: 'keys', words: 'keys api key ai provider', label: 'AI keys', detail: 'Settings → API Keys', open: () => openSettings('keys') },
+    ].filter(page => page.words.toLowerCase().includes(searchNeedle)).map(page => ({ ...page, kind: 'Page' })),
+    ...(['guide', 'help', 'docs', 'documentation', 'how'].some(w => w.startsWith(searchNeedle) || searchNeedle.startsWith(w))
+      ? [{ id: 'guide', kind: 'Guide', label: 'Open the guide', detail: 'How each step works', open: () => setShowHelp(true) }] : []),
+  ]
+  function openSearchResult(result) {
+    setSearchOpen(false)
+    result.open()
+  }
   const activeApp = apps.find(a => a.id === activeAppId) || null
   const activeAppPhase = activeApp ? getDevPhase(activeApp, phaseByAppId) : null
   const activePhaseApps = ['design','test','deploy'].includes(tab)
@@ -351,13 +380,13 @@ export default function DevStudioPage({
 
   const pageContent = creationContent || (settingsOpen ? (
     <ErrorBoundary compact title="Settings couldn't load" resetKey="settings">
-      <Suspense fallback={TAB_LOADING}><SettingsPage user={user} developer /></Suspense>
+      <Suspense fallback={TAB_LOADING}><SettingsPage key={String(settingsOpen)} user={user} developer focus={settingsOpen === 'keys' ? 'keys' : null} /></Suspense>
     </ErrorBoundary>
   ) : null)
 
   if (isPhone) return <MobileDeveloper user={user} apps={apps} runs={runs} phaseByAppId={phaseByAppId} loading={loading}
     error={loadError || feedbackError} onRefresh={load} onAppUpdated={updateAppInState}
-    onShowProfile={onShowProfile} onShowSettings={onShowSettings} onShowHistory={onShowHistory}
+    onShowHistory={onShowHistory}
     onSignOut={signOut} onToggleTheme={toggleTheme} />
 
   return (
@@ -376,16 +405,24 @@ export default function DevStudioPage({
             <DeveloperRowSection side="header">
             <div className="pointer-events-auto hidden md:flex h-[71px] items-center justify-end gap-4">
               <div className="flex items-center gap-2 min-w-0">
-                <div className="hidden lg:flex items-center gap-2 bg-[#0E1424] border border-white/10 rounded-lg px-3 h-9 text-sm text-slate-300 w-56 xl:w-72 focus-within:border-[#6C5CE7]/60 transition-colors">
+                <div className="relative hidden lg:block w-56 xl:w-72"
+                  onFocus={() => setSearchOpen(true)}
+                  onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) setSearchOpen(false) }}>
+                <div className="flex items-center gap-2 bg-[#0E1424] border border-white/10 rounded-lg px-3 h-9 text-sm text-slate-300 focus-within:border-[#6C5CE7]/60 transition-colors">
                   <Search size={16} strokeWidth={1.75} className="shrink-0 text-slate-500" aria-hidden="true" />
                   <input
                     type="search"
                     value={search}
-                    onChange={e => onSearch?.(e.target.value)}
-                    onKeyDown={e => { if (e.key === 'Escape' && search) { e.preventDefault(); e.stopPropagation(); onSearch?.('') } }}
-                    placeholder="Search apps"
-                    aria-label="Search apps by name, description, type or stage"
-                    title="Filters the app list by name, description, type or stage"
+                    onChange={e => { onSearch?.(e.target.value); setSearchOpen(true) }}
+                    onKeyDown={e => {
+                      if (e.key === 'Escape' && search) { e.preventDefault(); e.stopPropagation(); onSearch?.(''); return }
+                      if (e.key === 'Enter' && searchResults[0]) { e.preventDefault(); openSearchResult(searchResults[0]) }
+                      if (e.key === 'ArrowDown' && searchResults[0]) { e.preventDefault(); e.currentTarget.closest('.relative')?.querySelector('[data-search-result]')?.focus() }
+                    }}
+                    placeholder="Search apps, prompts, runs…"
+                    aria-label="Search apps, prompts, runs and pages"
+                    aria-controls="developer-search-results"
+                    aria-expanded={searchOpen && !!searchNeedle}
                     ref={searchRef}
                     className="flex-1 min-w-0 bg-transparent text-sm text-white placeholder-slate-500 focus:outline-none [&::-webkit-search-cancel-button]:hidden"
                   />
@@ -395,6 +432,29 @@ export default function DevStudioPage({
                     </button>
                   )}
                 </div>
+                {searchOpen && searchNeedle && (
+                  <div id="developer-search-results" role="listbox" aria-label="Search results"
+                    onKeyDown={e => {
+                      const items = [...e.currentTarget.querySelectorAll('[data-search-result]')]
+                      const at = items.indexOf(document.activeElement)
+                      if (e.key === 'ArrowDown') { e.preventDefault(); items[Math.min(at + 1, items.length - 1)]?.focus() }
+                      if (e.key === 'ArrowUp') { e.preventDefault(); if (at <= 0) searchRef?.current?.focus(); else items[at - 1]?.focus() }
+                      if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); setSearchOpen(false); searchRef?.current?.focus() }
+                    }}
+                    className="absolute left-0 right-0 top-full mt-1 z-50 max-h-[70vh] overflow-y-auto rounded-lg border border-white/10 bg-[#111827] shadow-2xl py-1">
+                    {searchResults.length ? searchResults.map(result => (
+                      <button key={result.id} data-search-result role="option" aria-selected="false" onClick={() => openSearchResult(result)}
+                        className="w-full flex items-start gap-3 px-3 py-2 text-left hover:bg-white/5 focus:bg-white/5 focus:outline-none">
+                        <span className="mt-0.5 w-11 shrink-0 text-[10px] uppercase tracking-wider text-slate-500">{result.kind}</span>
+                        <span className="min-w-0">
+                          <span className="block text-sm text-white truncate">{result.label}</span>
+                          <span className="block text-[11px] text-slate-400 truncate">{result.detail}</span>
+                        </span>
+                      </button>
+                    )) : <p role="status" className="px-3 py-2 text-xs text-slate-400">No apps, runs or pages match “{search.trim()}”.</p>}
+                  </div>
+                )}
+                </div>
                 <div className="flex items-center gap-1">
                   <NotificationsPanel user={user} onNavChange={onNavChange} />
                   <button onClick={onShowHistory}
@@ -403,7 +463,7 @@ export default function DevStudioPage({
                     <Play size={16} strokeWidth={1.75} aria-hidden="true" /> Runs
                   </button>
                   <button
-                    onClick={onShowSettings}
+                    onClick={() => openSettings('keys')}
                     aria-label={noKeys ? 'Keys — no AI key added yet' : undefined}
                     title={noKeys ? 'No AI key added — add one to build apps' : undefined}
                     className="relative inline-flex items-center gap-2 h-9 px-3 rounded-lg text-sm text-slate-200 hover:text-white hover:bg-white/5 transition-colors whitespace-nowrap"
@@ -442,7 +502,7 @@ export default function DevStudioPage({
                         <p className="text-slate-500 text-[11px] truncate">{user?.email}</p>
                       </div>
                       <button
-                        onClick={() => { setAccountOpen(false); openSettings() }}
+                        onClick={() => { setAccountOpen(false); openSettings('top') }}
                         className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-sm text-slate-300 hover:bg-white/5 hover:text-white transition-colors"
                       >
                         <Settings size={15} /> Settings

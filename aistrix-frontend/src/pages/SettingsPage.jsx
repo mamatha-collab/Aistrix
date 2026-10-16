@@ -6,9 +6,9 @@ import { PROVIDER_STYLE, removeProviderKey, saveProviderKey, useProviders } from
 
 const AVATAR_COLORS = ['#6C5CE7','#E84393','#00B894','#0984E3','#FDCB6E','#E17055','#74B9FF','#A29BFE','#55EFC4','#FD79A8']
 
-function Section({ title, description, children }) {
+function Section({ id, title, description, children }) {
   return (
-    <div className="bg-[#171B33] border border-white/5 rounded-2xl overflow-hidden">
+    <div id={id} className="bg-[#171B33] border border-white/5 rounded-2xl overflow-hidden scroll-mt-4">
       <div className="px-6 py-4 border-b border-white/5">
         <p className="text-white font-medium">{title}</p>
         {description && <p className="text-xs text-slate-400 mt-0.5">{description}</p>}
@@ -21,8 +21,15 @@ function Section({ title, description, children }) {
 // `developer`: the one Settings page in the Developer workspace. It leaves out
 // Business-only sections (AI Memory is used when running apps as a business
 // user).
-export default function SettingsPage({ user, developer = false }) {
+// `embedded`: shown inside another screen that already has the title and padding (phone).
+export default function SettingsPage({ user, developer = false, focus = null, embedded = false }) {
   const toast = useToast()
+  useEffect(() => {
+    if (focus !== 'keys') return
+    const el = document.getElementById('settings-api-keys')
+    el?.scrollIntoView({ block: 'start' })
+    el?.querySelector('input:not([hidden])')?.focus({ preventScroll: true })
+  }, [focus])
 
   // Profile
   const meta = user?.user_metadata || {}
@@ -148,8 +155,8 @@ export default function SettingsPage({ user, developer = false }) {
   const inputCls = 'w-full bg-[#1F2444] border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-[#6C5CE7] transition-colors'
 
   return (
-    <div className="flex-1 overflow-y-auto px-6 py-6 space-y-5 max-w-6xl">
-      <div>
+    <div className={embedded ? 'space-y-5' : 'flex-1 overflow-y-auto px-6 py-6 space-y-5 max-w-6xl'}>
+      <div hidden={embedded}>
         <h1 className="text-white text-xl font-semibold">Settings</h1>
         <p className="text-slate-400 text-sm mt-0.5">{developer ? 'Your profile, appearance, notifications and AI keys.' : 'Manage your account and preferences.'}</p>
       </div>
@@ -203,7 +210,7 @@ export default function SettingsPage({ user, developer = false }) {
       </div>
       <div className="space-y-5 min-w-0">
       {/* API Keys */}
-      <Section title="API Keys" description="Use your own keys — they never leave the server and don't count against your quota.">
+      <Section id="settings-api-keys" title="API Keys" description="Use your own keys — they never leave the server and don't count against your quota.">
         <div className="space-y-4">
           {PROVIDERS.map(p => (
             <div key={p.id} className="bg-[#1F2444] border border-white/5 rounded-xl p-4">

@@ -105,7 +105,7 @@ test('empty Developer welcome keeps account controls available', async ({ page }
   const menu = page.getByRole('menu').filter({ visible: true })
   await expect(menu.getByText('fixture@example.invalid', { exact: true })).toBeVisible()
   await expect(menu.getByRole('button', { name: 'Sign out', exact: true })).toBeVisible()
-  await expect(menu.getByRole('button', { name: testInfo.project.name === 'mobile' ? 'User settings' : 'Settings', exact: true })).toBeVisible()
+  await expect(menu.getByRole('button', { name: 'Settings', exact: true })).toBeVisible()
 })
 
 test('one Settings page opens inside the Developer workspace and tabs leave it', async ({ page }, testInfo) => {
@@ -131,7 +131,7 @@ test('search filters the app list and says when nothing matches', async ({ page 
   await page.setViewportSize({ width: 1280, height: 800 })
   await page.goto('/e2e/fixtures/?scenario=shared-row')
   const box = page.getByRole('searchbox', { name: /Search apps/ })
-  await expect(box).toHaveAttribute('placeholder', 'Search apps')
+  await expect(box).toHaveAttribute('placeholder', 'Search apps, prompts, runs…')
   const list = page.locator('.developer-app-list')
   await box.fill('second')
   await expect(list.getByText('Second Assistant', { exact: true })).toBeVisible()
@@ -142,6 +142,38 @@ test('search filters the app list and says when nothing matches', async ({ page 
   await expect(box).toHaveValue('')
   await expect(list.getByText('Fixture Assistant', { exact: true })).toBeVisible()
   await box.fill('zzz')
+  await expect(page.getByRole('listbox', { name: 'Search results' })).toContainText('No apps, runs or pages match “zzz”')
   await box.press('Escape')
   await expect(box).toHaveValue('')
+
+  // Results: apps (by name or prompt), pages, the guide; Enter opens the first.
+  const results = page.getByRole('listbox', { name: 'Search results' })
+  await box.fill('markdown')                                     // only in the fixture app's prompt
+  await expect(results.getByRole('option')).toContainText(['Prompt matches'])
+  await box.fill('secrets')
+  await expect(results.getByRole('option', { name: /Page\s*Secrets/ })).toBeVisible()
+  await box.press('Enter')
+  await expect(page.locator('button[title="Secrets: Env vars"]').filter({ visible: true })).toHaveAttribute('aria-current', 'step')
+  await box.fill('keys')
+  await results.getByRole('option', { name: /AI keys/ }).click()
+  await expect(page.getByTestId('developer-settings').locator('#settings-api-keys')).toBeInViewport()
+  await box.fill('guide')
+  await expect(results.getByRole('option', { name: /Open the guide/ })).toBeVisible()
+})
+
+test('Keys opens Settings at API Keys; phones have one Settings item', async ({ page }, testInfo) => {
+  await page.goto('/e2e/fixtures/?scenario=shared-row')
+  if (testInfo.project.name === 'mobile') {
+    await page.getByRole('button', { name: 'Account menu', exact: true }).filter({ visible: true }).click()
+    const menu = page.getByRole('menu').filter({ visible: true })
+    await expect(menu.getByRole('button', { name: 'User settings' })).toHaveCount(0)
+    await expect(menu.getByRole('button', { name: 'AI keys' })).toHaveCount(0)
+    await menu.getByRole('button', { name: 'Settings', exact: true }).click()
+    await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toBeVisible()
+    await expect(page.getByText('API Keys', { exact: true })).toBeVisible()
+    return
+  }
+  await page.getByRole('button', { name: /^Keys/ }).filter({ visible: true }).click()
+  const keys = page.getByTestId('developer-settings').locator('#settings-api-keys')
+  await expect(keys).toBeInViewport()
 })

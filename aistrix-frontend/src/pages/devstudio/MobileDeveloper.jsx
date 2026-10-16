@@ -7,6 +7,7 @@ import { feedbackSummary } from '../../lib/operationsLoop'
 import { timeAgo } from '../../utils'
 
 const MobileManage = lazy(() => import('./MobileManage'))
+const SettingsPage = lazy(() => import('../SettingsPage'))
 const PublishedVersions = lazy(() => import('../../components/PublishedVersions'))
 const card = 'rounded-2xl border border-white/8 bg-[#171B33] p-4'
 const action = 'min-h-11 rounded-xl px-3 py-2 text-sm font-medium text-slate-200 hover:bg-white/5'
@@ -27,7 +28,7 @@ function RunCard({ run, appName }) {
   </details>
 }
 
-export default function MobileDeveloper({ user, apps, runs, phaseByAppId, loading, error, onRefresh, onAppUpdated, onShowProfile, onShowSettings, onShowHistory, onSignOut, onToggleTheme }) {
+export default function MobileDeveloper({ user, apps, runs, phaseByAppId, loading, error, onRefresh, onAppUpdated, onShowHistory, onSignOut, onToggleTheme }) {
   const [view, setView] = useState('monitor')
   const [selectedId, setSelectedId] = useState(null)
   const [filter, setFilter] = useState('')
@@ -75,7 +76,7 @@ export default function MobileDeveloper({ user, apps, runs, phaseByAppId, loadin
           <button aria-label="Close account menu" className="fixed inset-0 z-40 cursor-default" onClick={() => setAccountOpen(false)} />
           <div role="menu" className="absolute top-full right-0 mt-2 z-50 w-60 rounded-2xl border border-white/10 bg-[#111827] shadow-2xl p-2">
             <p className="truncate text-xs text-slate-400 px-3 py-3 border-b border-white/8 mb-1">{user.email}</p>
-            {[['User settings', onShowProfile], ['AI keys', onShowSettings], ['Run history', onShowHistory], ['Change theme', onToggleTheme]].map(([label, handler]) => <button key={label} className={`${action} w-full text-left`} onClick={() => { setAccountOpen(false); handler?.() }}>{label}</button>)}
+            {[['Settings', () => navigate('settings')], ['Run history', onShowHistory], ['Change theme', onToggleTheme]].map(([label, handler]) => <button key={label} className={`${action} w-full text-left`} onClick={() => { setAccountOpen(false); handler?.() }}>{label}</button>)}
             <button className={`${action} !text-red-300 w-full text-left border-t border-white/8 mt-1`} onClick={() => { setAccountOpen(false); setConfirmSignOut(true) }}>Sign out</button>
           </div>
         </>}
@@ -84,11 +85,11 @@ export default function MobileDeveloper({ user, apps, runs, phaseByAppId, loadin
 
     <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-5 space-y-5" key={`${view}:${selectedId || ''}`}>
       <div className="flex items-center justify-between gap-3">
-        <h1 className="text-xl text-white font-semibold">{selected && view === 'apps' ? 'App details' : view === 'monitor' ? 'Monitor' : view === 'apps' ? 'Apps' : view === 'manage' ? 'Manage' : 'Feedback'}</h1>
+        <h1 className="text-xl text-white font-semibold">{selected && view === 'apps' ? 'App details' : view === 'monitor' ? 'Monitor' : view === 'apps' ? 'Apps' : view === 'manage' ? 'Manage' : view === 'settings' ? 'Settings' : 'Feedback'}</h1>
         {view !== 'manage' && <button className={`${action} !p-2.5 border border-white/8`} aria-label="Refresh app activity" disabled={loading} onClick={onRefresh}><RefreshCw size={18} className={loading ? 'animate-spin' : ''} /></button>}
       </div>
       {error && view !== 'manage' && <div role="alert" className="rounded-xl border border-amber-400/20 bg-amber-400/5 p-3 text-sm text-amber-200">{error}<button className="block underline min-h-11" onClick={onRefresh}>Try again</button></div>}
-      {view === 'manage' ? <ErrorBoundary compact title="Manage could not load"><Suspense fallback={<p role="status" className="text-sm text-slate-400">Loading Manage…</p>}><MobileManage apps={apps} user={user} onAppUpdated={onAppUpdated} /></Suspense></ErrorBoundary> : loading && !hasLoaded ? <div role="status" className="space-y-3"><p className="text-sm text-slate-400">Loading app activity…</p>{[0, 1, 2].map(i => <div key={i} className="h-20 rounded-2xl bg-white/5 animate-pulse" />)}</div> : !apps.length && !error ? <div className={`${card} space-y-2`}><h2 className="text-white font-semibold">No apps yet</h2><p className="text-sm text-slate-400 leading-relaxed">Create your first app on a computer or tablet. Check its activity and feedback here.</p></div> : <>
+      {view === 'settings' ? <ErrorBoundary compact title="Settings could not load"><Suspense fallback={<p role="status" className="text-sm text-slate-400">Loading Settings…</p>}><SettingsPage user={user} developer embedded /></Suspense></ErrorBoundary> : view === 'manage' ? <ErrorBoundary compact title="Manage could not load"><Suspense fallback={<p role="status" className="text-sm text-slate-400">Loading Manage…</p>}><MobileManage apps={apps} user={user} onAppUpdated={onAppUpdated} /></Suspense></ErrorBoundary> : loading && !hasLoaded ? <div role="status" className="space-y-3"><p className="text-sm text-slate-400">Loading app activity…</p>{[0, 1, 2].map(i => <div key={i} className="h-20 rounded-2xl bg-white/5 animate-pulse" />)}</div> : !apps.length && !error ? <div className={`${card} space-y-2`}><h2 className="text-white font-semibold">No apps yet</h2><p className="text-sm text-slate-400 leading-relaxed">Create your first app on a computer or tablet. Check its activity and feedback here.</p></div> : <>
         {view === 'monitor' && <>
           <div className="grid grid-cols-2 gap-3">
             <div className={card}><p className="text-2xl text-white font-bold">{live.length}</p><p className="text-xs text-slate-400 mt-1">Live apps</p></div>

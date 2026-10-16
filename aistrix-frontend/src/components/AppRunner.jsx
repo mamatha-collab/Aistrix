@@ -300,27 +300,33 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
       ])
       setRunStatus({ hasKey: (keys?.length ?? 0) > 0, provider: appProvider, runsToday: runsToday ?? 0, limit: 50 })
     }
-    async function loadEntitlement() {
-      if (!app.is_paid) { setEntitlement(null); return }
-      const { data } = await supabase
-        .from('app_entitlements')
-        .select('*')
-        .eq('app_id', app.id)
-        .eq('user_id', user.id)
-        .eq('status', 'active')
-        .maybeSingle()
-      setEntitlement(data ?? null)
-    }
     async function loadBlueprint() {
       const { data } = await supabase.from('app_blueprints').select('blueprint').eq('app_id', app.id).maybeSingle()
       setBlueprint(data?.blueprint || null)
     }
     loadContext()
     loadRunStatus()
-    loadEntitlement()
+    loadEntitlement().catch(() => setEntitlement(null))
     loadBlueprint()
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when user changes
   }, [user])
+
+  async function loadEntitlement() {
+    if (!app.is_paid) { setEntitlement(null); return null }
+    const { data } = await supabase
+      .from('app_entitlements')
+      .select('*')
+      .eq('app_id', app.id)
+      .eq('user_id', user.id)
+      .eq('status', 'active')
+      .maybeSingle()
+    setEntitlement(data ?? null)
+    return data ?? null
+  }
+
+  // Pay-per-run: each purchase is one run (run_quota = runs bought).
+  const payPerRun = entitlement?.plan === 'pay_per_run'
+  const runsLeft = entitlement?.run_quota != null ? Math.max(entitlement.run_quota - (entitlement.runs_this_period ?? 0), 0) : null
 
   async function buildUserContext() {
     const parts = []
@@ -975,7 +981,11 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
         <Suspense fallback={null}>
           <PaymentModal
             app={app} user={user}
-            onSuccess={() => { setShowPayment(false); if (isNative) handleRun(buildNativeInput()); else handleRun() }}
+            onSuccess={async () => {
+              setShowPayment(false)
+              await loadEntitlement().catch(() => null)
+              if (isNative) handleRun(buildNativeInput()); else handleRun()
+            }}
             onClose={() => setShowPayment(false)}
           />
         </Suspense>
@@ -986,7 +996,8 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
           onClick={() => {
             if (app.is_paid && app.price_per_run > 0) {
               // Over quota check
-              if (entitlement && entitlement.run_quota != null && entitlement.runs_this_period >= entitlement.run_quota) {
+              if (entitlement && runsLeft === 0) {
+                if (payPerRun) { setShowPayment(true); return }
                 toast(`You've used all ${entitlement.run_quota} runs in your current period`, 'error', 5000)
                 return
               }
@@ -1039,8 +1050,12 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
       {/* Entitlement status */}
       {app.is_paid && entitlement && (
         <div className="flex items-center gap-2 text-[11px]">
-          <span className="text-emerald-400">✓ Subscribed</span>
-          {entitlement.run_quota != null && (
+          <span className="text-emerald-400">{payPerRun ? '✓ Purchased' : '✓ Subscribed'}</span>
+          {payPerRun ? (
+            <span className="text-slate-500">
+              {runsLeft ? `${runsLeft} run${runsLeft === 1 ? '' : 's'} left` : `No runs left · running buys another for $${app.price_per_run}`}
+            </span>
+          ) : entitlement.run_quota != null && (
             <span className="text-slate-500">
               {entitlement.runs_this_period ?? 0}/{entitlement.run_quota} runs used this period
             </span>

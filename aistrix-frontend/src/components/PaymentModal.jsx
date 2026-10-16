@@ -29,7 +29,7 @@ const CARD_STYLE = {
   },
 }
 
-function CheckoutForm({ app, user, onSuccess, onClose }) {
+function CheckoutForm({ app, onSuccess, onClose }) {
   const stripe = useStripe()
   const elements = useElements()
   const [processing, setProcessing] = useState(false)
@@ -48,10 +48,10 @@ function CheckoutForm({ app, user, onSuccess, onClose }) {
       const res = await fetch(`${API_URL}/create-payment-intent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
-        body: JSON.stringify({ app_id: app.id, amount: Math.round(app.price_per_run * 100), currency: 'usd' }),
+        body: JSON.stringify({ app_id: app.id }),   // the server charges the app's own price
       })
-      const { client_secret, error: backendError } = await res.json()
-      if (backendError) throw new Error(backendError)
+      const { client_secret, detail } = await res.json().catch(() => ({}))
+      if (!res.ok || !client_secret) throw new Error(typeof detail === 'string' ? detail : 'Could not start the payment. Please try again.')
 
       // Confirm payment
       const { error: stripeError, paymentIntent } = await stripe.confirmCardPayment(client_secret, {
@@ -61,18 +61,17 @@ function CheckoutForm({ app, user, onSuccess, onClose }) {
       if (stripeError) throw new Error(stripeError.message)
 
       if (paymentIntent.status === 'succeeded') {
-        // Record payment
-        await supabase.from('app_payments').insert({
-          app_id: app.id, user_id: user.id,
-          amount: app.price_per_run, currency: 'usd', status: 'completed',
-          stripe_payment_intent_id: paymentIntent.id,
+        // The server checks the payment with Stripe and adds the run it
+        // bought (once, even if Stripe's webhook reports it too).
+        const confirm = await fetch(`${API_URL}/payments/confirm`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
+          body: JSON.stringify({ payment_intent_id: paymentIntent.id }),
         })
-        // Upsert entitlement for this pay-per-run purchase
-        await supabase.from('app_entitlements').upsert({
-          app_id: app.id, user_id: user.id,
-          plan: 'pay_per_run', status: 'active',
-          runs_this_period: 0, run_quota: null,
-        }, { onConflict: 'app_id,user_id', ignoreDuplicates: false })
+        if (!confirm.ok) {
+          const detail = (await confirm.json().catch(() => ({}))).detail
+          throw new Error(typeof detail === 'string' ? detail : 'Payment received, but your run could not be added yet. Try running again in a minute.')
+        }
         track(EVENTS.CHECKOUT_COMPLETED, { app_id: app.id, app_name: app.name, plan: 'pay_per_run', method: 'elements' })
         toast(`Payment successful — running ${app.name}`, 'success')
         onSuccess()
@@ -125,8 +124,8 @@ async function startCheckoutSession(app, user, plan) {
       cancel_url:  `${origin}/app/${app.id}?checkout=cancelled`,
     }),
   })
-  const { checkout_url, error } = await res.json()
-  if (error) throw new Error(error)
+  const { checkout_url, detail } = await res.json().catch(() => ({}))
+  if (!res.ok || !checkout_url) throw new Error(typeof detail === 'string' ? detail : 'Could not open checkout. Please try again.')
   window.location.href = checkout_url
 }
 
@@ -136,7 +135,6 @@ export default function PaymentModal({ app, user, onSuccess, onClose }) {
   const [plan, setPlan] = useState('pay_per_run')   // pay_per_run | subscription
   const [checkoutLoading, setCheckoutLoading] = useState(false)
   const [checkoutError, setCheckoutError] = useState('')
-  const toast = useToast()
 
   // Track modal open
   useState(() => { track(EVENTS.PAYMENT_MODAL_OPENED, { app_id: app.id, app_name: app.name, price: app.price_per_run }) })
@@ -222,7 +220,7 @@ export default function PaymentModal({ app, user, onSuccess, onClose }) {
                   <div className="flex-1 h-px bg-white/5" />
                 </div>
                 <Elements stripe={stripe}>
-                  <CheckoutForm app={app} user={user} onSuccess={onSuccess} onClose={onClose} />
+                  <CheckoutForm app={app} onSuccess={onSuccess} onClose={onClose} />
                 </Elements>
               </div>
             </>

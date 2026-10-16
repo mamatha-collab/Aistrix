@@ -63,6 +63,7 @@ export default function AgentRunner({ app, user, onClose, onRun, inline = false 
   const [lastRunId, setLastRunId] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [maxSteps, setMaxSteps] = useState(8)
   const resultRef = useRef('')
   const toast = useToast()
 
@@ -72,9 +73,6 @@ export default function AgentRunner({ app, user, onClose, onRun, inline = false 
     resultRef.current = ''
     let finalUsage = null
 
-    const agentSystemPrompt = (app.system_prompt || 'You are a helpful AI agent.') +
-      `\n\nYou are operating in autonomous agent mode. Think through the problem step by step. Use available tools to gather information and take actions. Continue working until you have a complete, accurate answer. When finished, provide a clear, comprehensive final response.`
-
     try {
       const { data: { session } } = await supabase.auth.getSession()
       const res = await fetch(`${API_URL}/run`, {
@@ -82,12 +80,18 @@ export default function AgentRunner({ app, user, onClose, onRun, inline = false 
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
         body: JSON.stringify({
           app_id: app.id, input: goal,
-          system_prompt: agentSystemPrompt,
+          system_prompt: app.system_prompt || 'You are a helpful AI agent.',
+          run_mode: 'agent',
           ai_provider: app.ai_provider || 'claude',
           ai_model: app.ai_model || null,
           output_type: app.output_type || 'markdown',
+          max_tool_steps: maxSteps,
         }),
       })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.error || err.detail || `Run failed (${res.status})`)
+      }
 
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
@@ -105,6 +109,7 @@ export default function AgentRunner({ app, user, onClose, onRun, inline = false 
           if (data.tool_call) setSteps(prev => [...prev, { type: 'tool_call', name: data.tool_call.name, input: data.tool_call.input }])
           if (data.tool_result) setSteps(prev => [...prev, { type: 'tool_result', name: data.tool_result.name, result: data.tool_result.result }])
           if (data.done) { setSteps(prev => [...prev, { type: 'complete' }]); finalUsage = data.usage || null }
+          if (data.contract_error) throw new Error(`Output contract failed: ${data.contract_error.join('; ')}`)
           if (data.error) throw new Error(data.error)
         }
       }
@@ -154,6 +159,19 @@ export default function AgentRunner({ app, user, onClose, onRun, inline = false 
           placeholder={app.input_placeholder || 'e.g. Research the top 5 competitors of Tesla and summarize their EV strategies...'}
           value={goal} onChange={e => setGoal(e.target.value)}
         />
+      </div>
+
+      <div className="bg-[#1F2444] border border-white/5 rounded-xl px-3 py-2.5">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-xs text-white font-medium">Execution limit</p>
+            <p className="text-[10px] text-slate-500">Stops runaway tool loops and keeps cost predictable.</p>
+          </div>
+          <select value={maxSteps} onChange={e => setMaxSteps(Number(e.target.value))}
+            className="bg-[#0F1225] border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:border-[#6C5CE7]">
+            {[3, 5, 8, 12, 20].map(n => <option key={n} value={n}>{n} steps</option>)}
+          </select>
+        </div>
       </div>
 
       <button onClick={runAgent} disabled={loading || !goal.trim()}

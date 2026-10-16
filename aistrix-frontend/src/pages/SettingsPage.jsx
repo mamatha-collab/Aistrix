@@ -2,16 +2,13 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { applyTheme } from '../utils/theme'
+import { PROVIDER_STYLE, removeProviderKey, saveProviderKey, useProviders } from '../lib/providers'
 
 const AVATAR_COLORS = ['#6C5CE7','#E84393','#00B894','#0984E3','#FDCB6E','#E17055','#74B9FF','#A29BFE','#55EFC4','#FD79A8']
-const PROVIDERS = [
-  { id: 'claude', name: 'Claude', company: 'Anthropic', color: '#6C5CE7', placeholder: 'sk-ant-api03-...' },
-  { id: 'openai', name: 'GPT-4', company: 'OpenAI', color: '#00A67E', placeholder: 'sk-proj-...' },
-]
 
-function Section({ title, description, children }) {
+function Section({ id, title, description, children }) {
   return (
-    <div className="bg-[#171B33] border border-white/5 rounded-2xl overflow-hidden">
+    <div id={id} className="bg-[#171B33] border border-white/5 rounded-2xl overflow-hidden scroll-mt-4">
       <div className="px-6 py-4 border-b border-white/5">
         <p className="text-white font-medium">{title}</p>
         {description && <p className="text-xs text-slate-400 mt-0.5">{description}</p>}
@@ -21,8 +18,18 @@ function Section({ title, description, children }) {
   )
 }
 
-export default function SettingsPage({ user }) {
+// `developer`: the one Settings page in the Developer workspace. It leaves out
+// Business-only sections (AI Memory is used when running apps as a business
+// user).
+// `embedded`: shown inside another screen that already has the title and padding (phone).
+export default function SettingsPage({ user, developer = false, focus = null, embedded = false }) {
   const toast = useToast()
+  useEffect(() => {
+    if (focus !== 'keys') return
+    const el = document.getElementById('settings-api-keys')
+    el?.scrollIntoView({ block: 'start' })
+    el?.querySelector('input:not([hidden])')?.focus({ preventScroll: true })
+  }, [focus])
 
   // Profile
   const meta = user?.user_metadata || {}
@@ -34,7 +41,6 @@ export default function SettingsPage({ user }) {
   const [theme, setTheme] = useState(() => localStorage.getItem('aistrix_theme') || 'dark')
 
   // Daily run limit
-  const [dailyLimit, setDailyLimit] = useState(() => parseInt(localStorage.getItem('aistrix_daily_limit') || '50'))
 
   // Notifications
   const [notifPermission, setNotifPermission] = useState(() =>
@@ -42,21 +48,16 @@ export default function SettingsPage({ user }) {
   )
 
   // API Keys
-  const [keys, setKeys] = useState({})
   const [keyInputs, setKeyInputs] = useState({})
   const [keySaving, setKeySaving] = useState({})
   const [keyShow, setKeyShow] = useState({})
 
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount only
-  useEffect(() => { loadKeys() }, [])
-
-  async function loadKeys() {
-    const { data } = await supabase.from('user_api_keys')
-      .select('provider, label, is_active, updated_at').eq('user_id', user.id)
-    if (data) {
-      const m = {}; data.forEach(k => { m[k.provider] = k }); setKeys(m)
-    }
-  }
+  const providers = useProviders()
+  const PROVIDERS = providers.map(p => {
+    const style = PROVIDER_STYLE[p.id] || {}
+    return { ...p, ...style, name: style.name || p.name || p.label || p.id, color: style.color || '#6C5CE7', placeholder: style.placeholder || 'Paste provider API key' }
+  })
+  const keys = Object.fromEntries(providers.filter(p => p.connected).map(p => [p.id, p]))
 
   async function saveProfile() {
     setSavingProfile(true)
@@ -77,38 +78,38 @@ export default function SettingsPage({ user }) {
     setTimeout(() => document.documentElement.classList.remove('theme-transitioning'), 350)
   }
 
-  function saveDailyLimit(val) {
-    setDailyLimit(val)
-    localStorage.setItem('aistrix_daily_limit', String(val))
-    toast(`Daily limit set to ${val} runs`, 'success', 2000)
-  }
-
   async function requestNotifications() {
+    if (typeof Notification === 'undefined') {
+      toast('Browser notifications are not available in this environment.', 'info')
+      return
+    }
     const result = await Notification.requestPermission()
     setNotifPermission(result)
     toast(result === 'granted' ? 'Notifications enabled' : 'Permission denied', result === 'granted' ? 'success' : 'error')
   }
 
+  // Saved through the backend: it checks the key with the provider and
+  // stores it encrypted.
   async function saveKey(provider) {
     const raw = keyInputs[provider]?.trim()
     if (!raw) return
     setKeySaving(prev => ({ ...prev, [provider]: true }))
-    const { error } = await supabase.from('user_api_keys').upsert({
-      user_id: user.id, provider, encrypted_key: raw,
-      label: `My ${provider} key`, is_active: true,
-    }, { onConflict: 'user_id,provider' })
-    setKeySaving(prev => ({ ...prev, [provider]: false }))
-    if (error) { toast(error.message, 'error'); return }
-    setKeys(prev => ({ ...prev, [provider]: { provider, is_active: true } }))
-    setKeyInputs(prev => ({ ...prev, [provider]: '' }))
-    toast(`${provider === 'claude' ? 'Claude' : 'OpenAI'} key saved`, 'success')
+    try {
+      await saveProviderKey(provider, raw)
+      setKeyInputs(prev => ({ ...prev, [provider]: '' }))
+      toast(`${PROVIDER_STYLE[provider]?.name || provider} key saved`, 'success')
+    } catch (e) {
+      toast(e.message, 'error', 6000)
+    } finally {
+      setKeySaving(prev => ({ ...prev, [provider]: false }))
+    }
   }
 
   async function removeKey(provider) {
-    const { error } = await supabase.from('user_api_keys').delete().eq('user_id', user.id).eq('provider', provider)
-    if (error) { toast(error.message, 'error'); return }
-    setKeys(prev => { const n = { ...prev }; delete n[provider]; return n })
-    toast('Key removed', 'info')
+    try {
+      await removeProviderKey(provider)
+      toast('Key removed', 'info')
+    } catch (e) { toast(e.message, 'error') }
   }
 
   const initial = (displayName || user?.email || '?')[0].toUpperCase()
@@ -154,12 +155,14 @@ export default function SettingsPage({ user }) {
   const inputCls = 'w-full bg-[#1F2444] border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-[#6C5CE7] transition-colors'
 
   return (
-    <div className="flex-1 overflow-y-auto px-6 py-6 space-y-5 max-w-2xl">
-      <div>
+    <div className={embedded ? 'space-y-5' : 'flex-1 overflow-y-auto px-6 py-6 space-y-5 max-w-6xl'}>
+      <div hidden={embedded}>
         <h1 className="text-white text-xl font-semibold">Settings</h1>
-        <p className="text-slate-400 text-sm mt-0.5">Manage your account and preferences.</p>
+        <p className="text-slate-400 text-sm mt-0.5">{developer ? 'Your profile, appearance, notifications and AI keys.' : 'Manage your account and preferences.'}</p>
       </div>
 
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
+      <div className="space-y-5 min-w-0">
       {/* Profile */}
       <Section title="Profile" description="Your public name and avatar shown throughout Aistrix.">
         <div className="flex items-center gap-5 mb-5">
@@ -204,22 +207,66 @@ export default function SettingsPage({ user }) {
         </div>
       </Section>
 
-      {/* Usage */}
-      <Section title="Usage limits" description="Control how many runs you use from Aistrix's quota per day.">
-        <div className="space-y-3">
-          <div className="flex items-center justify-between text-sm">
-            <span className="text-slate-300">Daily run limit</span>
-            <span className="text-white font-medium">{dailyLimit} runs</span>
-          </div>
-          <input type="range" min="10" max="200" step="10" value={dailyLimit}
-            onChange={e => setDailyLimit(Number(e.target.value))}
-            onMouseUp={e => saveDailyLimit(Number(e.target.value))}
-            onTouchEnd={e => saveDailyLimit(Number(e.target.value))}
-            className="w-full accent-[#6C5CE7]" />
-          <div className="flex justify-between text-[10px] text-slate-600">
-            <span>10</span><span>100</span><span>200</span>
-          </div>
-          <p className="text-xs text-slate-500">Add your own API keys to bypass this limit entirely.</p>
+      </div>
+      <div className="space-y-5 min-w-0">
+      {/* API Keys */}
+      <Section id="settings-api-keys" title="API Keys" description="Use your own keys — they never leave the server and don't count against your quota.">
+        <div className="space-y-4">
+          {PROVIDERS.map(p => (
+            <div key={p.id} className="bg-[#1F2444] border border-white/5 rounded-xl p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg flex items-center justify-center text-white text-xs font-bold" style={{ background: p.color }}>
+                    {p.name[0]}
+                  </div>
+                  <div>
+                    <p className="text-sm text-white font-medium">{p.name}</p>
+                    <p className="text-[10px] text-slate-500">{p.company}</p>
+                  </div>
+                </div>
+                {keys[p.id] ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full">✓ Connected{keys[p.id].last4 ? ` ····${keys[p.id].last4}` : ''}</span>
+                    <button onClick={() => removeKey(p.id)} className="text-[10px] text-red-400 hover:text-red-300">Remove</button>
+                  </div>
+                ) : <span className="text-[10px] text-slate-500">Not connected</span>}
+              </div>
+              {!keys[p.id] && (
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    name="username"
+                    autoComplete="username"
+                    value={user?.email || `aistrix-${p.id}-key`}
+                    readOnly
+                    hidden
+                  />
+                  <div className="flex-1 relative">
+                    <input
+                      name={`${p.id}-api-key`}
+                      type={keyShow[p.id] ? 'text' : 'password'}
+                      autoComplete="new-password"
+                      value={keyInputs[p.id] || ''}
+                      onChange={e => setKeyInputs(prev => ({ ...prev, [p.id]: e.target.value }))}
+                      onKeyDown={e => e.key === 'Enter' && saveKey(p.id)}
+                      placeholder={p.placeholder}
+                      className="w-full bg-[#0F1225] border border-white/10 rounded-lg px-3 py-2 pr-8 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7] transition-colors font-mono"
+                    />
+                    <button type="button" tabIndex={-1}
+                      onClick={() => setKeyShow(prev => ({ ...prev, [p.id]: !prev[p.id] }))}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 text-[10px]">
+                      {keyShow[p.id] ? '🙈' : '👁'}
+                    </button>
+                  </div>
+                  <button onClick={() => saveKey(p.id)} disabled={keySaving[p.id] || !keyInputs[p.id]}
+                    className="bg-[#6C5CE7] hover:bg-[#7D6FF0] disabled:opacity-40 text-white text-xs px-3 py-2 rounded-lg transition-colors shrink-0">
+                    {keySaving[p.id] ? '...' : 'Save'}
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+          <p className="text-[11px] text-slate-500">Keys are stored encrypted and only retrieved server-side when you run an app.</p>
         </div>
       </Section>
 
@@ -249,60 +296,8 @@ export default function SettingsPage({ user }) {
         </div>
       </Section>
 
-      {/* API Keys */}
-      <Section title="API Keys" description="Use your own keys — they never leave the server and don't count against your quota.">
-        <div className="space-y-4">
-          {PROVIDERS.map(p => (
-            <div key={p.id} className="bg-[#1F2444] border border-white/5 rounded-xl p-4">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2">
-                  <div className="w-7 h-7 rounded-lg flex items-center justify-center text-white text-xs font-bold" style={{ background: p.color }}>
-                    {p.name[0]}
-                  </div>
-                  <div>
-                    <p className="text-sm text-white font-medium">{p.name}</p>
-                    <p className="text-[10px] text-slate-500">{p.company}</p>
-                  </div>
-                </div>
-                {keys[p.id] ? (
-                  <div className="flex items-center gap-2">
-                    <span className="text-[10px] text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full">✓ Connected</span>
-                    <button onClick={() => removeKey(p.id)} className="text-[10px] text-red-400 hover:text-red-300">Remove</button>
-                  </div>
-                ) : <span className="text-[10px] text-slate-500">Not connected</span>}
-              </div>
-              {!keys[p.id] && (
-                <div className="flex gap-2">
-                  <div className="flex-1 relative">
-                    <input
-                      type={keyShow[p.id] ? 'text' : 'password'}
-                      autoComplete="new-password"
-                      value={keyInputs[p.id] || ''}
-                      onChange={e => setKeyInputs(prev => ({ ...prev, [p.id]: e.target.value }))}
-                      onKeyDown={e => e.key === 'Enter' && saveKey(p.id)}
-                      placeholder={p.placeholder}
-                      className="w-full bg-[#0F1225] border border-white/10 rounded-lg px-3 py-2 pr-8 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7] transition-colors font-mono"
-                    />
-                    <button type="button" tabIndex={-1}
-                      onClick={() => setKeyShow(prev => ({ ...prev, [p.id]: !prev[p.id] }))}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 text-[10px]">
-                      {keyShow[p.id] ? '🙈' : '👁'}
-                    </button>
-                  </div>
-                  <button onClick={() => saveKey(p.id)} disabled={keySaving[p.id] || !keyInputs[p.id]}
-                    className="bg-[#6C5CE7] hover:bg-[#7D6FF0] disabled:opacity-40 text-white text-xs px-3 py-2 rounded-lg transition-colors shrink-0">
-                    {keySaving[p.id] ? '...' : 'Save'}
-                  </button>
-                </div>
-              )}
-            </div>
-          ))}
-          <p className="text-[11px] text-slate-500">Keys are stored encrypted and only retrieved server-side when you run an app.</p>
-        </div>
-      </Section>
-
       {/* AI Memory */}
-      <Section title="AI Memory" description="Things you want every app to know about you. Toggle memory on in the app runner to inject these automatically.">
+      {!developer && <Section title="AI Memory" description="Things you want every app to know about you. Toggle memory on in the app runner to inject these automatically.">
         <div className="space-y-3">
           {PRESET_MEMORY.map(({ key, placeholder }) => {
             const existing = memory.find(m => m.key === key)
@@ -347,7 +342,9 @@ export default function SettingsPage({ user }) {
             </div>
           </div>
         </div>
-      </Section>
+      </Section>}
+      </div>
+      </div>
     </div>
   )
 }

@@ -1,30 +1,17 @@
-import { useState, useEffect } from 'react'
-import { supabase } from '../supabase'
+import { useState } from 'react'
 import { useToast } from '../hooks/useToast'
+import { PROVIDER_STYLE, removeProviderKey, saveProviderKey, useProviders } from '../lib/providers'
 
-const PROVIDERS = [
-  {
-    id: 'claude',
-    name: 'Claude',
-    company: 'Anthropic',
-    color: '#6C5CE7',
-    placeholder: 'sk-ant-api03-...',
-    validate: k => k.startsWith('sk-ant-'),
-    hint: 'Must start with sk-ant-',
-  },
-  {
-    id: 'openai',
-    name: 'GPT-4',
-    company: 'OpenAI',
-    color: '#00A67E',
-    placeholder: 'sk-proj-...',
-    validate: k => k.startsWith('sk-'),
-    hint: 'Must start with sk-',
-  },
-]
-
-export default function ApiKeySettings({ user, onClose }) {
-  const [keys, setKeys] = useState({})
+// onContinue: shown before building (no key saved yet) — saving the first
+// key continues straight into the chosen app type.
+export default function ApiKeySettings({ user, onClose, onContinue, title = 'API Key Settings',
+  subtitle = 'Use your own keys — sent securely and never returned to the browser after saving' }) {
+  const providers = useProviders()
+  const PROVIDERS = providers.map(p => {
+    const style = PROVIDER_STYLE[p.id] || {}
+    return { ...p, ...style, name: style.name || p.name || p.label || p.id, color: style.color || '#6C5CE7', placeholder: style.placeholder || 'Paste provider API key' }
+  })
+  const keys = Object.fromEntries(providers.filter(p => p.connected).map(p => [p.id, p]))
   const [inputs, setInputs] = useState({})
   const [saving, setSaving] = useState({})
   const [saved, setSaved] = useState({})
@@ -32,70 +19,34 @@ export default function ApiKeySettings({ user, onClose }) {
   const [showKey, setShowKey] = useState({})
   const toast = useToast()
 
-  useEffect(() => {
-    fetchKeys()
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount only
-  }, [])
-
-  async function fetchKeys() {
-    // Only select metadata — never fetch the key value itself to the client
-    const { data } = await supabase
-      .from('user_api_keys')
-      .select('provider, label, is_active, updated_at')
-      .eq('user_id', user.id)
-    if (data) {
-      const keyMap = {}
-      data.forEach(k => { keyMap[k.provider] = k })
-      setKeys(keyMap)
-    }
-  }
-
+  // Saved through the backend: it checks the key with the provider and
+  // stores it encrypted.
   async function saveKey(provider) {
     const raw = inputs[provider]?.trim()
     if (!raw) return
-
     const p = PROVIDERS.find(p => p.id === provider)
-    if (!p.validate(raw)) {
-      setErrors(prev => ({ ...prev, [provider]: p.hint }))
-      return
-    }
-
     setSaving(prev => ({ ...prev, [provider]: true }))
     setErrors(prev => ({ ...prev, [provider]: '' }))
-
-    const { error } = await supabase
-      .from('user_api_keys')
-      .upsert({
-        user_id: user.id,
-        provider,
-        encrypted_key: raw,
-        label: `My ${provider} key`,
-        is_active: true,
-      }, { onConflict: 'user_id,provider' })
-
-    setSaving(prev => ({ ...prev, [provider]: false }))
-
-    if (error) {
-      setErrors(prev => ({ ...prev, [provider]: error.message }))
-    } else {
+    try {
+      await saveProviderKey(provider, raw)
       setSaved(prev => ({ ...prev, [provider]: true }))
-      setKeys(prev => ({ ...prev, [provider]: { provider, label: `My ${provider} key`, is_active: true } }))
       setInputs(prev => ({ ...prev, [provider]: '' }))
-      toast(`${p.name} key saved`, 'success')
+      toast(`${p?.name || provider} key saved`, 'success')
       setTimeout(() => setSaved(prev => ({ ...prev, [provider]: false })), 2000)
+      onContinue?.()
+    } catch (e) {
+      setErrors(prev => ({ ...prev, [provider]: e.message }))
+    } finally {
+      setSaving(prev => ({ ...prev, [provider]: false }))
     }
   }
 
   async function removeKey(provider) {
     const p = PROVIDERS.find(p => p.id === provider)
-    const { error } = await supabase
-      .from('user_api_keys')
-      .delete()
-      .eq('user_id', user.id)
-      .eq('provider', provider)
-    if (error) { toast(error.message, 'error'); return }
-    setKeys(prev => { const next = { ...prev }; delete next[provider]; return next })
-    toast(`${p.name} key removed`, 'info')
+    try {
+      await removeProviderKey(provider)
+      toast(`${p?.name || provider} key removed`, 'info')
+    } catch (e) { toast(e.message, 'error') }
   }
 
   return (
@@ -103,8 +54,8 @@ export default function ApiKeySettings({ user, onClose }) {
       <div className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-lg">
         <div className="flex items-center justify-between p-5 border-b border-white/5">
           <div>
-            <p className="text-white font-medium">API Key Settings</p>
-            <p className="text-xs text-slate-400 mt-0.5">Use your own keys — sent securely and never returned to the browser after saving</p>
+            <p className="text-white font-medium">{title}</p>
+            <p className="text-xs text-slate-400 mt-0.5">{subtitle}</p>
           </div>
           <button aria-label="Close" onClick={onClose} className="text-slate-500 hover:text-white">✕</button>
         </div>
@@ -124,7 +75,7 @@ export default function ApiKeySettings({ user, onClose }) {
                 </div>
                 {keys[p.id] ? (
                   <div className="flex items-center gap-2">
-                    <span className="text-[10px] text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full">✓ Connected</span>
+                    <span className="text-[10px] text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full">✓ Connected{keys[p.id].last4 ? ` ····${keys[p.id].last4}` : ''}</span>
                     <button
                       onClick={() => removeKey(p.id)}
                       className="text-[10px] text-red-400 hover:text-red-300 transition-colors"
@@ -139,9 +90,18 @@ export default function ApiKeySettings({ user, onClose }) {
 
               {!keys[p.id] && (
                 <form onSubmit={e => { e.preventDefault(); saveKey(p.id) }} autoComplete="off">
+                  <input
+                    type="text"
+                    name="username"
+                    autoComplete="username"
+                    value={user?.email || `aistrix-${p.id}-key`}
+                    readOnly
+                    hidden
+                  />
                   <div className="flex gap-2">
                     <div className="flex-1 relative">
                       <input
+                        name={`${p.id}-api-key`}
                         type={showKey[p.id] ? 'text' : 'password'}
                         autoComplete="new-password"
                         autoCorrect="off"

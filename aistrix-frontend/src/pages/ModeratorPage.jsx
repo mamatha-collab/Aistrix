@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { withPrivateFields } from '../lib/appColumns'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { timeAgo } from '../utils'
@@ -20,10 +21,11 @@ function ReviewQueue({ toast }) {
 
   useEffect(() => {
     supabase.from('apps')
-      .select('id, name, emoji, color, description, system_prompt, app_type, status, review_notes, created_at, total_runs')
+      .select('id, name, emoji, color, description, app_type, status, created_at, total_runs')
       .in('status', ['pending', 'flagged'])
       .order('created_at', { ascending: false })
-      .then(({ data }) => { setApps(data || []); setLoading(false) })
+      // Prompt and review notes are private columns: staff read them separately.
+      .then(async ({ data }) => { setApps(await withPrivateFields(supabase, data || [])); setLoading(false) })
   }, [])
 
   async function setStatus(id, status) {

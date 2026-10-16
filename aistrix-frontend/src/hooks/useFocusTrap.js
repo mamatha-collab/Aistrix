@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 
 const FOCUSABLE = [
   'a[href]',
@@ -11,8 +11,14 @@ const FOCUSABLE = [
 
 // Traps keyboard focus inside `ref` and calls `onEscape` when Escape is pressed.
 // Moves focus to the first focusable element on mount.
-export function useFocusTrap(ref, { onEscape } = {}) {
+export function useFocusTrap(ref, { onEscape, enabled = true } = {}) {
+  // Latest handler, so Escape sees current state (e.g. "unsaved changes?")
+  // even though the listener is only attached once.
+  const onEscapeRef = useRef(onEscape)
+  useEffect(() => { onEscapeRef.current = onEscape })
+
   useEffect(() => {
+    if (!enabled) return
     const el = ref.current
     if (!el) return
 
@@ -25,7 +31,7 @@ export function useFocusTrap(ref, { onEscape } = {}) {
     function onKeyDown(e) {
       if (e.key === 'Escape') {
         e.stopPropagation()
-        onEscape?.()
+        onEscapeRef.current?.()
         return
       }
       if (e.key !== 'Tab') return
@@ -42,8 +48,11 @@ export function useFocusTrap(ref, { onEscape } = {}) {
     el.addEventListener('keydown', onKeyDown)
     return () => {
       el.removeEventListener('keydown', onKeyDown)
-      prevFocus?.focus?.()
+      // Give focus back only if it's still ours (or was dropped when this
+      // closed) — not when the next popup in a flow has already taken it.
+      const active = document.activeElement
+      if (!active || active === document.body || el.contains(active)) prevFocus?.focus?.()
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally mount-once; ref is stable and onEscape is read via closure
-  }, [])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally mount-once; ref is stable and onEscape is read via onEscapeRef
+  }, [enabled])
 }

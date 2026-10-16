@@ -90,4 +90,15 @@ export const EVENTS = {
   // Dev Studio
   VERSION_SAVED:          'version_saved',
   TEST_SUITE_RUN:         'test_suite_run',
+
+  // Build flow (Design → Test → Deploy): where developers get stuck.
+  // Properties are ids, counts and versions only — never prompts or inputs.
+  BUILD_APP_CREATED:      'build_app_created',
+  BUILD_DESIGN_SAVED:     'build_design_saved',
+  BUILD_PHASE_MOVED:      'build_phase_moved',
+  BUILD_TESTS_RUN:        'build_tests_run',
+  BUILD_PUBLISH_BLOCKED:  'build_publish_blocked',
+  BUILD_PUBLISHED:        'build_published',
+  BUILD_PROMOTED:         'build_promoted',
+  BUILD_ROLLED_BACK:      'build_rolled_back',
 }

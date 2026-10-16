@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { saveAppFields } from '../lib/appFields'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 
@@ -10,6 +11,7 @@ const VISIBILITY_OPTIONS = [
 
 export default function AccessControlPanel({ app, onVisibilityChange }) {
   const [visibility, setVisibility] = useState(app.visibility || 'public')
+  const savedVisibilityRef = useRef(app.visibility ?? null)   // as stored (may be empty = public)
   const [members, setMembers] = useState([])
   const [emailInput, setEmailInput] = useState('')
   const [role, setRole] = useState('viewer')
@@ -29,9 +31,13 @@ export default function AccessControlPanel({ app, onVisibilityChange }) {
 
   async function saveVisibility(v) {
     setSaving(true)
-    const { error } = await supabase.from('apps').update({ visibility: v }).eq('id', app.id)
+    const { error } = await saveAppFields(supabase, app, { visibility: v }, { expected: { visibility: savedVisibilityRef.current } })
     setSaving(false)
-    if (error) { toast(error.message, 'error'); return }
+    if (error) {
+      if (error.current) { savedVisibilityRef.current = error.current.visibility ?? null; setVisibility(error.current.visibility || 'public'); onVisibilityChange?.(error.current.visibility) }
+      toast(error.message, 'error', 7000); return
+    }
+    savedVisibilityRef.current = v
     setVisibility(v)
     onVisibilityChange?.(v)
     toast(`Access set to ${v}`, 'success', 2000)

@@ -1,3 +1,5 @@
+import AistrixWordmark from '../components/AistrixWordmark'
+import { APP_PUBLIC_SELECT, asPublicApp } from '../lib/appColumns'
 import { useState, useEffect } from 'react'
 import { supabase } from '../supabase'
 import { useNavigate } from 'react-router-dom'
@@ -12,7 +14,8 @@ export default function Gallery() {
 
   useEffect(() => {
     Promise.all([
-      supabase.from('apps').select('*, domains(name, emoji, color)').eq('is_published', true).order('total_runs', { ascending: false }),
+      supabase.from('apps').select(`${APP_PUBLIC_SELECT}, domains(name, emoji, color)`).eq('is_published', true).order('total_runs', { ascending: false })
+        .then(res => ({ ...res, data: res.data?.map(asPublicApp) })),
       supabase.from('domains').select('*').order('order_index'),
     ]).then(([{ data: appData }, { data: domainData }]) => {
       if (appData) setApps(appData)
@@ -35,7 +38,7 @@ export default function Gallery() {
         <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="w-7 h-7 rounded-lg bg-[#6C5CE7] flex items-center justify-center text-white font-bold text-sm">A</div>
-            <span className="text-white font-semibold">Aistrix</span>
+            <span className="text-white font-semibold"><AistrixWordmark /></span>
             <span className="text-slate-600 mx-2">/</span>
             <span className="text-slate-400 text-sm">App Gallery</span>
           </div>

@@ -1,3 +1,5 @@
+import AistrixWordmark from './AistrixWordmark'
+import { sessionExpired } from '../lib/session'
 import { useState } from 'react'
 import { supabase } from '../supabase'
 
@@ -13,7 +15,7 @@ function isValidEmail(value) {
 const DEMO_EMAIL = import.meta.env.VITE_DEMO_EMAIL
 const DEMO_PASSWORD = import.meta.env.VITE_DEMO_PASSWORD
 
-export default function Auth() {
+export default function Auth({ developer = false }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [mode, setMode] = useState('login') // 'login' | 'signup' | 'reset'
@@ -76,19 +78,48 @@ export default function Auth() {
   const canUseDemo = isDev && DEMO_EMAIL && DEMO_PASSWORD
 
   return (
-    <div className="min-h-screen w-full bg-[#0F1225] flex items-center justify-center p-4 sm:p-6">
+    <div className={`min-h-screen w-full bg-[#0F1225] ${developer ? 'flex flex-col' : 'flex items-center justify-center p-4 sm:p-6'}`}>
+      {developer && (
+        <header className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-[#111827] px-4 sm:px-6 py-4">
+          <div className="flex items-center gap-1">
+            <img src="/aistrix-logo.svg" alt="" className="w-7 h-7 shrink-0" />
+            <span className="text-white font-bold text-lg"><AistrixWordmark /></span>
+            <span className="ml-1 rounded-full border border-[#00D4AA]/20 bg-[#00D4AA]/10 px-2 py-0.5 text-[9px] font-bold uppercase tracking-wide text-[#00D4AA]">Developer</span>
+          </div>
+          <nav aria-label="Developer account" className="flex items-center gap-2">
+            <button type="button" aria-label="Sign in to Developer" aria-pressed={isLogin}
+              onClick={() => switchMode('login')}
+              className="min-h-11 rounded-xl border border-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/5 transition-colors">
+              Sign in
+            </button>
+            <button type="button" aria-label="Sign up for Developer" aria-pressed={mode === 'signup'}
+              onClick={() => switchMode('signup')}
+              className="min-h-11 rounded-xl bg-[#6C5CE7] px-4 py-2 text-sm font-semibold text-white hover:bg-[#7D6FF0] transition-colors">
+              Sign up
+            </button>
+          </nav>
+        </header>
+      )}
+      <div className={developer ? 'flex flex-1 items-center justify-center p-4 sm:p-6' : 'contents'}>
       <div className="bg-[#171B33] border border-white/10 rounded-2xl p-5 sm:p-8 w-full max-w-sm">
         <div className="flex items-center gap-2 mb-8">
-          <div className="w-8 h-8 rounded-lg bg-[#6C5CE7] flex items-center justify-center text-white font-bold">A</div>
-          <span className="text-white font-semibold text-lg">Aistrix</span>
+          <img src="/aistrix-logo.svg" alt="" className="w-8 h-8 shrink-0" />
+          <span className="text-white font-semibold text-lg"><AistrixWordmark /></span>
         </div>
 
+        {isLogin && sessionExpired() && (
+          <div role="status" className="mb-4 rounded-xl bg-amber-500/10 border border-amber-500/25 px-3 py-2.5 text-xs text-amber-200 leading-relaxed">
+            Your session expired. Sign in again — any unsaved design or prompt changes on this browser will be offered back.
+          </div>
+        )}
         <h1 className="text-white text-xl font-semibold mb-1">
-          {isReset ? 'Reset your password' : isLogin ? 'Welcome back' : 'Create an account'}
+          {isReset ? 'Reset your password' : developer ? (isLogin ? 'Sign in to Developer' : 'Create your developer account') : isLogin ? 'Welcome back' : 'Create an account'}
         </h1>
         <p className="text-slate-400 text-sm mb-6">
           {isReset
             ? "Enter your email and we'll send a reset link"
+            : developer
+              ? 'Build, test, and publish your AI apps with Aistrix.'
             : isLogin
               ? 'Sign in to your Aistrix account'
               : 'Start using AI-powered apps today'}
@@ -202,6 +233,7 @@ export default function Auth() {
             </>
           )}
         </p>
+      </div>
       </div>
     </div>
   )

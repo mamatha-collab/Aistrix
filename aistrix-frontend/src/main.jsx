@@ -14,6 +14,14 @@ if (import.meta.env.VITE_SENTRY_DSN) {
 }
 import { initTheme } from './utils/theme.js'
 initTheme()
+import { installApiWorkspaceHeader } from './lib/workspace.js'
+installApiWorkspaceHeader()
+import { reloadOnceForNewVersion } from './utils/chunkReload.js'
+// Vite fires this when a lazily-loaded file is gone after a deploy: reload
+// once to get the new build instead of failing.
+window.addEventListener('vite:preloadError', event => {
+  if (reloadOnceForNewVersion()) event.preventDefault()
+})
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import './index.css'

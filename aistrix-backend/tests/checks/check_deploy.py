@@ -107,7 +107,7 @@ async def allow(*a, **k): return True, ""
 async def no_checks(*a, **k): return []
 
 
-async def tests_pass(app_row):
+async def tests_pass(app_row, user_id=None):
     state = await main.app_draft_state(app_row)
     return {"all_passed": True, "required_passed": 1, "required_total": 1, "draft_hash": main.state_hash(state)}
 

@@ -20,6 +20,7 @@ const LABELS = {
   contract: 'Returns the right output format',
   performance: 'Speed & cost checked',
   persona: 'Works for different kinds of users',
+  saved: 'Passes your saved tests',
 }
 const APP_SPECIFIC = {
   chatbot: 'Remembers the conversation', native: 'Uses every form field', data: 'Reads the data correctly',
@@ -340,6 +341,11 @@ export default function SimpleTestPanel({ app, user, onMovePhase, onOpenKeys }) 
 
   return (
     <div className="space-y-4">
+      {cases.some(tc => tc.name?.startsWith('Run regression')) && <div className="rounded-2xl border border-[#6C5CE7]/25 bg-[#171B33] p-4 space-y-2">
+        <h3 className="text-white text-sm font-semibold">Feedback regression coverage</h3>
+        <p className="text-xs text-slate-400">{cases.filter(tc => tc.name?.startsWith('Run regression')).length} saved run regression(s) are included when you run the tests. Passing the current draft checks is required before publishing an update.</p>
+        <button onClick={() => setShowCustomize(true)} className="text-xs font-semibold text-[#A29BFE] hover:text-white">Review regression tests →</button>
+      </div>}
       <SafeCard name="Test results" resetKey={app.id}>{() => (
       <div className="bg-[#171B33] border border-white/8 rounded-2xl p-5 space-y-4">
         <div className="flex items-start justify-between gap-4 flex-wrap">

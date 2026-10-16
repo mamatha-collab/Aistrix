@@ -138,8 +138,12 @@ Publishing now refuses to go live if it cannot record the version history
 (`app_versions.version_num`), so the database must be migrated **before** the new
 backend serves traffic:
 
-1. Apply the migrations `20261013030000` through `20261014030000` to production
-   (`supabase db push` against the production project).
+1. Apply the migrations `20261013030000` through `20261015040000` to production
+   (`supabase db push` against the production project). Production already has
+   everything through `20261014030000`; the new ones are
+   `20261015010000_purchase_payment_ref`, `20261015020000_test_case_updated_at`,
+   `20261015030000_github_connection_server_only` and
+   `20261015040000_pay_per_run_credits`.
 2. Deploy the backend.
 3. Deploy the frontend.
 4. Smoke-check: open Dev Studio, publish or promote a test app, confirm a new
@@ -153,3 +157,28 @@ After this migration browsers can no longer `select('*')` from `apps`, so an
 older frontend cannot load apps; the new frontend reads `pages_public`, which
 older databases don't have. Apply the migration, then deploy the frontend
 straight away (the backend can go first — it uses the service role).
+
+**Payments (before taking real money).** The backend refuses Stripe webhooks
+unless `STRIPE_WEBHOOK_SECRET` is set (only `ENVIRONMENT=development`/`test`
+accepts unsigned ones). In the Stripe dashboard, point the webhook at
+`/stripe/webhook` and send these events: `checkout.session.completed`,
+`payment_intent.succeeded`, `invoice.paid`, `customer.subscription.created`,
+`customer.subscription.updated` and `customer.subscription.deleted`.
+Revenue is recorded from `invoice.paid` (subscriptions, including renewals)
+and from one-time payments, once per Stripe payment.
+
+**Pay-per-run = one run per purchase.** Each one-time payment adds one run to
+the buyer's access (`run_quota`), in the same transaction that records the
+payment (`record_purchase`). The app confirms card payments through
+`/payments/confirm` so the run can start before the webhook arrives; both
+report the same payment, so it is granted once. A run is reserved just before
+the model is called (`reserve_entitlement_run`, atomic) and given back if the
+run fails. Subscribers can't buy single runs. Existing pay-per-run buyers from
+before this change keep one more run.
+
+**GitHub feedback tracker.** The GitHub token is stored only on the server
+(`developer_github`, encrypted with `SECRET_ENCRYPTION_KEY`). Set
+`GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET` and `GITHUB_REDIRECT_URI`
+(`https://<api host>/auth/github/callback`, the same URL as in the GitHub OAuth
+app). Migration `20261015030000` drops tokens saved the old way, so developers
+who connected before reconnect once.

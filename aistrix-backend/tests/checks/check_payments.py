@@ -1,0 +1,209 @@
+"""Payments: the server sets the price, only signed Stripe events count, and
+each real payment is recorded, paid out to the developer and emailed once —
+however many times Stripe delivers it. Fake Stripe and fake storage only."""
+import hashlib
+import hmac
+import json
+import os
+import time
+from types import SimpleNamespace as NS
+
+import _harness
+from _harness import ok, finish
+_harness.setup(STRIPE_SECRET_KEY="sk_test_fixture", ENVIRONMENT="production")
+import main
+import stripe
+from fastapi import HTTPException
+from fastapi.testclient import TestClient
+
+main.STRIPE_PLATFORM_FEE_PCT = 20
+TABLES = {
+    "apps": [{"id": "paid-app", "name": "Pricey <b>App</b>", "created_by": "dev", "is_paid": True, "price_per_run": 25},
+             {"id": "free-app", "name": "Free", "created_by": "dev", "is_paid": False, "price_per_run": 0}],
+    "developer_profiles": [{"user_id": "dev", "stripe_account_id": "acct_dev"}],
+    "purchases": [],
+    "app_entitlements": [],
+}
+TRANSFERS, INTENTS, EMAILS = [], [], []
+
+
+class Query:
+    def __init__(self, table): self.table, self.filters, self.action, self.value = table, {}, "select", None
+    def select(self, *a, **k): return self
+    def eq(self, key, value): self.filters[key] = value; return self
+    def limit(self, *a): return self
+    def order(self, *a, **k): return self
+    def insert(self, value): self.action, self.value = "insert", value; return self
+    def update(self, value): self.action, self.value = "update", value; return self
+    def upsert(self, value, **k): self.action, self.value = "upsert", value; return self
+    def execute(self):
+        rows = TABLES[self.table]
+        hits = [r for r in rows if all(r.get(k) == v for k, v in self.filters.items())]
+        if self.action == "insert":
+            ref = self.value.get("stripe_payment_ref")
+            if ref and any(r.get("stripe_payment_ref") == ref for r in rows):
+                raise Exception('duplicate key value violates unique constraint (23505)')
+            row = {"id": f"p{len(rows) + 1}", **self.value}
+            rows.append(row)
+            return NS(data=[row])
+        if self.action == "update":
+            for r in hits: r.update(self.value)
+            return NS(data=hits)
+        if self.action == "upsert":
+            same = next((r for r in rows if r["app_id"] == self.value["app_id"] and r["user_id"] == self.value["user_id"]), None)
+            same.update(self.value) if same else rows.append(dict(self.value))
+            return NS(data=[self.value])
+        return NS(data=[dict(r) for r in hits])
+
+
+def record_purchase(p, runs):
+    """Mirror of the database function: one row per payment, plus its runs."""
+    rows = TABLES["purchases"]
+    if any(r.get("stripe_payment_ref") == p["stripe_payment_ref"] for r in rows):
+        return None
+    row = {"id": f"p{len(rows) + 1}", **p}
+    rows.append(row)
+    if runs > 0:
+        ent = next((e for e in TABLES["app_entitlements"] if e["app_id"] == p["app_id"] and e["user_id"] == p["buyer_id"]), None)
+        if ent is None:
+            TABLES["app_entitlements"].append({"app_id": p["app_id"], "user_id": p["buyer_id"], "plan": "pay_per_run",
+                                               "status": "active", "run_quota": runs, "runs_this_period": 0})
+        elif ent["plan"] == "pay_per_run" and ent["status"] == "active":
+            ent["run_quota"] = (ent.get("run_quota") or 0) + runs
+        elif not (ent["plan"] == "subscription" and ent["status"] == "active"):
+            ent.update(plan="pay_per_run", status="active", run_quota=runs, runs_this_period=0)
+    return row["id"]
+
+def rpc(name, params):
+    assert name == "record_purchase"
+    return NS(execute=lambda: NS(data=record_purchase(params["p_purchase"], params["p_grant_runs"])))
+
+client = NS(table=Query, rpc=rpc)
+main._service_client = lambda: client
+main.get_anon_client = lambda: client
+async def lookup_email(uid): return f"{uid}@example.test"
+async def send_email(to, subject, html): EMAILS.append((to, subject, html)); return True
+async def user(request):
+    token = request.headers.get("authorization", "").removeprefix("Bearer ")
+    if token not in ("buyer", "dev"): raise HTTPException(status_code=401, detail="Sign in required")
+    return token
+main._lookup_email = lookup_email
+main.send_email = send_email
+main.require_verified_user = user
+stripe.Transfer.create = lambda **kw: TRANSFERS.append(kw) or NS(id="tr_1")
+stripe.PaymentIntent.create = lambda **kw: INTENTS.append(kw) or NS(client_secret="pi_secret_fixture")
+
+c = TestClient(main.app, raise_server_exceptions=False)
+buyer = {"Authorization": "Bearer buyer"}
+
+# ── The price comes from the app, never from the browser ──────────────────────
+r = c.post("/create-payment-intent", json={"app_id": "paid-app", "amount": 1})
+ok("card payment requires sign-in", r.status_code == 401 and not INTENTS)
+r = c.post("/create-payment-intent", headers=buyer, json={"app_id": "paid-app", "amount": 1})
+ok("a 1-cent request is charged the app's real price", r.status_code == 200 and INTENTS[-1]["amount"] == 2500)
+ok("the payment carries the signed-in buyer, not a browser-supplied one", INTENTS[-1]["metadata"]["user_id"] == "buyer")
+ok("free apps can't take card payments", c.post("/create-payment-intent", headers=buyer, json={"app_id": "free-app"}).status_code == 400)
+ok("unknown apps can't take card payments", c.post("/create-payment-intent", headers=buyer, json={"app_id": "nope"}).status_code == 404)
+
+# ── Only signed events count ──────────────────────────────────────────────────
+def event(kind, obj): return json.dumps({"id": f"evt_{time.time_ns()}", "type": kind, "data": {"object": obj}})
+paid_intent = {"id": "pi_1", "amount_received": 2500, "customer": "cus_1",
+               "metadata": {"app_id": "paid-app", "user_id": "buyer", "plan": "pay_per_run"}}
+
+os.environ["STRIPE_WEBHOOK_SECRET"] = ""
+r = c.post("/stripe/webhook", content=event("payment_intent.succeeded", paid_intent))
+ok("production refuses webhooks when no signing secret is set", r.status_code == 503 and not TABLES["app_entitlements"] and not TABLES["purchases"])
+
+SECRET = "whsec_fixture"
+os.environ["STRIPE_WEBHOOK_SECRET"] = SECRET
+def signed(body, secret=SECRET):
+    t = int(time.time())
+    sig = hmac.new(secret.encode(), f"{t}.{body}".encode(), hashlib.sha256).hexdigest()
+    return {"stripe-signature": f"t={t},v1={sig}", "content-type": "application/json"}
+def deliver(kind, obj, secret=SECRET):
+    body = event(kind, obj)
+    return c.post("/stripe/webhook", content=body, headers=signed(body, secret))
+
+r = deliver("payment_intent.succeeded", paid_intent, secret="whsec_attacker")
+ok("a forged signature grants nothing", r.status_code == 400 and not TABLES["app_entitlements"])
+
+r = deliver("payment_intent.succeeded", paid_intent)
+ok("a signed payment is accepted", r.status_code == 200)
+ok("the purchase buys exactly one run", [(e["plan"], e["run_quota"], e["runs_this_period"]) for e in TABLES["app_entitlements"]] == [("pay_per_run", 1, 0)])
+ok("the payment is recorded at the amount Stripe charged",
+   len(TABLES["purchases"]) == 1 and TABLES["purchases"][0]["gross_amount"] == 25 and TABLES["purchases"][0]["dev_share"] == 20)
+ok("the developer is paid their share once, with an idempotency key",
+   len(TRANSFERS) == 1 and TRANSFERS[0]["amount"] == 2000 and TRANSFERS[0]["idempotency_key"] == "aistrix-payout-pi_1")
+ok("payout status records the transfer", TABLES["purchases"][0]["payout_status"] == "transferred")
+ok("buyer and developer are each emailed once", sorted(e[0] for e in EMAILS) == ["buyer@example.test", "dev@example.test"])
+ok("app names are escaped in email HTML", all("<b>App</b>" not in e[2] for e in EMAILS))
+
+deliver("payment_intent.succeeded", paid_intent)
+ok("Stripe redelivering the event records, pays and emails nothing more",
+   len(TABLES["purchases"]) == 1 and len(TRANSFERS) == 1 and len(EMAILS) == 2)
+ok("…and adds no extra run", TABLES["app_entitlements"][0]["run_quota"] == 1)
+
+# ── The app confirms a card payment so the run can start right away ──────────
+INTENTS_BY_ID = {"pi_app": {"id": "pi_app", "status": "succeeded", "amount_received": 2500,
+                            "metadata": {"app_id": "paid-app", "user_id": "buyer"}},
+                 "pi_pending": {"id": "pi_pending", "status": "processing", "amount_received": 0,
+                                "metadata": {"app_id": "paid-app", "user_id": "buyer"}}}
+def retrieve(pid):
+    if pid not in INTENTS_BY_ID: raise stripe.error.InvalidRequestError("No such payment_intent", None)
+    return stripe.PaymentIntent.construct_from(INTENTS_BY_ID[pid], "sk_test_fixture")
+stripe.PaymentIntent.retrieve = retrieve
+confirm = lambda pid, who="buyer": c.post("/payments/confirm", headers={"Authorization": f"Bearer {who}"}, json={"payment_intent_id": pid})
+ok("confirming requires sign-in", c.post("/payments/confirm", json={"payment_intent_id": "pi_app"}).status_code == 401)
+ok("someone else's payment can't be confirmed", confirm("pi_app", "dev").status_code == 404)
+ok("an unfinished payment grants nothing", confirm("pi_pending").status_code == 409)
+ok("an unknown payment grants nothing", confirm("pi_nope").status_code == 404)
+ok("a confirmed card payment adds one run straight away", confirm("pi_app").status_code == 200 and TABLES["app_entitlements"][0]["run_quota"] == 2)
+deliver("payment_intent.succeeded", {**INTENTS_BY_ID["pi_app"], "customer": "cus_1"})
+confirm("pi_app")
+ok("the webhook and repeat confirmations for the same payment add nothing more",
+   TABLES["app_entitlements"][0]["run_quota"] == 2 and sum(p["stripe_payment_ref"] == "pi_app" for p in TABLES["purchases"]) == 1)
+
+# ── Checkout: one-time payment, then a subscription with renewals ─────────────
+checkout = {"id": "cs_1", "mode": "payment", "payment_status": "paid", "payment_intent": "pi_2", "amount_total": 2500,
+            "customer": "cus_1", "metadata": {"app_id": "paid-app", "user_id": "buyer", "plan": "pay_per_run"}}
+deliver("checkout.session.completed", checkout)
+deliver("checkout.session.completed", checkout)
+ok("a checkout payment is recorded once", sum(p["stripe_payment_ref"] == "pi_2" for p in TABLES["purchases"]) == 1)
+ok("…and buys one run", TABLES["app_entitlements"][0]["run_quota"] == 3)
+unpaid = {**checkout, "id": "cs_unpaid", "payment_status": "unpaid", "payment_intent": "pi_unpaid"}
+before = len(TABLES["purchases"])
+deliver("checkout.session.completed", unpaid)
+ok("an unpaid checkout (e.g. a delayed bank payment) grants and records nothing yet", len(TABLES["purchases"]) == before)
+
+sub_checkout = {"id": "cs_sub", "mode": "subscription", "payment_status": "paid", "subscription": "sub_1", "customer": "cus_2",
+                "amount_total": 2500, "metadata": {"app_id": "paid-app", "user_id": "buyer", "plan": "subscription"}}
+before = len(TABLES["purchases"])
+deliver("checkout.session.completed", sub_checkout)
+ok("starting a subscription grants access; money is recorded per invoice", len(TABLES["purchases"]) == before
+   and any(e.get("stripe_sub_id") == "sub_1" for e in TABLES["app_entitlements"]))
+deliver("customer.subscription.updated", {"id": "sub_1", "customer": "cus_2", "status": "active", "metadata": {"app_id": "paid-app", "user_id": "buyer"}})
+ok("a subscription update (e.g. a new card) is not a sale", len(TABLES["purchases"]) == before)
+INTENTS.clear()
+r = c.post("/create-payment-intent", headers=buyer, json={"app_id": "paid-app"})
+ok("a subscriber isn't sold single runs", r.status_code == 409 and "subscribe" in r.json()["detail"] and not INTENTS)
+invoice = {"id": "in_1", "amount_paid": 2500, "customer": "cus_2",
+           "parent": {"subscription_details": {"subscription": "sub_1", "metadata": {"app_id": "paid-app", "user_id": "buyer"}}}}
+deliver("invoice.paid", invoice); deliver("invoice.paid", invoice)
+deliver("invoice.paid", {**invoice, "id": "in_2"})
+ok("each paid invoice (first month and renewal) is recorded once",
+   [p["stripe_payment_ref"] for p in TABLES["purchases"] if p["plan"] == "subscription"] == ["in_1", "in_2"])
+r = deliver("invoice.paid", {"id": "in_3", "amount_paid": 2500, "subscription": "sub_unknown"})
+ok("an invoice for a subscription not linked yet is retried by Stripe, not dropped", r.status_code == 503)
+before = len(TABLES["purchases"])
+deliver("invoice.paid", {**invoice, "id": "in_zero", "amount_paid": 0})
+ok("a $0 invoice (trial) is not revenue", len(TABLES["purchases"]) == before)
+
+# ── Failed payout stays visible as money owed ─────────────────────────────────
+def fail(**kw): raise stripe.error.InvalidRequestError("no funds", None)
+stripe.Transfer.create = fail
+deliver("payment_intent.succeeded", {**paid_intent, "id": "pi_fail"})
+row = next(p for p in TABLES["purchases"] if p["stripe_payment_ref"] == "pi_fail")
+ok("a failed transfer is marked, not silently lost", row["payout_status"] == "transfer_failed")
+earnings = c.get("/stripe/earnings", headers={"Authorization": "Bearer dev"}).json()
+ok("money not yet paid out counts as pending", earnings["total_pending"] == 20)
+finish()

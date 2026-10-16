@@ -8,6 +8,8 @@ from functools import partial
 import io
 import ipaddress
 import json
+from urllib.parse import urlencode
+from html import escape as html_escape
 import math
 import operator
 import os
@@ -167,7 +169,7 @@ GITHUB_CLIENT_SECRET      = os.getenv("GITHUB_CLIENT_SECRET")
 GITHUB_REDIRECT_URI       = os.getenv("GITHUB_REDIRECT_URI")  # e.g. https://api.aistrix.app/auth/github/callback
 
 # Short-lived nonce store for GitHub OAuth CSRF protection: nonce → (user_id, expiry_ts)
-_oauth_nonces: dict[str, tuple[str, float]] = {}
+_oauth_nonces: dict[str, tuple[str, float, str]] = {}   # nonce → (user_id, expiry, repo)
 CRON_SECRET               = os.getenv("CRON_SECRET")
 SECRET_ENCRYPTION_KEY     = os.getenv("SECRET_ENCRYPTION_KEY")  # Fernet key (base64, 32 bytes)
 _fernet: "Fernet | None" = Fernet(SECRET_ENCRYPTION_KEY.encode()) if SECRET_ENCRYPTION_KEY else None
@@ -602,42 +604,54 @@ def entitlement_block_reason(ent: dict) -> Optional[str]:
             pass
     quota = ent.get("run_quota")
     if quota is not None and (ent.get("runs_this_period") or 0) >= quota:
+        if ent.get("plan") == "pay_per_run":
+            return "You've used the runs you bought — buy another run to keep using this app"
         return f"You've used all {quota} runs in this period — top up to keep running this app"
     return None
 
 
-async def consume_entitlement_run(ent: dict, app_name: str) -> None:
-    """Count a successful run against the buyer's quota. Server-side only:
-    RLS blocks client writes to app_entitlements, so the old browser-side
-    increment silently never happened and quotas were never enforced."""
+async def reserve_entitlement_run(ent: dict) -> Optional[int]:
+    """Take one run from the buyer's access before the model is called.
+    Atomic in the database, so two runs started together can't both use the
+    last purchased run. Returns runs used (including this one), or None when
+    none are left. Server-side only (buyers can't write app_entitlements)."""
     sb = _service_client()
     if not sb:
-        return
+        return None
+    res = await db(sb.rpc("reserve_entitlement_run", {"p_entitlement_id": ent["id"]}))
+    data = res.data[0] if isinstance(res.data, list) and res.data else res.data
+    if isinstance(data, dict):
+        data = next(iter(data.values()), None)
+    return data if isinstance(data, int) else None
+
+
+async def release_entitlement_run(ent: dict) -> None:
+    """Give a reserved run back: the run failed or was cancelled."""
     try:
-        res = await db(sb.rpc("consume_entitlement_run", {"p_entitlement_id": ent["id"]}))
-        used = res.data if isinstance(res.data, int) else (ent.get("runs_this_period") or 0) + 1
-    except Exception:
-        used = (ent.get("runs_this_period") or 0) + 1
-        try:
-            await db(sb.table("app_entitlements").update({"runs_this_period": used}).eq("id", ent["id"]))
-        except Exception as e:
-            print(f"consume_entitlement_run error: {e}")
-            return
+        await db(_service_client().rpc("release_entitlement_run", {"p_entitlement_id": ent["id"]}))
+    except Exception as e:
+        print(f"release_entitlement_run error: {type(e).__name__}")
+        sentry_sdk.capture_exception(e)
+
+
+async def notify_low_runs(ent: dict, used: int, app_name: str) -> None:
+    """Email a subscriber once they've used 80% of their period's runs."""
     quota = ent.get("run_quota")
-    if quota and used == math.floor(quota * 0.8) and used < quota:
-        email = await _lookup_email(ent["user_id"])
-        if email:
-            remaining = quota - used
-            await send_email(
-                to=email,
-                subject=f"You've used 80% of your runs for {app_name}",
-                html=_email_base(
-                    title=f"Running low on {app_name}",
-                    body=f"You've used <strong style='color:#fff'>{used} of {quota} runs</strong>. "
-                         f"You have <strong style='color:#fff'>{remaining} run{'s' if remaining != 1 else ''}</strong> left in this period.",
-                    cta_url=FRONTEND_URL, cta_label="Top up →",
-                ),
-            )
+    if ent.get("plan") == "pay_per_run" or not quota or used != math.floor(quota * 0.8) or used >= quota:
+        return
+    email = await _lookup_email(ent["user_id"])
+    if email:
+        remaining = quota - used
+        await send_email(
+            to=email,
+            subject=f"You've used 80% of your runs for {app_name}",
+            html=_email_base(
+                title=f"Running low on {html_escape(app_name)}",
+                body=f"You've used <strong style='color:#fff'>{used} of {quota} runs</strong>. "
+                     f"You have <strong style='color:#fff'>{remaining} run{'s' if remaining != 1 else ''}</strong> left in this period.",
+                cta_url=FRONTEND_URL, cta_label="Top up →",
+            ),
+        )
 
 
 def hash_api_key(raw: str) -> str:
@@ -1659,6 +1673,8 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
 
     # ── Paid-app entitlement (verified caller only) ───────────────────────────
     entitlement = None
+    entitlement_used = None
+    run_state = {"finished": False}      # a reserved paid run is given back unless the run finishes
     if app_row and app_row.get("is_paid") and not is_editor:
         if not caller_id:
             return JSONResponse(status_code=401, content={"error": "Sign in to run this app"})
@@ -1783,7 +1799,7 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
     knowledge, tools, app_secrets, blueprint = await asyncio.gather(
         fetch_app_knowledge(req.app_id) if req.app_id else _default(""),
         _default(prod.get("tools") or []) if prod else fetch_app_tools(req.app_id) if req.app_id else _default([]),
-        _load_app_secrets(req.app_id, owner_id) if (req.app_id and owner_id) else _default({}),
+        _load_app_secrets(req.app_id) if (req.app_id and owner_id) else _default({}),
         _default(prod.get("blueprint") or {}) if prod else fetch_app_blueprint(req.app_id) if req.app_id else _default({}),
     )
     webhook_url = app_row.get("webhook_url") if app_row else None
@@ -1819,8 +1835,9 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
         # disconnect on "done") stop reading at the done event, so anything
         # after that yield would never run.
         _record_run_outcome(True)
-        if entitlement:
-            asyncio.create_task(consume_entitlement_run(entitlement, app_name))
+        run_state["finished"] = True
+        if entitlement and entitlement_used:
+            asyncio.create_task(notify_low_runs(entitlement, entitlement_used, app_name))
         if webhook_url:
             asyncio.create_task(_fire_webhook(webhook_url, req.app_id, req.input, full_result, provider, model))
         if log_source:
@@ -1973,6 +1990,17 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
         except asyncio.TimeoutError:
             _record_run_outcome(False, "timeout")
             yield _sse({"error": f"Request timed out after {REQUEST_TIMEOUT}s. Try a shorter input or faster model."})
+        finally:
+            if entitlement and not run_state["finished"]:
+                asyncio.create_task(release_entitlement_run(entitlement))
+
+    # Take the paid run last, after every check that can still refuse the
+    # request, so a refused request never uses up a purchased run.
+    if entitlement:
+        entitlement_used = await reserve_entitlement_run(entitlement)
+        if entitlement_used is None:
+            return JSONResponse(status_code=402, content={"error": entitlement_block_reason(
+                {**entitlement, "runs_this_period": entitlement.get("run_quota") or 0}) or "Purchase access to run this app"})
 
     return StreamingResponse(
         generate_with_timeout(),
@@ -3466,23 +3494,45 @@ async def schedule_status(flow_id: str, request: Request):
 
 
 # ─── Health + info endpoints ──────────────────────────────────────────────────
+async def _refuse_if_subscribed(app_id: str, user_id: str) -> None:
+    """A subscriber already has access; a single run would be wasted money."""
+    sb = _service_client()
+    if not sb:
+        return
+    res = await db(sb.table("app_entitlements").select("plan, status").eq("app_id", app_id)
+                   .eq("user_id", user_id).limit(1))
+    ent = (res.data or [None])[0] or {}
+    if ent.get("plan") == "subscription" and ent.get("status") == "active":
+        raise HTTPException(status_code=409, detail="You already subscribe to this app — no need to buy single runs")
+
+
 class PaymentIntentRequest(BaseModel):
     app_id: str
-    amount: int = Field(..., gt=0, le=100000)  # in cents, max $1000
+    amount: Optional[int] = None   # ignored: the server charges the app's own price
     currency: str = "usd"
 
 
 @app.post("/create-payment-intent")
 async def create_payment_intent(req: PaymentIntentRequest, request: Request):
+    """Card payment for one paid app. The amount always comes from the app's
+    price on the server, never from the browser."""
     import stripe
     secret_key = os.getenv("STRIPE_SECRET_KEY")
     if not secret_key:
         raise HTTPException(status_code=503, detail="Stripe is not configured on this server")
-
+    user_id = await require_verified_user(request)
     stripe.api_key = secret_key
-    auth_header = request.headers.get("Authorization", "")
-    user_jwt = auth_header.removeprefix("Bearer ").strip() or None
-    user_id = await verify_user_jwt(user_jwt) if user_jwt else None
+    app_row = await db(get_anon_client().table("apps").select("price_per_run, is_paid")
+                       .eq("id", req.app_id).limit(1))
+    app_data = (app_row.data or [None])[0]
+    if not app_data:
+        raise HTTPException(status_code=404, detail="App not found")
+    if not app_data.get("is_paid") or not app_data.get("price_per_run"):
+        raise HTTPException(status_code=400, detail="App is not a paid app")
+    amount_cents = int(round(float(app_data["price_per_run"]) * 100))
+    if amount_cents < 50:
+        raise HTTPException(status_code=400, detail="This app's price is below the card minimum ($0.50)")
+    await _refuse_if_subscribed(req.app_id, user_id)
 
     try:
         # stripe's SDK is synchronous/blocking — offload it so it doesn't stall
@@ -3490,9 +3540,9 @@ async def create_payment_intent(req: PaymentIntentRequest, request: Request):
         # waits on Stripe's API.
         intent = await asyncio.to_thread(
             stripe.PaymentIntent.create,
-            amount=req.amount,
-            currency=req.currency,
-            metadata={"app_id": req.app_id, "user_id": user_id or "anonymous"},
+            amount=amount_cents,
+            currency="usd",
+            metadata={"app_id": req.app_id, "user_id": user_id, "plan": "pay_per_run"},
             automatic_payment_methods={"enabled": True},
         )
         return {"client_secret": intent.client_secret}
@@ -3540,8 +3590,10 @@ async def create_checkout_session(req: CheckoutSessionRequest, request: Request)
     if not app_data.get("is_paid") or not app_data.get("price_per_run"):
         raise HTTPException(status_code=400, detail="App is not a paid app")
 
-    amount_cents = int(float(app_data["price_per_run"]) * 100)
+    amount_cents = int(round(float(app_data["price_per_run"]) * 100))
     app_name = app_data.get("name", "AI App")
+    if req.plan != "subscription":
+        await _refuse_if_subscribed(req.app_id, user_id)
 
     try:
         if req.plan == "subscription":
@@ -3557,6 +3609,7 @@ async def create_checkout_session(req: CheckoutSessionRequest, request: Request)
                 stripe.checkout.Session.create,
                 mode="subscription",
                 line_items=[{"price": price.id, "quantity": 1}],
+                subscription_data={"metadata": {"app_id": req.app_id, "user_id": user_id}},
                 success_url=req.success_url,
                 cancel_url=req.cancel_url,
                 metadata={"app_id": req.app_id, "user_id": user_id, "workspace_id": workspace_id or "",
@@ -3633,77 +3686,105 @@ async def _lookup_email(user_id: str) -> Optional[str]:
         return None
 
 
-async def _record_purchase(
-    app_id: str, buyer_id: str, dev_id: str, plan: str,
-    stripe_customer_id: Optional[str], stripe_sub_id: Optional[str],
-    sb,
-):
-    """Insert a row into purchases and attempt a Stripe Connect transfer to the developer."""
-    try:
-        # Fetch app price + dev's Connect account id
-        app_row = await asyncio.to_thread(
-            lambda: sb.table("apps").select("price_per_run").eq("id", app_id).single().execute()
+def _stripe_dict(obj) -> dict:
+    """Stripe SDK objects (v13+) have no .get(); work with plain dicts."""
+    if isinstance(obj, dict):
+        return obj
+    return obj.to_dict() if hasattr(obj, "to_dict") else {}
+
+
+async def _record_payment(
+    app_id: str, buyer_id: str, plan: str, amount_cents: int, payment_ref: str,
+    stripe_customer_id: Optional[str] = None, stripe_sub_id: Optional[str] = None,
+    workspace_id: Optional[str] = None, grant_runs: int = 0,
+) -> bool:
+    """Record one real Stripe payment in purchases, grant the runs it bought
+    (pay-per-run: one run per purchase), pay the developer their share, and
+    email both sides. Keyed by the Stripe payment (payment intent or invoice
+    id): Stripe delivers the same event more than once, several events
+    describe one payment and the app confirms card payments too, so a repeat
+    records, grants, pays and emails nothing. Returns True when this call
+    recorded the payment."""
+    sb = _service_client()
+    if not sb:
+        raise HTTPException(status_code=503, detail="Payment storage is unavailable")   # Stripe retries
+    if not payment_ref or amount_cents <= 0:
+        return False
+    app_res = await db(sb.table("apps").select("name, created_by").eq("id", app_id).limit(1))
+    app_row = (app_res.data or [None])[0] or {}
+    dev_id = app_row.get("created_by")
+    if not dev_id:
+        print(f"payment {payment_ref}: app {app_id} has no developer, not recorded")
+        return False
+    dev_res = await db(sb.table("developer_profiles").select("stripe_account_id").eq("user_id", dev_id).limit(1))
+    stripe_account_id = ((dev_res.data or [None])[0] or {}).get("stripe_account_id")
+
+    gross = round(amount_cents / 100, 2)
+    platform_fee = round(gross * STRIPE_PLATFORM_FEE_PCT / 100, 6)
+    dev_share = round(gross - platform_fee, 6)
+    row = {
+        "app_id": app_id, "buyer_id": buyer_id, "dev_id": dev_id, "plan": plan,
+        "gross_amount": gross, "platform_fee": platform_fee, "dev_share": dev_share,
+        "stripe_customer_id": stripe_customer_id, "stripe_sub_id": stripe_sub_id,
+        "stripe_payment_ref": payment_ref, "workspace_id": workspace_id,
+        "payout_status": "pending" if stripe_account_id else "no_connect_account",
+    }
+    # One transaction: the purchase row and the runs it grants (database
+    # function record_purchase); null when this payment was already recorded.
+    res = await db(sb.rpc("record_purchase", {"p_purchase": row, "p_grant_runs": grant_runs}))
+    purchase_id = res.data[0] if isinstance(res.data, list) and res.data else res.data
+    if isinstance(purchase_id, dict):
+        purchase_id = next(iter(purchase_id.values()), None)
+    if not purchase_id:
+        return False              # already recorded by an earlier delivery
+
+    if stripe_account_id and dev_share > 0:
+        import stripe
+        stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+        try:
+            await asyncio.to_thread(
+                stripe.Transfer.create,
+                amount=int(round(dev_share * 100)), currency="usd", destination=stripe_account_id,
+                metadata={"app_id": app_id, "buyer_id": buyer_id, "plan": plan, "payment": payment_ref},
+                idempotency_key=f"aistrix-payout-{payment_ref}",
+            )
+            status = "transferred"
+        except Exception as te:
+            print(f"Stripe transfer failed for {payment_ref}: {type(te).__name__}")
+            sentry_sdk.capture_exception(te)
+            status = "transfer_failed"
+        if purchase_id:
+            await db(sb.table("purchases").update({"payout_status": status}).eq("id", purchase_id))
+
+    app_name = app_row.get("name") or "your app"
+    safe_name = html_escape(app_name)
+    plan_label = "subscription" if plan == "subscription" else "purchase"
+    buyer_email = await _lookup_email(buyer_id)
+    if buyer_email:
+        await send_email(
+            to=buyer_email,
+            subject=f"You now have access to {app_name}",
+            html=_email_base(
+                title=f"Welcome to {safe_name} 🎉",
+                body=f"Your {plan_label} is confirmed. You can run <strong style='color:#fff'>{safe_name}</strong> from your Aistrix dashboard any time.",
+                cta_url="https://aistrix.app",
+                cta_label="Open Aistrix →",
+            ),
         )
-        price = float(app_row.data.get("price_per_run") or 0) if app_row.data else 0.0
-
-        dev_row = await asyncio.to_thread(
-            lambda: sb.table("developer_profiles")
-                .select("stripe_account_id")
-                .eq("user_id", dev_id).single().execute()
-        )
-        stripe_account_id = dev_row.data.get("stripe_account_id") if dev_row.data else None
-
-        platform_fee = round(price * STRIPE_PLATFORM_FEE_PCT / 100, 6)
-        dev_share    = round(price - platform_fee, 6)
-
-        # Insert purchase record
-        purchase_row = {
-            "app_id":             app_id,
-            "buyer_id":           buyer_id,
-            "dev_id":             dev_id,
-            "plan":               plan,
-            "gross_amount":       price,
-            "platform_fee":       platform_fee,
-            "dev_share":          dev_share,
-            "stripe_customer_id": stripe_customer_id,
-            "stripe_sub_id":      stripe_sub_id,
-            "payout_status":      "pending" if stripe_account_id else "no_connect_account",
-        }
-        await asyncio.to_thread(
-            lambda: sb.table("purchases").insert(purchase_row).execute()
-        )
-
-        # Attempt transfer if developer has Connect account and price > 0
-        if stripe_account_id and dev_share > 0:
-            import stripe
-            stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
-            transfer_amount = int(dev_share * 100)  # cents
-            try:
-                await asyncio.to_thread(
-                    stripe.Transfer.create,
-                    amount=transfer_amount,
-                    currency="usd",
-                    destination=stripe_account_id,
-                    metadata={"app_id": app_id, "buyer_id": buyer_id, "plan": plan},
-                )
-                purchase_row = await asyncio.to_thread(
-                    lambda: sb.table("purchases")
-                        .select("id").eq("app_id", app_id).eq("buyer_id", buyer_id)
-                        .order("created_at", desc=True).limit(1).execute()
-                )
-                if purchase_row.data:
-                    purchase_id = purchase_row.data[0]["id"]
-                    await asyncio.to_thread(
-                        lambda: sb.table("purchases")
-                            .update({"payout_status": "transferred"})
-                            .eq("id", purchase_id).execute()
-                    )
-                print(f"Transfer {transfer_amount}c → connect/{stripe_account_id} for app={app_id}")
-            except Exception as te:
-                print(f"Stripe Transfer failed: {te}")
-
-    except Exception as e:
-        print(f"_record_purchase error: {e}")
+    if dev_id != buyer_id:
+        dev_email = await _lookup_email(dev_id)
+        if dev_email:
+            await send_email(
+                to=dev_email,
+                subject=f"New {plan_label} for {app_name}",
+                html=_email_base(
+                    title=f"You have a new {plan_label}! 💰",
+                    body=f"Someone just paid ${gross:.2f} for <strong style='color:#fff'>{safe_name}</strong>. See it under Manage → Revenue.",
+                    cta_url="https://aistrix.app",
+                    cta_label="View in Dev Studio →",
+                ),
+            )
+    return True
 
 
 async def _upsert_entitlement(
@@ -3716,10 +3797,10 @@ async def _upsert_entitlement(
     period_end: Optional[str] = None,
     workspace_id: Optional[str] = None,
 ):
-    """Upsert app_entitlements row using the service-role client (bypasses RLS)."""
+    """Grant or update a buyer's access (service role; buyers can't write it).
+    Money and emails are handled by _record_payment, once per payment."""
     if not SUPABASE_SERVICE_ROLE_KEY:
-        print("WARN: SUPABASE_SERVICE_ROLE_KEY not set — cannot upsert entitlement")
-        return
+        raise HTTPException(status_code=503, detail="Entitlement storage is unavailable")
     sb = _service_client()
     row = {
         "app_id": app_id,
@@ -3736,75 +3817,74 @@ async def _upsert_entitlement(
     if period_start:       row["current_period_start"] = period_start
     if period_end:         row["current_period_end"]   = period_end
     if workspace_id:       row["workspace_id"]         = workspace_id   # else: buyer's personal workspace
+    await db(sb.table("app_entitlements").upsert(row, on_conflict="app_id,user_id"))
+    print(f"Entitlement upserted: app={app_id} plan={plan} status={status}")
 
-    result = await asyncio.to_thread(
-        lambda: sb.table("app_entitlements")
-            .upsert(row, on_conflict="app_id,user_id")
-            .execute()
+
+def _invoice_subscription(invoice: dict) -> tuple[Optional[str], dict]:
+    """(subscription id, subscription metadata) across Stripe API versions."""
+    details = ((invoice.get("parent") or {}).get("subscription_details")
+               or invoice.get("subscription_details") or {})
+    sub = details.get("subscription") or invoice.get("subscription")
+    if isinstance(sub, dict):
+        sub = sub.get("id")
+    return sub, details.get("metadata") or {}
+
+
+async def _fulfil_card_payment(intent: dict) -> bool:
+    """A succeeded in-app card payment (PaymentIntent) buys one run."""
+    meta = intent.get("metadata") or {}
+    return await _record_payment(
+        app_id=meta["app_id"], buyer_id=meta["user_id"], plan="pay_per_run",
+        amount_cents=int(intent.get("amount_received") or intent.get("amount") or 0),
+        payment_ref=intent.get("id"), stripe_customer_id=intent.get("customer"), grant_runs=1,
     )
-    print(f"Entitlement upserted: app={app_id} user={user_id} plan={plan} status={status}")
 
-    if status != "active":
-        return
 
-    # Look up app name + developer user_id
+class PaymentConfirmRequest(BaseModel):
+    payment_intent_id: str
+
+
+@app.post("/payments/confirm")
+async def confirm_card_payment(body: PaymentConfirmRequest, request: Request):
+    """Called by the app right after a card payment succeeds, so the run can
+    start without waiting for Stripe's webhook. Checks the payment with Stripe;
+    the webhook and this call share one record, so it's granted once."""
+    import stripe
+    secret_key = os.getenv("STRIPE_SECRET_KEY")
+    if not secret_key:
+        raise HTTPException(status_code=503, detail="Stripe is not configured on this server")
+    user_id = await require_verified_user(request)
+    stripe.api_key = secret_key
     try:
-        app_row = await asyncio.to_thread(
-            lambda: sb.table("apps").select("name, created_by").eq("id", app_id).single().execute()
-        )
-        app_name    = app_row.data["name"] if app_row.data else "your app"
-        dev_user_id = app_row.data.get("created_by") if app_row.data else None
-    except Exception:
-        app_name, dev_user_id = "your app", None
+        intent = _stripe_dict(await asyncio.to_thread(stripe.PaymentIntent.retrieve, body.payment_intent_id))
+    except stripe.error.StripeError:
+        raise HTTPException(status_code=404, detail="Payment not found")
+    meta = intent.get("metadata") or {}
+    if meta.get("user_id") != user_id or not meta.get("app_id"):
+        raise HTTPException(status_code=404, detail="Payment not found")
+    if intent.get("status") != "succeeded":
+        raise HTTPException(status_code=409, detail="This payment hasn't completed")
+    await _fulfil_card_payment(intent)
+    return {"ok": True, "app_id": meta["app_id"]}
 
-    plan_label = "subscription" if plan == "subscription" else "purchase"
 
-    # Email buyer — welcome
-    buyer_email = await _lookup_email(user_id)
-    if buyer_email:
-        await send_email(
-            to=buyer_email,
-            subject=f"You now have access to {app_name}",
-            html=_email_base(
-                title=f"Welcome to {app_name} 🎉",
-                body=f"Your {plan_label} is confirmed. You can run <strong style='color:#fff'>{app_name}</strong> from your Aistrix dashboard any time.",
-                cta_url="https://aistrix.app",
-                cta_label="Open Aistrix →",
-            ),
-        )
-
-    # Email developer — new sale
-    if dev_user_id and dev_user_id != user_id:
-        dev_email = await _lookup_email(dev_user_id)
-        if dev_email:
-            await send_email(
-                to=dev_email,
-                subject=f"New {plan_label} for {app_name}",
-                html=_email_base(
-                    title=f"You have a new {plan_label}! 💰",
-                    body=f"Someone just made a <strong style='color:#fff'>{plan_label}</strong> for <strong style='color:#fff'>{app_name}</strong>. Check your Monitor tab for subscriber stats.",
-                    cta_url="https://aistrix.app",
-                    cta_label="View in Dev Studio →",
-                ),
-            )
-
-    # Record purchase for revenue tracking + attempt Connect transfer
-    if dev_user_id:
-        await _record_purchase(
-            app_id=app_id, buyer_id=user_id, dev_id=dev_user_id,
-            plan=plan, stripe_customer_id=stripe_customer_id,
-            stripe_sub_id=stripe_sub_id, sb=sb,
-        )
+def _unsigned_webhooks_allowed() -> bool:
+    return os.getenv("ENVIRONMENT", "production").lower() in ("development", "dev", "local", "test")
 
 
 @app.post("/stripe/webhook")
 async def stripe_webhook(request: Request):
-    """Handle Stripe payment and subscription webhooks."""
+    """Handle Stripe payment and subscription webhooks. Access is granted on
+    payment; each payment is recorded (and the developer paid) exactly once."""
     import stripe
     secret_key = os.getenv("STRIPE_SECRET_KEY")
     webhook_secret = os.getenv("STRIPE_WEBHOOK_SECRET")
     if not secret_key:
         raise HTTPException(status_code=503, detail="Stripe not configured")
+    if not webhook_secret and not _unsigned_webhooks_allowed():
+        # Without the signing secret anyone could post a fake "payment".
+        raise HTTPException(status_code=503, detail="Stripe webhooks are not configured (STRIPE_WEBHOOK_SECRET)")
 
     stripe.api_key = secret_key
     payload = await request.body()
@@ -3812,76 +3892,98 @@ async def stripe_webhook(request: Request):
 
     try:
         if webhook_secret:
-            event = await asyncio.to_thread(
-                stripe.Webhook.construct_event, payload, sig_header, webhook_secret
-            )
-        else:
-            # Dev mode: parse without signature verification
-            event = json.loads(payload)
-    except (ValueError, Exception):
+            stripe.WebhookSignature.verify_header(payload.decode("utf-8"), sig_header, webhook_secret,
+                                                  stripe.Webhook.DEFAULT_TOLERANCE)
+        event = json.loads(payload)      # verified above; a plain dict (SDK objects have no .get)
+    except Exception:
         raise HTTPException(status_code=400, detail="Invalid payload or signature")
 
     event_type = event.get("type", "")
-    obj = event.get("data", {}).get("object", {})
-    meta = obj.get("metadata", {})
+    obj = (event.get("data") or {}).get("object") or {}
+    meta = obj.get("metadata") or {}
 
-    # ── One-time payment via Checkout Session ───────────────────────────────
+    # ── Checkout (one-time payment or the start of a subscription) ─────────
     if event_type == "checkout.session.completed":
         app_id  = meta.get("app_id")
         user_id = meta.get("user_id")
         plan    = meta.get("plan", "pay_per_run")
         run_quota_str = meta.get("run_quota", "")
         run_quota = int(run_quota_str) if run_quota_str and run_quota_str.isdigit() else None
+        workspace_id = meta.get("workspace_id") or None
+        paid = obj.get("payment_status") in ("paid", "no_payment_required")
 
-        if app_id and user_id:
-            customer_id = obj.get("customer")
-            sub_id      = obj.get("subscription")
-            await _upsert_entitlement(
-                app_id=app_id, user_id=user_id, plan=plan,
-                stripe_customer_id=customer_id, stripe_sub_id=sub_id,
-                run_quota=run_quota, workspace_id=meta.get("workspace_id") or None,
-            )
+        if app_id and user_id and paid:
+            if obj.get("mode") == "payment":
+                # One-time purchase: recorded with the one run it buys.
+                await _record_payment(
+                    app_id=app_id, buyer_id=user_id, plan="pay_per_run",
+                    amount_cents=int(obj.get("amount_total") or 0),
+                    payment_ref=obj.get("payment_intent") or obj.get("id"),
+                    stripe_customer_id=obj.get("customer"), workspace_id=workspace_id, grant_runs=1,
+                )
+            else:
+                # Subscription: access now; money is recorded per invoice
+                # (invoice.paid), so renewals count too.
+                await _upsert_entitlement(
+                    app_id=app_id, user_id=user_id, plan=plan,
+                    stripe_customer_id=obj.get("customer"), stripe_sub_id=obj.get("subscription"),
+                    run_quota=run_quota, workspace_id=workspace_id,
+                )
 
-    # ── PaymentIntent (Elements flow) ───────────────────────────────────────
+    # ── PaymentIntent (card form in the app; Checkout's intents carry no metadata) ─
     elif event_type == "payment_intent.succeeded":
         app_id  = meta.get("app_id")
         user_id = meta.get("user_id")
         if app_id and user_id and user_id != "anonymous":
-            await _upsert_entitlement(app_id=app_id, user_id=user_id, plan="pay_per_run")
+            await _fulfil_card_payment(obj)
+
+    # ── Subscription invoice paid (first month and every renewal) ──────────
+    elif event_type == "invoice.paid":
+        sub_id, sub_meta = _invoice_subscription(obj)
+        app_id, user_id = sub_meta.get("app_id"), sub_meta.get("user_id")
+        if sub_id and not (app_id and user_id) and SUPABASE_SERVICE_ROLE_KEY:
+            row = await db(_service_client().table("app_entitlements").select("app_id, user_id")
+                           .eq("stripe_sub_id", sub_id).limit(1))
+            if row.data:
+                app_id, user_id = row.data[0]["app_id"], row.data[0]["user_id"]
+        if sub_id and int(obj.get("amount_paid") or 0) > 0:
+            if not (app_id and user_id):
+                # Checkout hasn't been processed yet: ask Stripe to retry later.
+                raise HTTPException(status_code=503, detail="Subscription not linked yet")
+            await _record_payment(
+                app_id=app_id, buyer_id=user_id, plan="subscription",
+                amount_cents=int(obj["amount_paid"]), payment_ref=obj.get("id"),
+                stripe_customer_id=obj.get("customer"), stripe_sub_id=sub_id,
+            )
 
     # ── Subscription lifecycle ──────────────────────────────────────────────
     elif event_type in ("customer.subscription.created", "customer.subscription.updated"):
         sub = obj
-        app_id  = sub.get("metadata", {}).get("app_id")
-        user_id = sub.get("metadata", {}).get("user_id")
+        app_id  = meta.get("app_id")
+        user_id = meta.get("user_id")
         if not (app_id and user_id):
             # Try to look up via customer in app_entitlements
             customer_id = sub.get("customer")
             if customer_id and SUPABASE_SERVICE_ROLE_KEY:
-                sb = _service_client()
-                row = await asyncio.to_thread(
-                    lambda: sb.table("app_entitlements")
-                        .select("app_id, user_id")
-                        .eq("stripe_customer_id", customer_id)
-                        .limit(1).execute()
-                )
+                row = await db(_service_client().table("app_entitlements").select("app_id, user_id")
+                               .eq("stripe_customer_id", customer_id).limit(1))
                 if row.data:
                     app_id  = row.data[0]["app_id"]
                     user_id = row.data[0]["user_id"]
 
         if app_id and user_id:
-            status = "active" if sub.get("status") == "active" else sub.get("status", "active")
-            period = sub.get("current_period_end")
-            period_end_iso = datetime.fromtimestamp(period, tz=timezone.utc).isoformat() if period else None
-            period_start = sub.get("current_period_start")
-            period_start_iso = datetime.fromtimestamp(period_start, tz=timezone.utc).isoformat() if period_start else None
+            status = sub.get("status") or "active"
+            # Newer API versions keep the billing period on the subscription item.
+            item = ((sub.get("items") or {}).get("data") or [{}])[0]
+            period = sub.get("current_period_end") or item.get("current_period_end")
+            period_start = sub.get("current_period_start") or item.get("current_period_start")
             await _upsert_entitlement(
                 app_id=app_id, user_id=user_id, plan="subscription",
                 stripe_customer_id=sub.get("customer"),
                 stripe_sub_id=sub.get("id"),
                 status=status,
-                period_start=period_start_iso,
-                period_end=period_end_iso,
+                period_start=datetime.fromtimestamp(period_start, tz=timezone.utc).isoformat() if period_start else None,
+                period_end=datetime.fromtimestamp(period, tz=timezone.utc).isoformat() if period else None,
             )
 
     elif event_type == "customer.subscription.deleted":
@@ -4001,8 +4103,8 @@ async def stripe_connect_onboard(request: Request):
     link = await asyncio.to_thread(
         stripe.AccountLink.create,
         account=stripe_account_id,
-        refresh_url=f"{FRONTEND_URL}/studio?stripe_connect=refresh",
-        return_url=f"{FRONTEND_URL}/studio?stripe_connect=success",
+        refresh_url=f"{FRONTEND_URL}/developer?stripe_connect=refresh",
+        return_url=f"{FRONTEND_URL}/developer?stripe_connect=success",
         type="account_onboarding",
     )
     return {"url": link.url, "stripe_account_id": stripe_account_id}
@@ -4032,7 +4134,7 @@ async def stripe_connect_status(request: Request):
 
     try:
         stripe.api_key = secret_key
-        account = await asyncio.to_thread(stripe.Account.retrieve, stripe_account_id)
+        account = (await asyncio.to_thread(stripe.Account.retrieve, stripe_account_id)).to_dict()
         charges_enabled  = account.get("charges_enabled", False)
         payouts_enabled  = account.get("payouts_enabled", False)
         details_submitted = account.get("details_submitted", False)
@@ -4067,7 +4169,10 @@ async def stripe_earnings(request: Request):
 
     total_gross   = sum(r.get("gross_amount", 0) or 0 for r in rows)
     total_dev     = sum(r.get("dev_share", 0) or 0 for r in rows)
-    total_pending = sum(r.get("dev_share", 0) or 0 for r in rows if r.get("payout_status") == "pending")
+    # Owed but not yet paid out: waiting for a transfer, for the developer's
+    # payout account, or for a failed transfer to be retried.
+    total_pending = sum(r.get("dev_share", 0) or 0 for r in rows
+                        if r.get("payout_status") in ("pending", "no_connect_account", "transfer_failed"))
     by_app: dict = {}
     for r in rows:
         aid = r["app_id"]
@@ -4088,34 +4193,50 @@ async def stripe_earnings(request: Request):
 
 
 # ─── GitHub OAuth ─────────────────────────────────────────────────────────────
+# The GitHub token lives only on the server (developer_github, encrypted, no
+# browser access). The browser sees whether it's connected, the login and the
+# repository; issues are created here on the developer's behalf.
 
-@app.get("/auth/github")
-async def github_oauth_start(request: Request, token: Optional[str] = None):
-    """Redirect developer to GitHub OAuth authorisation page."""
-    if not GITHUB_CLIENT_ID:
-        raise HTTPException(status_code=503, detail="GitHub OAuth not configured")
-    # Accept token as query param (browser redirect can't set headers)
-    if token:
-        user_id = await verify_user_jwt(token)
-        if not user_id:
-            raise HTTPException(status_code=401, detail="Invalid token")
-    else:
-        user_id = await require_verified_user(request)
-    nonce = secrets.token_urlsafe(32)
-    _oauth_nonces[nonce] = (user_id, time.time() + 600)  # 10-min window
-    # Prune stale nonces
+_GITHUB_REPO = re.compile(r"^[A-Za-z0-9_.-]{1,100}/[A-Za-z0-9_.-]{1,100}$")
+
+
+class GitHubConnectRequest(BaseModel):
+    repo: str = ""
+
+
+def _github_repo(value: str) -> str:
+    repo = (value or "").strip().removeprefix("https://github.com/").strip("/")
+    if repo and not _GITHUB_REPO.match(repo):
+        raise HTTPException(status_code=400, detail="Repository must look like owner/repo")
+    return repo
+
+
+async def _github_row(user_id: str) -> Optional[dict]:
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        raise HTTPException(status_code=503, detail="GitHub connection storage is unavailable on this server")
+    res = await db(_service_client().table("developer_github").select("token_encrypted, login, repo, connected_at")
+                   .eq("user_id", user_id).limit(1))
+    return (res.data or [None])[0]
+
+
+@app.post("/github/connect")
+async def github_connect(body: GitHubConnectRequest, request: Request):
+    """Start connecting GitHub. Returns the GitHub authorisation URL; the
+    session token stays in the Authorization header (never in a URL)."""
+    if not GITHUB_CLIENT_ID or not GITHUB_CLIENT_SECRET or not GITHUB_REDIRECT_URI:
+        raise HTTPException(status_code=503, detail="GitHub isn't set up on this server yet")
+    if not _fernet:
+        raise HTTPException(status_code=503, detail="Secret encryption is unavailable on this server")
+    user_id = await require_verified_user(request)
+    repo = _github_repo(body.repo)
     now = time.time()
-    for k in [k for k, (_, exp) in list(_oauth_nonces.items()) if exp < now]:
+    for k in [k for k, entry in list(_oauth_nonces.items()) if entry[1] < now]:
         _oauth_nonces.pop(k, None)
-    scope = "repo"
-    url = (
-        f"https://github.com/login/oauth/authorize"
-        f"?client_id={GITHUB_CLIENT_ID}"
-        f"&redirect_uri={GITHUB_REDIRECT_URI}"
-        f"&scope={scope}"
-        f"&state={nonce}"
-    )
-    return RedirectResponse(url)
+    nonce = secrets.token_urlsafe(32)
+    _oauth_nonces[nonce] = (user_id, now + 600, repo)  # 10-min window
+    query = urlencode({"client_id": GITHUB_CLIENT_ID, "redirect_uri": GITHUB_REDIRECT_URI,
+                       "scope": "repo", "state": nonce})
+    return {"url": f"https://github.com/login/oauth/authorize?{query}"}
 
 
 @app.get("/auth/github/callback")
@@ -4128,7 +4249,7 @@ async def github_oauth_callback(code: str, state: str, request: Request):
     nonce_entry = _oauth_nonces.pop(state, None)
     if not nonce_entry or nonce_entry[1] < time.time():
         raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
-    dev_id = nonce_entry[0]
+    dev_id, _, repo = nonce_entry
 
     # Exchange code for token
     async with httpx.AsyncClient(timeout=15) as c:
@@ -4145,7 +4266,7 @@ async def github_oauth_callback(code: str, state: str, request: Request):
     token_data = r.json()
     access_token = token_data.get("access_token")
     if not access_token:
-        raise HTTPException(status_code=400, detail=f"GitHub token exchange failed: {token_data.get('error_description', 'unknown error')}")
+        return RedirectResponse(f"{FRONTEND_URL}/developer?github_connected=0")
 
     # Fetch GitHub username to confirm the connection
     async with httpx.AsyncClient(timeout=10) as c:
@@ -4153,28 +4274,90 @@ async def github_oauth_callback(code: str, state: str, request: Request):
             "https://api.github.com/user",
             headers={"Authorization": f"Bearer {access_token}", "Accept": "application/vnd.github+json"},
         )
-    github_user = me.json()
-    github_login = github_user.get("login", "")
+    github_login = (me.json() if me.status_code == 200 else {}).get("login", "")
 
-    # Store token server-side in developer_settings (service-role only)
-    if SUPABASE_SERVICE_ROLE_KEY:
-        sb = _service_client()
-        existing = await asyncio.to_thread(
-            lambda: sb.table("developer_settings")
-                .select("settings")
-                .eq("user_id", dev_id).maybe_single().execute()
-        )
-        current = {}
-        if existing and existing.data:
-            current = existing.data.get("settings") or {}
-        current["github"] = {"token": access_token, "login": github_login, "connected_at": datetime.now(timezone.utc).isoformat()}
-        await asyncio.to_thread(
-            lambda: sb.table("developer_settings")
-                .upsert({"user_id": dev_id, "settings": current}, on_conflict="user_id")
-                .execute()
-        )
+    await _github_row(dev_id)       # fails closed if storage is unavailable
+    await db(_service_client().table("developer_github").upsert({
+        "user_id": dev_id, "token_encrypted": _encrypt(access_token), "login": github_login,
+        "repo": repo or None, "connected_at": datetime.now(timezone.utc).isoformat(),
+    }, on_conflict="user_id"))
+    return RedirectResponse(f"{FRONTEND_URL}/developer?github_connected=1")
 
-    return RedirectResponse(f"{FRONTEND_URL}/studio?github_connected=1&login={github_login}")
+
+@app.get("/github/connection")
+async def github_connection(request: Request):
+    """Whether GitHub is connected — never the token."""
+    row = await _github_row(await require_verified_user(request))
+    return {"connected": bool(row), "login": (row or {}).get("login"), "repo": (row or {}).get("repo"),
+            "connected_at": (row or {}).get("connected_at")}
+
+
+@app.put("/github/connection")
+async def github_set_repo(body: GitHubConnectRequest, request: Request):
+    user_id = await require_verified_user(request)
+    if not await _github_row(user_id):
+        raise HTTPException(status_code=404, detail="Connect GitHub first")
+    repo = _github_repo(body.repo)
+    await db(_service_client().table("developer_github").update({"repo": repo or None}).eq("user_id", user_id))
+    return {"ok": True, "repo": repo or None}
+
+
+@app.delete("/github/connection")
+async def github_disconnect(request: Request):
+    user_id = await require_verified_user(request)
+    await _github_row(user_id)
+    await db(_service_client().table("developer_github").delete().eq("user_id", user_id))
+    return {"ok": True}
+
+
+class GitHubIssueRequest(BaseModel):
+    run_id: str
+
+
+@app.post("/github/issues")
+async def github_create_issue(body: GitHubIssueRequest, request: Request):
+    """File a GitHub issue for a run the developer can see, in their repo."""
+    user_id = await require_verified_user(request)
+    user_jwt = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    row = await _github_row(user_id)
+    if not row:
+        raise HTTPException(status_code=409, detail="Connect GitHub first")
+    if not row.get("repo"):
+        raise HTTPException(status_code=409, detail="Choose a repository for issues first")
+    # Read the run as the developer, so only runs they can already see can be filed.
+    res = await db(get_supabase_for_user(user_jwt).table("run_history")
+                   .select("id, app_id, app_name, input, output, rating_value, created_at")
+                   .eq("id", body.run_id).limit(1))
+    run = (res.data or [None])[0]
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if not await can_edit_app(await load_app_row(run["app_id"]), ApiCaller(user_id=user_id)):
+        raise HTTPException(status_code=404, detail="Run not found")
+    try:
+        token = _decrypt(row["token_encrypted"])
+    except Exception:
+        raise HTTPException(status_code=409, detail="Reconnect GitHub")
+    app_name = run.get("app_name") or "App"
+    text = "\n".join(part for part in [
+        f"**App:** {app_name}",
+        "**Feedback:** 👎" if run.get("rating_value") == -1 else "",
+        f"**Date:** {run.get('created_at')}",
+        f"\n**Input:**\n```\n{(run.get('input') or '')[:4000]}\n```" if run.get("input") else "",
+        f"\n**Output:**\n```\n{(run.get('output') or '')[:4000]}\n```" if run.get("output") else "",
+        "\n---\n*Created from Aistrix Improve*",
+    ] if part)
+    async with httpx.AsyncClient(timeout=15) as c:
+        r = await c.post(f"https://api.github.com/repos/{row['repo']}/issues",
+                         headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"},
+                         json={"title": f"[{app_name}] run flagged", "body": text, "labels": ["ai-quality"]})
+    if r.status_code == 401:
+        raise HTTPException(status_code=409, detail="GitHub access was revoked. Reconnect GitHub.")
+    if r.status_code in (403, 404):
+        raise HTTPException(status_code=409, detail=f"GitHub won't let this account create issues in {row['repo']}.")
+    if r.status_code >= 300:
+        raise HTTPException(status_code=502, detail="GitHub couldn't create the issue. Try again.")
+    issue = r.json()
+    return {"number": issue.get("number"), "url": issue.get("html_url")}
 
 
 # ─── App Secrets ─────────────────────────────────────────────────────────────
@@ -4185,17 +4368,20 @@ class SecretUpsert(BaseModel):
 
 @app.get("/apps/{app_id}/secrets")
 async def list_secrets(app_id: str, request: Request):
-    """Return secret key names only — never values."""
-    if not _fernet:
-        return {"secrets": [], "warning": "SECRET_ENCRYPTION_KEY not configured"}
+    """Return secret key names only — never values. Secrets belong to the app
+    (one value per name), so every editor sees and runs the same set."""
     user_id = await require_verified_user(request)
+    if not await can_edit_app(await load_app_row(app_id), ApiCaller(user_id=user_id)):
+        raise HTTPException(status_code=404, detail="App not found")
+    if not _fernet:
+        raise HTTPException(status_code=503, detail="Secret encryption is unavailable on this server")
     if not SUPABASE_SERVICE_ROLE_KEY:
-        return {"secrets": []}
+        raise HTTPException(status_code=503, detail="Secret storage is unavailable on this server")
     sb = _service_client()
     rows = await asyncio.to_thread(
         lambda: sb.table("app_secrets")
             .select("key, created_at, updated_at")
-            .eq("app_id", app_id).eq("user_id", user_id)
+            .eq("app_id", app_id)
             .order("key").execute()
     )
     return {"secrets": rows.data or []}
@@ -4203,11 +4389,13 @@ async def list_secrets(app_id: str, request: Request):
 @app.put("/apps/{app_id}/secrets")
 async def upsert_secret(app_id: str, body: SecretUpsert, request: Request):
     """Create or update a secret value (stored encrypted, value never returned)."""
-    if not _fernet:
-        raise HTTPException(status_code=503, detail="SECRET_ENCRYPTION_KEY not set on server — add it to .env and restart")
     user_id = await require_verified_user(request)
     if not await can_edit_app(await load_app_row(app_id), ApiCaller(user_id=user_id)):
         raise HTTPException(status_code=404, detail="App not found")
+    if not _fernet:
+        raise HTTPException(status_code=503, detail="Secret encryption is unavailable on this server")
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        raise HTTPException(status_code=503, detail="Secret storage is unavailable on this server")
     if not body.key.strip():
         raise HTTPException(status_code=400, detail="Key cannot be empty")
     if len(body.key) > 100:
@@ -4231,15 +4419,19 @@ async def upsert_secret(app_id: str, body: SecretUpsert, request: Request):
 @app.delete("/apps/{app_id}/secrets/{key}")
 async def delete_secret(app_id: str, key: str, request: Request):
     user_id = await require_verified_user(request)
+    if not await can_edit_app(await load_app_row(app_id), ApiCaller(user_id=user_id)):
+        raise HTTPException(status_code=404, detail="App not found")
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        raise HTTPException(status_code=503, detail="Secret storage is unavailable on this server")
     sb = _service_client()
     await asyncio.to_thread(
         lambda: sb.table("app_secrets")
-            .delete().eq("app_id", app_id).eq("user_id", user_id).eq("key", key.upper())
+            .delete().eq("app_id", app_id).eq("key", key.upper())
             .execute()
     )
     return {"ok": True}
 
-async def _load_app_secrets(app_id: str, user_id: str) -> dict[str, str]:
+async def _load_app_secrets(app_id: str) -> dict[str, str]:
     """Load decrypted secrets for injection into a run — server-side only."""
     if not _fernet or not SUPABASE_SERVICE_ROLE_KEY:
         return {}
@@ -4247,7 +4439,7 @@ async def _load_app_secrets(app_id: str, user_id: str) -> dict[str, str]:
     rows = await asyncio.to_thread(
         lambda: sb.table("app_secrets")
             .select("key, encrypted_value")
-            .eq("app_id", app_id).eq("user_id", user_id).execute()
+            .eq("app_id", app_id).execute()
     )
     result = {}
     for r in (rows.data or []):
@@ -4990,8 +5182,18 @@ def _test_requirements(app_row: dict, blueprint: dict, rows: list[dict]) -> list
     return requirements
 
 
-async def app_test_status(app_row: dict) -> dict:
-    """Latest result per test case for the app's current draft, plus timing/cost profile."""
+def _parse_ts(value) -> Optional[datetime]:
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")) if value else None
+    except ValueError:
+        return None
+
+
+async def app_test_status(app_row: dict, user_id: Optional[str] = None) -> dict:
+    """Latest result per test case for the app's current draft, plus timing/cost profile.
+    With user_id, every test that person saved (e.g. a regression from user
+    feedback) must also have passed on this draft — a test added after the
+    last run can't be skipped by publishing straight away."""
     state = await app_draft_state(app_row)
     draft = state_hash(state)
     sb = _service_client()
@@ -5025,6 +5227,26 @@ async def app_test_status(app_row: dict) -> dict:
     # check on the same draft mustn't block publishing for good.
     gate_rows = cases + [r for r in rows if r.get("source") == "profile"][:2]
     requirements = _test_requirements(app_row, state.get("blueprint") or {}, gate_rows)
+    if user_id and sb:
+        saved = await db(sb.table("app_test_cases").select("id, name, updated_at")
+                         .eq("app_id", app_row["id"]).eq("user_id", user_id).limit(500))
+        if saved.data:
+            # A result only counts if it was recorded after the test's last edit.
+            edited = {c["id"]: _parse_ts(c.get("updated_at")) for c in saved.data}
+            results = {r["case_ref"]: r for r in cases if r["source"] == "suite"
+                       and not (edited.get(r["case_ref"]) and _parse_ts(r.get("created_at"))
+                                and _parse_ts(r["created_at"]) < edited[r["case_ref"]])}
+            not_run = [c.get("name") or c["id"] for c in saved.data if c["id"] not in results]
+            failed = [c.get("name") or c["id"] for c in saved.data if c["id"] in results and not results[c["id"]]["passed"]]
+            requirements.append({
+                "id": "saved", "label": "Your saved tests", "required": True,
+                "fix": f"Run tests again: {len(not_run)} saved test{'s have' if len(not_run) != 1 else ' has'} not run on this draft."
+                       if not_run else "Fix the app so your saved tests pass.",
+                "status": "failed" if failed else "missing" if not_run else "passed",
+                "passed": not not_run and not failed,
+                "total": len(saved.data),
+                "failures": (failed + not_run)[:5],
+            })
     required_requirements = [r for r in requirements if r["required"]]
     lat = [r["latency_ms"] for r in rows if r.get("latency_ms") is not None]
     costs = [float(r["cost_usd"]) for r in rows if r.get("cost_usd") is not None]
@@ -5055,8 +5277,8 @@ async def app_test_status(app_row: dict) -> dict:
 
 @app.get("/v1/apps/{app_id}/tests/status")
 async def get_app_test_status(app_id: str, request: Request):
-    _, app_row = await _editable_app(app_id, request)
-    return await app_test_status(app_row)
+    caller, app_row = await _editable_app(app_id, request)
+    return await app_test_status(app_row, caller.user_id)
 
 
 # ── Release: draft → production ──────────────────────────────────────────────
@@ -5283,7 +5505,7 @@ async def get_release(app_id: str, request: Request):
     state = await app_draft_state(app_row)
     draft = state_hash(state)
     prod = app_row.get("prod_snapshot") if isinstance(app_row.get("prod_snapshot"), dict) else None
-    tests = await app_test_status(app_row)
+    tests = await app_test_status(app_row, caller.user_id)
     checks = await _publish_checks(app_id, caller.user_jwt)
     return {
         "is_published": bool(app_row.get("is_published")), "promoted_at": app_row.get("promoted_at"),
@@ -5300,7 +5522,7 @@ async def promote_app(app_id: str, request: Request):
     the publish checks and passing tests for this exact draft."""
     caller, app_row = await _editable_app(app_id, request)
     checks = await _publish_checks(app_id, caller.user_jwt)
-    tests = await app_test_status(app_row)
+    tests = await app_test_status(app_row, caller.user_id)
     problems = _test_problems(tests)
     if checks or problems:
         return JSONResponse(status_code=409, content={

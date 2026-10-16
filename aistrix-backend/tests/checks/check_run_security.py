@@ -63,9 +63,16 @@ main.fetch_app_tools = emptyl
 main.fetch_app_blueprint = bp
 main._load_app_secrets = emptyd
 main.stream_claude = fake_stream
-consumed = []
-async def consume(e, n): consumed.append(e["id"])
-main.consume_entitlement_run = consume
+consumed, released = [], []
+async def reserve(e):
+    if e.get("run_quota") is not None and e["runs_this_period"] >= e["run_quota"]:
+        return None
+    e["runs_this_period"] += 1; consumed.append(e["id"]); return e["runs_this_period"]
+async def release(e): e["runs_this_period"] -= 1; released.append(e["id"])
+async def no_notice(*a): return None
+main.reserve_entitlement_run = reserve
+main.release_entitlement_run = release
+main.notify_low_runs = no_notice
 
 def run(body, tok=None, origin=None):
     h = {"Authorization": f"Bearer {tok}"} if tok else {}
@@ -82,8 +89,21 @@ code, body = run({"app_id": "paid", "input": "hi", "system_prompt": "EVIL", "run
 ok("buyer runs with the app's own prompt (swap ignored)", code == 200 and "SECRET PROMPT" in captured["system"] and "EVIL" not in captured["system"])
 ok("run_mode suffix applied", "autonomous agent mode" in captured["system"])
 import time; time.sleep(0.2)
-ok("entitlement run consumed", consumed == ["e1"])
-ENT[("paid", "buyer")]["runs_this_period"] = 5
+ok("entitlement run consumed", consumed == ["e1"] and released == [] and ENT[("paid", "buyer")]["runs_this_period"] == 2)
+ENT[("paid", "buyer")].update(plan="pay_per_run", run_quota=3, runs_this_period=2)
+ok("the last purchased run can be used", run({"app_id": "paid", "input": "hi"}, "tok-buyer")[0] == 200)
+code, body = run({"app_id": "paid", "input": "hi"}, "tok-buyer")
+ok("pay-per-run used up → 402 asks to buy another run", code == 402 and "buy another run" in body)
+async def broken_stream(*a, **k):
+    raise RuntimeError("provider down")
+    yield ""
+ENT[("paid", "buyer")].update(run_quota=4, runs_this_period=3)
+main.stream_claude = broken_stream
+code, body = run({"app_id": "paid", "input": "hi"}, "tok-buyer")
+time.sleep(0.2)
+main.stream_claude = fake_stream
+ok("a failed run gives the purchased run back", '"error"' in body and released == ["e1"] and ENT[("paid", "buyer")]["runs_this_period"] == 3)
+ENT[("paid", "buyer")].update(plan="subscription", run_quota=5, runs_this_period=5)
 code, body = run({"app_id": "paid", "input": "hi"}, "tok-buyer")
 ok("quota used up → 402 with message", code == 402 and "used all 5 runs" in body)
 # forged token can't impersonate

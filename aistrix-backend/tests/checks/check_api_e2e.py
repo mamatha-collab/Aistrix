@@ -77,10 +77,16 @@ class FakeSB:
         db = self.db
         class R:
             def execute(_):
-                if name == "consume_entitlement_run":
+                if name == "reserve_entitlement_run":
+                    for e in db.get("app_entitlements", []):
+                        if e["id"] == params["p_entitlement_id"] and (e.get("run_quota") is None or e["runs_this_period"] < e["run_quota"]):
+                            e["runs_this_period"] += 1
+                            return Res(data=e["runs_this_period"])
+                    return Res(data=None)
+                if name == "release_entitlement_run":
                     for e in db.get("app_entitlements", []):
                         if e["id"] == params["p_entitlement_id"]:
-                            e["runs_this_period"] += 1
+                            e["runs_this_period"] = max(e["runs_this_period"] - 1, 0)
                             return Res(data=e["runs_this_period"])
                 return Res(data=None)
         return R()

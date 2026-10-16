@@ -159,6 +159,16 @@ describe('workspace roles and personal settings', () => {
     const r = await as('developer', `select settings from developer_settings where user_id = $1`, [U.owner])
     expect(r.rows).toHaveLength(0)
   })
+
+  it('GitHub tokens are server-only: not even their owner can read them from the browser', async () => {
+    await db.query(`insert into developer_github (user_id, token_encrypted, login, repo) values ($1, 'gAAAA-cipher', 'octo', 'acme/app')`, [U.owner])
+    for (const who of ['owner', 'developer']) {
+      const read = await as(who, `select token_encrypted from developer_github`)
+      expect(read.error).not.toBeNull()
+      const write = await as(who, `insert into developer_github (user_id, token_encrypted) values ($1, 'x')`, [U[who]])
+      expect(write.error).not.toBeNull()
+    }
+  })
 })
 
 describe('draft tracking', () => {
@@ -173,6 +183,74 @@ describe('draft tracking', () => {
     await db.query(`update apps set has_draft_changes = false where id = $1`, [APP])
     await as('owner', `update app_blueprints set blueprint = blueprint || '{"dev_phase":"test"}' where app_id = $1`, [APP])
     expect((await db.query(`select has_draft_changes from apps where id = $1`, [APP])).rows[0].has_draft_changes).toBe(false)
+  })
+})
+
+describe('release gate and revenue records', () => {
+  it('editing a saved test stamps when it changed, so old passes stop counting', async () => {
+    const made = await as('developer', `insert into app_test_cases (app_id, user_id, name, input) values ($1, $2, 'gate', 'a') returning id`, [APP, U.developer])
+    const id = made.rows[0].id
+    await db.query(`update app_test_cases set updated_at = '2000-01-01' where id = $1`, [id])
+    await as('developer', `update app_test_cases set rules = '[{"type":"must-contain","value":"x"}]', updated_at = '1999-01-01' where id = $1`, [id])
+    const { rows } = await db.query(`select updated_at > '2001-01-01' as fresh from app_test_cases where id = $1`, [id])
+    expect(rows[0].fresh).toBe(true)                    // and it can't be backdated
+  })
+
+  it('a Stripe payment can only be recorded once', async () => {
+    const row = `insert into purchases (app_id, dev_id, plan, gross_amount, stripe_payment_ref) values ($1, $2, 'pay_per_run', 25, 'pi_once')`
+    await db.query(row, [APP, U.owner])
+    await expect(db.query(row, [APP, U.owner])).rejects.toThrow(/duplicate key/)
+  })
+
+  it('browsers cannot write revenue; each developer reads only their own', async () => {
+    const forged = await as('owner', `insert into purchases (app_id, dev_id, plan, gross_amount) values ($1, $2, 'pay_per_run', 9999)`, [APP, U.owner])
+    expect(forged.error).not.toBeNull()
+    expect((await as('owner', `select stripe_payment_ref from purchases`)).rows.map(r => r.stripe_payment_ref)).toContain('pi_once')
+    expect((await as('developer', `select 1 from purchases`)).rows).toHaveLength(0)
+  })
+})
+
+describe('pay-per-run: each purchase is one run', () => {
+  const buy = (ref, runs = 1) => db.query(`select record_purchase($1::jsonb, $2) id`, [
+    { app_id: APP, buyer_id: U.outsider, dev_id: U.owner, plan: 'pay_per_run', gross_amount: 2, platform_fee: 0.4, dev_share: 1.6, stripe_payment_ref: ref }, runs])
+  const access = async () => (await db.query(`select id, plan, status, run_quota, runs_this_period from app_entitlements where app_id = $1 and user_id = $2`, [APP, U.outsider])).rows
+  const reserve = async id => (await db.query(`select reserve_entitlement_run($1) used`, [id])).rows[0].used
+
+  it('a purchase grants one run; the same payment reported twice grants nothing more', async () => {
+    expect((await buy('pi_run_1')).rows[0].id).not.toBeNull()
+    expect((await buy('pi_run_1')).rows[0].id).toBeNull()
+    const [ent] = await access()
+    expect(ent).toMatchObject({ plan: 'pay_per_run', status: 'active', run_quota: 1, runs_this_period: 0 })
+  })
+
+  it('the run can be used once; a failed run gives it back; buying again adds one more', async () => {
+    const [ent] = await access()
+    expect(await reserve(ent.id)).toBe(1)
+    expect(await reserve(ent.id)).toBeNull()            // a second run at the same time gets nothing
+    await db.query(`select release_entitlement_run($1)`, [ent.id])
+    expect(await reserve(ent.id)).toBe(1)
+    await buy('pi_run_2')
+    expect((await access())[0]).toMatchObject({ run_quota: 2, runs_this_period: 1 })
+    expect(await reserve(ent.id)).toBe(2)
+    expect(await reserve(ent.id)).toBeNull()
+  })
+
+  it('an active subscription is never replaced by a single-run purchase', async () => {
+    await db.query(`insert into app_entitlements (app_id, user_id, plan, status) values ($1, $2, 'subscription', 'active')`, [APP, U.billing])
+    await db.query(`select record_purchase($1::jsonb, 1)`, [{ app_id: APP, buyer_id: U.billing, dev_id: U.owner, plan: 'pay_per_run', stripe_payment_ref: 'pi_sub_holder' }])
+    const { rows } = await db.query(`select plan, run_quota from app_entitlements where app_id = $1 and user_id = $2`, [APP, U.billing])
+    expect(rows).toEqual([{ plan: 'subscription', run_quota: null }])
+  })
+
+  it('one access record per buyer and app', async () => {
+    await expect(db.query(`insert into app_entitlements (app_id, user_id, plan) values ($1, $2, 'pay_per_run')`, [APP, U.outsider])).rejects.toThrow(/duplicate key/)
+  })
+
+  it('browsers cannot grant, reserve or give back runs', async () => {
+    const [ent] = await access()
+    for (const sql of [`select record_purchase('{}'::jsonb, 5)`, `select reserve_entitlement_run('${ent.id}')`, `select release_entitlement_run('${ent.id}')`]) {
+      expect((await as('outsider', sql)).error).not.toBeNull()
+    }
   })
 })
 

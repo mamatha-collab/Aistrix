@@ -93,7 +93,7 @@ CHECKS = {"errors": []}
 async def checks(app_id, jwt): return CHECKS["errors"]
 main._publish_checks = checks
 STATUS = {}
-async def status(app_row):
+async def status(app_row, user_id=None):
     return {"draft_hash": main.state_hash(await main.app_draft_state(app_row)), **STATUS}
 main.app_test_status = status
 owner = {"Authorization": "Bearer tok-owner"}
@@ -117,7 +117,7 @@ ok("promote saves the draft as the live version and publishes", r.status_code ==
    and [t["name"] for t in apps_patch["prod_snapshot"]["tools"]] == ["draft_tool"] and apps_patch["has_draft_changes"] is False)
 ok("…and keeps blueprint_prod in step for the Deploy diff", ("app_blueprints", {"blueprint_prod": DRAFT_BP}) in UPDATES)
 
-async def moving_status(app_row):
+async def moving_status(app_row, user_id=None):
     return {"draft_hash": "an-older-draft", "all_passed": True, "requirements": []}
 main.app_test_status = moving_status
 UPDATES.clear()

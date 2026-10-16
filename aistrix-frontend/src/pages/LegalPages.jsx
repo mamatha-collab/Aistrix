@@ -71,8 +71,8 @@ export function TermsPage() {
       </p>
       <h2 className="text-white font-semibold text-base mt-6">Paid apps</h2>
       <p>
-        Some apps charge per run via Stripe. Charges are billed at the time of a successful run;
-        failed runs are not charged. Refund requests go to support@aistrix.com.
+        Some apps charge per run via Stripe. Each purchase buys one run; if a run fails, it isn't
+        used up and you can run again. Refund requests go to support@aistrix.com.
       </p>
       <h2 className="text-white font-semibold text-base mt-6">Your content</h2>
       <p>

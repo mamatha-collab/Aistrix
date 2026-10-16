@@ -46,17 +46,18 @@ async def fake_stream(system, user_input, model, api_key=None, usage_holder=None
         usage_holder.update(input_tokens=1000, output_tokens=500)
 main.stream_claude = fake_stream
 
+CASES = []         # app_test_cases (the developer's saved tests)
 class _T:
-    def __init__(self): self.q = {}
-    def insert(self, row): ROWS.append({**row, "created_at": f"t{len(ROWS):04d}"}); return self
+    def __init__(self, table="app_test_runs"): self.q = {}; self.rows = CASES if table == "app_test_cases" else ROWS
+    def insert(self, row): self.rows.append({**row, "created_at": f"t{len(self.rows):04d}"}); return self
     def select(self, *a, **k): return self
     def eq(self, k, v): self.q[k] = v; return self
     def order(self, *a, **k): return self
     def limit(self, n): return self
     def execute(self):
-        data = [r for r in ROWS if all(r.get(k) == v for k, v in self.q.items())]
+        data = [r for r in self.rows if all(r.get(k) == v for k, v in self.q.items())]
         return NS(data=sorted(data, key=lambda r: r["created_at"], reverse=True))
-main._service_client = lambda: NS(table=lambda t: _T())
+main._service_client = lambda: NS(table=lambda t: _T(t))
 auth = {"Authorization": "Bearer tok-owner"}
 
 # ── draft fingerprint ───────────────────────────────────────────────────────
@@ -220,5 +221,27 @@ r = c.post("/v1/apps/app-1/tests/run", headers=auth, json={"input": "x", "case_r
 ok("grader error → this check fails with a reason, the request doesn't crash",
    r.status_code == 200 and not r.json()["passed"] and "grader couldn't check" in r.json()["errors"][0])
 main.stream_claude = fake_stream
+
+# ── saved tests (e.g. a regression from user feedback) gate publishing ──────
+reqs = lambda: {r["id"]: r for r in c.get("/v1/apps/app-1/tests/status", headers=auth).json()["requirements"]}
+ok("no saved tests → no extra requirement", "saved" not in reqs())
+CASES.append({"id": "case-reg", "app_id": "app-1", "user_id": OWNER, "name": "Run regression · r1", "created_at": "c1"})
+CASES.append({"id": "case-theirs", "app_id": "app-1", "user_id": "other", "name": "Someone else's test", "created_at": "c2"})
+saved = reqs()["saved"]
+ok("a saved test not run on this draft blocks publishing", saved["required"] and not saved["passed"] and saved["status"] == "missing"
+   and saved["failures"] == ["Run regression · r1"] and saved["total"] == 1)
+run_case(source="suite", case_ref="case-reg", label="Run regression · r1", checks=[{"type": "must-contain", "value": "Nope"}])
+ok("a failing saved test blocks publishing", reqs()["saved"]["status"] == "failed")
+run_case(source="suite", case_ref="case-reg", label="Run regression · r1", checks=[{"type": "must-contain", "value": "Score"}])
+ok("once it passes on this draft the requirement is met", reqs()["saved"]["passed"])
+reg_runs = [r for r in ROWS if r["case_ref"] == "case-reg"]
+reg_runs[0]["created_at"], reg_runs[1]["created_at"] = "2026-10-15T09:00:00+00:00", "2026-10-15T10:00:00+00:00"
+CASES[0]["updated_at"] = "2026-10-15T11:00:00+00:00"   # the test was edited after its last result
+ok("editing a saved test needs it run again", not reqs()["saved"]["passed"])
+CASES[0]["updated_at"] = "2026-10-15T08:00:00+00:00"
+ok("a result recorded after the edit counts", reqs()["saved"]["passed"])
+APP["system_prompt"] = "Score the lead, briefly"
+ok("editing the draft needs the saved test run again", not reqs()["saved"]["passed"])
+APP["system_prompt"] = "Score the lead"
 
 finish()

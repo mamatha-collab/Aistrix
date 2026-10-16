@@ -14,7 +14,7 @@ import ErrorBoundary from '../components/ErrorBoundary'
 import ConfirmDialog from '../components/ConfirmDialog'
 import { scopeToWorkspace } from '../lib/workspace'
 import NotificationsPanel from '../components/NotificationsPanel'
-import { ChartNoAxesColumn, ChevronDown, CircleHelp, CirclePlay, ClipboardCheck, Database, History, KeyRound, LockKeyhole, LogOut, Megaphone, Moon, PenLine, Play, Plus, Search, Send, Settings, Sun, TrendingUp, X } from 'lucide-react'
+import { ArrowLeft, ChartNoAxesColumn, ChevronDown, CircleHelp, CirclePlay, ClipboardCheck, Database, History, KeyRound, LockKeyhole, LogOut, Megaphone, Moon, PenLine, Play, Plus, Search, Send, Settings, Sun, TrendingUp, X } from 'lucide-react'
 import { applyTheme } from '../utils/theme'
 import { AppEmojiWithType, AppNavigator, DEV_PHASES, EMPTY_BP, HelpPanel, MoveBackModal, WelcomeScreen, calcReadiness, getDevPhase, migrateBlueprint, normalizeDevPhase } from './devstudio/shared'
 
@@ -179,20 +179,20 @@ export default function DevStudioPage({
     if (!rows?.length) { setApps([]); setRuns([]); setLoading(false); return }
     // Prompts and other private fields come separately, for apps this user can edit.
     const myApps = await withPrivateFields(supabase, rows)
-    setApps(myApps)
-    setActiveAppId(prev => myApps.some(a => a.id === prev) ? prev : null)
 
-    // Load blueprint dev phases. This is separate from apps.status, which is used by moderation/marketplace review.
+    // Load blueprint dev phases first and show apps and phases together:
+    // shown before their phase, apps flash in the wrong step (as Design).
+    // This is separate from apps.status (moderation/marketplace review).
     const { data: bpRows } = await supabase.from('app_blueprints')
       .select('app_id, blueprint').in('app_id', myApps.map(a => a.id))
-    if (bpRows?.length) {
-      const phases = {}
-      for (const row of bpRows) {
-        const phase = normalizeDevPhase(row.blueprint?.dev_phase)
-        if (phase) phases[row.app_id] = phase
-      }
-      setPhaseByAppId(phases)
+    const phases = {}
+    for (const row of bpRows || []) {
+      const phase = normalizeDevPhase(row.blueprint?.dev_phase)
+      if (phase) phases[row.app_id] = phase
     }
+    setPhaseByAppId(prev => ({ ...prev, ...phases }))
+    setApps(myApps)
+    setActiveAppId(prev => myApps.some(a => a.id === prev) ? prev : null)
 
     const [{ data: runData, error: runError }, { data: entData }] = await Promise.all([
       supabase.from('run_history')
@@ -607,7 +607,11 @@ export default function DevStudioPage({
           {!pageContent && <div className="flex-1 min-w-0 overflow-y-auto px-4 sm:px-5 lg:px-6 py-4 md:py-6 space-y-5">
             {/* Tab content */}
             {['design','test','deploy'].includes(tab) ? (
-              phaseScopedActiveAppId ? (
+              phaseScopedActiveAppId ? (<>
+                <button onClick={() => setActiveAppId(null)}
+                  className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-400 hover:text-white transition-colors">
+                  <ArrowLeft size={14} strokeWidth={1.75} aria-hidden="true" /> All {DEV_PHASES[tab]?.label || ''} apps
+                </button>
                 <ErrorBoundary compact title={`${DEV_PHASES[tab]?.label || 'Dev Studio'} section could not load`} resetKey={`${tab}:${phaseScopedActiveAppId}`}>
                   <Suspense fallback={TAB_LOADING}>
                   {tab === 'design' && <DesignTab   navigationGuardRef={navigationGuardRef} apps={activePhaseApps} allApps={apps} loading={loading} onOpenCreate={onOpenCreate} user={user} onAppUpdated={updateAppInState} onGoToTest={appId => { moveAppPhase(appId, 'test'); setDeployFixReason('') }} selectedAppId={phaseScopedActiveAppId} onSelectApp={setActiveAppId} deployFixReason={deployFixReason} phaseByAppId={phaseByAppId} />}
@@ -615,7 +619,7 @@ export default function DevStudioPage({
                   {tab === 'deploy' && <DeployTab   apps={activePhaseApps} user={user} onAppUpdated={updateAppInState} onFixInDesign={returnToDesignForPublishFix} onMonitor={appId => navigateOperations('monitor', appId)} selectedAppId={phaseScopedActiveAppId} onSelectApp={setActiveAppId} onMovePhase={moveAppPhase} onOpenKeys={onShowSettings} />}
                   </Suspense>
                 </ErrorBoundary>
-              ) : (
+              </>) : (
                 (() => {
                   const designApps = visibleApps.filter(a => getDevPhase(a, phaseByAppId) === 'design')
                   const appRow = (a, onPick) => {

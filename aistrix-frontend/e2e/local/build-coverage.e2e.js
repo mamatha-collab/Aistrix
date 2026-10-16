@@ -126,3 +126,33 @@ test('Build with AI: "Save for Test" saves the app straight into the Test step w
   expect(await page.evaluate(() => window.buildFixture.requests.some(r => r.path.endsWith('/promote')))).toBe(false)
   await expect(page.getByText('Testing Invoice Checker')).toBeVisible()
 })
+
+test('reloading never flashes an app in the wrong step', async ({ page }) => {
+  // Watch every render from the first moment: the unpublished app in Test
+  // must never be listed under Design while the steps are still loading.
+  await page.addInitScript(() => {
+    window.__wrongStep = false
+    new MutationObserver(() => {
+      for (const row of document.querySelectorAll('button')) {
+        const badge = row.querySelector(':scope > span:last-child')
+        if (row.textContent.includes('Second Assistant') && badge?.textContent === 'Design') window.__wrongStep = true
+      }
+    }).observe(document, { subtree: true, childList: true, characterData: true })
+  })
+  await page.route('**/*', route => {
+    const url = new URL(route.request().url())
+    return url.hostname === '127.0.0.1' || url.protocol === 'data:' ? route.continue() : route.abort()
+  })
+  // Steps (app_blueprints) arrive after the apps, as on a real network.
+  await page.goto('/e2e/fixtures/?phase2=test&slow=app_blueprints')
+  await expect(page.getByText('Fixture Assistant', { exact: true }).first()).toBeVisible()
+  await page.waitForTimeout(800)
+  expect(await page.evaluate(() => window.__wrongStep)).toBe(false)
+})
+
+test('an opened app can be closed back to the step list', async ({ page }) => {
+  await open(page, '?scenario=live')                       // opens the live app in Deploy
+  await page.getByRole('button', { name: 'All Deploy apps' }).click()
+  await expect(page.getByText('Launch', { exact: true })).toHaveCount(0)
+  await expect(page.getByText(/Ready to deploy/)).toBeVisible()
+})

@@ -22,6 +22,10 @@ export const state = window.buildFixture = {
   },
   failures: {}, requests: [], testRuns: [], toasts: [],
 }
+// ?phase2=test: the second (unpublished) app is in the Test step.
+if (new URLSearchParams(location.search).get('phase2')) {
+  state.tables.app_blueprints[1].blueprint.dev_phase = new URLSearchParams(location.search).get('phase2')
+}
 if (new URLSearchParams(location.search).get('scenario') === 'empty') {
   state.tables.apps = []
   state.tables.app_blueprints = []
@@ -57,7 +61,12 @@ class Query {
   delete() { this.op = 'delete'; return this }
   maybeSingle() { this.wantSingle = true; return this }
   single() { this.wantSingle = true; return this }
-  then(resolve, reject) { return Promise.resolve().then(() => this.execute()).then(resolve, reject) }
+  // ?slow=<table>: that table answers after a network-like delay.
+  then(resolve, reject) {
+    const slow = new URLSearchParams(location.search).get('slow') === this.table && this.op === 'select'
+    const wait = slow ? new Promise(done => setTimeout(done, 400)) : Promise.resolve()
+    return wait.then(() => this.execute()).then(resolve, reject)
+  }
   execute() {
     const failureKey = `${this.table}:${this.op}`
     if (state.failures[failureKey]) return { data: null, error: { message: state.failures[failureKey], code: 'FIXTURE_ERROR' } }

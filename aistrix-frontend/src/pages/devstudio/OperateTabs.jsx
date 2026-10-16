@@ -1,7 +1,11 @@
-import { useState, useEffect, useMemo, Suspense } from 'react'
+import RevenueDetails from '../../components/RevenueDetails'
+import AppSecretsPanel from '../../components/AppSecretsPanel'
+import { useManageRecord } from '../../hooks/useManageRecord'
+import { manageRequest } from '../../lib/manageApi'
+import { useState, useEffect, useMemo, useRef, Suspense } from 'react'
+import { streamRun } from '../../lib/runStream'
 import { saveAppFields } from '../../lib/appFields'
 import { supabase } from '../../supabase'
-import { loadDeveloperSettings as loadSettingsFrom, saveDeveloperSetting as saveSettingTo } from '../../lib/developerSettings'
 import { useToast } from '../../hooks/useToast'
 import { track, EVENTS } from '../../lib/analytics'
 import { timeAgo } from '../../utils'
@@ -27,8 +31,6 @@ const STATUS_COLORS = {
   rejected:  'bg-red-500/10 text-red-400',
 }
 
-const loadDeveloperSettings = userId => loadSettingsFrom(supabase, userId)
-const saveDeveloperSetting = (userId, key, vals) => saveSettingTo(supabase, userId, key, vals)
 
 function ListingSetupCard({ onRetry }) {
   return (
@@ -475,92 +477,11 @@ function ThumbsBars({ dist }) {
   )
 }
 
-// Observability integration connection card
-function IntegrationCard({ icon, name, desc, docsUrl, fields, savedKeys, onSave }) {
-  const [open, setOpen]     = useState(false)
-  const [vals, setVals]     = useState(() => Object.fromEntries(fields.map(f => [f.key, savedKeys?.[f.key] || ''])))
-  const [saving, setSaving] = useState(false)
-  const toast = useToast()
-
-  async function save() {
-    setSaving(true)
-    await onSave(vals)
-    setSaving(false)
-    setOpen(false)
-    toast(`${name} settings saved`, 'success', 2000)
-  }
-
-  const connected = fields.every(f => savedKeys?.[f.key])
-  return (
-    <div className="bg-[#171B33] border border-white/5 rounded-2xl overflow-hidden">
-      <div className="flex items-center gap-3 px-4 py-3">
-        <span className="text-2xl shrink-0">{icon}</span>
-        <div className="flex-1 min-w-0">
-          <p className="text-white text-sm font-medium">{name}</p>
-          <p className="text-[11px] text-slate-300 truncate">{desc}</p>
-        </div>
-        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full shrink-0 ${connected ? 'bg-emerald-500/10 text-emerald-400' : 'bg-white/5 text-slate-500'}`}>
-          {connected ? 'Connected' : 'Not connected'}
-        </span>
-        <button onClick={() => setOpen(p => !p)}
-          className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 transition-colors shrink-0">
-          {open ? 'Cancel' : connected ? 'Edit' : 'Connect'}
-        </button>
-        {docsUrl && (
-          <a href={docsUrl} target="_blank" rel="noopener noreferrer"
-            className="text-[11px] text-slate-300 hover:text-slate-300 transition-colors shrink-0">Docs ↗</a>
-        )}
-      </div>
-      {open && (
-        <div className="border-t border-white/5 px-4 py-4 space-y-3">
-          {fields.map(f => (
-            <div key={f.key}>
-              <label className="text-[10px] text-slate-400 uppercase font-semibold tracking-wide block mb-1">{f.label}</label>
-              <input
-                type={f.secret ? 'password' : 'text'}
-                value={vals[f.key]}
-                onChange={e => setVals(p => ({ ...p, [f.key]: e.target.value }))}
-                placeholder={f.placeholder}
-                className="w-full bg-[#0E1424] border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-[#6C5CE7]/40 font-mono"
-              />
-              {f.hint && <p className="text-[10px] text-slate-400 mt-1">{f.hint}</p>}
-            </div>
-          ))}
-          <div className="flex justify-end">
-            <button onClick={save} disabled={saving}
-              className="text-xs font-semibold px-4 py-2 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors disabled:opacity-40">
-              {saving ? '…' : 'Save'}
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  )
-}
-
 // ─── Tab: Monitor ────────────────────────────────────────────────────────────
 
-export function MonitorTab({ apps, appStats, loading, totalStats, runs, entitlements, user }) {
+export function MonitorTab({ apps, appStats, loading, totalStats, runs, entitlements }) {
   const [expandedApp, setExpandedApp]   = useState(null)
-  const [integrations, setIntegrations] = useState(null)   // loaded from developer_settings
-  const [intSetupNeeded, setIntSetupNeeded] = useState(false)
   const toast = useToast()
-
-  useEffect(() => { loadIntegrations() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
-
-  async function loadIntegrations() {
-    try {
-      setIntegrations(await loadDeveloperSettings(user.id))
-    } catch (error) {
-      if (error.code === '42P01') { setIntSetupNeeded(true); return }
-      setIntegrations({})
-    }
-  }
-
-  async function saveIntegration(key, vals) {
-    try { setIntegrations(await saveDeveloperSetting(user.id, key, vals)) }
-    catch (error) { toast(error.message, 'error', 6000) }
-  }
 
   async function refreshBadges() {
     const { error } = await supabase.rpc('update_app_badges')
@@ -640,8 +561,8 @@ export function MonitorTab({ apps, appStats, loading, totalStats, runs, entitlem
     <div className="space-y-6">
       {/* ── Top stats ── */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatTile label="Total runs" value={totalStats.runs} color="#6C5CE7" />
-        <StatTile label="Unique users" value={totalStats.users} color="#00B894" />
+        <StatTile label="Runs, all apps" value={totalStats.runs} color="#6C5CE7" />
+        <StatTile label="Users in sample" value={totalStats.users} color="#00B894" />
         <StatTile label="Satisfaction" value={satisfaction !== null ? `${satisfaction}%` : '—'} color="#FDCB6E"
           sub={thumbsTotal ? `${thumbsTotal} rated` : undefined} />
         <StatTile label="Active apps" value={apps.filter(a => a.is_published).length} color="#E84393" />
@@ -758,15 +679,8 @@ export function MonitorTab({ apps, appStats, loading, totalStats, runs, entitlem
             const s = appStats[app.id] || { uniqueUsers: 0, thumbsUp: 0, rated: 0, daily: new Array(7).fill(0) }
             const satisfaction = s.rated > 0 ? Math.round((s.thumbsUp / s.rated) * 100) : null
             const appThumbsDist = { up: s.thumbsUp || 0, down: Math.max((s.rated || 0) - (s.thumbsUp || 0), 0) }
-            // Health score: 0-100
-            const health = (() => {
-              if (!s.rated) return null
-              let score = (s.thumbsUp / s.rated) * 60          // satisfaction 60%
-              if (app.total_runs > 10) score += 20             // volume 20%
-              if (app.is_published) score += 10                // published 10%
-              if (app.is_verified)  score += 10                // verified  10%
-              return Math.min(100, Math.round(score))
-            })()
+            // Feedback usefulness is observable; volume and publication are not quality evidence.
+            const health = satisfaction
             const healthColor = health === null ? '#334155' : health >= 70 ? '#00B894' : health >= 40 ? '#FDCB6E' : '#E84393'
 
             return (
@@ -789,7 +703,7 @@ export function MonitorTab({ apps, appStats, loading, totalStats, runs, entitlem
                   {health !== null && (
                     <div className="flex flex-col items-end">
                       <span className="text-lg font-bold" style={{ color: healthColor }}>{health}</span>
-                      <span className="text-[9px] text-slate-600">health score</span>
+                      <span className="text-[9px] text-slate-600">useful feedback %</span>
                     </div>
                   )}
                 </div>
@@ -843,43 +757,6 @@ export function MonitorTab({ apps, appStats, loading, totalStats, runs, entitlem
         </div>
       </div>
 
-      {/* ── Observability integrations ── */}
-      <div>
-        <p className="text-xs text-slate-400 font-semibold uppercase tracking-wide mb-3">Observability integrations</p>
-        {intSetupNeeded && (
-          <div className="bg-amber-500/5 border border-amber-500/20 rounded-xl px-4 py-3 mb-3 text-xs text-amber-400">
-            Run <code className="bg-black/20 px-1 rounded">create table developer_settings (id uuid primary key default gen_random_uuid(), user_id uuid references auth.users(id) unique, settings jsonb default '&#123;&#125;'); alter table developer_settings enable row level security; create policy "owner" on developer_settings using (auth.uid() = user_id) with check (auth.uid() = user_id);</code> in Supabase, then reload.
-          </div>
-        )}
-        <div className="space-y-3">
-          <IntegrationCard
-            icon="🔭"
-            name="Langfuse"
-            desc="LLM tracing, prompt management, cost and latency tracking per run."
-            docsUrl="https://langfuse.com/docs"
-            fields={[
-              { key: 'langfuse_public_key', label: 'Public key',  placeholder: 'pk-lf-…', secret: false, hint: 'Found in your Langfuse project settings → API keys' },
-              { key: 'langfuse_secret_key', label: 'Secret key',  placeholder: 'sk-lf-…', secret: true  },
-              { key: 'langfuse_host',       label: 'Host (optional)', placeholder: 'https://cloud.langfuse.com', secret: false },
-            ]}
-            savedKeys={integrations?.langfuse}
-            onSave={vals => saveIntegration('langfuse', vals)}
-          />
-          <IntegrationCard
-            icon="🛡️"
-            name="Sentry"
-            desc="Frontend and backend error tracking — captures exceptions and traces."
-            docsUrl="https://docs.sentry.io"
-            fields={[
-              { key: 'dsn', label: 'DSN', placeholder: 'https://…@o….ingest.sentry.io/…', secret: false,
-                hint: 'Sentry project → Settings → Client Keys (DSN)' },
-            ]}
-            savedKeys={integrations?.sentry}
-            onSave={vals => saveIntegration('sentry', vals)}
-          />
-        </div>
-        <p className="text-[10px] text-slate-400 mt-2">Keys are stored in your Supabase account (developer_settings table) and only readable by you. The Aistrix backend uses them to forward traces automatically.</p>
-      </div>
     </div>
   )
 }
@@ -907,29 +784,13 @@ function QualityScore({ score }) {
   )
 }
 
-export function EvaluateTab({ apps, appStats, runs, user }) {
-  const [selectedApp, setSelectedApp] = useState(apps[0]?.id || null)
+export function EvaluateTab({ apps, appStats, runs, selectedAppId, onSelectApp }) {
+  const selectedApp = selectedAppId || apps[0]?.id || null
+  const setSelectedApp = onSelectApp || (() => {})
 
   const [expandRun, setExpandRun]     = useState(null)
-  const [integrations, setIntegrations] = useState(null)
-  const toast = useToast()
 
-  useEffect(() => { loadIntegrations() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
-
-  async function loadIntegrations() {
-    try {
-      setIntegrations(await loadDeveloperSettings(user.id))
-    } catch {
-      setIntegrations({})
-    }
-  }
-
-  async function saveIntegration(key, vals) {
-    try { setIntegrations(await saveDeveloperSetting(user.id, key, vals)) }
-    catch (error) { toast(error.message, 'error', 6000) }
-  }
-
-  // Per-app quality score (0-100): 70% satisfaction + 30% test pass rate (if available)
+  // Feedback satisfaction, not a test pass rate or an automated quality grade.
   function qualityScore(app) {
     const s = appStats[app.id] || {}
     if (!s.rated) return null
@@ -969,13 +830,13 @@ export function EvaluateTab({ apps, appStats, runs, user }) {
     <div className="space-y-6">
       {/* ── Quality score overview table ── */}
       <div>
-        <p className="text-[10px] text-slate-400 uppercase font-semibold tracking-wide mb-3">Quality scores</p>
+        <p className="text-[10px] text-slate-400 uppercase font-semibold tracking-wide mb-3">Feedback satisfaction</p>
         <div className="bg-[#171B33] border border-white/5 rounded-2xl overflow-hidden">
           <table className="w-full text-xs">
             <thead>
               <tr className="text-left text-[11px] text-slate-300 border-b border-white/5">
                 <th className="px-4 py-3 font-medium">App</th>
-                <th className="px-4 py-3 font-medium text-center">Score</th>
+                <th className="px-4 py-3 font-medium text-center">Useful %</th>
                 <th className="px-4 py-3 font-medium text-right">Rated runs</th>
                 <th className="px-4 py-3 font-medium text-right">👍 Useful</th>
                 <th className="px-4 py-3 font-medium text-right">👎 Not useful</th>
@@ -1073,7 +934,7 @@ export function EvaluateTab({ apps, appStats, runs, user }) {
             </div>
 
             {lowRuns.length === 0 ? (
-              <p className="text-slate-600 text-xs text-center py-6">No runs match this filter — great sign!</p>
+              <p className="text-slate-600 text-xs text-center py-6">No negative feedback in the loaded runs. More feedback is needed to assess quality.</p>
             ) : (
               <div className="space-y-2 max-h-96 overflow-y-auto pr-1">
                 {lowRuns.map(r => (
@@ -1113,60 +974,15 @@ export function EvaluateTab({ apps, appStats, runs, user }) {
         </>
       )}
 
-      {/* ── Eval framework integrations ── */}
-      <div>
-        <p className="text-[10px] text-slate-400 uppercase font-semibold tracking-wide mb-3">Evaluation framework integrations</p>
-        <div className="space-y-3">
-          <IntegrationCard
-            icon="🧪"
-            name="Promptfoo"
-            desc="Open-source LLM eval CLI — run structured test suites against your prompts from CI."
-            docsUrl="https://promptfoo.dev/docs"
-            fields={[
-              { key: 'api_key', label: 'API key (if using Promptfoo Cloud)', placeholder: 'pfoo-…', secret: true,
-                hint: 'Optional — needed only for Promptfoo Cloud sharing. Self-hosted runs need no key.' },
-            ]}
-            savedKeys={integrations?.promptfoo}
-            onSave={vals => saveIntegration('promptfoo', vals)}
-          />
-          <IntegrationCard
-            icon="🔬"
-            name="DeepEval"
-            desc="LLM evaluation metrics library — correctness, faithfulness, hallucination detection."
-            docsUrl="https://docs.confident-ai.com"
-            fields={[
-              { key: 'api_key', label: 'Confident AI API key', placeholder: 'deepeval-…', secret: true,
-                hint: 'From confident-ai.com dashboard → API Keys' },
-            ]}
-            savedKeys={integrations?.deepeval}
-            onSave={vals => saveIntegration('deepeval', vals)}
-          />
-          <IntegrationCard
-            icon="📊"
-            name="Ragas"
-            desc="Retrieval-augmented generation evaluation — faithfulness, context precision, answer relevancy."
-            docsUrl="https://docs.ragas.io"
-            fields={[
-              { key: 'app_token', label: 'Ragas app token', placeholder: 'rg-…', secret: true,
-                hint: 'From app.ragas.io → Settings → API tokens. Required for dataset syncing.' },
-            ]}
-            savedKeys={integrations?.ragas}
-            onSave={vals => saveIntegration('ragas', vals)}
-          />
-        </div>
-        <p className="text-[10px] text-slate-400 mt-2">Keys are stored in your developer_settings (Supabase) and forwarded by the Aistrix backend when running evaluations.</p>
-      </div>
     </div>
   )
 }
 
 // ─── Tab: Improve ─────────────────────────────────────────────────────────────
 
-const API_URL = import.meta.env.VITE_API_URL || ''
-
 export function ImproveTab({ apps, user, runs, selectedAppId }) {
-  const [selectedApp, setSelectedApp] = useState(selectedAppId || null)
-  useEffect(() => { if (selectedAppId) { setSelectedApp(selectedAppId); setVA(null); setVB(null); setOutputA(''); setOutputB('') } }, [selectedAppId])
+  const [selectedApp, setSelectedApp] = useState(selectedAppId || apps[0]?.id || null)
+  useEffect(() => { if (selectedAppId) { setSelectedApp(selectedAppId); setVA(null); setVB(null); setOutputA(''); setOutputB(''); setSuggestion(''); setTestInput(''); setSuggesting(false); setRunningA(false); setRunningB(false) } }, [selectedAppId])
   const [vA, setVA] = useState(null)   // version left
   const [vB, setVB] = useState(null)   // version right
   const [testInput, setTestInput] = useState('')
@@ -1178,20 +994,33 @@ export function ImproveTab({ apps, user, runs, selectedAppId }) {
   const [suggestion, setSuggestion]   = useState('')
   const [suggesting, setSuggesting]   = useState(false)
   // GitHub feedback tracker state
-  const [ghToken, setGhToken]         = useState('')
   const [ghRepo, setGhRepo]           = useState('')
   const [ghConnected, setGhConnected] = useState(false)
   const [creatingIssue, setCreatingIssue] = useState(null)   // run id
-  // Integrations (for deep-links)
-  const [integrations, setIntegrations] = useState(null)
   const toast = useToast()
+  const requests = useRef(new Set())
+  useEffect(() => {
+    const active = requests.current
+    return () => { active.forEach(controller => controller.abort()); active.clear() }
+  }, [selectedAppId])
 
-  useEffect(() => { loadSettings() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
 
-  async function loadSettings() {
-    const s = await loadDeveloperSettings(user.id).catch(() => ({}))
-    setIntegrations(s)
-    if (s.github?.token) { setGhToken(s.github.token); setGhRepo(s.github.repo || ''); setGhConnected(true) }
+  useEffect(() => { loadGitHub() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The GitHub token stays on the server; this only says whether it's connected.
+  async function loadGitHub() {
+    try {
+      const connection = await manageRequest('/github/connection')
+      setGhConnected(!!connection.connected)
+      setGhRepo(connection.repo || '')
+    } catch { setGhConnected(false) }
+  }
+
+  async function connectGitHub() {
+    try {
+      const { url } = await manageRequest('/github/connect', { method: 'POST', body: JSON.stringify({ repo: ghRepo }) })
+      window.location.href = url
+    } catch (e) { toast(e.message, 'error') }
   }
 
   const appObj = apps.find(a => a.id === selectedApp) || null
@@ -1210,63 +1039,24 @@ export function ImproveTab({ apps, user, runs, selectedAppId }) {
     setSuggesting(true)
     setSuggestion('')
     const examples = worstRuns.slice(0, 5)
-      .map((r, i) => `Example ${i + 1}:\nApp: ${r.app_name}\nFeedback: 👎`)
+      .map((r, i) => `Example ${i + 1}:\nInput: ${r.input || "Not recorded"}\nAnswer: ${r.output || "Not recorded"}\nFeedback: ${r.feedback_text || "Not useful"}`)
       .join('\n\n')
     const systemPrompt = `You are an expert prompt engineer. Analyse the following low-rated AI app runs and suggest specific, actionable improvements to the system prompt to address the issues. Be concrete — rewrite problem sections rather than giving vague advice. Focus on tone, specificity, constraints, and output format.`
     const userMsg = `App: ${appObj.name}\nCurrent system prompt:\n${appObj.system_prompt || '(none)'}\n\nLow-rated runs:\n${examples || 'No rated runs yet — provide general improvement suggestions based on the prompt.'}`
+    const controller = new AbortController()
+    requests.current.add(controller)
     try {
-      const res = await fetch(`${API_URL}/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          input: userMsg,
-          system_prompt: systemPrompt,
-          ai_provider: appObj.ai_provider || 'anthropic',
-          ai_model: appObj.ai_model || 'claude-haiku-4-5',
-        }),
-      })
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let buf = ''
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buf += decoder.decode(value, { stream: true })
-        const parts = buf.split('\n\n')
-        buf = parts.pop()
-        for (const part of parts) {
-          if (!part.startsWith('data:')) continue
-          try {
-            const j = JSON.parse(part.slice(5))
-            if (j.token) setSuggestion(p => p + j.token)
-            if (j.error) toast(j.error, 'error')
-          } catch { /* partial JSON */ }
-        }
-      }
-    } catch (e) { toast(e.message, 'error') }
-    finally { setSuggesting(false) }
+      await streamRun({ input: userMsg, system_prompt: systemPrompt,
+        ai_provider: appObj.ai_provider || 'anthropic', ai_model: appObj.ai_model || 'claude-haiku-4-5' }, { signal: controller.signal, onToken: setSuggestion })
+    } catch (e) { if (e.name !== 'AbortError') toast(e.message, 'error') }
+    finally { requests.current.delete(controller); if (!controller.signal.aborted) setSuggesting(false) }
   }
 
   async function createGitHubIssue(run) {
-    if (!ghToken || !ghRepo) { toast('Connect GitHub first', 'error', 2000); return }
+    if (!ghConnected || !ghRepo) { toast('Connect GitHub first', 'error', 2000); return }
     setCreatingIssue(run.id)
-    const [owner, repo] = ghRepo.split('/')
-    const body = [
-      `**App:** ${run.app_name}`,
-      `**Feedback:** 👎`,
-      `**Date:** ${new Date(run.created_at).toLocaleString()}`,
-      run.input  ? `\n**Input:**\n\`\`\`\n${run.input}\n\`\`\`` : '',
-      run.output ? `\n**Output:**\n\`\`\`\n${run.output}\n\`\`\`` : '',
-      '\n---\n*Created from Aistrix Improve tab*',
-    ].filter(Boolean).join('\n')
     try {
-      const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/issues`, {
-        method: 'POST',
-        headers: { Authorization: `token ${ghToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ title: `[${run.app_name}] 👎 run flagged`, body, labels: ['ai-quality'] }),
-      })
-      if (!res.ok) { const e = await res.json(); toast(e.message || 'GitHub API error', 'error'); return }
-      const issue = await res.json()
+      const issue = await manageRequest('/github/issues', { method: 'POST', body: JSON.stringify({ run_id: run.id }) })
       toast(`Issue #${issue.number} created`, 'success', 3000)
     } catch (e) { toast(e.message, 'error') }
     finally { setCreatingIssue(null) }
@@ -1276,37 +1066,14 @@ export function ImproveTab({ apps, user, runs, selectedAppId }) {
     if (!testInput.trim()) { toast('Enter a test input first', 'error', 2000); return }
     setRunning(true)
     setOutput('')
+    const controller = new AbortController()
+    requests.current.add(controller)
     try {
-      const res = await fetch(`${API_URL}/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          input: testInput,
-          system_prompt: v.system_prompt,
-          ai_provider: v.ai_provider || app.ai_provider,
-          ai_model: v.ai_model || app.ai_model,
-        }),
-      })
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let buf = ''
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buf += decoder.decode(value, { stream: true })
-        const parts = buf.split('\n\n')
-        buf = parts.pop()
-        for (const part of parts) {
-          if (!part.startsWith('data:')) continue
-          try {
-            const j = JSON.parse(part.slice(5))
-            if (j.token) setOutput(p => p + j.token)
-            if (j.error) toast(j.error, 'error')
-          } catch { /* partial JSON */ }
-        }
-      }
-    } catch (e) { toast(e.message, 'error') }
-    finally { setRunning(false) }
+      await streamRun({ input: testInput, system_prompt: v.version_data?.system_prompt || v.system_prompt,
+        ai_provider: v.version_data?.ai_provider || v.ai_provider || app.ai_provider,
+        ai_model: v.version_data?.ai_model || v.ai_model || app.ai_model }, { signal: controller.signal, onToken: setOutput })
+    } catch (e) { if (e.name !== 'AbortError') toast(e.message, 'error') }
+    finally { requests.current.delete(controller); if (!controller.signal.aborted) setRunning(false) }
   }
 
   return (
@@ -1347,8 +1114,8 @@ export function ImproveTab({ apps, user, runs, selectedAppId }) {
                   <div className="rounded-xl overflow-hidden border border-white/5" style={{ height: 300 }}>
                     <Suspense fallback={<div className="h-full flex items-center justify-center text-slate-500 text-sm bg-[#0E1424]">Loading editor…</div>}>
                       <DiffEditor
-                        original={vA?.system_prompt || ''}
-                        modified={vB?.system_prompt || ''}
+                        original={vA?.version_data?.system_prompt || vA?.system_prompt || ''}
+                        modified={vB?.version_data?.system_prompt || vB?.system_prompt || ''}
                         language="plaintext"
                         theme="vs-dark"
                         options={{
@@ -1402,27 +1169,6 @@ export function ImproveTab({ apps, user, runs, selectedAppId }) {
             </>
           )}
         </>
-      )}
-
-      {/* ── Tool deep-links (when integrations connected) ── */}
-      {(integrations?.langfuse?.langfuse_public_key || integrations?.promptfoo?.api_key) && (
-        <div>
-          <p className="text-[10px] text-slate-400 uppercase font-semibold tracking-wide mb-2">Open in connected tools</p>
-          <div className="flex flex-wrap gap-2">
-            {integrations?.langfuse?.langfuse_public_key && (
-              <a href="https://cloud.langfuse.com" target="_blank" rel="noopener noreferrer"
-                className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium border border-white/5 bg-[#0E1424] text-slate-300 hover:text-white hover:border-white/10 transition-all">
-                🔭 Langfuse prompt playground ↗
-              </a>
-            )}
-            {integrations?.promptfoo?.api_key && (
-              <a href="https://app.promptfoo.dev" target="_blank" rel="noopener noreferrer"
-                className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-medium border border-white/5 bg-[#0E1424] text-slate-300 hover:text-white hover:border-white/10 transition-all">
-                🧪 Promptfoo comparison reports ↗
-              </a>
-            )}
-          </div>
-        </div>
       )}
 
       {/* ── AI improvement suggestions ── */}
@@ -1488,11 +1234,7 @@ export function ImproveTab({ apps, user, runs, selectedAppId }) {
                   className="bg-[#0E1424] border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-[#6C5CE7]/40 w-56" />
               </div>
               <button
-                onClick={async () => {
-                  const { data: { session } } = await supabase.auth.getSession()
-                  const API_URL = import.meta.env.VITE_API_URL || ''
-                  window.location.href = `${API_URL}/auth/github?token=${session?.access_token}`
-                }}
+                onClick={connectGitHub}
                 className="mt-5 flex items-center gap-2 text-xs font-semibold px-4 py-2 rounded-lg bg-[#24292e] hover:bg-[#2f363d] text-white border border-white/10 transition-colors">
                 <span>🐙</span> Connect GitHub
               </button>
@@ -1568,75 +1310,17 @@ export function ImproveTab({ apps, user, runs, selectedAppId }) {
 
 // ─── Tab: Version ─────────────────────────────────────────────────────────────
 
-export function VersionTab({ apps, user, onAppUpdated, selectedAppId }) {
+export function VersionTab({ apps, onAppUpdated, selectedAppId }) {
   const [selectedApp, setSelectedApp] = useState(selectedAppId || apps[0]?.id || null)
-  const [integrations, setIntegrations] = useState(null)
   const appObj = apps.find(a => a.id === selectedApp) || null
-  const toast  = useToast()
 
   useEffect(() => { if (selectedAppId) setSelectedApp(selectedAppId) }, [selectedAppId])
-  useEffect(() => { loadIntegrations() }, [])  // eslint-disable-line react-hooks/exhaustive-deps
-
-  async function loadIntegrations() {
-    setIntegrations(await loadDeveloperSettings(user.id).catch(() => ({})))
-  }
-
-  async function saveIntegration(key, vals) {
-    try { setIntegrations(await saveDeveloperSetting(user.id, key, vals)) }
-    catch (error) { toast(error.message, 'error', 6000) }
-  }
 
   return (
     <div className="space-y-5">
       {/* App selector */}
 
       {appObj && <PublishedVersions app={appObj} onAppUpdated={onAppUpdated} />}
-
-      {/* Feature flag integrations */}
-      <div>
-        <p className="text-[10px] text-slate-400 uppercase font-semibold tracking-wide mb-3">Feature flag integrations</p>
-        <p className="text-xs text-slate-600 mb-3">Connect a feature flag service to gate new prompt versions to a percentage of users before full rollout.</p>
-        <div className="space-y-3">
-          <IntegrationCard
-            icon="🚩"
-            name="Unleash"
-            desc="Open-source feature flag platform — self-host or use Unleash Cloud."
-            docsUrl="https://docs.getunleash.io"
-            fields={[
-              { key: 'api_url',  label: 'API URL',   placeholder: 'https://app.unleash-hosted.com/api', secret: false,
-                hint: 'Your Unleash instance URL — ends in /api' },
-              { key: 'api_token', label: 'API token', placeholder: '*:production.abc123…', secret: true },
-            ]}
-            savedKeys={integrations?.unleash}
-            onSave={vals => saveIntegration('unleash', vals)}
-          />
-          <IntegrationCard
-            icon="🎌"
-            name="Flagsmith"
-            desc="Feature flags and remote config — cloud or self-hosted."
-            docsUrl="https://docs.flagsmith.com"
-            fields={[
-              { key: 'environment_key', label: 'Environment key', placeholder: 'ser.abc123…', secret: true,
-                hint: 'Flagsmith dashboard → Environment → SDK Keys → Server-side' },
-            ]}
-            savedKeys={integrations?.flagsmith}
-            onSave={vals => saveIntegration('flagsmith', vals)}
-          />
-          <IntegrationCard
-            icon="🦔"
-            name="PostHog feature flags"
-            desc="Use PostHog feature flags alongside product analytics — same SDK."
-            docsUrl="https://posthog.com/docs/feature-flags"
-            fields={[
-              { key: 'personal_api_key', label: 'Personal API key', placeholder: 'phx_abc123…', secret: true,
-                hint: 'PostHog → Settings → Personal API keys' },
-              { key: 'project_id', label: 'Project ID', placeholder: '12345', secret: false },
-            ]}
-            savedKeys={integrations?.posthog_flags}
-            onSave={vals => saveIntegration('posthog_flags', vals)}
-          />
-        </div>
-      </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <ComingSoonCard
@@ -1673,106 +1357,6 @@ const ENTITLEMENT_STATUS = {
   trialing: 'bg-blue-500/10 text-blue-400',
   past_due: 'bg-amber-500/10 text-amber-400',
   canceled: 'bg-white/5 text-slate-500',
-}
-
-function StripeCard({ user }) {
-  const [integrations, setIntegrations] = useState(null)
-  const toast = useToast()
-
-  useEffect(() => {
-    loadDeveloperSettings(user.id).then(setIntegrations).catch(() => setIntegrations({}))
-  }, [user.id])
-
-  async function save(vals) {
-    try {
-      setIntegrations(await saveDeveloperSetting(user.id, 'stripe', vals))
-      toast('Stripe keys saved', 'success', 2000)
-    } catch (error) { toast(error.message, 'error', 6000) }
-  }
-
-  const stripe = integrations?.stripe || {}
-  const connected = !!(stripe.publishable_key && stripe.restricted_key)
-
-  return (
-    <div className="bg-[#171B33] border border-white/5 rounded-2xl overflow-hidden">
-      <div className="flex items-start gap-4 p-5">
-        <span className="text-3xl shrink-0">💳</span>
-        <div className="flex-1 min-w-0 space-y-3">
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <div>
-              <p className="text-white text-sm font-semibold">Stripe Checkout + Connect</p>
-              <p className="text-slate-300 text-xs mt-0.5 leading-relaxed">
-                Aistrix uses Stripe Checkout for user payments and Stripe Connect for developer payouts.
-                Store your keys here — the Aistrix backend uses them to create checkout sessions and process webhooks.
-              </p>
-            </div>
-            <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full shrink-0 ${connected ? 'bg-emerald-500/10 text-emerald-400' : 'bg-white/5 text-slate-500'}`}>
-              {connected ? 'Keys saved' : 'Not configured'}
-            </span>
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-            <div>
-              <label className="text-[10px] text-slate-400 uppercase font-semibold tracking-wide block mb-1">Publishable key</label>
-              <input
-                type="text"
-                defaultValue={stripe.publishable_key || ''}
-                id="stripe-pk"
-                placeholder="pk_live_… or pk_test_…"
-                className="w-full bg-[#0E1424] border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-[#6C5CE7]/40 font-mono"
-              />
-            </div>
-            <div>
-              <label className="text-[10px] text-slate-400 uppercase font-semibold tracking-wide block mb-1">Restricted key <span className="text-slate-600 font-normal normal-case">(charges + webhooks scope)</span></label>
-              <input
-                type="password"
-                defaultValue={stripe.restricted_key || ''}
-                id="stripe-rk"
-                placeholder="rk_live_… or rk_test_…"
-                className="w-full bg-[#0E1424] border border-white/10 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-[#6C5CE7]/40 font-mono"
-              />
-              <p className="text-[10px] text-slate-400 mt-1">Stripe dashboard → Developers → API keys → Restricted keys. Grant: write on charges, read on customers.</p>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between flex-wrap gap-2">
-            <div className="flex gap-2">
-              <a href="https://dashboard.stripe.com/apikeys" target="_blank" rel="noopener noreferrer"
-                className="text-[11px] text-[#A29BFE] hover:text-white transition-colors">Stripe API keys ↗</a>
-              <span className="text-slate-700">·</span>
-              <a href="https://dashboard.stripe.com/connect/accounts/overview" target="_blank" rel="noopener noreferrer"
-                className="text-[11px] text-[#A29BFE] hover:text-white transition-colors">Stripe Connect ↗</a>
-              <span className="text-slate-700">·</span>
-              <a href="https://dashboard.stripe.com/webhooks" target="_blank" rel="noopener noreferrer"
-                className="text-[11px] text-[#A29BFE] hover:text-white transition-colors">Webhooks ↗</a>
-            </div>
-            <button
-              onClick={() => {
-                const pk = document.getElementById('stripe-pk')?.value || ''
-                const rk = document.getElementById('stripe-rk')?.value || ''
-                save({ publishable_key: pk.trim(), restricted_key: rk.trim() })
-              }}
-              className="text-xs font-semibold px-4 py-2 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors">
-              Save keys
-            </button>
-          </div>
-
-          <div className="border-t border-white/5 pt-3 grid grid-cols-1 lg:grid-cols-3 gap-2">
-            {[
-              { icon: '1️⃣', label: 'Save keys above', done: connected },
-              { icon: '2️⃣', label: 'Aistrix team enables Checkout + Connect', done: false },
-              { icon: '3️⃣', label: 'Business users pay — entitlements created automatically', done: false },
-            ].map(({ icon, label, done }) => (
-              <div key={label} className={`flex items-center gap-2 text-xs ${done ? 'text-emerald-400' : 'text-slate-500'}`}>
-                <span>{done ? '✓' : icon}</span>
-                <span>{label}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    </div>
-  )
 }
 
 function EntitlementsSection({ apps }) {
@@ -1892,109 +1476,43 @@ function EntitlementsSection({ apps }) {
 
 // ─── Tab: Revenue (Cost & Profit Meter + Connect Payout) ─────────────────────
 
-function ConnectPayoutPanel() {
-  const [status, setStatus] = useState(null)  // null | object
-  const [loading, setLoading] = useState(true)
+function ConnectPayoutPanel({ user }) {
+  const { data: status, error, loading, refresh } = useManageRecord('/stripe/connect/status', user.id)
   const [onboarding, setOnboarding] = useState(false)
-  const [earnings, setEarnings] = useState(null)
-  const API_URL = import.meta.env.VITE_API_URL || ''
-
-  useEffect(() => { load() }, []) // eslint-disable-line
-
-  async function load() {
-    setLoading(true)
-    try {
-      const { data: { session } } = await supabase.auth.getSession()
-      const headers = { Authorization: `Bearer ${session?.access_token}` }
-      const [sRes, eRes] = await Promise.all([
-        fetch(`${API_URL}/stripe/connect/status`, { headers }),
-        fetch(`${API_URL}/stripe/earnings`, { headers }),
-      ])
-      if (sRes.ok) setStatus(await sRes.json())
-      if (eRes.ok) setEarnings(await eRes.json())
-    } catch {}
-    setLoading(false)
-  }
-
+  const [problem, setProblem] = useState('')
   async function startOnboarding() {
-    setOnboarding(true)
+    setOnboarding(true); setProblem('')
     try {
-      const { data: { session } } = await supabase.auth.getSession()
-      const r = await fetch(`${API_URL}/stripe/connect/onboard`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${session?.access_token}` },
-      })
-      if (r.ok) {
-        const { url } = await r.json()
-        window.location.href = url
-      }
-    } catch {}
-    setOnboarding(false)
+      const result = await manageRequest('/stripe/connect/onboard', { method: 'POST' })
+      if (!result.url) throw new Error('The payout setup link was not returned.')
+      window.location.assign(result.url)
+    } catch (e) { setProblem(e.message) }
+    finally { setOnboarding(false) }
   }
-
-  if (loading) return null
-
-  const connected = status?.charges_enabled
-  const detailsSubmitted = status?.details_submitted
-
-  return (
-    <div className="bg-[#171B33] border border-white/5 rounded-2xl overflow-hidden">
-      <div className="flex items-center gap-3 px-5 py-4 border-b border-white/5">
-        <span className="text-xl">💳</span>
-        <div className="flex-1">
-          <p className="text-white text-sm font-semibold">Stripe Connect — Payout account</p>
-          <p className="text-[11px] text-slate-300 mt-0.5">Receive your share of revenue directly to your bank account.</p>
-        </div>
-        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full shrink-0 ${
-          connected ? 'bg-emerald-500/10 text-emerald-400'
-          : detailsSubmitted ? 'bg-amber-500/10 text-amber-400'
-          : 'bg-white/5 text-slate-500'
-        }`}>
-          {connected ? 'Active' : detailsSubmitted ? 'Pending review' : 'Not connected'}
-        </span>
-      </div>
-
-      {earnings && connected && (
-        <div className="grid grid-cols-3 divide-x divide-white/5 border-b border-white/5">
-          {[
-            { label: 'Total earned', value: `$${earnings.total_dev_share.toFixed(2)}` },
-            { label: 'Pending payout', value: `$${earnings.total_pending.toFixed(2)}` },
-            { label: 'Platform fee', value: `${earnings.platform_fee_pct}%` },
-          ].map(({ label, value }) => (
-            <div key={label} className="px-5 py-3 text-center">
-              <p className="text-white font-bold text-lg">{value}</p>
-              <p className="text-slate-500 text-[10px] mt-0.5">{label}</p>
-            </div>
-          ))}
-        </div>
-      )}
-
-      <div className="px-5 py-4 flex items-center justify-between gap-3">
-        {!connected ? (
-          <>
-            <p className="text-slate-300 text-xs leading-relaxed">
-              {detailsSubmitted
-                ? 'Your Connect account is under review by Stripe. You\'ll receive an email when it\'s approved.'
-                : 'Connect a Stripe account to receive payouts. Aistrix keeps ' + (earnings?.platform_fee_pct ?? 20) + '% as a platform fee.'}
-            </p>
-            {!detailsSubmitted && (
-              <button onClick={startOnboarding} disabled={onboarding}
-                className="shrink-0 text-xs font-semibold px-4 py-2 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors disabled:opacity-40">
-                {onboarding ? 'Redirecting…' : 'Set up payouts →'}
-              </button>
-            )}
-          </>
-        ) : (
-          <p className="text-slate-300 text-xs">
-            Payouts are active. Transfers are sent automatically after each sale.
-          </p>
-        )}
-      </div>
-    </div>
-  )
+  return <section aria-label="Payout account" className="rounded-2xl border border-white/8 bg-[#171B33] p-5 space-y-3">
+    <div className="flex flex-wrap items-center justify-between gap-3"><h2 className="font-semibold text-white text-sm">Payout account</h2><button onClick={refresh} disabled={loading} className="text-xs text-slate-300 min-h-11 px-3 rounded-xl border border-white/10">Refresh payout status</button></div>
+    {loading && <p role="status" className="text-sm text-slate-400">Checking payout status…</p>}
+    {(error || status?.error || problem) && <p role="alert" className="text-sm text-amber-200">{problem || error || 'The payout provider could not verify this account. Try refreshing its status.'}</p>}
+    {status && !status.error && <>
+      <p className="text-sm text-slate-300">{status.payouts_enabled ? 'Payouts enabled by Stripe.' : status.details_submitted ? 'Account submitted; payouts are not enabled yet.' : 'Payout account setup is incomplete.'}</p>
+      <p className="text-xs text-slate-400">Account status does not confirm that a particular payment reached your bank.</p>
+      {!status.details_submitted && !status.payouts_enabled && <button onClick={startOnboarding} disabled={onboarding} className="min-h-11 rounded-xl bg-[#6C5CE7] px-4 text-sm font-semibold text-white disabled:opacity-40">{onboarding ? 'Opening setup…' : 'Set up payouts →'}</button>}
+    </>}
+  </section>
 }
 
 export function MonetizeTab({ apps, runs, loading, user }) {
+  return <div className="space-y-5">
+    <RevenueDetails apps={apps} user={user} />
+    <ConnectPayoutPanel user={user} />
+    {!!apps.length && <>
+      <details className="rounded-2xl border border-white/8 bg-[#171B33] p-4"><summary className="cursor-pointer text-sm font-semibold text-white">Pricing and usage estimates (not earnings)</summary><div className="mt-4"><RunCostEstimates apps={apps} runs={runs} loading={loading} /></div></details>
+      <details className="rounded-2xl border border-white/8 bg-[#171B33] p-4"><summary className="cursor-pointer text-sm font-semibold text-white">Customer access</summary><div className="mt-4"><EntitlementsSection apps={apps} user={user} /></div></details>
+    </>}
+  </div>
+}
+
+function RunCostEstimates({ apps, runs, loading }) {
   const profitData = useMemo(() => {
     if (!apps.length) return []
     return apps.map(app => {
@@ -2013,7 +1531,7 @@ export function MonetizeTab({ apps, runs, loading, user }) {
       const pricePerRun = app.is_paid && app.price_per_run ? Number(app.price_per_run) : 0
       const margin      = costPerRun != null ? pricePerRun - costPerRun : null
       const marginPct   = margin != null && pricePerRun > 0 ? Math.round((margin / pricePerRun) * 100) : null
-      const totalCost   = costPerRun != null ? costPerRun * appRuns.length : null
+      const totalCost   = costPerRun != null ? costPerRun * withTokens.length : null
       const totalRev    = pricePerRun * appRuns.length
 
       return { app, appRuns: appRuns.length, withTokens: withTokens.length, avgIn, avgOut, costPerRun, pricePerRun, margin, marginPct, totalCost, totalRev }
@@ -2033,19 +1551,19 @@ export function MonetizeTab({ apps, runs, loading, user }) {
     </div>
   )
 
-  const margin = totals.revenue - totals.cost
-  const marginPct = totals.revenue > 0 ? Math.round((margin / totals.revenue) * 100) : null
+  const completeCosts = profitData.every(d => !d.appRuns || (d.withTokens === d.appRuns && d.totalCost != null))
+  const margin = completeCosts ? totals.revenue - totals.cost : null
+  const marginPct = margin != null && totals.revenue > 0 ? Math.round((margin / totals.revenue) * 100) : null
 
   return (
     <div className="space-y-5">
       {/* Stripe Connect payout panel */}
-      <ConnectPayoutPanel user={user} />
 
       {/* Summary tiles */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <StatTile label="Est. revenue" value={totals.revenue > 0 ? `$${totals.revenue.toFixed(2)}` : '—'} color="#00B894" sub="price × runs" />
+        <StatTile label="Potential revenue" value={totals.revenue > 0 ? `$${totals.revenue.toFixed(2)}` : '—'} color="#00B894" sub="price × runs" />
         <StatTile label="Est. AI cost"  value={totals.cost   > 0 ? `$${totals.cost.toFixed(4)}`   : '—'} color="#E17055" sub="tokens × model rate" />
-        <StatTile label="Est. margin"  value={margin > 0 ? `$${margin.toFixed(2)}` : margin < 0 ? `-$${Math.abs(margin).toFixed(2)}` : '—'} color={margin >= 0 ? '#00B894' : '#E17055'} />
+        <StatTile label="Projected margin"  value={margin > 0 ? `$${margin.toFixed(2)}` : margin < 0 ? `-$${Math.abs(margin).toFixed(2)}` : '—'} color={margin >= 0 ? '#00B894' : '#E17055'} />
         <StatTile label="Margin %"     value={marginPct !== null ? `${marginPct}%` : '—'} color={marginPct != null && marginPct >= 60 ? '#00B894' : '#FDCB6E'} />
       </div>
 
@@ -2123,222 +1641,17 @@ export function MonetizeTab({ apps, runs, loading, user }) {
       </div>
 
       <p className="text-[11px] text-slate-400">
-        Token costs are estimates based on published model pricing. Actual costs may vary. Revenue figures assume every run was charged.
+        Token costs are estimates based on published model pricing. Actual costs may vary. Potential revenue assumes every loaded run was charged; it is not recorded earnings. Cost totals cover only runs with token records. Aggregate margin is unavailable when cost coverage is incomplete.
         {profitData.some(d => d.withTokens === 0 && d.appRuns > 0) && ' Some apps have no token data — token tracking is active for new runs.'}
       </p>
 
-      {/* ── Stripe connection ── */}
-      <div>
-        <p className="text-[10px] text-slate-400 uppercase font-semibold tracking-wide mb-3">Stripe billing</p>
-        <div className="space-y-3">
-          <StripeCard user={user} />
-        </div>
-      </div>
-
-      {/* ── Entitlements viewer ── */}
-      <div>
-        <p className="text-[10px] text-slate-400 uppercase font-semibold tracking-wide mb-3">User entitlements</p>
-        <EntitlementsSection apps={apps} user={user} />
-      </div>
-
-      {/* ── Coming soon ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <ComingSoonCard
-          icon="💰"
-          title="Revenue Dashboard"
-          desc="Real revenue from paid runs, subscription billing, and payout history — once Stripe Checkout is live."
-          bullets={[
-            'Actual charged revenue vs estimated',
-            'Failed payment rate and retry logic',
-            'Monthly recurring revenue (MRR)',
-            'Stripe Connect payout requests',
-          ]}
-        />
-        <ComingSoonCard
-          icon="📐"
-          title="Suggested Pricing"
-          desc="Aistrix recommends a price based on cost, comparable apps in the marketplace, and your quality score."
-          bullets={[
-            'Cost-plus pricing floor',
-            'Market comparison across category',
-            'Quality premium for top-rated apps',
-            'One-click apply suggested price',
-          ]}
-        />
-      </div>
     </div>
   )
 }
 
 // ─── Secrets Tab ─────────────────────────────────────────────────────────────
 
-export function SecretsTab({ apps, selectedAppId }) {
-  const [selectedApp, setSelectedApp] = useState(selectedAppId || apps[0]?.id || null)
-  useEffect(() => { if (selectedAppId) setSelectedApp(selectedAppId) }, [selectedAppId])
-  const [secrets, setSecrets]         = useState([])
-  const [loading, setLoading]         = useState(false)
-  const [newKey, setNewKey]           = useState('')
-  const [newVal, setNewVal]           = useState('')
-  const [saving, setSaving]           = useState(false)
-  const [error, setError]             = useState(null)
-  const [toast, setToast]             = useState(null)
-
-  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
-
-  useEffect(() => { if (selectedApp) loadSecrets(selectedApp) }, [selectedApp]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  async function getToken() {
-    const { data: { session } } = await supabase.auth.getSession()
-    return session?.access_token
-  }
-
-  async function loadSecrets(appId) {
-    setLoading(true)
-    setError(null)
-    try {
-      const token = await getToken()
-      const r = await fetch(`${API_URL}/apps/${appId}/secrets`, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-      const body = await r.json()
-      if (!r.ok) throw new Error(body.detail || 'Failed to load secrets')
-      setSecrets(body.secrets || [])
-      if (body.warning) setError('⚠️ ' + body.warning)
-    } catch (e) { setError(e.message) }
-    finally { setLoading(false) }
-  }
-
-  async function addSecret() {
-    if (!newKey.trim() || !newVal.trim()) return
-    setSaving(true)
-    setError(null)
-    try {
-      const token = await getToken()
-      const r = await fetch(`${API_URL}/apps/${selectedApp}/secrets`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ key: newKey.trim(), value: newVal.trim() }),
-      })
-      const body = await r.json()
-      if (!r.ok) throw new Error(body.detail || 'Failed to save')
-      setNewKey(''); setNewVal('')
-      showToast(`${body.key} saved`)
-      await loadSecrets(selectedApp)
-    } catch (e) { setError(e.message) }
-    finally { setSaving(false) }
-  }
-
-  async function deleteSecret(key) {
-    const token = await getToken()
-    await fetch(`${API_URL}/apps/${selectedApp}/secrets/${key}`, {
-      method: 'DELETE', headers: { Authorization: `Bearer ${token}` },
-    })
-    showToast(`${key} deleted`)
-    await loadSecrets(selectedApp)
-  }
-
-  function showToast(msg) {
-    setToast(msg)
-    setTimeout(() => setToast(null), 2500)
-  }
-
-  const app = apps.find(a => a.id === selectedApp)
-
-  return (
-    <div className="space-y-6">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <h2 className="text-lg font-bold text-white">Secrets & Environment Variables</h2>
-          <p className="text-slate-400 text-sm mt-0.5">Encrypted, server-only — never exposed to the browser or users.</p>
-        </div>
-        {toast && (
-          <span className="text-xs font-semibold px-3 py-1.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-            ✓ {toast}
-          </span>
-        )}
-      </div>
-
-
-      {!selectedApp ? (
-        <p className="text-slate-500 text-sm">Create an app first.</p>
-      ) : (
-        <div className="space-y-4">
-          {/* Security notice */}
-          <div className="bg-[#6C5CE7]/5 border border-[#6C5CE7]/15 rounded-xl px-4 py-3 flex gap-3">
-            <span className="text-lg shrink-0">🔐</span>
-            <div className="text-xs text-slate-400 space-y-0.5">
-              <p className="text-slate-300 font-semibold">Secrets are encrypted at rest and only used server-side by your app's tools.</p>
-              <p>Values are never returned via API, never shown after saving, and never sent to the AI model. Use them in an HTTP Request tool's URL or headers as <code className="bg-black/20 px-1 rounded text-[#A29BFE]">{'{{secrets.YOUR_KEY}}'}</code>.</p>
-            </div>
-          </div>
-
-          {/* Existing secrets */}
-          {loading ? (
-            <p className="text-slate-500 text-sm py-4">Loading…</p>
-          ) : secrets.length === 0 ? (
-            <div className="bg-[#0E1424] border border-white/5 rounded-xl px-5 py-8 text-center">
-              <p className="text-slate-500 text-sm">No secrets yet for <span className="text-white">{app?.name}</span>.</p>
-            </div>
-          ) : (
-            <div className="bg-[#0E1424] border border-white/5 rounded-xl overflow-hidden">
-              <table className="w-full text-sm">
-                <thead>
-                  <tr className="border-b border-white/5">
-                    <th className="text-left px-4 py-2.5 text-[10px] text-slate-400 uppercase font-semibold tracking-wide">Key</th>
-                    <th className="text-left px-4 py-2.5 text-[10px] text-slate-400 uppercase font-semibold tracking-wide">Value</th>
-                    <th className="px-4 py-2.5 text-[10px] text-slate-400 uppercase font-semibold tracking-wide">Updated</th>
-                    <th className="w-8" />
-                  </tr>
-                </thead>
-                <tbody>
-                  {secrets.map(s => (
-                    <tr key={s.key} className="border-b border-white/3 last:border-0 hover:bg-white/2 transition-colors">
-                      <td className="px-4 py-3 font-mono text-[#A29BFE] text-xs">{s.key}</td>
-                      <td className="px-4 py-3 text-slate-600 text-xs tracking-widest">••••••••</td>
-                      <td className="px-4 py-3 text-slate-600 text-[10px] text-center">{new Date(s.updated_at).toLocaleDateString()}</td>
-                      <td className="px-4 py-3">
-                        <button aria-label="Remove" onClick={() => deleteSecret(s.key)}
-                          className="text-slate-600 hover:text-red-400 transition-colors text-xs">✕</button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {error && (
-            <div className="bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3 text-xs text-red-400">{error}</div>
-          )}
-
-          {/* Add new secret */}
-          <div className="bg-[#0E1424] border border-white/5 rounded-xl p-4 space-y-3">
-            <p className="text-xs font-semibold text-slate-300">Add / update secret</p>
-            <div className="flex gap-2 flex-wrap sm:flex-nowrap">
-              <input
-                value={newKey}
-                onChange={e => setNewKey(e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, ''))}
-                placeholder="KEY_NAME"
-                className="flex-1 min-w-0 bg-[#171B33] border border-white/10 rounded-lg px-3 py-2 text-xs text-[#A29BFE] font-mono placeholder-slate-500 focus:outline-none focus:border-[#6C5CE7]/40"
-              />
-              <input
-                value={newVal}
-                onChange={e => setNewVal(e.target.value)}
-                placeholder="secret value"
-                type="password"
-                className="flex-1 min-w-0 bg-[#171B33] border border-white/10 rounded-lg px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-[#6C5CE7]/40"
-              />
-              <button
-                onClick={addSecret}
-                disabled={saving || !newKey.trim() || !newVal.trim()}
-                className="shrink-0 text-xs font-semibold px-4 py-2 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors disabled:opacity-40">
-                {saving ? 'Saving…' : 'Save'}
-              </button>
-            </div>
-            <p className="text-[10px] text-slate-400">Keys auto-uppercased. Saving again with the same key overwrites the value.</p>
-          </div>
-        </div>
-      )}
-    </div>
-  )
+export function SecretsTab({ apps, user, selectedAppId }) {
+  const selected = apps.find(app => app.id === selectedAppId) || apps[0]
+  return <AppSecretsPanel key={selected?.id || 'none'} appId={selected?.id} user={user} />
 }

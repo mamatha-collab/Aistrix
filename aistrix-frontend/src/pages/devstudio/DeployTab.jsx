@@ -1104,7 +1104,7 @@ curl -X POST ${PUBLIC_API_URL}/webhooks/YOUR_TRIGGER_TOKEN \\
   )
 }
 
-export function DeployTab({ apps, user, onAppUpdated, onFixInDesign, selectedAppId, onMovePhase, onOpenKeys }) {
+export function DeployTab({ apps, user, onAppUpdated, onFixInDesign, selectedAppId, onMovePhase, onOpenKeys, onMonitor }) {
   const activeAppId = apps.some(a => a.id === selectedAppId) ? selectedAppId : apps[0]?.id ?? null
   const selectedApp = apps.find(a => a.id === activeAppId)
 
@@ -1116,6 +1116,10 @@ export function DeployTab({ apps, user, onAppUpdated, onFixInDesign, selectedApp
 
   return (
     <div className="space-y-5">
+      {selectedApp?.is_published && onMonitor && <div className="rounded-2xl border border-emerald-500/20 bg-[#171B33] p-4 flex flex-wrap items-center gap-3">
+        <p className="text-sm text-slate-300 flex-1">After publishing, collect feedback and turn weak answers into regression tests.</p>
+        <button className="rounded-xl bg-[#6C5CE7] px-4 py-2 text-xs font-semibold text-white" onClick={() => onMonitor(selectedApp.id)}>Monitor this app →</button>
+      </div>}
       {/* Selected app deploy card */}
       {selectedApp && (
         <AppDeployCard

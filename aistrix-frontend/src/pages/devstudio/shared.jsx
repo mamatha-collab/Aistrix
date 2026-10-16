@@ -117,7 +117,7 @@ export function getDevPhase(app, phaseByAppId = {}) {
 
 // ─── Phase Rail ───────────────────────────────────────────────────────────────
 
-export function AppNavigator({ apps, phaseByAppId, activeAppId, activeTab, onSelectApp, onSwitchTab, onMovePhase, onCreateApp }) {
+export function AppNavigator({ apps, phaseByAppId, activeAppId, activeTab, onSelectApp, onSwitchTab, onMovePhase, onCreateApp, onOpenApp, compact = false }) {
   const grouped = { design: [], test: [], deploy: [] }
   for (const a of apps) grouped[getDevPhase(a, phaseByAppId)]?.push(a)
 
@@ -127,8 +127,11 @@ export function AppNavigator({ apps, phaseByAppId, activeAppId, activeTab, onSel
   const activeApp = apps.find(a => a.id === activeAppId)
 
   return (
-    <div className="w-[340px] max-w-full shrink-0 px-4 py-5 space-y-5">
-      <div className="rounded-2xl border border-white/8 bg-[#111827] p-4 space-y-4">
+    <div className={`${compact ? 'developer-app-navigator w-full px-0 py-2' : 'w-[340px] px-4 py-5'} max-w-full shrink-0 space-y-5`}>
+      {compact && <div className="flex items-center justify-between px-2"><h2 className="text-sm text-white font-semibold">Your apps</h2><button onClick={onCreateApp} aria-label="Create an app" className="text-slate-400 hover:text-white text-lg px-2">+</button></div>}
+      <details open={!compact || undefined} className="rounded-2xl border border-white/8 bg-[#111827] p-3 space-y-3">
+        <summary className="cursor-pointer text-xs font-semibold text-slate-400">App pipeline</summary>
+        <div className="space-y-4">
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-white text-sm font-bold">App Pipeline</p>
@@ -167,7 +170,8 @@ export function AppNavigator({ apps, phaseByAppId, activeAppId, activeTab, onSel
         ) : (
           <p className="text-[11px] text-slate-500 leading-relaxed">Select an app below to edit, test, deploy, version, or manage secrets.</p>
         )}
-      </div>
+        </div>
+      </details>
 
       {PHASE_ORDER.map(phase => {
         const p = DEV_PHASES[phase]
@@ -193,7 +197,7 @@ export function AppNavigator({ apps, phaseByAppId, activeAppId, activeTab, onSel
                 return (
                   <div key={a.id} className="group/app relative">
                     <button
-                      onClick={() => { onSelectApp(a.id); onSwitchTab(phase) }}
+                      onClick={() => { if (onOpenApp) onOpenApp(a.id, phase); else { onSelectApp(a.id); onSwitchTab(phase) } }}
                       className={`w-full text-left flex items-center gap-2.5 px-3 py-2 rounded-xl border text-sm transition-colors ${
                         isActive
                           ? `${p.bg} ${p.border} ${p.color} font-semibold`
@@ -439,35 +443,32 @@ export const TAB_NOTES = {
   },
   monitor: {
     color: '#E84393',
-    title: 'How Monitor works technically',
+    title: 'Monitor → Evaluate',
     points: [
-      'Run data is pulled from `run_history` — every run inserts a row with `app_id`, `user_id`, `created_at`, `input_tokens`, `output_tokens`, `rating_value`, `input`, and `output`.',
-      'The **30-day volume chart** is computed client-side: runs are bucketed by day using `Math.round((today - runDate) / 86400000)`.',
-      '**Token usage** is reported by the AI provider in the SSE stream\'s `done` event and written to `run_history` at end of each run.',
-      '**Feedback** is stored as `rating_value` in `run_history` (with `rating_type` and optional `feedback_text`): `1` = 👍 thumbs-up, `-1` = 👎 thumbs-down, `null` = no feedback given.',
-      '**Entitlement stats** are loaded from `app_entitlements` — subscriber counts, active vs cancelled, plan types — all fetched in parallel with run history on studio load.',
+      'Choose an app and review negative feedback in Needs attention. Review run carries that app and example into Evaluate.',
+      'Refresh feedback reloads the latest 500 runs you can access across your apps. Charts describe this sample, not necessarily all customer runs.',
+      'Useful feedback is positive ratings divided by positive and negative ratings. Unrated runs are excluded from that percentage.',
+      'Run history does not identify the published version or reliably record production failures and latency. Do not interpret these charts as a before/after release comparison.',
     ],
   },
   evaluate: {
     color: '#A29BFE',
-    title: 'How Evaluate works technically',
+    title: 'Evaluate → regression coverage',
     points: [
-      'Quality scores are computed per-app from `run_history`: satisfaction = 👍 count / total rated runs; health = weighted score across satisfaction (60%), volume (20%), published (10%), verified (10%).',
-      'The **health score (0–100)** is a composite: high satisfaction + high volume + published + verified badge all contribute.',
-      'Run history rows include the full `input` and `output` text, so you can inspect what was sent and received for any run.',
-      'Failed or low-rated runs are surfaced in the failure list — click any row to see the exact prompt input and output that produced the bad result.',
-      'Quality signals feed back into the marketplace listing: apps above thresholds get "Verified" and "Top Rated" trust badges via the `update_app_badges` Supabase RPC.',
+      'Inspect the recorded input, answer, and written feedback. A negative rating is an issue to investigate, not proof of its cause.',
+      'Review the regression input and define a phrase the corrected answer must contain or must avoid. The observed bad answer is never used as the expected answer automatically.',
+      'Save regression test stores the case in your existing Build test suite. Repeated saves preserve the existing case and its edits.',
+      'Continue to Improve to plan a draft fix, or Validate in Test to reproduce the issue. Saving a case does not mean the app has passed its tests.',
     ],
   },
   improve: {
     color: '#74B9FF',
-    title: 'How Improve works technically',
+    title: 'Improve → Build → Monitor',
     points: [
-      '**A/B prompt diffing**: select two saved versions (from `app_versions`) and run the same input through both using separate `/run` SSE calls fired in parallel.',
-      'Each call streams independently — outputs appear side-by-side in real time as tokens arrive.',
-      'The **diff view** (powered by Monaco DiffEditor) shows character-level changes between two version prompts so you can see exactly what changed.',
-      '**AI suggestions**: fires a `/run` call with a meta-prompt that asks Claude to review the current system prompt and suggest improvements based on recent failure patterns.',
-      'GitHub integration stores a `gh_token` + `gh_repo` in `developer_settings` (jsonb). Low-rated runs can be filed as GitHub issues via the GitHub REST API (`POST /repos/{owner}/{repo}/issues`).',
+      'Open draft fix in Design records the originating run and regression case in the change note. For a deployed app, confirm the reason before moving it back to Design.',
+      'The live snapshot remains available while you edit. Save the draft, run Build tests, and use Deploy to publish an update through the release checks.',
+      'The AI suggestion action uses the selected app prompt and its accessible negative-feedback examples. Suggestions do not change or publish the prompt automatically.',
+      'After publishing, Monitor this app returns to the same app so you can collect further feedback. Marketplace is an optional distribution step after quality review.',
     ],
   },
   version: {
@@ -496,10 +497,9 @@ export const TAB_NOTES = {
     color: '#FDCB6E',
     title: 'How Secrets works technically',
     points: [
-      'Developer secrets are stored in `developer_settings` and referenced by app blueprints at runtime instead of hard-coded into prompts.',
+      'App secrets are encrypted by the server (`app_secrets`) and given to the app tools at run time instead of being hard-coded into prompts. Browsers only ever see their names and dates.',
       '**Secret keys** are normalized to uppercase names like `OPENAI_API_KEY`, `STRIPE_SECRET_KEY`, or `GITHUB_TOKEN` so apps can declare predictable requirements.',
       'The Secrets tab separates platform keys from app requirements: developers can save reusable keys once, then attach required secrets per app.',
-      'Production hardening should move raw secret values behind a server-side vault or service-role-only storage layer before external customer launch.',
       'Apps should fail with a friendly missing-secret message instead of exposing raw provider errors or secret names to end users.',
     ],
   },
@@ -869,8 +869,8 @@ export const EMPTY_BP = {
 // next published version's history).
 const CHANGE_REASONS = ['Bug fix', 'Improve answers', 'New feature', 'User feedback', 'Other']
 
-export function MoveBackModal({ app, phase, onCancel, onConfirm }) {
-  const previous = app.change_note || {}
+export function MoveBackModal({ app, phase, initialNote, onCancel, onConfirm }) {
+  const previous = initialNote || app.change_note || {}
   const [reason, setReason] = useState(previous.reason || '')
   const [note, setNote] = useState(previous.note || '')
   const [saving, setSaving] = useState(false)

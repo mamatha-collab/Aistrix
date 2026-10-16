@@ -156,3 +156,12 @@ test('an opened app can be closed back to the step list', async ({ page }) => {
   await expect(page.getByText('Launch', { exact: true })).toHaveCount(0)
   await expect(page.getByText(/Ready to deploy/)).toBeVisible()
 })
+
+test('reloading keeps the open step and app; the first load shows no empty list', async ({ page }) => {
+  await open(page, '?slow=apps')
+  await expect(page.getByTestId('design-workspace')).toBeVisible()
+  await page.reload()
+  await expect(page.getByText('Loading your apps…')).toBeVisible()           // not an empty list the apps pop into
+  await expect(page.getByTestId('design-workspace')).toBeVisible()
+  await expect(page.getByRole('button', { name: 'All Design apps' })).toBeVisible()
+})

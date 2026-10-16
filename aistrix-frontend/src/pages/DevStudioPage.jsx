@@ -54,6 +54,14 @@ const LIFECYCLE_GROUPS = [
   { id: 'manage', label: 'Manage' },
 ]
 
+const VIEW_KEY = 'aistrix:developer-view'
+function savedView() {
+  try {
+    const saved = JSON.parse(sessionStorage.getItem(VIEW_KEY) || '{}')
+    return { tab: LIFECYCLE_TABS.some(t => t.id === saved.tab) ? saved.tab : 'design', appId: typeof saved.appId === 'string' ? saved.appId : null }
+  } catch { return { tab: 'design', appId: null } }
+}
+
 export default function DevStudioPage({
   user,
   onOpenCreate: requestCreate,
@@ -72,7 +80,8 @@ export default function DevStudioPage({
   const isPhone = useMediaQuery('(max-width: 767px)')
   const localNavigationGuardRef = useRef(null)
   const navigationGuardRef = sharedNavigationGuardRef || localNavigationGuardRef
-  const [tab, setTabState] = useState('design')
+  // The open step and app survive a reload of this browser tab.
+  const [tab, setTabState] = useState(() => savedView().tab)
   // Runs a navigation now, or — when the Design editor has unsaved edits —
   // after the developer chooses to discard or save them (its dialog).
   function guarded(action) {
@@ -101,7 +110,10 @@ export default function DevStudioPage({
     const target = group && el.querySelector(`[data-group="${group}"]`)
     if (target) el.scrollTo({ left: target.offsetLeft - el.offsetLeft, behavior: 'smooth' })
   }, [tab])
-  const [activeAppId, setActiveAppIdState] = useState(null)
+  const [activeAppId, setActiveAppIdState] = useState(() => savedView().appId)
+  useEffect(() => {
+    try { sessionStorage.setItem(VIEW_KEY, JSON.stringify({ tab, appId: activeAppId })) } catch { /* private mode */ }
+  }, [tab, activeAppId])
   function setActiveAppId(next) {
     if (typeof next === 'function' || next === activeAppId) setActiveAppIdState(next)
     else guarded(() => setActiveAppIdState(next))
@@ -621,6 +633,7 @@ export default function DevStudioPage({
                 </ErrorBoundary>
               </>) : (
                 (() => {
+                  if (loading && !apps.length) return <p role="status" className="py-16 text-center text-sm text-slate-500">Loading your apps…</p>
                   const designApps = visibleApps.filter(a => getDevPhase(a, phaseByAppId) === 'design')
                   const appRow = (a, onPick) => {
                     const pick = typeof onPick === 'function' ? onPick : () => setActiveAppId(a.id)

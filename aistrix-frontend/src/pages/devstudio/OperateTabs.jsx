@@ -3,6 +3,8 @@ import AppSecretsPanel from '../../components/AppSecretsPanel'
 import { useManageRecord } from '../../hooks/useManageRecord'
 import { manageRequest } from '../../lib/manageApi'
 import { getAppFeedback } from '../../lib/feedback'
+import { clearLocalDraft, readLocalDraft, saveLocalDraft } from '../../lib/localDraft'
+import { deleteComparison, listComparisons, saveComparison, saveComparisonAsTest, sideOf } from '../../lib/comparisons'
 import { getAppMonitor } from '../../lib/monitor'
 import { useState, useEffect, useMemo, useRef, Suspense } from 'react'
 import { streamRun } from '../../lib/runStream'
@@ -59,13 +61,18 @@ function MarketplaceListings({ apps, user }) {
   const [saving, setSaving]       = useState(false)
   const toast = useToast()
 
-  useEffect(() => { load() }, [])   // eslint-disable-line react-hooks/exhaustive-deps
+  const appKey = apps.map(a => a.id).join(',')
+  useEffect(() => { load() }, [appKey])   // eslint-disable-line react-hooks/exhaustive-deps
 
   async function load() {
+    // By app, not by who created the listing: every editor of the app sees
+    // and maintains the same listing.
+    const appIds = apps.map(a => a.id)
+    if (!appIds.length) { setNeedsSetup(false); setListings([]); return }
     const { data, error } = await supabase
       .from('marketplace_listings')
       .select('*')
-      .eq('user_id', user.id)
+      .in('app_id', appIds)
     if (error) {
       if (error.code === '42P01' || error.message?.includes('does not exist')) { setNeedsSetup(true); return }
       toast(error.message, 'error'); return
@@ -91,9 +98,10 @@ function MarketplaceListings({ apps, user }) {
   async function saveListing() {
     if (!form.title?.trim()) { toast('Title is required', 'error', 2000); return }
     setSaving(true)
+    const existing = listingFor(editId)
     const payload = {
       app_id:      editId,
-      user_id:     user.id,
+      ...(existing ? {} : { user_id: user.id }),   // the listing keeps its creator
       title:       form.title.trim(),
       tagline:     form.tagline.trim() || null,
       description: form.description.trim() || null,
@@ -101,15 +109,29 @@ function MarketplaceListings({ apps, user }) {
       tags:        form.tags ? form.tags.split(',').map(t => t.trim()).filter(Boolean) : [],
       updated_at:  new Date().toISOString(),
     }
-    const existing = listingFor(editId)
     let data, error
     if (existing) {
-      ;({ data, error } = await supabase.from('marketplace_listings').update(payload).eq('id', existing.id).select().single())
+      // Only if nobody saved it since it was loaded: a teammate's newer
+      // listing is never overwritten silently.
+      const query = supabase.from('marketplace_listings').update(payload).eq('id', existing.id)
+      ;({ data, error } = await (existing.updated_at ? query.eq('updated_at', existing.updated_at) : query.is('updated_at', null))
+        .select().maybeSingle())
+      if (!error && !data) {
+        setSaving(false)
+        toast('Someone else changed this listing since you opened it. Their version is shown; make your changes again.', 'error', 7000)
+        await load()
+        setEditId(null)
+        return
+      }
     } else {
       ;({ data, error } = await supabase.from('marketplace_listings').insert(payload).select().single())
     }
     setSaving(false)
-    if (error) { toast(error.message, 'error'); return }
+    if (error) {
+      toast(error.code === '23505' ? 'A teammate already created this listing. It is shown now; edit that one.' : error.message, 'error', 6000)
+      if (error.code === '23505') { await load(); setEditId(null) }
+      return
+    }
     setListings(prev => existing ? prev.map(l => l.id === data.id ? data : l) : [...(prev || []), data])
     setEditId(null)
     toast('Listing saved', 'success', 2000)
@@ -122,6 +144,8 @@ function MarketplaceListings({ apps, user }) {
     if (!app.is_published)                    errs.push({ key: 'deploy',   label: 'App is not deployed — publish it in Deploy' })
     if (app.is_paid && !(parseFloat(app.price_per_run) > 0))
                                               errs.push({ key: 'price',    label: 'Paid app has no price — set one in Marketplace' })
+    else if (app.is_paid && parseFloat(app.price_per_run) < 0.5)
+                                              errs.push({ key: 'price',    label: "Price is below the $0.50 card minimum — buyers couldn't pay" })
     if (!l?.title?.trim())                    errs.push({ key: 'title',    label: 'Listing title is missing — fill in the form above' })
     if (!l?.tagline?.trim())                  errs.push({ key: 'tagline',  label: 'Tagline is missing — one sentence description' })
     if (!l?.category)                         errs.push({ key: 'category', label: 'Category not selected' })
@@ -282,8 +306,8 @@ export function SellTab({ apps, user, onAppUpdated }) {
   async function save(app) {
     const d = draft(app)
     const price = d.is_paid ? parseFloat(d.price_per_run) : null
-    if (d.is_paid && (isNaN(price) || price <= 0)) {
-      toast('Enter a valid price per run (e.g. 0.05)', 'error', 3000)
+    if (d.is_paid && (isNaN(price) || price < 0.5)) {
+      toast('Enter a price of at least $0.50 per run (the smallest card payment)', 'error', 4000)
       return
     }
     setSaving(prev => ({ ...prev, [app.id]: true }))
@@ -308,26 +332,12 @@ export function SellTab({ apps, user, onAppUpdated }) {
 
   return (
     <div className="space-y-4">
-      {/* Setup mode banner */}
-      <div className="flex items-start gap-3 bg-amber-500/8 border border-amber-500/20 rounded-xl px-4 py-3">
-        <span className="text-amber-400 text-lg shrink-0 mt-0.5">⚠️</span>
-        <div>
-          <p className="text-amber-300 text-sm font-semibold">Payments are in setup mode</p>
-          <p className="text-amber-200/60 text-xs mt-0.5 leading-relaxed">
-            Checkout and payouts require backend activation. You can configure pricing now,
-            but live transactions will not be processed until Stripe Connect is enabled by Aistrix.
-          </p>
-        </div>
-      </div>
       <div>
         <p className="text-xs text-slate-400 uppercase font-semibold tracking-wide mb-3">Pricing editor</p>
         <div className="space-y-3">
           {apps.map(app => {
             const d     = draft(app)
             const dirty = JSON.stringify(d) !== JSON.stringify({ is_paid: app.is_paid ?? false, price_per_run: app.price_per_run ?? '' })
-            const rev   = d.is_paid && parseFloat(d.price_per_run) > 0
-              ? `~$${(parseFloat(d.price_per_run) * (app.total_runs || 0)).toFixed(2)} projected revenue`
-              : null
             return (
               <div key={app.id} className="bg-[#171B33] border border-white/5 rounded-2xl p-4">
                 <div className="flex items-center gap-3 flex-wrap">
@@ -357,11 +367,11 @@ export function SellTab({ apps, user, onAppUpdated }) {
                       <span className="text-slate-300 text-xs">$</span>
                       <input
                         type="number"
-                        min="0.01"
+                        min="0.50"
                         step="0.01"
                         value={d.price_per_run}
                         onChange={e => setDraft(app.id, { price_per_run: e.target.value })}
-                        placeholder="0.05"
+                        placeholder="0.50"
                         className="bg-transparent text-white text-xs w-16 focus:outline-none"
                       />
                       <span className="text-slate-600 text-[10px]">/ run</span>
@@ -379,12 +389,6 @@ export function SellTab({ apps, user, onAppUpdated }) {
                   )}
                 </div>
 
-                {/* Revenue projection */}
-                {rev && (
-                  <p className="text-[10px] text-emerald-400 mt-2 ml-8">
-                    {rev} · based on historical run count
-                  </p>
-                )}
               </div>
             )
           })}
@@ -399,35 +403,6 @@ export function SellTab({ apps, user, onAppUpdated }) {
       {/* Marketplace listing editor */}
       <MarketplaceListings apps={apps} user={user} />
 
-      {/* Stripe stub */}
-      <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5">
-        <div className="flex items-start gap-4">
-          <span className="text-3xl shrink-0">💳</span>
-          <div className="flex-1 min-w-0">
-            <p className="text-white font-semibold text-sm">Billing & Payouts via Stripe</p>
-            <p className="text-slate-300 text-xs mt-1 leading-relaxed">
-              Aistrix uses <strong className="text-slate-300">Stripe Checkout</strong> for business-user payments and <strong className="text-slate-300">Stripe Connect</strong> for developer payouts. Connect your Stripe account to start collecting revenue from paid apps.
-            </p>
-            <ul className="mt-2 space-y-1">
-              {['Pay-per-run and subscription billing', 'Automatic developer payouts (Stripe Connect)', 'Team & enterprise license deals', 'Full payout dashboard inside Aistrix'].map(b => (
-                <li key={b} className="text-[11px] text-slate-300 flex items-center gap-1.5">
-                  <span className="text-[#6C5CE7]">·</span>{b}
-                </li>
-              ))}
-            </ul>
-          </div>
-          <a
-            href="https://dashboard.stripe.com/register"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="shrink-0 text-xs font-semibold px-3 py-2 rounded-lg border border-[#6C5CE7]/30 text-[#A29BFE] hover:bg-[#6C5CE7]/10 transition-colors whitespace-nowrap">
-            Set up Stripe →
-          </a>
-        </div>
-        <p className="text-[10px] text-slate-400 mt-3 border-t border-white/5 pt-3">
-          Stripe Connect integration will be activated by the Aistrix team once your account is verified. The "Set up Stripe" button opens Stripe's registration page.
-        </p>
-      </div>
     </div>
   )
 }
@@ -437,9 +412,18 @@ export function SellTab({ apps, user, onAppUpdated }) {
 // Inline sparkline — no chart library needed
 // ─── Tab: Improve ─────────────────────────────────────────────────────────────
 
-export function ImproveTab({ apps, selectedAppId }) {
+export function ImproveTab({ apps, user, selectedAppId, selectedRunId, onSaveCandidate, navigationGuardRef }) {
   const [selectedApp, setSelectedApp] = useState(selectedAppId || apps[0]?.id || null)
   useEffect(() => { if (selectedAppId) { setSelectedApp(selectedAppId); setVA(null); setVB(null); setOutputA(''); setOutputB(''); setSuggestion(''); setTestInput(''); setSuggesting(false); setRunningA(false); setRunningB(false) } }, [selectedAppId])
+  const [candidate, setCandidate] = useState('')
+  // The saved prompt the candidate started from: drives "unsaved", the
+  // browser copy and the conflict check when saving.
+  const [baseline, setBaseline] = useState('')
+  const [restoreOffer, setRestoreOffer] = useState(null)
+  const [savedPromptChanged, setSavedPromptChanged] = useState(false)
+  const [conflict, setConflict] = useState(null)        // { theirs } — the saved prompt changed since you started
+  const [operationError, setOperationError] = useState('')
+  const [saving, setSaving] = useState(false)
   const [vA, setVA] = useState(null)   // version left
   const [vB, setVB] = useState(null)   // version right
   const [testInput, setTestInput] = useState('')
@@ -447,11 +431,17 @@ export function ImproveTab({ apps, selectedAppId }) {
   const [outputB, setOutputB] = useState('')
   const [runningA, setRunningA] = useState(false)
   const [runningB, setRunningB] = useState(false)
+  // Comparison history: both sides finished on the same input → saved.
+  const finished = useRef({})
+  const [history, setHistory] = useState({ items: [], loading: false, error: '' })
+  const [historyKey, setHistoryKey] = useState(0)
+  const [testFor, setTestFor] = useState(null)          // { id, input, type, expectation, busy, error, saved }
   // AI suggestions state
   const [suggestion, setSuggestion]   = useState('')
   const [suggesting, setSuggesting]   = useState(false)
   // GitHub feedback tracker state
   const [ghRepo, setGhRepo]           = useState('')
+  const [ghError, setGhError] = useState('')
   const [ghConnected, setGhConnected] = useState(false)
   const [creatingIssue, setCreatingIssue] = useState(null)   // run id
   const toast = useToast()
@@ -466,11 +456,12 @@ export function ImproveTab({ apps, selectedAppId }) {
 
   // The GitHub token stays on the server; this only says whether it's connected.
   async function loadGitHub() {
+    setGhError('')
     try {
       const connection = await manageRequest('/github/connection')
       setGhConnected(!!connection.connected)
       setGhRepo(connection.repo || '')
-    } catch { setGhConnected(false) }
+    } catch (error) { setGhConnected(false); setGhError(error.message || 'GitHub connection could not be checked.') }
   }
 
   async function connectGitHub() {
@@ -481,7 +472,117 @@ export function ImproveTab({ apps, selectedAppId }) {
   }
 
   const appObj = apps.find(a => a.id === selectedApp) || null
-  const { versions, loading: vLoading, needsSetup } = useVersions(selectedApp)
+  const { versions, loading: vLoading, needsSetup, error: versionError, reload } = useVersions(selectedApp)
+  const candidateDirty = !!appObj && candidate !== baseline
+  // Opening an app: start from its saved prompt and offer back an unsaved
+  // candidate left on this browser (reload, crash, leaving Improve).
+  useEffect(() => {
+    if (!appObj) return
+    const saved = appObj.system_prompt || ''
+    setBaseline(saved); setCandidate(saved); setConflict(null); setSavedPromptChanged(false); setOperationError('')
+    const local = readLocalDraft('improve', appObj.id)
+    setRestoreOffer(local && local.value !== saved ? local : null)
+  }, [selectedApp, !!appObj]) // eslint-disable-line react-hooks/exhaustive-deps
+  // The saved prompt changed while you were here (a save in Design, or a
+  // teammate): follow it if you haven't edited, otherwise keep your edits.
+  useEffect(() => {
+    if (!appObj) return
+    const saved = appObj.system_prompt || ''
+    if (saved === baseline) return
+    if (candidate === baseline) { setBaseline(saved); setCandidate(saved) }
+    else setSavedPromptChanged(true)
+  }, [appObj?.system_prompt]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Keep unsaved edits on this browser until they're saved or discarded.
+  useEffect(() => {
+    if (!appObj || restoreOffer) return
+    if (candidateDirty) saveLocalDraft('improve', appObj.id, candidate, baseline)
+    else clearLocalDraft('improve', appObj.id)
+  }, [candidate, baseline, candidateDirty, restoreOffer, appObj?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Leaving Improve or switching apps with unsaved edits asks first.
+  useEffect(() => {
+    if (!navigationGuardRef || !candidateDirty) return undefined
+    const guard = () => window.confirm('Leave without saving your candidate prompt? It stays on this browser and is offered back when you return.')
+    navigationGuardRef.current = guard
+    const unload = event => { event.preventDefault(); event.returnValue = '' }
+    window.addEventListener('beforeunload', unload)
+    return () => {
+      if (navigationGuardRef.current === guard) navigationGuardRef.current = null
+      window.removeEventListener('beforeunload', unload)
+    }
+  }, [candidateDirty, navigationGuardRef])
+  // Default comparison: latest release vs the draft candidate. A choice you
+  // made is kept while it still exists (app details refreshing don't reset it).
+  useEffect(() => {
+    if (vLoading || !appObj) return
+    const live = appObj.prod_snapshot ? { id: 'live', version_num: appObj.live_version, label: 'Live release', version_data: appObj.prod_snapshot } : null
+    const draft = { id: 'draft', label: 'Draft candidate', version_data: appObj }
+    const still = v => v && (v.id === 'draft' || v.id === 'live' || versions.some(x => x.id === v.id))
+    setVA(prev => still(prev) ? prev : (versions[0] || live))
+    setVB(prev => still(prev) ? prev : draft)
+  }, [selectedApp, versions, vLoading]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!selectedApp) return undefined
+    let active = true
+    setHistory(h => ({ ...h, loading: true, error: '' }))
+    listComparisons(selectedApp)
+      .then(items => { if (active) setHistory({ items, loading: false, error: '' }) })
+      .catch(e => { if (active) setHistory({ items: [], loading: false, error: e.message || 'Comparison history could not be loaded.' }) })
+    return () => { active = false }
+  }, [selectedApp, historyKey])
+  async function recordIfComplete(side, version, output) {
+    const promptOf = v => v?.id === 'draft' ? candidate : (v?.version_data?.system_prompt ?? v?.system_prompt ?? '')
+    finished.current[side] = { versionId: version.id, input: testInput, output }
+    const a = finished.current.A, b = finished.current.B
+    if (!a || !b || a.input !== b.input || a.versionId !== vA?.id || b.versionId !== vB?.id) return
+    finished.current = {}
+    try {
+      const saved = await saveComparison({ appId: selectedApp, userId: user?.id, input: a.input,
+        baseline: sideOf(vA, promptOf(vA)), candidate: sideOf(vB, promptOf(vB)), baselineOutput: a.output, candidateOutput: b.output })
+      setHistory(h => ({ ...h, items: [saved, ...h.items].slice(0, 20) }))
+    } catch (e) { setOperationError(`The comparison ran, but it couldn't be saved to history: ${e.message}`) }
+  }
+  function reuseComparison(entry) {
+    invalidateComparison()
+    setTestInput(entry.input)
+    const find = side => side.version_num != null ? versions.find(v => v.version_num === side.version_num) : null
+    const a = find(entry.baseline), b = entry.candidate.version_num == null ? vB : find(entry.candidate)
+    if (a) setVA(a)
+    if (b) setVB(b)
+  }
+  async function removeEntry(id) {
+    try { await deleteComparison(id); setHistory(h => ({ ...h, items: h.items.filter(e => e.id !== id) })) }
+    catch (e) { setOperationError(`Could not delete the comparison: ${e.message}`) }
+  }
+  async function saveTest() {
+    setTestFor(t => ({ ...t, busy: true, error: '' }))
+    try {
+      await saveComparisonAsTest({ appId: selectedApp, userId: user?.id, input: testFor.input, type: testFor.type, expectation: testFor.expectation })
+      setTestFor(t => ({ ...t, busy: false, saved: true }))
+    } catch (e) { setTestFor(t => ({ ...t, busy: false, error: e.message })) }
+  }
+  function invalidateComparison() {
+    finished.current = {}
+    requests.current.forEach(controller => controller.abort())
+    requests.current.clear()
+    setRunningA(false); setRunningB(false); setSuggesting(false)
+    setOutputA(''); setOutputB(''); setOperationError('')
+  }
+  async function saveCandidate(expected = baseline) {
+    setSaving(true); setOperationError(''); setConflict(null)
+    try {
+      await onSaveCandidate(selectedApp, candidate, { expected, source: sourceFeedback })
+      clearLocalDraft('improve', selectedApp)
+      setBaseline(candidate); setSavedPromptChanged(false)
+    } catch (error) {
+      if (error.current) setConflict({ theirs: error.current.system_prompt ?? '' })
+      else setOperationError(error.message || 'Could not save candidate. Please try again.')
+    } finally { setSaving(false) }
+  }
+  function discardCandidate() {
+    clearLocalDraft('improve', selectedApp)
+    setCandidate(appObj?.system_prompt || ''); setBaseline(appObj?.system_prompt || ''); setSavedPromptChanged(false); setConflict(null)
+    invalidateComparison()
+  }
 
   // Worst-rated runs for selected app (for AI suggestions + GitHub tracker)
   // Customer feedback marked "not useful" (what customers chose to share).
@@ -489,11 +590,14 @@ export function ImproveTab({ apps, selectedAppId }) {
   useEffect(() => {
     if (!selectedApp) return undefined
     let active = true
+    setFeedback({ items: [], error: '' })
     getAppFeedback(selectedApp, 'all')
       .then(data => { if (active) setFeedback({ items: data.items || [], error: '' }) })
       .catch(e => { if (active) setFeedback({ items: [], error: e.message || 'Feedback could not be loaded.' }) })
     return () => { active = false }
   }, [selectedApp])
+  // The customer feedback this improvement answers (selected in Eval).
+  const sourceFeedback = selectedRunId ? feedback.items.find(f => f.run_id === selectedRunId) || null : null
   const worstRuns = useMemo(() => feedback.items
     .filter(f => f.rating === -1 && f.status !== 'dismissed')
     .slice(0, 10)
@@ -503,9 +607,10 @@ export function ImproveTab({ apps, selectedAppId }) {
   async function runAISuggestion() {
     if (!appObj) return
     setSuggesting(true)
+    setOperationError('')
     setSuggestion('')
     const examples = worstRuns.slice(0, 5)
-      .map((r, i) => `Example ${i + 1}:\nInput: ${r.input || "Not shared by the customer"}\nAnswer: ${r.output || "Not shared by the customer"}\nFeedback: ${r.feedback_text || "Not useful"}`)
+      .map((r, i) => `Example ${i + 1}:\nInput: ${r.input ?? "Not shared by the customer"}\nAnswer: ${r.output ?? "Not shared by the customer"}\nFeedback: ${r.feedback_text || "Not useful"}`)
       .join('\n\n')
     const systemPrompt = `You are an expert prompt engineer. Analyse the following low-rated AI app runs and suggest specific, actionable improvements to the system prompt to address the issues. Be concrete — rewrite problem sections rather than giving vague advice. Focus on tone, specificity, constraints, and output format.`
     const userMsg = `App: ${appObj.name}\nCurrent system prompt:\n${appObj.system_prompt || '(none)'}\n\nLow-rated runs:\n${examples || 'No rated runs yet — provide general improvement suggestions based on the prompt.'}`
@@ -513,8 +618,8 @@ export function ImproveTab({ apps, selectedAppId }) {
     requests.current.add(controller)
     try {
       await streamRun({ input: userMsg, system_prompt: systemPrompt,
-        ai_provider: appObj.ai_provider || 'claude', ai_model: appObj.ai_model || undefined }, { signal: controller.signal, onToken: setSuggestion })
-    } catch (e) { if (e.name !== 'AbortError') toast(e.message, 'error') }
+        ai_provider: appObj.ai_provider || 'claude', ai_model: appObj.ai_model || undefined }, { signal: controller.signal, onToken: text => { if (!controller.signal.aborted) setSuggestion(text) } })
+    } catch (e) { if (e.name !== 'AbortError') setOperationError(e.message) }
     finally { requests.current.delete(controller); if (!controller.signal.aborted) setSuggesting(false) }
   }
 
@@ -534,19 +639,53 @@ export function ImproveTab({ apps, selectedAppId }) {
     setOutput('')
     const controller = new AbortController()
     requests.current.add(controller)
+    let last = ''
     try {
-      await streamRun({ input: testInput, system_prompt: v.version_data?.system_prompt || v.system_prompt,
+      await streamRun({ input: testInput, system_prompt: v.id === 'draft' ? candidate : (v.version_data?.system_prompt ?? v.system_prompt),
         ai_provider: v.version_data?.ai_provider || v.ai_provider || app.ai_provider,
-        ai_model: v.version_data?.ai_model || v.ai_model || app.ai_model }, { signal: controller.signal, onToken: setOutput })
-    } catch (e) { if (e.name !== 'AbortError') toast(e.message, 'error') }
+        ai_model: v.version_data?.ai_model || v.ai_model || app.ai_model }, { signal: controller.signal, onToken: text => { if (!controller.signal.aborted) { last = text; setOutput(text) } } })
+      if (!controller.signal.aborted) await recordIfComplete(v === vA ? 'A' : 'B', v, last)
+    } catch (e) { if (e.name !== 'AbortError') setOperationError(e.message) }
     finally { requests.current.delete(controller); if (!controller.signal.aborted) setRunning(false) }
   }
 
   return (
     <div className="space-y-5">
+      {operationError && <p role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-200">{operationError}</p>}
+      {feedback.error && <p role="alert" className="text-sm text-red-300">{feedback.error}</p>}
+      {versionError && <div role="alert" className="text-sm text-red-300">{versionError} <button className="underline" onClick={reload}>Retry versions</button></div>}
+      {appObj && <section className="rounded-2xl border border-white/10 bg-[#171B33] p-5 space-y-3">
+        <h2 className="text-sm font-semibold text-white">Draft improvement</h2>
+        <p className="text-xs text-slate-400">Review the issue above, refine the prompt, then save to Design. Your live release stays available. Validate the full app in Test before publishing. Unsaved edits stay on this browser.</p>
+        {restoreOffer && <div role="status" className="rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-sm text-amber-200 flex flex-wrap items-center gap-3">
+          <span className="flex-1 min-w-48">Restore your unsaved candidate from {new Date(restoreOffer.savedAt).toLocaleString()}?{restoreOffer.base != null && restoreOffer.base !== (appObj.system_prompt || '') ? ' The saved prompt has changed since then.' : ''}</span>
+          <button className="underline" onClick={() => { clearLocalDraft('improve', appObj.id); setRestoreOffer(null) }}>Discard</button>
+          <button className="underline font-semibold" onClick={() => { setCandidate(restoreOffer.value); if (restoreOffer.base != null) setBaseline(restoreOffer.base); setRestoreOffer(null); invalidateComparison() }}>Restore</button>
+        </div>}
+        {savedPromptChanged && !conflict && <p role="status" className="text-xs text-amber-300">The saved prompt changed while you were editing (in Design or by a teammate). Saving will ask before replacing it.</p>}
+        {conflict && <div role="alert" className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200 space-y-2">
+          <p>The prompt was changed since you started this candidate. Saving yours would replace that newer prompt.</p>
+          <div className="flex flex-wrap gap-3">
+            <button className="underline" onClick={() => { setCandidate(conflict.theirs); setBaseline(conflict.theirs); setConflict(null); setSavedPromptChanged(false); invalidateComparison() }}>Load the saved prompt</button>
+            <button className="underline font-semibold" disabled={saving} onClick={() => saveCandidate(conflict.theirs)}>Save mine anyway</button>
+          </div>
+        </div>}
+        <label htmlFor="improve-candidate" className="block text-xs font-medium text-slate-300">Candidate system prompt</label>
+        <textarea id="improve-candidate" rows={6} value={candidate} onChange={event => { invalidateComparison(); setCandidate(event.target.value) }} className="w-full rounded-xl border border-white/10 bg-[#0E1424] p-3 text-sm text-white" />
+        {sourceFeedback && <p className="text-xs text-slate-400">Answers customer feedback: “{(sourceFeedback.comment || 'Marked not useful').slice(0, 120)}”</p>}
+        <div className="flex flex-wrap items-center gap-3">
+          <button onClick={() => saveCandidate()} disabled={saving || !candidate.trim() || !candidateDirty || runningA || runningB || suggesting} className="rounded-lg bg-[#6C5CE7] px-4 py-2 text-sm font-semibold text-white disabled:opacity-40">{saving ? 'Saving…' : 'Save candidate and open Design'}</button>
+          {candidateDirty && <button onClick={discardCandidate} disabled={saving} className="text-xs text-slate-400 hover:text-white">Discard changes</button>}
+          {candidateDirty && <span className="text-xs text-slate-500">Unsaved changes</span>}
+        </div>
+        {appObj.change_note?.improvement_id && <p className="text-xs text-slate-400">Saved improvement: {appObj.change_note.improvement_id}</p>}
+      </section>}
+      <details className="rounded-2xl border border-white/10 p-5" open>
+      <summary className="cursor-pointer text-sm font-semibold text-white">Compare prompts</summary>
+      <p className="my-3 text-xs text-slate-400">Compare a released prompt with your candidate using the same input. This checks prompt and model responses; tools, files, and app workflows require validation in Test.</p>
       {selectedApp && (
         <>
-          {needsSetup && <VersionSetupCard onRetry={() => {}} />}
+          {needsSetup && <VersionSetupCard onRetry={reload} />}
 
           {!needsSetup && (
             <>
@@ -558,14 +697,14 @@ export function ImproveTab({ apps, selectedAppId }) {
                     <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
                       {vLoading && <p className="text-slate-500 text-xs py-2 text-center">Loading…</p>}
                       {!vLoading && versions.length === 0 && (
-                        <p className="text-slate-500 text-xs py-2 text-center">No snapshots — save one in the Version tab first.</p>
+                        <p className="text-slate-500 text-xs py-2 text-center">No released baseline yet. Publish a validated version to enable a release comparison.</p>
                       )}
-                      {versions.map(v => (
-                        <button key={v.id} onClick={() => setSel(v)}
+                      {(label.startsWith('B') ? [{ id: 'draft', label: 'Draft candidate', version_data: appObj }, ...versions] : versions).map(v => (
+                        <button key={v.id} onClick={() => { invalidateComparison(); setSel(v) }}
                           className={`w-full text-left px-3 py-2 rounded-lg border text-xs transition-all ${sel?.id === v.id ? 'border-[#6C5CE7]/50 bg-[#6C5CE7]/10 text-white' : 'border-white/5 bg-[#0E1424] text-slate-400 hover:border-white/10 hover:text-white'}`}>
-                          <span className="font-semibold">v{v.version_num}</span>
+                          <span className="font-semibold">{v.id === 'draft' ? 'Draft' : `v${v.version_num}`}</span>
                           {v.label && <span className="ml-2 text-slate-500">{v.label}</span>}
-                          <span className="ml-2 text-slate-600">{timeAgo(v.created_at)}</span>
+                          {v.created_at && <span className="ml-2 text-slate-600">{timeAgo(v.created_at)}</span>}
                         </button>
                       ))}
                     </div>
@@ -581,9 +720,9 @@ export function ImproveTab({ apps, selectedAppId }) {
                     <Suspense fallback={<div className="h-full flex items-center justify-center text-slate-500 text-sm bg-[#0E1424]">Loading editor…</div>}>
                       <DiffEditor
                         original={vA?.version_data?.system_prompt || vA?.system_prompt || ''}
-                        modified={vB?.version_data?.system_prompt || vB?.system_prompt || ''}
+                        modified={vB?.id === 'draft' ? candidate : (vB?.version_data?.system_prompt ?? vB?.system_prompt ?? '')}
                         language="plaintext"
-                        theme="vs-dark"
+                        theme={document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'vs-dark'}
                         options={{
                           readOnly: true,
                           minimap: { enabled: false },
@@ -605,7 +744,7 @@ export function ImproveTab({ apps, selectedAppId }) {
                   <p className="text-[10px] text-slate-400 uppercase font-semibold tracking-wide mb-2">Side-by-side test</p>
                   <textarea
                     value={testInput}
-                    onChange={e => setTestInput(e.target.value)}
+                    onChange={e => { invalidateComparison(); setTestInput(e.target.value) }}
                     placeholder="Enter a test input to run against both versions…"
                     rows={3}
                     className="w-full bg-[#0E1424] border border-white/10 rounded-xl px-4 py-3 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-[#6C5CE7]/40 resize-none mb-3"
@@ -614,14 +753,14 @@ export function ImproveTab({ apps, selectedAppId }) {
                     {[[vA, outputA, setOutputA, runningA, setRunningA, 'Run v' + vA.version_num],
                       [vB, outputB, setOutputB, runningB, setRunningB, 'Run v' + vB.version_num]
                     ].map(([v, out, , running, setRunning, label]) => (
-                      <div key={v.id} className="bg-[#0E1424] border border-white/5 rounded-xl p-4 space-y-3">
+                      <div key={v === vA ? 'baseline' : 'candidate'} className="bg-[#0E1424] border border-white/5 rounded-xl p-4 space-y-3">
                         <div className="flex items-center justify-between">
-                          <span className="text-xs font-semibold text-white">v{v.version_num} {v.label ? `· ${v.label}` : ''}</span>
+                          <span className="text-xs font-semibold text-white">{v.id === 'draft' ? 'Draft candidate' : `v${v.version_num}`} {v.label ? `· ${v.label}` : ''}</span>
                           <button
                             onClick={() => runVersion(v, appObj, v === vA ? setOutputA : setOutputB, setRunning)}
-                            disabled={running}
+                            disabled={running || !testInput.trim()}
                             className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors disabled:opacity-40">
-                            {running ? '▌' : '▶ ' + label}
+                            {running ? '▌' : '▶ ' + (v.id === 'draft' ? 'Run candidate' : label)}
                           </button>
                         </div>
                         <div className="min-h-24 bg-[#09101F] rounded-lg p-3 text-xs text-slate-300 leading-relaxed whitespace-pre-wrap font-mono overflow-y-auto max-h-56">
@@ -636,6 +775,47 @@ export function ImproveTab({ apps, selectedAppId }) {
           )}
         </>
       )}
+
+      </details>
+
+      {/* ── Comparison history ── */}
+      {selectedApp && <section aria-label="Comparison history" className="rounded-2xl border border-white/10 bg-[#171B33] p-5 space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <h2 className="text-sm font-semibold text-white">Comparison history</h2>
+          <button className="text-xs text-[#A29BFE] hover:underline" disabled={history.loading} onClick={() => setHistoryKey(n => n + 1)}>{history.loading ? 'Loading…' : 'Refresh'}</button>
+        </div>
+        <p className="text-xs text-slate-400">Every side-by-side run where both versions answered the same input is saved here for the app's editors.</p>
+        {history.error && <p role="alert" className="text-sm text-red-300">{history.error}</p>}
+        {!history.error && !history.loading && !history.items.length && <p className="text-sm text-slate-400">No comparisons yet. Run both versions on the same input above.</p>}
+        <div className="space-y-2">{history.items.map(entry => <details key={entry.id} className="rounded-xl border border-white/8 bg-[#0E1424] p-3">
+          <summary className="cursor-pointer text-sm text-slate-200 flex flex-wrap gap-x-3 gap-y-1">
+            <span className="font-semibold">{entry.baseline?.label} vs {entry.candidate?.label}</span>
+            {entry.created_at && <span className="text-slate-500 text-xs self-center">{new Date(entry.created_at).toLocaleString()}</span>}
+            <span className="basis-full text-xs text-slate-400 truncate">{entry.input}</span>
+          </summary>
+          <div className="mt-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
+            {[[entry.baseline, entry.baseline_output], [entry.candidate, entry.candidate_output]].map(([side, out], i) => <div key={i} className="min-w-0">
+              <p className="text-[11px] text-slate-400 mb-1">{side?.label}{side?.model ? ` · ${side.model}` : ''}</p>
+              <pre className="whitespace-pre-wrap break-words text-xs text-slate-300 bg-[#09101F] rounded-lg p-3 max-h-56 overflow-auto font-sans">{out || 'No answer recorded'}</pre>
+            </div>)}
+          </div>
+          <div className="mt-3 flex flex-wrap gap-3 text-xs">
+            <button className="text-[#A29BFE] hover:underline" onClick={() => reuseComparison(entry)}>Use this input again</button>
+            <button className="text-[#A29BFE] hover:underline" onClick={() => setTestFor({ id: entry.id, input: entry.input, type: 'must-contain', expectation: '', busy: false, error: '', saved: false })}>Save input as a test</button>
+            <button className="text-slate-400 hover:text-red-300" onClick={() => removeEntry(entry.id)}>Delete</button>
+          </div>
+          {testFor?.id === entry.id && <div className="mt-3 space-y-2 border-t border-white/8 pt-3">
+            {testFor.saved ? <p role="status" className="text-sm text-emerald-300">Test saved. Run it in Build → Test.</p> : <>
+              <div className="flex flex-wrap gap-2">
+                <select aria-label="Test check" value={testFor.type} onChange={e => setTestFor(t => ({ ...t, type: e.target.value }))} className="rounded-lg border border-white/10 bg-[#171B33] px-2 py-1.5 text-xs text-white"><option value="must-contain">Answer must contain</option><option value="must-not-contain">Answer must not contain</option></select>
+                <input aria-label="Expected behavior" value={testFor.expectation} onChange={e => setTestFor(t => ({ ...t, expectation: e.target.value }))} placeholder="Required phrase or forbidden claim" className="flex-1 min-w-40 rounded-lg border border-white/10 bg-[#171B33] px-2 py-1.5 text-xs text-white" />
+                <button disabled={testFor.busy || !testFor.expectation.trim()} onClick={saveTest} className="rounded-lg bg-[#6C5CE7] px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-40">{testFor.busy ? 'Saving…' : 'Save test'}</button>
+              </div>
+              {testFor.error && <p role="alert" className="text-xs text-red-300">{testFor.error}</p>}
+            </>}
+          </div>}
+        </details>)}</div>
+      </section>}
 
       {/* ── AI improvement suggestions ── */}
       {selectedApp && appObj && (
@@ -667,7 +847,8 @@ export function ImproveTab({ apps, selectedAppId }) {
       )}
 
       {/* ── GitHub feedback tracker ── */}
-      <div className="bg-[#171B33] border border-white/5 rounded-2xl overflow-hidden">
+      <details className="bg-[#171B33] border border-white/5 rounded-2xl overflow-hidden"><summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-white">Optional: GitHub issue tracking</summary>
+        {ghError && <p role="alert" className="px-4 py-3 text-sm text-red-300">{ghError} <button className="underline" onClick={loadGitHub}>Retry connection</button></p>}
         <div className="flex items-center gap-3 px-4 py-3">
           <span className="text-2xl">🐙</span>
           <div className="flex-1 min-w-0">
@@ -744,7 +925,7 @@ export function ImproveTab({ apps, selectedAppId }) {
             <p className="text-slate-600 text-xs text-center">Select an app above to see low-rated runs.</p>
           </div>
         )}
-      </div>
+      </details>
 
     </div>
   )

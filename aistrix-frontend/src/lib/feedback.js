@@ -14,8 +14,8 @@ export const rateRun = (runId, { rating, comment = '', shareRun = false }) =>
   })
 
 // { items, counts } — status: 'open' (new + investigating), 'all', or one status
-export const getAppFeedback = (appId, status = 'open') =>
-  manageRequest(`/v1/apps/${encodeURIComponent(appId)}/feedback?status=${encodeURIComponent(status)}`)
+export const getAppFeedback = (appId, status = 'open', { offset = 0, limit = 200, signal } = {}) =>
+  manageRequest(`/v1/apps/${encodeURIComponent(appId)}/feedback?status=${encodeURIComponent(status)}&offset=${offset}&limit=${limit}`, { signal })
 
 export const updateFeedback = (id, patch) =>
   manageRequest(`/v1/feedback/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(patch) })

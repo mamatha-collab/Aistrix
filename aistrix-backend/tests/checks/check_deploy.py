@@ -43,7 +43,7 @@ class Q:
 
     def select(self, *a, count=None, head=False, **k): self.count = count; return self
     def insert(self, row): self.op, self.payload = "insert", row; return self
-    def upsert(self, row, on_conflict=None): self.op, self.payload, self.conflict = "upsert", row, on_conflict; return self
+    def upsert(self, row, on_conflict=None, **kwargs): self.op, self.payload, self.conflict = "upsert", row, on_conflict; return self
     def update(self, patch): self.op, self.payload = "update", patch; return self
     def delete(self): self.op = "delete"; return self
     def eq(self, k, v): self.filters.append(lambda r, k=k, v=v: r.get(k) == v); return self
@@ -93,6 +93,7 @@ def rpc(name, params):
 
 
 main._service_client = lambda: NS(table=lambda t: Q(t), rpc=rpc)
+main._telemetry_service_client = main._service_client
 
 SEEN = []
 
@@ -211,6 +212,31 @@ st = c.get("/v1/apps/app-1/stats", headers=owner).json()
 ok("stats count everyone: people, visitors, API", st["total"] == 3 and st["users"] == 1 and st["visitor_runs"] == 1 and st["api_runs"] == 1)
 ok("stats: only editors (404)", c.get("/v1/apps/app-1/stats", headers=user).status_code == 404)
 
+# Closing a response early is a real outcome, not a silent disappearance.
+from starlette.requests import Request
+async def close_early():
+    request = Request({'type': 'http', 'method': 'POST', 'headers': [(b'authorization', b'Bearer tok-user')], 'client': ('127.0.0.1', 1)})
+    response = await main.execute_run(main.RunRequest(app_id='app-1', input='hi'), request,
+                                      caller=main.ApiCaller(user_id=USER, user_jwt='tok-user'))
+    await response.body_iterator.__anext__()
+    await response.body_iterator.aclose()
+    await asyncio.gather(*main._telemetry_tasks)      # delivery runs in the background
+before = len(TABLES['app_runs'])
+asyncio.run(close_early())
+ok('a disconnected stream records exactly one cancelled outcome', len(TABLES['app_runs']) == before + 1
+   and TABLES['app_runs'][-1]['error_kind'] == 'cancelled' and TABLES['app_runs'][-1]['status'] == 'error')
+real_outbox = main._telemetry_outbox
+def disk_full(*args): raise OSError('SIMULATED DISK FULL')
+main._telemetry_outbox = NS(begin=disk_full, finish=disk_full, acknowledged=disk_full, failed=disk_full)
+before, logged = len(SEEN), len(TABLES['app_runs'])
+r = c.post('/run', json={'app_id': 'app-1', 'input': 'hi'}, headers=user)
+settle()
+ok('unavailable recovery storage never stops a customer run', r.status_code == 200 and len(SEEN) == before + 1)
+deadline = time.time() + 3
+while len(TABLES['app_runs']) == logged and time.time() < deadline: time.sleep(0.05)
+ok('…and its outcome is still sent directly to the run log', len(TABLES['app_runs']) == logged + 1)
+main._telemetry_outbox = real_outbox
+
 # ── Signed webhooks ──────────────────────────────────────────────────────────
 secret = c.get("/v1/apps/app-1/webhook/secret", headers=owner).json()["secret"]
 ok("signing secret is stable per app and differs between apps",
@@ -265,4 +291,14 @@ except HTTPException as e:
 fresh._service_client = lambda: Boom(Exception("PGRST205: Could not find the table 'public.workspace_members'"))
 ok("…but a missing table (not migrated yet) still means no workspace", asyncio.run(fresh.workspace_role("ws-1", "u-1")) is None)
 
+# ── Health: public basics, operator-only deployment details ─────────────────
+import os
+h = c.get("/health").json()
+ok("public /health has no database or process details", "database_project" not in h and "process_id" not in h)
+os.environ.pop("OPS_HEALTH_TOKEN", None)
+ok("deployment details are hidden when no operator token is set", c.get("/health/details", headers={"X-Ops-Token": ""}).status_code == 404)
+os.environ["OPS_HEALTH_TOKEN"] = "ops-fixture-token"
+ok("…and need the operator token", c.get("/health/details", headers={"X-Ops-Token": "wrong"}).status_code == 404)
+d = c.get("/health/details", headers={"X-Ops-Token": "ops-fixture-token"})
+ok("the operator sees the database project and recovery setup", d.status_code == 200 and "database_project" in d.json() and "telemetry_recovery_configured" in d.json())
 finish()

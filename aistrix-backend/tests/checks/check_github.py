@@ -19,7 +19,7 @@ main.GITHUB_REDIRECT_URI = "https://api.example.test/auth/github/callback"
 main.FRONTEND_URL = "https://app.example.test"
 main._fernet = Fernet(Fernet.generate_key())
 
-TABLES = {"developer_github": []}
+TABLES = {"developer_github": [], "server_once": []}
 RUNS = [{"id": "run-1", "app_id": "app-1", "app_name": "Pitch", "input": "hi", "output": "bad answer", "rating_value": -1, "created_at": "2026-10-15"},
         {"id": "run-2", "app_id": "app-other", "app_name": "Theirs", "input": "x", "output": "y", "rating_value": -1, "created_at": "2026-10-15"}]
 GITHUB = []          # requests sent to GitHub
@@ -34,8 +34,13 @@ class Query:
     def upsert(self, value, **k): self.action, self.value = "upsert", value; return self
     def update(self, value): self.action, self.value = "update", value; return self
     def delete(self): self.action = "delete"; return self
+    def insert(self, value): self.action, self.value = "insert", value; return self
     def execute(self):
         rows = TABLES[self.table]
+        if self.action == "insert":            # server_once: the key is unique
+            if any(r["key"] == self.value["key"] for r in rows):
+                raise Exception("duplicate key value violates unique constraint (23505)")
+            rows.append(dict(self.value)); return NS(data=[dict(self.value)])
         hits = [r for r in rows if all(r.get(k) == v for k, v in self.filters.items())]
         if self.action == "upsert":
             rows[:] = [r for r in rows if r["user_id"] != self.value["user_id"]] + [dict(self.value)]
@@ -102,6 +107,9 @@ r = c.get(f"/auth/github/callback?code=bad&state={q['state'][0]}")
 ok("a failed token exchange goes back to the app without connecting", r.status_code in (302, 307) and r.headers["location"].endswith("/developer?github_connected=0") and not TABLES["developer_github"])
 r = c.get(f"/auth/github/callback?code=good&state={q['state'][0]}")
 ok("a state can only be used once", r.status_code == 400)
+forged = main.Fernet(main.Fernet.generate_key()).encrypt(b'{"u": "dev", "r": "", "n": "x"}').decode()
+ok("a state not signed by this server's key is refused", c.get(f"/auth/github/callback?code=good&state={forged}").status_code == 400
+   and not TABLES["developer_github"])
 
 state = parse_qs(urlparse(c.post("/github/connect", headers=dev, json={"repo": "acme/app"}).json()["url"]).query)["state"][0]
 r = c.get(f"/auth/github/callback?code=good&state={state}")

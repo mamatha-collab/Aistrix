@@ -49,8 +49,11 @@ export async function listVersions(appId) {
 }
 
 // Make an earlier published version live again (the draft isn't changed).
-export async function rollbackVersion(appId, versionNum) {
-  const res = await fetch(`${API_URL}/v1/apps/${appId}/versions/${versionNum}/rollback`, { method: 'POST', headers: await headers() })
+// expectedLive: the live version on screen; if a teammate changed it since,
+// nothing is rolled back (409).
+export async function rollbackVersion(appId, versionNum, expectedLive = null) {
+  const query = expectedLive != null ? `?expected_live=${encodeURIComponent(expectedLive)}` : ''
+  const res = await fetch(`${API_URL}/v1/apps/${appId}/versions/${versionNum}/rollback${query}`, { method: 'POST', headers: await headers() })
   if (!res.ok) throw await errorFromResponse(res, 'Could not roll back')
   return res.json()
 }

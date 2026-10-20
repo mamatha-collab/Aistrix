@@ -18,6 +18,7 @@ export const state = window.buildFixture = {
   tables: {
     apps: [app, { ...app, id: 'app-2', name: 'Second Assistant' }],
     marketplace_listings: [],
+    app_comparisons: [],
     app_blueprints: ['app-1', 'app-2'].map(app_id => ({ app_id, user_id: 'fixture-user', blueprint: copy(blueprint), updated_at: '2026-10-14T12:00:00.000Z' })),
     app_tools: [], app_test_cases: [], app_versions: [],
   },
@@ -53,7 +54,12 @@ class Query {
   select() { return this }
   eq(key, value) { this.filters.push(row => row[key] === value); return this }
   in(key, values) { this.filters.push(row => values.includes(row[key])); return this }
-  is(key, value) { this.filters.push(row => row[key] === value); return this }
+  is(key, value) { this.filters.push(row => (row[key] ?? null) === value); return this }
+  not(key, operator, value) {
+    if (operator !== 'is') throw new Error(`Unsupported fixture operator: ${operator}`)
+    this.filters.push(row => value === null ? row[key] != null : row[key] !== value)
+    return this
+  }
   order() { return this }
   limit() { return this }
   insert(value) { this.op = 'insert'; this.value = value; return this }
@@ -147,15 +153,16 @@ const nativeFetch = window.fetch.bind(window)
 const scenario = new URLSearchParams(location.search).get('scenario') || ''
 if (scenario === 'operations') {
   const now = new Date().toISOString()
+  const reported = new Date(Date.now() - 3600000).toISOString()   // feedback came in before the latest release
   state.tables.run_history = [
     { id: 'run-invoice', app_id: 'app-1', app_name: 'Fixture Assistant', user_id: 'fixture-user', created_at: now, rating_value: -1, feedback_text: 'The answer invented an invoice number.', input: 'Check invoice with no invoice number.', output: 'Invoice 123 is complete.' },
     { id: 'run-other', app_id: 'app-2', app_name: 'Second Assistant', user_id: 'fixture-user', created_at: now, rating_value: -1, feedback_text: 'The translation ignored the glossary.', input: 'Translate the receipt.', output: 'Incorrect translation.' },
   ]
-  Object.assign(app, { is_published: true, live_version: 1, total_runs: 4, prod_snapshot: snapshot(app) })
+  Object.assign(app, { is_published: true, live_version: 1, total_runs: 4, promoted_at: now, prod_snapshot: snapshot(app) })
   state.tables.app_blueprints[0].blueprint.dev_phase = 'deploy'
   // What the server shares with the developers (customers chose to include the run).
   state.feedback = state.tables.run_history.map((r, i) => ({ id: `fb-${i + 1}`, app_id: r.app_id, run_id: r.id, rating: r.rating_value,
-    comment: r.feedback_text, shared_input: r.input, shared_output: r.output, status: 'new', note: null, test_case_id: null, created_at: now, updated_at: now }))
+    comment: r.feedback_text, shared_input: r.input, shared_output: r.output, status: 'new', note: null, test_case_id: null, created_at: reported, updated_at: reported }))
 }
 
 // Build with AI: the two model calls (follow-up questions, then the app
@@ -182,7 +189,7 @@ function monitorFor(appId, days) {
     days, daily, truncated: false,
     totals: { runs, users: busy ? 6 : 0, visitor_runs: busy ? 3 : 0, errors, error_rate: runs ? errors / runs : null,
       latency_p50_ms: busy ? 1200 : null, latency_p95_ms: busy ? 4200 : null, cost_usd: busy ? 0.02 * days : null,
-      cost_per_run_usd: busy ? 0.002 : null, rated: busy ? 8 : 0, satisfaction: busy ? 0.75 : null, last_run: null },
+      cost_recorded_runs: busy ? runs : 0, cost_per_run_usd: busy ? 0.002 : null, rated: busy ? 8 : 0, satisfaction: busy ? 0.75 : null, last_run: null },
     by_version: busy ? [{ version: 2, runs: runs - 20, errors, error_rate: errors / (runs - 20), latency_p95_ms: 4200 }, { version: 1, runs: 20, errors: 0, error_rate: 0, latency_p95_ms: 3000 }] : [],
     by_source: busy ? { app: runs - 3, embed: 3 } : {},
     error_kinds: busy ? { timeout: errors } : {},
@@ -193,7 +200,7 @@ function monitorFor(appId, days) {
 window.fetch = async (input, init = {}) => {
   const url = new URL(typeof input === 'string' ? input : input.url, location.href)
   if (url.pathname === '/run') {
-    state.requests.push({ path: '/run', method: 'POST' })
+    state.requests.push({ path: '/run', method: 'POST', body: JSON.parse(init.body || '{}') })
     return fakeModelReply(JSON.parse(init.body || '{}'))
   }
   if (url.pathname === '/stripe/earnings.csv') {
@@ -203,8 +210,9 @@ window.fetch = async (input, init = {}) => {
   }
   if (url.pathname === '/stripe/payouts/retry') {
     state.requests.push({ path: url.pathname, method: 'POST' })
-    if (state.earnings) Object.assign(state.earnings, { total_pending: 0, owed_count: 0 })
-    return new Response(JSON.stringify({ sent: 2, failed: 0 }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    const result = state.payoutResult || { sent: 2, failed: 0, in_progress: 0, remaining: 0 }
+    if (state.earnings && !result.remaining) Object.assign(state.earnings, { total_pending: 0, owed_count: 0 })
+    return new Response(JSON.stringify(result), { status: 200, headers: { 'Content-Type': 'application/json' } })
   }
   if (url.pathname === '/stripe/earnings' || url.pathname === '/stripe/connect/status' || /^\/apps\/[^/]+\/secrets(?:\/[^/]+)?$/.test(url.pathname)) {
     const path = url.pathname
@@ -255,7 +263,8 @@ window.fetch = async (input, init = {}) => {
     const items = mine.filter(f => status === 'all' || (status === 'open' ? ['new', 'investigating'].includes(f.status) : f.status === status))
     const counts = {}
     for (const f of mine) counts[f.status] = (counts[f.status] || 0) + 1
-    return response({ items, counts })
+    const offset = Number(url.searchParams.get('offset') || 0), limit = Number(url.searchParams.get('limit') || 200)
+    return response({ items: items.slice(offset, offset + limit), counts, next_offset: items.length > offset + limit ? offset + limit : null, counts_truncated: false })
   }
   if (/^\/v1\/feedback\/[^/]+$/.test(path) && init.method === 'PATCH') {
     const item = state.feedback.find(f => f.id === path.split('/')[3])
@@ -279,10 +288,10 @@ window.fetch = async (input, init = {}) => {
     const days = Number(url.searchParams.get('days') || 7)
     if (path === '/v1/monitor') {
       const ids = (url.searchParams.get('app_ids') || '').split(',').filter(Boolean)
-      return response({ days, apps: ids.filter(i => state.tables.apps.some(a => a.id === i)).map(i => ({ app_id: i, ...monitorFor(i, days),
+      return response({ days, telemetry_health: state.telemetryHealth, summary: monitorFor(ids.includes('app-1') ? 'app-1' : '', days), apps: ids.filter(i => state.tables.apps.some(a => a.id === i)).map(i => ({ app_id: i, live_version: state.tables.apps.find(a => a.id === i)?.live_version, ...monitorFor(i, days),
         open_feedback: (state.feedback || []).filter(f => f.app_id === i && ['new', 'investigating'].includes(f.status)).length })) })
     }
-    return response({ app_id: path.split('/')[3], live_version: 2, ...monitorFor(path.split('/')[3], days) })
+    return response({ app_id: path.split('/')[3], live_version: 2, telemetry_health: state.telemetryHealth, ...monitorFor(path.split('/')[3], days) })
   }
   const id = path.split('/')[3]
   const current = state.tables.apps.find(row => row.id === id)
@@ -312,6 +321,10 @@ window.fetch = async (input, init = {}) => {
     const version = Number(path.split('/').at(-2))
     const row = state.tables.app_versions.find(row => row.app_id === id && row.version_num === version)
     if (!row) return response({ error: 'Not found' }, 404)
+    const expected = url.searchParams.get('expected_live')
+    if (expected != null && Number(expected) !== current.live_version) {
+      return response({ detail: "Another release was made while you were doing this. Reload to see what's live now, then try again." }, 409)
+    }
     current.prod_snapshot = copy(row.version_data)
     Object.assign(current, { live_version: version, is_published: true, has_draft_changes: true })
     return response({ ok: true, live_version: version, promoted_at: new Date().toISOString(), has_draft_changes: true })

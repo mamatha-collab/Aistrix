@@ -57,7 +57,9 @@ test('feedback flows into a regression and draft without changing the live app',
 
   // Once the fix is live and healthy, the developer verifies it; it leaves the open list.
   await tab(page, 'Evaluate: Quality')
+  await workflow(page).getByLabel('Triage note', { exact: true }).fill('Verified the linked regression and live v1: no invoice number is invented.')
   await workflow(page).getByLabel('Feedback status').selectOption('verified')
+  await page.getByRole('button', { name: 'Confirm verification' }).click()
   await expect.poll(() => page.evaluate(() => window.buildFixture.feedback[0].status)).toBe('verified')
   await workflow(page).getByRole('button', { name: 'Refresh feedback' }).click()
   await expect(workflow(page).getByText(/No open feedback/)).toBeVisible()
@@ -70,7 +72,7 @@ test('app selection and feedback errors do not mix apps', async ({ page }) => {
   await page.goto('/e2e/fixtures/?scenario=operations')
   await tab(page, 'Evaluate: Quality')
   await workflow(page).getByLabel('App to operate').selectOption('app-2')
-  await expect(workflow(page).getByText('The translation ignored the glossary.', { exact: true })).toBeVisible()
+  await expect(workflow(page).getByLabel('Selected feedback').getByText('The translation ignored the glossary.', { exact: true })).toBeVisible()
   await expect(workflow(page).getByLabel('Regression input')).toHaveValue('Translate the receipt.')
   await workflow(page).getByLabel('App to operate').selectOption('app-1')
   await expect(workflow(page).getByLabel('Regression input')).toHaveValue('Check invoice with no invoice number.')

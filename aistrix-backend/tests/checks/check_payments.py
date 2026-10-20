@@ -28,18 +28,22 @@ TRANSFERS, INTENTS, EMAILS = [], [], []
 
 
 class Query:
-    def __init__(self, table): self.table, self.filters, self.action, self.value = table, {}, "select", None
+    def __init__(self, table): self.table, self.filters, self.action, self.value, self.bounds = table, {}, "select", None, None
     def select(self, *a, **k): return self
     def eq(self, key, value): self.filters[key] = value; return self
     def in_(self, key, values): self.filters[key] = ("in", tuple(values)); return self
     def gte(self, *a): return self
     def limit(self, *a): return self
     def order(self, *a, **k): return self
+    def range(self, start, end): self.bounds = (start, end); return self
+    def maybe_single(self): self.single = True; return self
     def insert(self, value): self.action, self.value = "insert", value; return self
     def update(self, value): self.action, self.value = "update", value; return self
     def upsert(self, value, **k): self.action, self.value = "upsert", value; return self
     def execute(self):
         rows = TABLES[self.table]
+        if self.table == "purchases":
+            for r in rows: r.setdefault("payout_attempts", 0)      # column default
         hits = [r for r in rows if all((r.get(k) in v[1]) if isinstance(v, tuple) else r.get(k) == v for k, v in self.filters.items())]
         if self.action == "insert":
             ref = self.value.get("stripe_payment_ref")
@@ -51,10 +55,17 @@ class Query:
         if self.action == "update":
             for r in hits: r.update(self.value)
             return NS(data=hits)
+        if self.action == "upsert" and self.table == "developer_profiles":
+            same = next((r for r in rows if r["user_id"] == self.value["user_id"]), None)
+            same.update(self.value) if same else rows.append(dict(self.value))
+            return NS(data=[self.value])
         if self.action == "upsert":
             same = next((r for r in rows if r["app_id"] == self.value["app_id"] and r["user_id"] == self.value["user_id"]), None)
             same.update(self.value) if same else rows.append(dict(self.value))
             return NS(data=[self.value])
+        if self.bounds: hits = hits[self.bounds[0]:self.bounds[1] + 1][:1000]
+        if getattr(self, "single", False):
+            return NS(data=dict(hits[0])) if hits else None     # supabase-py: no row → None, not an empty response
         return NS(data=[dict(r) for r in hits])
 
 
@@ -143,7 +154,7 @@ ok("the purchase buys exactly one run", [(e["plan"], e["run_quota"], e["runs_thi
 ok("the payment is recorded at the amount Stripe charged",
    len(TABLES["purchases"]) == 1 and TABLES["purchases"][0]["gross_amount"] == 25 and TABLES["purchases"][0]["dev_share"] == 20)
 ok("the developer is paid their share once, with an idempotency key",
-   len(TRANSFERS) == 1 and TRANSFERS[0]["amount"] == 2000 and TRANSFERS[0]["idempotency_key"].startswith("aistrix-payout-pi_1-")
+   len(TRANSFERS) == 1 and TRANSFERS[0]["amount"] == 2000 and TRANSFERS[0]["idempotency_key"] == "aistrix-payout-pi_1-1"
    and TRANSFERS[0]["transfer_group"] == "aistrix-pi_1")
 ok("payout status records the transfer", TABLES["purchases"][0]["payout_status"] == "transferred")
 ok("buyer and developer are each emailed once", sorted(e[0] for e in EMAILS) == ["buyer@example.test", "dev@example.test"])
@@ -268,4 +279,97 @@ c.post("/stripe/payouts/retry", headers=dev)
 ok("a transfer Stripe already made is found and recorded, not repeated", len(TRANSFERS) == before + 2 and by_ref("pi_fail")["payout_status"] == "transferred")
 stripe.Account.retrieve = lambda acct: {"id": acct, "payouts_enabled": False}
 ok("payouts wait until Stripe enables the account", c.post("/stripe/payouts/retry", headers=dev).status_code == 409)
+stripe.Account.retrieve = lambda acct: {"id": acct, "payouts_enabled": True}
+
+# ── A payout is claimed first: concurrent attempts can't both pay ────────────
+import asyncio
+from datetime import datetime, timedelta, timezone
+def owed_row(ref, **kw):
+    row = {"id": f"p-{ref}", "app_id": "paid-app", "buyer_id": "buyer", "dev_id": "dev", "plan": "pay_per_run",
+           "gross_amount": 25, "platform_fee": 5, "dev_share": 20, "refunded_amount": 0, "payout_attempts": 0,
+           "stripe_payment_ref": ref, "payout_status": "transfer_failed", "created_at": "2026-10-01T00:00:00+00:00", **kw}
+    TABLES["purchases"].append(row); return row
+race = owed_row("pi_race")
+stale_read = dict(race)                                          # both callers read the row before either claims it
+before = len(TRANSFERS)
+first = asyncio.run(main._pay_out(client, dict(race), "acct_dev"))
+second = asyncio.run(main._pay_out(client, stale_read, "acct_dev"))
+ok("two concurrent attempts on one purchase send one transfer", first == "transferred" and second == "busy" and len(TRANSFERS) == before + 1)
+ok("…keyed by payment and attempt", TRANSFERS[-1]["idempotency_key"] == "aistrix-payout-pi_race-1" and by_ref("pi_race")["payout_attempts"] == 1)
+
+retry_row = owed_row("pi_retry")
+stripe.Transfer.create = fail
+asyncio.run(main._pay_out(client, dict(retry_row), "acct_dev"))
+stripe.Transfer.create = create_transfer
+asyncio.run(main._pay_out(client, dict(by_ref("pi_retry")), "acct_dev"))
+ok("a later attempt after a failure uses a new key (not Stripe's cached error)",
+   by_ref("pi_retry")["payout_status"] == "transferred" and TRANSFERS[-1]["idempotency_key"] == "aistrix-payout-pi_retry-2")
+
+now = datetime.now(timezone.utc)
+busy = owed_row("pi_busy", payout_status="transferring", payout_attempts=1, payout_claimed_at=now.isoformat())
+before = len(TRANSFERS)
+r = c.post("/stripe/payouts/retry", headers=dev).json()
+ok("a payout another attempt is sending right now is left alone", by_ref("pi_busy")["payout_status"] == "transferring" and len(TRANSFERS) == before)
+r = deliver("charge.refunded", {"id": "ch_busy", "payment_intent": "pi_busy", "amount_refunded": 2500})
+ok("a refund arriving mid-payout is retried by Stripe, not applied over it", r.status_code == 503 and by_ref("pi_busy")["refunded_amount"] == 0)
+by_ref("pi_busy")["payout_claimed_at"] = (now - timedelta(hours=1)).isoformat()   # that server stopped
+r = c.post("/stripe/payouts/retry", headers=dev).json()
+ok("a claim left by a stopped server is taken over and paid once", by_ref("pi_busy")["payout_status"] == "transferred"
+   and len(TRANSFERS) == before + 1 and TRANSFERS[-1]["idempotency_key"] == "aistrix-payout-pi_busy-2")
+r = deliver("charge.refunded", {"id": "ch_busy", "payment_intent": "pi_busy", "amount_refunded": 2500})
+ok("…and Stripe's retried refund then takes the payout back", r.status_code == 200 and by_ref("pi_busy")["payout_status"] == "refunded"
+   and REVERSALS[-1][0] == by_ref("pi_busy")["stripe_transfer_id"])
+
+refunded_first = owed_row("pi_refunded_first", refunded_amount=25)
+stale = dict(refunded_first, refunded_amount=0)
+before = len(TRANSFERS)
+asyncio.run(main._pay_out(client, stale, "acct_dev"))
+ok("a payout uses the current row: a refund recorded meanwhile is not paid out", len(TRANSFERS) == before
+   and by_ref("pi_refunded_first")["payout_status"] == "refunded")
+
+# ── Every purchase counts; a partial ledger is never presented as complete ──
+TABLES["purchases"][:] = [r for r in TABLES["purchases"] if r["dev_id"] == "dev"]
+TABLES["purchases"] += [{"id": f"bulk-{i}", "app_id": "paid-app", "dev_id": "dev", "plan": "pay_per_run", "gross_amount": 1,
+                         "platform_fee": 0.2, "dev_share": 0.8, "refunded_amount": 0, "payout_status": "transferred",
+                         "stripe_payment_ref": f"pi_bulk_{i}", "created_at": "2026-09-01T00:00:00+00:00"} for i in range(2500)]
+total = len(TABLES["purchases"])
+e = c.get("/stripe/earnings", headers=dev).json()
+ok("earnings read past the database API's 1000-row page", e["purchase_count"] == total and e["truncated"] is False
+   and e["by_app"][0]["sale_count"] == total)
+ok("the CSV lists every purchase", len(c.get("/stripe/earnings.csv", headers=dev).text.splitlines()) == 1 + total)
+main.PURCHASE_ROW_LIMIT = 2000
+e = c.get("/stripe/earnings", headers=dev).json()
+ok("past the row limit, earnings say they're incomplete", e["truncated"] is True and e["purchase_count"] == 2000)
+r = c.get("/stripe/earnings.csv", headers=dev)
+ok("…and the CSV is refused rather than silently partial", r.status_code == 413 and "shorter period" in r.json()["detail"])
+main.PURCHASE_ROW_LIMIT = 200000
+
+# ── Owed payouts: all of them, in as many runs as it takes ───────────────────
+for i in range(1200):
+    owed_row(f"pi_owed_{i}", payout_status="no_connect_account", created_at=f"2026-08-01T00:00:{i % 60:02d}+00:00")
+main.PAYOUT_BATCH_SECONDS = 0                      # no time: nothing is sent, all is "remaining"
+r = c.post("/stripe/payouts/retry", headers=dev).json()
+ok("payouts not reached in one run are reported as remaining", r["sent"] == 0 and r["remaining"] == 1200)
+main.PAYOUT_BATCH_SECONDS = 60
+r = c.post("/stripe/payouts/retry", headers=dev).json()
+ok("more than 500 owed payouts are all sent", r["sent"] == 1200 and r["remaining"] == 0
+   and not any(p["payout_status"] == "no_connect_account" for p in TABLES["purchases"]))
+# ── Payout setup (Stripe Connect onboarding) ─────────────────────────────────
+ACCOUNTS = []
+def create_account(**kw):
+    ACCOUNTS.append(kw)
+    return NS(id="acct_new")
+stripe.Account.create = create_account
+stripe.AccountLink.create = lambda **kw: NS(url=f"https://connect.stripe.test/{kw['account']}")
+newdev = {"Authorization": "Bearer buyer"}                       # has no developer profile yet
+r = c.post("/stripe/connect/onboard", headers=newdev)
+ok("a developer with no profile yet can start payout setup", r.status_code == 200 and r.json()["url"].endswith("acct_new")
+   and any(p["user_id"] == "buyer" and p["stripe_account_id"] == "acct_new" for p in TABLES["developer_profiles"]))
+ok("…with one Stripe account per developer, even on a double click", ACCOUNTS[-1]["idempotency_key"] == "aistrix-connect-buyer")
+r = c.post("/stripe/connect/onboard", headers=newdev)
+ok("starting again reuses the account", r.status_code == 200 and len(ACCOUNTS) == 1)
+def refuse(**kw): raise stripe.error.InvalidRequestError("You can only create new accounts if you've signed up for Connect", None)
+stripe.AccountLink.create = refuse
+r = c.post("/stripe/connect/onboard", headers=newdev)
+ok("a Stripe refusal is explained, not a server error", r.status_code == 502 and "signed up for Connect" in r.json()["detail"])
 finish()

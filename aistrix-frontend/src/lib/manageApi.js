@@ -1,6 +1,8 @@
 import { supabase } from '../supabase'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+// The server no longer accepts this sign-in (expired, or signed out elsewhere).
+const SIGNED_OUT = 'Your sign-in has ended. Sign out and sign in again to continue.'
 
 export async function manageRequest(path, options = {}) {
   const { data: { session } } = await supabase.auth.getSession()
@@ -10,6 +12,7 @@ export async function manageRequest(path, options = {}) {
   let data = {}
   try { data = text ? JSON.parse(text) : {} }
   catch { throw new Error('The server returned an invalid response. Please retry.') }
+  if (response.status === 401) throw new Error(SIGNED_OUT)
   if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : data.error || 'This information could not be loaded.')
   if (!options.method || options.method === 'GET') {
     if (path.endsWith('/secrets') && !Array.isArray(data.secrets)) throw new Error('Secret metadata could not be verified. Please retry before making changes.')
@@ -25,6 +28,7 @@ export async function downloadManageFile(path, fallbackName) {
   const { data: { session } } = await supabase.auth.getSession()
   if (!session?.access_token) throw new Error('Sign in again to download this file.')
   const response = await fetch(`${API_URL}${path}`, { headers: { Authorization: `Bearer ${session.access_token}` } })
+  if (response.status === 401) throw new Error(SIGNED_OUT)
   if (!response.ok) {
     const data = await response.json().catch(() => ({}))
     throw new Error(typeof data.detail === 'string' ? data.detail : 'The file could not be downloaded.')

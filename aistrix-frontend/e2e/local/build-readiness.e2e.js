@@ -208,3 +208,20 @@ test("app settings: a teammate's newer change is never overwritten", async ({ pa
   await expect(box).toHaveValue('Teammate wrote this.')
   expect(await page.evaluate(() => window.buildFixture.tables.apps[0].description)).toBe('Teammate wrote this.')
 })
+
+test("a rollback from a stale screen never replaces a teammate's newer release", async ({ page }) => {
+  await open(page, '?scenario=live')
+  const live = () => page.evaluate(() => ({ version: window.buildFixture.tables.apps[0].live_version, prompt: window.buildFixture.tables.apps[0].prod_snapshot.system_prompt }))
+  await expect(page.getByRole('button', { name: 'Roll back', exact: true })).toBeVisible()
+  // A teammate publishes v3 while this screen still shows v2 as live.
+  await page.evaluate(() => {
+    const app = window.buildFixture.tables.apps[0]
+    app.live_version = 3
+    app.prod_snapshot = { ...app.prod_snapshot, system_prompt: "Teammate's v3 prompt." }
+    window.buildFixture.tables.app_versions.push({ app_id: app.id, version_num: 3, version_data: app.prod_snapshot, changelog: 'Release 3', created_at: new Date().toISOString() })
+  })
+  await page.getByRole('button', { name: 'Roll back', exact: true }).last().click()
+  await page.getByRole('button', { name: 'Make v1 live', exact: true }).click()
+  await expect(page.getByText(/Another release was made while you were doing this/)).toBeVisible()
+  expect(await live()).toEqual({ version: 3, prompt: "Teammate's v3 prompt." })
+})

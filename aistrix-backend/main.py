@@ -35,15 +35,18 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response, StreamingResponse
 from jose import jwt as jose_jwt
 from pydantic import BaseModel, Field, field_validator
 from sentry_sdk.integrations.fastapi import FastApiIntegration
 from sentry_sdk.integrations.starlette import StarletteIntegration
 from supabase import create_client, Client
 from supabase.lib.client_options import SyncClientOptions
+from telemetry import configured_outbox
 
 load_dotenv()
+_telemetry_outbox = configured_outbox()
+_telemetry_client = None
 
 # ─── Sentry ───────────────────────────────────────────────────────────────────
 # Anything that looks like a credential is masked before an error report
@@ -88,10 +91,15 @@ async def lifespan(_app):
     # Resume batch jobs left queued/interrupted by a restart, and keep sweeping
     # so another worker picks up jobs whose worker died (stale heartbeat).
     supervisor = asyncio.create_task(_batch_supervisor())
+    telemetry_worker = asyncio.create_task(_telemetry_supervisor())
+    scheduler = asyncio.create_task(_scheduler_loop())
+    report_production_config()
     try:
         yield
     finally:
-        supervisor.cancel()
+        for task in (supervisor, telemetry_worker, scheduler):
+            task.cancel()
+        await asyncio.gather(supervisor, telemetry_worker, scheduler, return_exceptions=True)
 
 
 app = FastAPI(title="Aistrix API", version="1.0.0", lifespan=lifespan)
@@ -169,7 +177,21 @@ GITHUB_CLIENT_SECRET      = os.getenv("GITHUB_CLIENT_SECRET")
 GITHUB_REDIRECT_URI       = os.getenv("GITHUB_REDIRECT_URI")  # e.g. https://api.aistrix.app/auth/github/callback
 
 # Short-lived nonce store for GitHub OAuth CSRF protection: nonce → (user_id, expiry_ts)
-_oauth_nonces: dict[str, tuple[str, float, str]] = {}   # nonce → (user_id, expiry, repo)
+OAUTH_STATE_SECONDS = 600   # how long a "Connect GitHub" link stays valid
+
+
+async def use_once(key: str) -> bool:
+    """True the first time any server sees `key`, False after (server_once)."""
+    sb = _service_client()
+    if not sb:
+        raise HTTPException(status_code=503, detail="This isn't available on this server right now")
+    try:
+        await db(sb.table("server_once").insert({"key": key[:300]}))
+        return True
+    except Exception as e:
+        if "23505" in str(e) or "duplicate" in str(e).lower():
+            return False
+        raise
 CRON_SECRET               = os.getenv("CRON_SECRET")
 SECRET_ENCRYPTION_KEY     = os.getenv("SECRET_ENCRYPTION_KEY")  # Fernet key (base64, 32 bytes)
 _fernet: "Fernet | None" = Fernet(SECRET_ENCRYPTION_KEY.encode()) if SECRET_ENCRYPTION_KEY else None
@@ -273,8 +295,17 @@ async def verify_user_jwt(user_jwt: Optional[str]) -> Optional[str]:
     try:
         resp = await asyncio.to_thread(get_anon_client().auth.get_user, user_jwt)
         return resp.user.id if resp and resp.user else None
-    except Exception:
-        return None
+    except Exception as e:
+        # Supabase Auth said no (bad, expired or revoked token): not signed in.
+        # Anything else (network, timeout, misconfiguration) is our outage,
+        # not the caller's fault, so it isn't reported as "Unauthorized".
+        status = getattr(e, "status", None)
+        if type(e).__name__ in ("AuthApiError", "AuthInvalidJwtError", "AuthSessionMissingError") and (status is None or 400 <= int(status) < 500):
+            print(f"sign-in check refused: {type(e).__name__} {status}: {str(e)[:160]}")
+            return None
+        print(f"sign-in check unavailable: {type(e).__name__}: {str(e)[:200]}")
+        sentry_sdk.capture_exception(e)
+        raise HTTPException(status_code=503, detail="Sign-in can't be checked right now. Try again shortly.")
 
 
 async def require_verified_user(request: Request) -> str:
@@ -410,7 +441,7 @@ async def fetch_user_api_key(user_jwt: str, provider: str, sb: Optional[Client] 
             .maybe_single()
         )
         result = await db(query)
-        return _open_key(result.data["encrypted_key"]) if result.data else None
+        return _open_key(result.data["encrypted_key"]) if result and result.data else None
     except Exception:
         return None
 
@@ -789,21 +820,95 @@ async def claim_app_daily_run(app_id: str, limit: int) -> bool:
 
 async def _log_app_run(app_id: str, user_id: Optional[str], source: str, usage: Optional[dict], *,
                        status: str = "ok", error_kind: Optional[str] = None, latency_ms: Optional[int] = None,
-                       live_version: Optional[int] = None, model: Optional[str] = None) -> None:
+                       live_version: Optional[int] = None, model: Optional[str] = None,
+                       event_id: Optional[str] = None, created_at: Optional[str] = None) -> None:
     """One row per real run (failures too) for Monitor: outcome, time, cost, version."""
     usage = usage or {}
     try:
         cost = model_cost_usd(model, usage) if model and usage.get("input_tokens") else None
     except Exception:
         cost = None
-    try:
-        await db(_service_client().table("app_runs").insert({
+    row = {
             "app_id": app_id, "user_id": user_id, "source": source,
             "input_tokens": usage.get("input_tokens"), "output_tokens": usage.get("output_tokens"),
             "status": status, "error_kind": error_kind, "latency_ms": latency_ms,
-            "live_version": live_version, "model": model, "cost_usd": cost}))
-    except Exception as e:
-        print(f"app run log skipped: {type(e).__name__}: {str(e)[:120]}")
+            "live_version": live_version, "model": model, "cost_usd": cost,
+            "event_id": event_id or str(uuid.uuid4()), "created_at": created_at or datetime.now(timezone.utc).isoformat()}
+    # Saved locally first (off the event loop), so a timed-out delivery can be
+    # replayed with the same event ID after a restart. If local storage is
+    # unavailable the run is still served and the outcome is sent directly.
+    durable = True
+    try:
+        await asyncio.to_thread(_telemetry_outbox.finish, row)
+    except Exception:
+        durable = False
+        print("Telemetry recovery storage unavailable; delivering this outcome directly")
+    # The customer's run doesn't wait for the database write.
+    _spawn_telemetry(_deliver_telemetry(row, 0, durable))
+
+
+_telemetry_tasks: set = set()
+
+
+def _spawn_telemetry(coro) -> None:
+    task = asyncio.create_task(coro)
+    _telemetry_tasks.add(task)
+    task.add_done_callback(_telemetry_tasks.discard)
+
+
+async def _deliver_telemetry(row, attempts, durable=True):
+    try:
+        sb = _telemetry_service_client()
+        if not sb:
+            raise RuntimeError("Telemetry database unavailable")
+        await asyncio.wait_for(db(sb.table("app_runs").upsert(row, on_conflict="event_id", ignore_duplicates=True)), timeout=3)
+        if durable:
+            await asyncio.to_thread(_telemetry_outbox.acknowledged, row["event_id"])
+    except Exception:
+        # Don't print payloads, provider errors, identifiers or credentials.
+        if not durable:
+            print("Telemetry delivery failed and no recovery storage is available; one outcome was not recorded")
+            return
+        try:
+            await asyncio.to_thread(_telemetry_outbox.failed, row["event_id"], attempts)
+            print("Telemetry delivery delayed; outcome retained for retry")
+        except Exception:
+            print("Telemetry recovery storage unavailable; check persistent volume")
+
+
+def _telemetry_service_client():
+    global _telemetry_client
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        return None
+    if _telemetry_client is None:
+        # Keep an outage from exhausting the ordinary database thread pool:
+        # timed-out to_thread work keeps running until its HTTP timeout ends.
+        _telemetry_client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, options=SyncClientOptions(
+            httpx_client=httpx.Client(http2=False, timeout=2, limits=httpx.Limits(max_connections=4, max_keepalive_connections=2))))
+    return _telemetry_client
+
+
+async def _flush_telemetry():
+    for _, row, attempts in await asyncio.to_thread(_telemetry_outbox.due, REQUEST_TIMEOUT + 60):
+        await _deliver_telemetry(row, attempts)
+
+
+async def _telemetry_supervisor():
+    while True:
+        try:
+            await _flush_telemetry()
+        except Exception:
+            print("Telemetry recovery storage unavailable; check persistent volume")
+        await asyncio.sleep(5)
+
+
+async def _telemetry_health(app_ids):
+    try:
+        return {**(await asyncio.to_thread(_telemetry_outbox.health, app_ids, REQUEST_TIMEOUT + 60)),
+                "recovery_path_configured": bool(os.getenv("TELEMETRY_OUTBOX_PATH"))}
+    except Exception:
+        return {"status": "unavailable", "pending": None, "failed": None,
+                "recovery_path_configured": bool(os.getenv("TELEMETRY_OUTBOX_PATH"))}
 
 
 async def record_metered_run(user_id: str, app_id: Optional[str], source: str, workspace_id: Optional[str] = None) -> None:
@@ -971,9 +1076,31 @@ def resolve_secret_refs(value: Any, secrets_map: dict[str, str]) -> Any:
     return value
 
 
+def redact_secrets(text: str, secrets_map: dict[str, str]) -> str:
+    """Blank out any secret value a tool result or error repeats (an API
+    echoing its headers, an error quoting the URL), so it never reaches the
+    model, the run log or the person running the app."""
+    for value in sorted({v for v in secrets_map.values() if v and len(v) >= 4}, key=len, reverse=True):
+        text = text.replace(value, "••••")
+    return text
+
+
 async def execute_tool(tool: dict, tool_input: dict, ctx: Optional[dict] = None) -> str:
-    """ctx carries run-scoped server data: {"secrets", "caller_id", "api_key", "provider"}."""
+    """ctx carries run-scoped server data: {"secrets", "caller_id", "api_key", "provider"}.
+    A tool whose secret is missing fails clearly instead of calling out with
+    an empty credential; secret values are blanked out of whatever it returns."""
     ctx = ctx or {}
+    secrets_map = ctx.get("secrets") or {}
+    needed = {m.upper() for m in _SECRET_REF.findall(json.dumps(tool.get("config") or {}, default=str))}
+    missing = sorted(needed - set(secrets_map))
+    if missing:
+        return (f"This tool can't run: the secret {', '.join(missing)} isn't set for this app. "
+                "Tell the user the tool is unavailable; the app's developer must add it in Manage → Secrets.")
+    result = await _execute_tool(tool, tool_input, ctx)
+    return redact_secrets(result, secrets_map) if isinstance(result, str) else result
+
+
+async def _execute_tool(tool: dict, tool_input: dict, ctx: dict) -> str:
     tool_type = tool.get("type", "")
     config = resolve_secret_refs(tool.get("config") or {}, ctx.get("secrets") or {})
     if not isinstance(tool_input, dict):
@@ -1864,23 +1991,25 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
 
     started = time.monotonic()
     run_version = app_row.get("live_version") if (app_row and prod) else None   # None: the draft answered
+    telemetry_id = str(uuid.uuid4())
+    telemetry_created = datetime.now(timezone.utc).isoformat()
 
-    def outcome(success: bool, kind: Optional[str] = None):
+    async def outcome(success: bool, kind: Optional[str] = None):
         """Final outcome of this run: ops alerting, plus the app's run log
         (failures included) so Monitor shows error rates and response times."""
         _record_run_outcome(success, kind)
         if success or not log_source or run_state.get("logged"):
             return
         run_state["logged"] = True
-        asyncio.create_task(_log_app_run(app_row["id"], None if caller.live else caller_id, log_source, usage,
+        await _log_app_run(app_row["id"], None if caller.live else caller_id, log_source, usage,
                                          status="error", error_kind=kind, latency_ms=int((time.monotonic() - started) * 1000),
-                                         live_version=run_version, model=model))
+                                         live_version=run_version, model=model, event_id=telemetry_id, created_at=telemetry_created)
 
     async def finish(full_result: str):
         # Side effects first: consumers (stream=false, batches, clients that
         # disconnect on "done") stop reading at the done event, so anything
         # after that yield would never run.
-        outcome(True)
+        await outcome(True)
         run_state["finished"] = True
         if entitlement and entitlement_used:
             asyncio.create_task(notify_low_runs(entitlement, entitlement_used, app_name))
@@ -1889,9 +2018,9 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
         if log_source:
             # Trigger runs act as the developer: not a person using the app.
             run_state["logged"] = True
-            asyncio.create_task(_log_app_run(app_row["id"], None if caller.live else caller_id, log_source, usage,
+            await _log_app_run(app_row["id"], None if caller.live else caller_id, log_source, usage,
                                              latency_ms=int((time.monotonic() - started) * 1000),
-                                             live_version=run_version, model=model))
+                                             live_version=run_version, model=model, event_id=telemetry_id, created_at=telemetry_created)
         if on_complete:
             # Awaited (not a task) so server-side history is written before the
             # caller's next run is rate-limit checked against it.
@@ -1942,7 +2071,7 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
                     errs = errs or _validate_schema_value(parsed, contract_fields)
                     if errs:
                         yield _sse({"contract_error": errs})
-                        outcome(False, "contract")
+                        await outcome(False, "contract")
                         return
 
             # ── Structured output: buffer, validate, one self-repair retry ──
@@ -1954,7 +2083,7 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
                     parts = [t async for t in stream_fn(system, attempt_input, model, user_api_key,
                                                         temperature=min(temp, 0.3), usage_holder=attempt_usage)]
                     if attempt_usage.pop("_stop", None) == "refusal":
-                        outcome(False, "refusal")
+                        await outcome(False, "refusal")
                         yield _sse({"error": REFUSAL_MESSAGE})
                         return
                     for k, v in attempt_usage.items():
@@ -1971,7 +2100,7 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
                     )
                 if errs:
                     yield _sse({"contract_error": errs})
-                    outcome(False, "contract")
+                    await outcome(False, "contract")
                     return
                 collected.append(text)
                 for i in range(0, len(text), 200):
@@ -1984,7 +2113,7 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
                     yield _sse({"token": token})
                 stop = usage.pop("_stop", None)
                 if stop == "refusal":
-                    outcome(False, "refusal")
+                    await outcome(False, "refusal")
                     yield _sse({"error": REFUSAL_MESSAGE})
                     return
                 if stop == "max_tokens":
@@ -1996,13 +2125,13 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
                 yield ev
 
         except (anthropic.AuthenticationError, openai.AuthenticationError):
-            outcome(False, "auth")
+            await outcome(False, "auth")
             yield _sse({"error": f"Invalid {provider} API key — check Settings → Keys and make sure the key is active."})
         except (anthropic.PermissionDeniedError,):
-            outcome(False, "permission")
+            await outcome(False, "permission")
             yield _sse({"error": f"API key does not have permission for this model. Check your {provider} account."})
         except (anthropic.RateLimitError, openai.RateLimitError) as e:
-            outcome(False, "rate_limit")
+            await outcome(False, "rate_limit")
             # OpenAI answers 429 both for "too many requests" and for "no credit left".
             out_of_credit = "insufficient_quota" in (getattr(e, "code", None), getattr(e, "type", None))
             if key_source == "platform":
@@ -2016,17 +2145,17 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
                 yield _sse({"error": f"{label} turned this run away: {whose} {label} account hit its rate limit or is out of credit. "
                                      f"Check the account's usage and billing, or wait a moment and try again."})
         except (anthropic.BadRequestError, openai.BadRequestError) as e:
-            outcome(False, "bad_request")
+            await outcome(False, "bad_request")
             yield _sse({"error": f"Prompt config error: {str(e)[:200]}"})
         except (anthropic.InternalServerError, openai.InternalServerError):
-            outcome(False, "provider_error")
+            await outcome(False, "provider_error")
             yield _sse({"error": f"{provider.capitalize()} service error — try again in a moment."})
         except asyncio.TimeoutError:
-            outcome(False, "timeout")
+            await outcome(False, "timeout")
             yield _sse({"error": f"Request timed out after {REQUEST_TIMEOUT} seconds. Try a shorter input or switch to a faster model (e.g. Haiku)."})
         except Exception as e:
             # Full detail goes to Sentry/logs only — never to the client.
-            outcome(False, "unexpected")
+            await outcome(False, "unexpected")
             sentry_sdk.capture_exception(e)
             print(f"Streaming error [{type(e).__name__}]: {e}")
             yield _sse({"error": "Unexpected backend error. This has been logged — please try again."})
@@ -2037,9 +2166,11 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
                 async for chunk in generate():
                     yield chunk
         except asyncio.TimeoutError:
-            outcome(False, "timeout")
+            await outcome(False, "timeout")
             yield _sse({"error": f"Request timed out after {REQUEST_TIMEOUT}s. Try a shorter input or faster model."})
         finally:
+            if log_source and not run_state.get("logged"):
+                await outcome(False, "cancelled")
             if entitlement and not run_state["finished"]:
                 asyncio.create_task(release_entitlement_run(entitlement))
 
@@ -2051,6 +2182,16 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
             return JSONResponse(status_code=402, content={"error": entitlement_block_reason(
                 {**entitlement, "runs_this_period": entitlement.get("run_quota") or 0}) or "Purchase access to run this app"})
 
+    if log_source:
+        # Mark the run as in flight so a crash is recovered as "interrupted".
+        # Run tracking must never take the app down: if local storage is
+        # unavailable, the run is still served and its outcome sent directly.
+        try:
+            await asyncio.to_thread(_telemetry_outbox.begin, {"event_id": telemetry_id, "app_id": app_row["id"],
+                                    "user_id": None if caller.live else caller_id, "source": log_source,
+                                    "live_version": run_version, "model": model, "created_at": telemetry_created})
+        except Exception:
+            print("Telemetry recovery storage unavailable; serving the run without crash recovery")
     return StreamingResponse(
         generate_with_timeout(),
         media_type="text/event-stream",
@@ -3478,20 +3619,31 @@ async def run_scheduled_workspace(sb_service: Client, schedule: dict):
             print(f"Scheduled-run webhook failed: {e}")
 
 
+async def _claim_schedule(sb, schedule: dict, now: datetime) -> bool:
+    """Move a due schedule to its next slot before running it. The update only
+    matches the slot that was read, so when servers (or the cron endpoint and
+    the built-in scheduler) overlap, exactly one of them runs it; and a run
+    that fails waits for its next slot instead of retrying (and spending AI
+    credits) every minute."""
+    next_run = compute_next_run_at(now, schedule["frequency"], schedule["hour_utc"], schedule.get("day_of_week"))
+    res = await db(sb.table("flow_schedules").update({
+        "last_run_at": now.isoformat(), "next_run_at": next_run.isoformat(),
+    }).eq("id", schedule["id"]).eq("next_run_at", schedule["next_run_at"]))
+    return bool(res.data)
+
+
 async def _execute_due_schedules() -> tuple[list, list]:
-    """Shared by both schedule-trigger endpoints below (previously duplicated in full)."""
+    """Shared by the schedule-trigger endpoints and the built-in scheduler."""
     sb_service = _service_client()
     now = datetime.now(timezone.utc)
     due = await db(sb_service.table("flow_schedules").select("*").eq("enabled", True).lte("next_run_at", now.isoformat()))
 
     ran, failed = [], []
     for schedule in due.data or []:
+        if not await _claim_schedule(sb_service, schedule, now):
+            continue                                   # another server took it
         try:
             await run_scheduled_workspace(sb_service, schedule)
-            next_run = compute_next_run_at(now, schedule["frequency"], schedule["hour_utc"], schedule.get("day_of_week"))
-            await db(sb_service.table("flow_schedules").update({
-                "last_run_at": now.isoformat(), "next_run_at": next_run.isoformat(),
-            }).eq("id", schedule["id"]))
             ran.append(schedule["id"])
         except Exception as e:
             sentry_sdk.capture_exception(e)
@@ -3499,6 +3651,34 @@ async def _execute_due_schedules() -> tuple[list, list]:
             failed.append(schedule["id"])
 
     return ran, failed
+
+
+SCHEDULER_INTERVAL_SECONDS = float(os.getenv("SCHEDULER_INTERVAL_SECONDS", "60"))
+
+
+async def _scheduler_tick() -> None:
+    """One pass of the built-in scheduler: due scheduled flows, then
+    Monitor alert emails. Every server runs it; claims keep work single."""
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        return
+    for job in (_execute_due_schedules, _send_monitor_alert_emails):
+        try:
+            await job()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"scheduler: {job.__name__} failed: {type(e).__name__}: {str(e)[:200]}")
+            sentry_sdk.capture_exception(e)
+
+
+async def _scheduler_loop() -> None:
+    """Scheduled flows run without an outside cron (the /cron endpoints still
+    work too). SCHEDULER_INTERVAL_SECONDS=0 turns it off."""
+    if SCHEDULER_INTERVAL_SECONDS <= 0:
+        return
+    while True:
+        await asyncio.sleep(SCHEDULER_INTERVAL_SECONDS)
+        await _scheduler_tick()
 
 
 @app.post("/cron/run-schedules")
@@ -3539,7 +3719,7 @@ async def schedule_status(flow_id: str, request: Request):
     user_jwt = auth_header.removeprefix("Bearer ").strip()
     sb = get_supabase_for_user(user_jwt)
     result = await db(sb.table("flow_schedules").select("*").eq("flow_id", flow_id).maybe_single())
-    return result.data or {}
+    return (result.data if result else None) or {}       # maybe_single() returns None when there's no row
 
 
 # ─── Health + info endpoints ──────────────────────────────────────────────────
@@ -3735,6 +3915,89 @@ async def _lookup_email(user_id: str) -> Optional[str]:
         return None
 
 
+# ─── Developer notifications (email) ─────────────────────────────────────────
+# Each notification is recorded once (developer_notifications: who, what kind,
+# which event), so a retried webhook or two servers never send it twice, and
+# a developer can turn alert emails off (developer_profiles.email_alerts).
+
+async def notify_developer(user_id: Optional[str], kind: str, ref: str, subject: str, title: str, body: str,
+                           cta_path: str = "/developer", cta_label: str = "Open Dev Studio →") -> bool:
+    """Email a developer about their apps, at most once per (kind, ref).
+    Returns True when an email was sent. Never raises: a notification must
+    not break the payment, feedback or monitoring work that triggered it."""
+    sb = _service_client()
+    if not (sb and user_id):
+        return False
+    try:
+        prof = await db(sb.table("developer_profiles").select("email_alerts").eq("user_id", user_id).limit(1))
+        if ((prof.data or [None])[0] or {}).get("email_alerts") is False:
+            return False
+        try:
+            await db(sb.table("developer_notifications").insert({"user_id": user_id, "kind": kind, "ref": ref[:200]}))
+        except Exception as e:
+            if "23505" in str(e) or "duplicate" in str(e).lower():
+                return False                                  # already sent
+            raise
+        email = await _lookup_email(user_id)
+        if not email:
+            return False
+        return await send_email(to=email, subject=subject,
+                                html=_email_base(title=title, body=body, cta_url=f"{FRONTEND_URL}{cta_path}", cta_label=cta_label))
+    except Exception as e:
+        print(f"developer notification {kind} not sent: {type(e).__name__}: {str(e)[:200]}")
+        return False
+
+
+async def _app_label(app_id: str) -> tuple[str, Optional[str]]:
+    """(escaped app name, owner id) for notification text."""
+    row = await load_app_row(app_id) if app_id else None
+    return html_escape((row or {}).get("name") or "your app"), (row or {}).get("created_by")
+
+
+MONITOR_ALERT_EMAIL_SECONDS = float(os.getenv("MONITOR_ALERT_EMAIL_SECONDS", "900"))
+EMAILED_ALERT_KINDS = ("errors_24h", "version")     # serious and actionable; the rest stay in Monitor
+_monitor_alert_check = {"at": 0.0}
+
+
+async def _send_monitor_alert_emails() -> int:
+    """Every 15 minutes: email the owner of each app with recent production
+    runs about a serious Monitor alert (most runs failing, or a new release
+    failing more than the last one) — once per app, kind and day."""
+    if time.monotonic() - _monitor_alert_check["at"] < MONITOR_ALERT_EMAIL_SECONDS:
+        return 0
+    _monitor_alert_check["at"] = time.monotonic()
+    sb = _service_client()
+    if not sb:
+        return 0
+    since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+    app_ids: set = set()
+    for start in range(0, 20000, 1000):
+        page = (await db(sb.table("app_runs").select("app_id").gte("created_at", since)
+                         .order("created_at", desc=True).range(start, start + 999))).data or []
+        app_ids.update(r["app_id"] for r in page if r.get("app_id"))
+        if len(page) < 1000:
+            break
+    sent = 0
+    today = datetime.now(timezone.utc).date().isoformat()
+    for app_id in sorted(app_ids):
+        row = await load_app_row(app_id)
+        if not row or not row.get("is_published"):
+            continue
+        runs, ratings, truncated = await _monitor_rows(app_id, 7, row.get("created_by"))
+        summary = monitor_summary(runs, ratings, 7, published=True, truncated=truncated, live_version=row.get("live_version"))
+        name = html_escape(row.get("name") or "your app")
+        for alert in summary["alerts"]:
+            if alert["kind"] not in EMAILED_ALERT_KINDS:
+                continue
+            if await notify_developer(row.get("created_by"), f"monitor_{alert['kind']}", f"{app_id}:{today}",
+                                      subject=f"{row.get('name') or 'Your app'} needs attention",
+                                      title=f"{name} needs attention",
+                                      body=f"{html_escape(alert['message'])} See Monitor for the details, then Eval and Improve to fix it, or roll back in Version.",
+                                      cta_label="Open Monitor →"):
+                sent += 1
+    return sent
+
+
 def _stripe_dict(obj) -> dict:
     """Stripe SDK objects (v13+) have no .get(); work with plain dicts."""
     if isinstance(obj, dict):
@@ -3750,33 +4013,79 @@ def _net_share(purchase: dict) -> float:
     return round(share * max(0.0, 1 - refunded / gross), 6) if gross else 0.0
 
 
+PAYOUT_CLAIM_STALE_SECONDS = int(os.getenv("PAYOUT_CLAIM_STALE_SECONDS", "900"))
+
+
+def _claim_is_stale(purchase: dict) -> bool:
+    claimed = _parse_ts(purchase.get("payout_claimed_at"))
+    return not claimed or (datetime.now(timezone.utc) - claimed).total_seconds() > PAYOUT_CLAIM_STALE_SECONDS
+
+
+async def _claim_payout(sb, purchase: dict) -> Optional[dict]:
+    """Take this purchase's payout for one attempt. The update only matches
+    the status and attempt count read before, so of two concurrent callers
+    (webhook, confirmation, "Send owed payouts", another server) exactly one
+    gets the row back; the other sends nothing. The returned row is current,
+    so a refund recorded meanwhile is reflected in the amount."""
+    status = purchase.get("payout_status") or "pending"
+    if status == "transferring" and not _claim_is_stale(purchase):
+        return None                                   # another attempt is in progress
+    attempts = int(purchase.get("payout_attempts") or 0)
+    res = await db(sb.table("purchases").update({
+        "payout_status": "transferring", "payout_attempts": attempts + 1,
+        "payout_claimed_at": datetime.now(timezone.utc).isoformat(),
+    }).eq("id", purchase["id"]).eq("payout_status", status).eq("payout_attempts", attempts))
+    return (res.data or [None])[0]
+
+
 async def _pay_out(sb, purchase: dict, stripe_account_id: str) -> str:
-    """Send the developer their share of one purchase. Safe to retry: a
-    transfer already made for this payment (its transfer group) is found and
-    recorded, never sent twice."""
+    """Send the developer their share of one purchase, at most once.
+
+    1. Claim the purchase (above); a caller that loses the claim stops.
+    2. A transfer already made for this payment (its transfer group, e.g. the
+       server stopped after Stripe paid) is recorded, not repeated.
+    3. The transfer's idempotency key names the payment and this attempt, so
+       a retried request within an attempt can't pay twice, and a later
+       attempt after a failure isn't stuck replaying the old error.
+    Returns transferred | transfer_failed | busy | refunded."""
     import stripe
     stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
-    ref = purchase["stripe_payment_ref"]
+    claimed = await _claim_payout(sb, purchase)
+    if not claimed:
+        return "busy"
+    ref = claimed["stripe_payment_ref"]
+    attempt = int(claimed.get("payout_attempts") or 1)
     group = f"aistrix-{ref}"
-    amount = int(round(_net_share(purchase) * 100))
+    amount = int(round(_net_share(claimed) * 100))
     transfer_id = None
     try:
         existing = _stripe_dict(await asyncio.to_thread(stripe.Transfer.list, transfer_group=group, limit=1))
         if existing.get("data"):
             transfer_id = existing["data"][0]["id"]
+            status = "transferred"
         elif amount > 0:
             transfer = await asyncio.to_thread(
                 stripe.Transfer.create, amount=amount, currency="usd", destination=stripe_account_id,
-                transfer_group=group, metadata={"app_id": purchase.get("app_id"), "plan": purchase.get("plan"), "payment": ref},
-                # Per hour: a failed attempt can be retried later; the group check above prevents doubles.
-                idempotency_key=f"aistrix-payout-{ref}-{int(time.time() // 3600)}")
+                transfer_group=group, metadata={"app_id": claimed.get("app_id"), "plan": claimed.get("plan"), "payment": ref},
+                idempotency_key=f"aistrix-payout-{ref}-{attempt}")
             transfer_id = _stripe_dict(transfer).get("id")
-        status = "transferred"
+            status = "transferred"
+        else:
+            status = "refunded"                       # nothing left to pay (fully refunded meanwhile)
     except Exception as te:
         print(f"Stripe transfer failed for {ref}: {type(te).__name__}")
         sentry_sdk.capture_exception(te)
         status = "transfer_failed"
-    await db(sb.table("purchases").update({"payout_status": status, "stripe_transfer_id": transfer_id}).eq("id", purchase["id"]))
+    # Release the claim we hold (and only ours).
+    await db(sb.table("purchases").update({"payout_status": status, "stripe_transfer_id": transfer_id})
+             .eq("id", claimed["id"]).eq("payout_attempts", attempt))
+    if status == "transfer_failed" and claimed.get("dev_id"):
+        await notify_developer(claimed["dev_id"], "payout_failed", datetime.now(timezone.utc).date().isoformat(),
+                               subject="A payout to you didn't go through",
+                               title="A payout didn't go through",
+                               body="Stripe couldn't send one or more of your payouts. The money is still owed to you: "
+                                    "check your payout account in Manage → Revenue, then select <strong style='color:#fff'>Send owed payouts</strong>.",
+                               cta_label="Open Revenue →")
     return status
 
 
@@ -3952,12 +4261,16 @@ async def _record_refund(charge: dict) -> None:
     refs = [r for r in (charge.get("payment_intent"), charge.get("invoice")) if r]
     if not refs:
         return
-    res = await db(sb.table("purchases").select("id, app_id, buyer_id, plan, gross_amount, dev_share, refunded_amount, "
-                                                 "stripe_payment_ref, stripe_transfer_id, payout_status")
+    res = await db(sb.table("purchases").select("id, app_id, buyer_id, dev_id, plan, gross_amount, dev_share, refunded_amount, "
+                                                 "stripe_payment_ref, stripe_transfer_id, payout_status, payout_attempts, payout_claimed_at")
                    .in_("stripe_payment_ref", refs).limit(1))
     purchase = (res.data or [None])[0]
     if not purchase:
         return                                    # not an Aistrix purchase
+    if purchase.get("payout_status") == "transferring" and not _claim_is_stale(purchase):
+        # A payout is being sent right now: Stripe retries this event, and by
+        # then the transfer is recorded and its refunded part is taken back.
+        raise HTTPException(status_code=503, detail="A payout for this purchase is in progress; retry")
     gross = float(purchase.get("gross_amount") or 0)
     refunded = min(gross, round(int(charge.get("amount_refunded") or 0) / 100, 2))
     previous = float(purchase.get("refunded_amount") or 0)
@@ -3979,9 +4292,22 @@ async def _record_refund(charge: dict) -> None:
                 print(f"Transfer reversal failed for {purchase['stripe_payment_ref']}: {type(e).__name__}")
                 sentry_sdk.capture_exception(e)
                 patch["payout_status"] = "reversal_failed"
-    await db(sb.table("purchases").update(patch).eq("id", purchase["id"]))
+    # Only if nothing changed since the read (e.g. a payout claimed it):
+    # otherwise Stripe retries the event against the current row.
+    saved = await db(sb.table("purchases").update(patch).eq("id", purchase["id"])
+                     .eq("payout_status", purchase.get("payout_status") or "pending")
+                     .eq("payout_attempts", int(purchase.get("payout_attempts") or 0)))
+    if not saved.data:
+        raise HTTPException(status_code=503, detail="The purchase changed while recording the refund; retry")
     if full and purchase.get("plan") == "pay_per_run" and purchase.get("buyer_id"):
         await db(sb.rpc("revoke_purchased_run", {"p_app_id": purchase["app_id"], "p_user_id": purchase["buyer_id"]}))
+    name, owner = await _app_label(purchase.get("app_id"))
+    await notify_developer(purchase.get("dev_id") or owner, "refund", f"{purchase['stripe_payment_ref']}:{int(round(refunded * 100))}",
+                           subject="A buyer was refunded",
+                           title="A purchase was refunded",
+                           body=f"A buyer of <strong style='color:#fff'>{name}</strong> was refunded ${refunded - previous:.2f}"
+                                f"{' (the full amount)' if full else ''}. Your earnings and any payout already sent are adjusted; see Manage → Revenue.",
+                           cta_label="Open Revenue →")
 
 
 def _unsigned_webhooks_allowed() -> bool:
@@ -4108,7 +4434,15 @@ async def stripe_webhook(request: Request):
         refs = [r for r in (obj.get("payment_intent"), obj.get("charge")) if r]
         sb = _service_client()
         if refs and sb:
-            await db(sb.table("purchases").update({"disputed": True}).in_("stripe_payment_ref", refs))
+            flagged = await db(sb.table("purchases").update({"disputed": True}).in_("stripe_payment_ref", refs))
+            for purchase in flagged.data or []:
+                name, owner = await _app_label(purchase.get("app_id"))
+                await notify_developer(purchase.get("dev_id") or owner, "dispute", obj.get("id") or purchase["id"],
+                                       subject="A buyer opened a chargeback",
+                                       title="A chargeback was opened",
+                                       body=f"A buyer's bank opened a chargeback on a purchase of <strong style='color:#fff'>{name}</strong>. "
+                                            "Stripe will ask for evidence; the purchase is flagged in Manage → Revenue.",
+                                       cta_label="Open Revenue →")
 
     elif event_type == "customer.subscription.deleted":
         sub_id = obj.get("id")
@@ -4207,30 +4541,39 @@ async def stripe_connect_onboard(request: Request):
             .select("stripe_account_id")
             .eq("user_id", dev_id).maybe_single().execute()
     )
-    stripe_account_id = dev_row.data.get("stripe_account_id") if dev_row.data else None
+    # No profile row yet (maybe_single() returns None then) = no account yet.
+    stripe_account_id = (dev_row.data or {}).get("stripe_account_id") if dev_row else None
 
-    if not stripe_account_id:
-        # Create new Express account
-        account = await asyncio.to_thread(
-            stripe.Account.create,
-            type="express",
-            metadata={"aistrix_user_id": dev_id},
-        )
-        stripe_account_id = account.id
-        await asyncio.to_thread(
-            lambda: sb.table("developer_profiles")
-                .upsert({"user_id": dev_id, "stripe_account_id": stripe_account_id}, on_conflict="user_id")
-                .execute()
-        )
+    try:
+        if not stripe_account_id:
+            # One Express account per developer: a double click or a retry
+            # gets the same account back instead of a second one.
+            account = await asyncio.to_thread(
+                stripe.Account.create,
+                type="express",
+                metadata={"aistrix_user_id": dev_id},
+                idempotency_key=f"aistrix-connect-{dev_id}",
+            )
+            stripe_account_id = account.id
+            await asyncio.to_thread(
+                lambda: sb.table("developer_profiles")
+                    .upsert({"user_id": dev_id, "stripe_account_id": stripe_account_id}, on_conflict="user_id")
+                    .execute()
+            )
 
-    # Generate onboarding link
-    link = await asyncio.to_thread(
-        stripe.AccountLink.create,
-        account=stripe_account_id,
-        refresh_url=f"{FRONTEND_URL}/developer?stripe_connect=refresh",
-        return_url=f"{FRONTEND_URL}/developer?stripe_connect=success",
-        type="account_onboarding",
-    )
+        # Generate onboarding link
+        link = await asyncio.to_thread(
+            stripe.AccountLink.create,
+            account=stripe_account_id,
+            refresh_url=f"{FRONTEND_URL}/developer?stripe_connect=refresh",
+            return_url=f"{FRONTEND_URL}/developer?stripe_connect=success",
+            type="account_onboarding",
+        )
+    except stripe.error.StripeError as e:
+        print(f"Stripe Connect onboarding failed: {type(e).__name__}: {str(e)[:300]}")
+        sentry_sdk.capture_exception(e)
+        reason = getattr(e, "user_message", None) or str(e)
+        raise HTTPException(status_code=502, detail=f"Stripe couldn't start payout setup: {reason[:300]}")
     return {"url": link.url, "stripe_account_id": stripe_account_id}
 
 
@@ -4275,19 +4618,33 @@ async def stripe_connect_status(request: Request):
 
 PURCHASE_FIELDS = ("id, app_id, plan, gross_amount, platform_fee, dev_share, refunded_amount, refunded_at, "
                    "disputed, payout_status, created_at, stripe_payment_ref")
-OWED_STATUSES = ("pending", "no_connect_account", "transfer_failed")
+# Owed to the developer: waiting for a transfer (or one in progress), for the
+# payout account, or for a failed transfer to be sent again.
+OWED_STATUSES = ("pending", "no_connect_account", "transfer_failed", "transferring")
+PURCHASE_PAGE = 1000                     # the most rows the database API returns at once
+PURCHASE_ROW_LIMIT = int(os.getenv("PURCHASE_ROW_LIMIT", "200000"))
 
 
-async def _dev_purchases(dev_id: str, days: Optional[int]) -> list[dict]:
+async def _dev_purchases(dev_id: str, days: Optional[int]) -> tuple[list[dict], bool]:
+    """Every purchase of the developer's apps in the period, newest first, read
+    page by page. (rows, truncated): truncated only past PURCHASE_ROW_LIMIT."""
     if not SUPABASE_SERVICE_ROLE_KEY:
         raise HTTPException(status_code=503, detail="Service role key not configured")
     if days is not None and days not in (7, 30, 90, 365):
         raise HTTPException(status_code=400, detail="days must be 7, 30, 90 or 365 (or omitted for all time)")
-    q = _service_client().table("purchases").select(PURCHASE_FIELDS).eq("dev_id", dev_id)
-    if days:
-        q = q.gte("created_at", (datetime.now(timezone.utc) - timedelta(days=days)).isoformat())
-    res = await db(q.order("created_at", desc=True).limit(10000))
-    return res.data or []
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat() if days else None
+    rows: list[dict] = []
+    while len(rows) < PURCHASE_ROW_LIMIT:
+        q = _service_client().table("purchases").select(PURCHASE_FIELDS).eq("dev_id", dev_id)
+        if since:
+            q = q.gte("created_at", since)
+        # id breaks created_at ties so pages never overlap or skip a row.
+        page = (await db(q.order("created_at", desc=True).order("id", desc=True)
+                         .range(len(rows), len(rows) + PURCHASE_PAGE - 1))).data or []
+        rows.extend(page)
+        if len(page) < PURCHASE_PAGE:
+            return rows, False
+    return rows[:PURCHASE_ROW_LIMIT], True
 
 
 @app.get("/stripe/earnings")
@@ -4295,7 +4652,7 @@ async def stripe_earnings(request: Request, days: Optional[int] = None):
     """The developer's earnings from recorded purchases, net of refunds.
     days: 7, 30, 90 or 365 (omit for all time)."""
     dev_id = await require_verified_user(request)
-    rows = await _dev_purchases(dev_id, days)
+    rows, truncated = await _dev_purchases(dev_id, days)
 
     def net_gross(r): return max(0.0, float(r.get("gross_amount") or 0) - float(r.get("refunded_amount") or 0))
     owed = [r for r in rows if r.get("payout_status") in OWED_STATUSES]
@@ -4311,6 +4668,9 @@ async def stripe_earnings(request: Request, days: Optional[int] = None):
             a[k] = round(a[k], 2)
     return {
         "days":              days,
+        "purchase_count":    len(rows),
+        # Past the row limit the totals would be partial: say so, never guess.
+        "truncated":         truncated,
         "total_gross":       round(sum(net_gross(r) for r in rows), 2),
         "total_dev_share":   round(sum(_net_share(r) for r in rows), 2),
         # Owed but not yet paid out: waiting for a transfer, for the developer's
@@ -4329,7 +4689,10 @@ async def stripe_earnings(request: Request, days: Optional[int] = None):
 async def stripe_earnings_csv(request: Request, days: Optional[int] = None):
     """Every recorded purchase in the period as CSV, for accounting."""
     dev_id = await require_verified_user(request)
-    rows = await _dev_purchases(dev_id, days)
+    rows, truncated = await _dev_purchases(dev_id, days)
+    if truncated:
+        # A CSV for accounting must be complete; a partial file is refused.
+        raise HTTPException(status_code=413, detail="Too many purchases for one file. Choose a shorter period.")
     names = {}
     app_ids = list({r["app_id"] for r in rows})
     if app_ids:
@@ -4344,6 +4707,9 @@ async def stripe_earnings_csv(request: Request, days: Optional[int] = None):
     name = f"aistrix-revenue-{'all' if not days else f'{days}d'}-{datetime.now(timezone.utc).date().isoformat()}.csv"
     return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv",
                              headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+PAYOUT_BATCH_SECONDS = float(os.getenv("PAYOUT_BATCH_SECONDS", "25"))
 
 
 @app.post("/stripe/payouts/retry")
@@ -4367,17 +4733,33 @@ async def stripe_payouts_retry(request: Request):
         raise HTTPException(status_code=502, detail="Couldn't check your payout account with Stripe. Try again.")
     if not account.get("payouts_enabled"):
         raise HTTPException(status_code=409, detail="Your payout account isn't ready for payouts yet. Finish setting it up with Stripe.")
-    res = await db(sb.table("purchases").select("id, app_id, plan, gross_amount, dev_share, refunded_amount, stripe_payment_ref, payout_status")
-                   .eq("dev_id", dev_id).in_("payout_status", ["no_connect_account", "transfer_failed", "pending"]).limit(500))
-    sent = failed = 0
-    for purchase in res.data or []:
-        if not purchase.get("stripe_payment_ref") or _net_share(purchase) <= 0:
-            continue
-        if await _pay_out(sb, purchase, account_id) == "transferred":
+    owed: list[dict] = []
+    while True:
+        page = (await db(sb.table("purchases").select("id, app_id, plan, gross_amount, dev_share, refunded_amount, stripe_payment_ref, "
+                                                      "payout_status, payout_attempts, payout_claimed_at")
+                         .eq("dev_id", dev_id).in_("payout_status", list(OWED_STATUSES))
+                         .order("created_at").order("id").range(len(owed), len(owed) + PURCHASE_PAGE - 1))).data or []
+        owed.extend(page)
+        if len(page) < PURCHASE_PAGE:
+            break
+    # A payout claimed by an attempt that's still running is left to it.
+    owed = [p for p in owed if p.get("stripe_payment_ref") and _net_share(p) > 0
+            and not (p.get("payout_status") == "transferring" and not _claim_is_stale(p))]
+    sent = failed = in_progress = 0
+    deadline = time.monotonic() + PAYOUT_BATCH_SECONDS
+    done = 0
+    for purchase in owed:
+        if time.monotonic() > deadline:
+            break                                         # the rest: "Send owed payouts" again
+        done += 1
+        result = await _pay_out(sb, purchase, account_id)
+        if result == "transferred":
             sent += 1
-        else:
+        elif result == "busy":
+            in_progress += 1
+        elif result == "transfer_failed":
             failed += 1
-    return {"sent": sent, "failed": failed}
+    return {"sent": sent, "failed": failed, "in_progress": in_progress, "remaining": len(owed) - done}
 
 
 # ─── GitHub OAuth ─────────────────────────────────────────────────────────────
@@ -4417,11 +4799,10 @@ async def github_connect(body: GitHubConnectRequest, request: Request):
         raise HTTPException(status_code=503, detail="Secret encryption is unavailable on this server")
     user_id = await require_verified_user(request)
     repo = _github_repo(body.repo)
-    now = time.time()
-    for k in [k for k, entry in list(_oauth_nonces.items()) if entry[1] < now]:
-        _oauth_nonces.pop(k, None)
-    nonce = secrets.token_urlsafe(32)
-    _oauth_nonces[nonce] = (user_id, now + 600, repo)  # 10-min window
+    # The state is encrypted and timestamped with the server's key, so any
+    # server can check it (nothing is kept in one server's memory) and nobody
+    # can forge one for another user.
+    nonce = _fernet.encrypt(json.dumps({"u": user_id, "r": repo, "n": secrets.token_urlsafe(8)}).encode()).decode()
     query = urlencode({"client_id": GITHUB_CLIENT_ID, "redirect_uri": GITHUB_REDIRECT_URI,
                        "scope": "repo", "state": nonce})
     return {"url": f"https://github.com/login/oauth/authorize?{query}"}
@@ -4434,10 +4815,15 @@ async def github_oauth_callback(code: str, state: str, request: Request):
         raise HTTPException(status_code=503, detail="GitHub OAuth not configured")
 
     # Verify CSRF nonce and extract user_id
-    nonce_entry = _oauth_nonces.pop(state, None)
-    if not nonce_entry or nonce_entry[1] < time.time():
+    try:
+        if not _fernet:
+            raise ValueError("no key")
+        claims = json.loads(_fernet.decrypt(state.encode(), ttl=OAUTH_STATE_SECONDS))
+        dev_id, repo = claims["u"], claims.get("r") or ""
+    except Exception:
         raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
-    dev_id, _, repo = nonce_entry
+    if not await use_once(f"github-state:{claims.get('n')}"):
+        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
 
     # Exchange code for token
     async with httpx.AsyncClient(timeout=15) as c:
@@ -4613,6 +4999,10 @@ async def upsert_secret(app_id: str, body: SecretUpsert, request: Request):
         raise HTTPException(status_code=400, detail="Key too long (max 100 chars)")
     if not re.match(r'^[A-Z0-9_]+$', body.key.upper()):
         raise HTTPException(status_code=400, detail="Key must contain only letters, numbers, and underscores")
+    if not body.value.strip():
+        raise HTTPException(status_code=400, detail="Enter the secret's value")
+    if len(body.value) > 10000:
+        raise HTTPException(status_code=400, detail="Secret value too long (max 10,000 characters)")
     encrypted = _encrypt(body.value)
     now = datetime.now(timezone.utc).isoformat()
     sb = _service_client()
@@ -4657,7 +5047,10 @@ async def _load_app_secrets(app_id: str) -> dict[str, str]:
         try:
             result[r["key"]] = _decrypt(r["encrypted_value"])
         except Exception:
-            pass
+            # Unreadable (e.g. the encryption key changed): treated as missing,
+            # so its tools fail clearly — and the operator is told.
+            print(f"secret {r.get('key')} for app {app_id} could not be decrypted")
+            sentry_sdk.capture_message(f"App secret could not be decrypted (app {app_id})")
     return result
 
 
@@ -5015,6 +5408,9 @@ async def trigger_via_webhook(token: str, request: Request):
     }
 
 
+MIN_CARD_PRICE = 0.50          # Stripe's smallest USD card charge
+
+
 def listing_problems(app_row: dict, listing: Optional[dict]) -> list[str]:
     """What stops a Marketplace listing from going live."""
     problems = []
@@ -5022,6 +5418,8 @@ def listing_problems(app_row: dict, listing: Optional[dict]) -> list[str]:
         problems.append("Publish the app in Deploy first (it must pass its tests)")
     if app_row.get("is_paid") and not (float(app_row.get("price_per_run") or 0) > 0):
         problems.append("Paid app has no price — set one in Marketplace")
+    elif app_row.get("is_paid") and float(app_row.get("price_per_run") or 0) < MIN_CARD_PRICE:
+        problems.append(f"Price is below the card minimum (${MIN_CARD_PRICE:.2f} per run) — buyers couldn't pay")
     if not listing:
         problems.append("Save a listing first")
     else:
@@ -5701,7 +6099,7 @@ def _ts(row: dict) -> datetime:
 
 
 def monitor_summary(runs: list[dict], ratings: list[dict], days: int, now: Optional[datetime] = None,
-                    published: bool = False, truncated: bool = False) -> dict:
+                    published: bool = False, truncated: bool = False, live_version: Optional[int] = None) -> dict:
     """Health of one app over `days`: totals, a daily series, per-version and
     per-source splits, error kinds, and alerts. Only counts and timings —
     never inputs or answers."""
@@ -5718,13 +6116,14 @@ def monitor_summary(runs: list[dict], ratings: list[dict], days: int, now: Optio
         "latency_p50_ms": _percentile(lat, 50), "latency_p95_ms": _percentile(lat, 95),
         "cost_usd": round(sum(costs), 4) if costs else None,
         "cost_per_run_usd": round(sum(costs) / len(costs), 6) if costs else None,
+        "cost_recorded_runs": len(costs), "latency_recorded_runs": len(lat),
         "rated": rated, "satisfaction": _rate(up, rated),
         "last_run": max((r["created_at"] for r in runs), default=None),
     }
 
-    start = (now - timedelta(days=days - 1)).date()
+    start = (now - timedelta(days=days)).date()
     daily = {(start + timedelta(days=i)).isoformat(): {"runs": 0, "errors": 0, "rated": 0, "up": 0, "cost_usd": 0.0}
-             for i in range(days)}
+             for i in range(days + 1)}
     for r in runs:
         d = daily.get(_ts(r).date().isoformat())
         if d is not None:
@@ -5772,31 +6171,76 @@ def monitor_summary(runs: list[dict], ratings: list[dict], days: int, now: Optio
             alerts.append({"level": "warning", "kind": "satisfaction",
                            "message": f"Only {round(100 * week_sat)}% of ratings in the last 7 days were useful ({len(week_ratings)} ratings)."})
     released = [v for v in by_version if v["version"] is not None and v["runs"] >= ALERT_MIN_VERSION_RUNS]
+    if live_version is not None:
+        current = [v for v in released if v["version"] == live_version]
+        previous = [v for v in released if v["version"] < live_version]
+        released = current + previous[:1] if current else []
     if len(released) >= 2 and released[0]["error_rate"] is not None and released[1]["error_rate"] is not None \
             and released[0]["error_rate"] - released[1]["error_rate"] >= ALERT_VERSION_DELTA:
         alerts.append({"level": "warning", "kind": "version",
+                       "version": released[0]["version"],
                        "message": f"v{released[0]['version']} fails more often than v{released[1]['version']} "
-                                  f"({round(100 * released[0]['error_rate'])}% vs {round(100 * released[1]['error_rate'])}%). Consider rolling back."})
+                                  f"({round(100 * released[0]['error_rate'])}% of {released[0]['runs']} runs vs "
+                                  f"{round(100 * released[1]['error_rate'])}% of {released[1]['runs']} runs in this period). Review the release."})
     if published and not any(_ts(r) >= now - timedelta(days=7) for r in runs):
         alerts.append({"level": "info", "kind": "idle", "message": "No runs in the last 7 days."})
     return {"days": days, "totals": totals, "daily": series, "by_version": by_version, "by_source": by_source,
             "error_kinds": error_kinds, "alerts": alerts, "truncated": truncated}
 
 
+MONITOR_CACHE_SECONDS = float(os.getenv("MONITOR_CACHE_SECONDS", "20"))
+_monitor_cache: dict = {}
+
+
 async def _monitor_rows(app_id: str, days: int, owner_id: Optional[str] = None) -> tuple[list[dict], list[dict], bool]:
+    """Cached for a few seconds: several open Monitor tabs refresh every
+    minute and each read can page through thousands of runs."""
+    key = (app_id, days, owner_id)
+    hit = _monitor_cache.get(key)
+    if MONITOR_CACHE_SECONDS > 0 and hit and time.monotonic() - hit[0] < MONITOR_CACHE_SECONDS:
+        return hit[1]
+    result = await _read_monitor_rows(app_id, days, owner_id)
+    if MONITOR_CACHE_SECONDS > 0:
+        if len(_monitor_cache) > 500:
+            _monitor_cache.clear()
+        _monitor_cache[key] = (time.monotonic(), result)
+    return result
+
+
+async def _read_monitor_rows(app_id: str, days: int, owner_id: Optional[str] = None) -> tuple[list[dict], list[dict], bool]:
     """Run log and customer ratings (the developer's own ratings don't count)."""
     sb = _service_client()
     if not sb:
         raise HTTPException(status_code=503, detail="Monitoring isn't available on this server")
     since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    runs_res, ratings_res = await asyncio.gather(
-        db(sb.table("app_runs").select("created_at, user_id, source, status, error_kind, latency_ms, live_version, cost_usd")
-           .eq("app_id", app_id).gte("created_at", since).order("created_at", desc=True).limit(MONITOR_ROW_LIMIT)),
-        db(sb.table("run_history").select("created_at, rating_value, user_id")
-           .eq("app_id", app_id).gte("created_at", since).not_.is_("rating_value", "null").limit(MONITOR_ROW_LIMIT)))
-    runs = runs_res.data or []
-    ratings = [r for r in (ratings_res.data or []) if not owner_id or r.get("user_id") != owner_id]
-    return runs, ratings, len(runs) >= MONITOR_ROW_LIMIT
+    (runs, run_limit), (rating_rows, rating_limit) = await asyncio.gather(
+        _read_monitor_pages(lambda: sb.table("app_runs").select("id, created_at, user_id, source, status, error_kind, latency_ms, live_version, cost_usd", count="exact")
+                            .eq("app_id", app_id).gte("created_at", since)),
+        _read_monitor_pages(lambda: sb.table("run_history").select("id, created_at, rating_value, user_id", count="exact")
+                            .eq("app_id", app_id).gte("created_at", since).not_.is_("rating_value", "null")))
+    ratings = [r for r in rating_rows if not owner_id or r.get("user_id") != owner_id]
+    return runs, ratings, run_limit or rating_limit
+
+
+async def _read_monitor_pages(query_factory):
+    """Honor the server's actual page size, not merely our requested limit.
+
+    A stable upper timestamp and tie-breaking ID keep ordinary inserts out of
+    the snapshot. Exact count reveals truncation even with a smaller API cap.
+    """
+    rows = []
+    until = datetime.now(timezone.utc).isoformat()
+    while len(rows) < MONITOR_ROW_LIMIT:
+        end = min(len(rows) + 500, MONITOR_ROW_LIMIT) - 1
+        result = await db(query_factory().lte("created_at", until).order("created_at", desc=True).order("id", desc=True).range(len(rows), end))
+        page = result.data or []
+        total = result.count
+        if not page:
+            return rows, bool(total is not None and total > len(rows))
+        rows.extend(page)
+        if total is not None and len(rows) >= total:
+            return rows, False
+    return rows, total is None or total > len(rows)
 
 
 def _monitor_days(days: int) -> int:
@@ -5813,7 +6257,8 @@ async def app_monitor(app_id: str, request: Request, days: int = 30):
     days = _monitor_days(days)
     runs, ratings, truncated = await _monitor_rows(app_id, days, app_row.get("created_by"))
     return {"app_id": app_id, "live_version": app_row.get("live_version"),
-            **monitor_summary(runs, ratings, days, published=bool(app_row.get("is_published")), truncated=truncated)}
+            "telemetry_health": await _telemetry_health([app_id]),
+            **monitor_summary(runs, ratings, days, published=bool(app_row.get("is_published")), truncated=truncated, live_version=app_row.get("live_version"))}
 
 
 @app.get("/v1/monitor")
@@ -5821,8 +6266,10 @@ async def monitor_overview(request: Request, app_ids: str = "", days: int = 7):
     """Health of several apps at once (the ones the caller can edit; others
     are skipped): totals and alerts per app, for the Monitor overview."""
     days = _monitor_days(days)
-    ids = [a for a in dict.fromkeys(app_ids.split(",")) if a][:50]
+    requested = [a for a in dict.fromkeys(app_ids.split(",")) if a]
+    ids = requested[:50]
     caller = await resolve_api_caller(request, required=True)
+    all_runs, all_ratings = [], []
 
     async def one(app_id: str):
         row = await load_app_row(app_id)
@@ -5832,12 +6279,21 @@ async def monitor_overview(request: Request, app_ids: str = "", days: int = 7):
             _monitor_rows(app_id, days, row.get("created_by")),
             db(_service_client().table("app_feedback").select("id", count="exact", head=True)
                .eq("app_id", app_id).in_("status", ["new", "investigating"])))
-        summary = monitor_summary(runs, ratings, days, published=bool(row.get("is_published")), truncated=truncated)
-        return {"app_id": app_id, "totals": summary["totals"], "alerts": summary["alerts"], "truncated": truncated,
+        all_runs.extend(runs)
+        all_ratings.extend(ratings)
+        summary = monitor_summary(runs, ratings, days, published=bool(row.get("is_published")), truncated=truncated, live_version=row.get("live_version"))
+        return {"app_id": app_id, "live_version": row.get("live_version"), "published": bool(row.get("is_published")), "totals": summary["totals"], "alerts": summary["alerts"], "truncated": truncated,
                 "open_feedback": open_res.count or 0}
 
-    results = await asyncio.gather(*(one(a) for a in ids))
-    return {"days": days, "apps": [r for r in results if r]}
+    semaphore = asyncio.Semaphore(4)
+    async def bounded(app_id):
+        async with semaphore:
+            return await one(app_id)
+    results = await asyncio.gather(*(bounded(a) for a in ids))
+    rows = [r for r in results if r]
+    combined = monitor_summary(all_runs, all_ratings, days, truncated=any(r["truncated"] for r in rows))
+    return {"days": days, "apps": rows, "summary": {k: combined[k] for k in ("totals", "daily", "truncated")},
+            "app_limit_reached": len(requested) > len(ids), "telemetry_health": await _telemetry_health([r["app_id"] for r in rows])}
 
 
 # ── Customer feedback (shared with the app's developers) ─────────────────────
@@ -5870,23 +6326,40 @@ async def rate_run(run_id: str, body: RunFeedback, request: Request):
              .eq("id", run_id))
     shared = False
     # Developers get every "not useful" and any rating with a comment or the run attached.
-    if run.get("app_id") and (body.rating == -1 or comment or body.share_run):
+    if run.get("app_id"):
         sb = _service_client()
         if not sb:
             raise HTTPException(status_code=503, detail="Feedback storage is unavailable")
         row = {"app_id": run["app_id"], "run_id": run_id, "rating": body.rating, "comment": comment,
                "shared_input": (run.get("input") or "")[:4000] if body.share_run else None,
                "shared_output": (run.get("output") or "")[:8000] if body.share_run else None}
-        await db(sb.table("app_feedback").upsert(row, on_conflict="run_id"))
-        shared = True
+        if body.rating == -1 or comment or body.share_run:
+            await db(sb.table("app_feedback").upsert(row, on_conflict="run_id"))
+            shared = True
+            name, owner = await _app_label(run["app_id"])
+            if owner and owner != user_id:
+                _spawn_telemetry(notify_developer(owner, "feedback", f"{run['app_id']}:{datetime.now(timezone.utc).date().isoformat()}",
+                                       subject="New customer feedback",
+                                       title=f"New feedback on {name}",
+                                       body=f"A customer rated an answer from <strong style='color:#fff'>{name}</strong>"
+                                            f"{' as not useful' if body.rating == -1 else ''}. Review it in Eval: "
+                                            "reproduce it, save a test and fix it in Improve. (One email a day per app.)",
+                                       cta_label="Open Eval →"))     # in the background: rating isn't delayed
+        else:
+            # Re-rating without sharing must also revoke previously attached
+            # evidence. Keep existing triage/test links, but don't create a new
+            # inbox report for a plain useful rating.
+            await db(sb.table("app_feedback").update(row).eq("run_id", run_id))
     return {"ok": True, "shared_with_developer": shared}
 
 
 @app.get("/v1/apps/{app_id}/feedback")
-async def list_feedback(app_id: str, request: Request, status: str = "open"):
+async def list_feedback(app_id: str, request: Request, status: str = "open", offset: int = 0, limit: int = 200):
     """Customer feedback for an app (editors only), newest first. `open`:
     new and investigating; `all`: everything; or one status."""
     await _editable_app(app_id, request)
+    if offset < 0 or not 1 <= limit <= 200:
+        raise HTTPException(status_code=400, detail="Invalid feedback page")
     sb = _service_client()
     if not sb:
         raise HTTPException(status_code=503, detail="Feedback storage is unavailable")
@@ -5897,10 +6370,18 @@ async def list_feedback(app_id: str, request: Request, status: str = "open"):
         q = q.eq("status", status)
     elif status != "all":
         raise HTTPException(status_code=400, detail="Unknown status")
-    res = await db(q.order("created_at", desc=True).limit(200))
-    items = res.data or []
-    counts_res = await db(sb.table("app_feedback").select("status").eq("app_id", app_id).limit(5000))
-    return {"items": items, "counts": dict(Counter(r["status"] for r in (counts_res.data or [])))}
+    res = await db(q.order("created_at", desc=True).order("id", desc=True).range(offset, offset + limit))
+    rows = res.data or []
+    items = rows[:limit]
+    try:
+        counts_res = await db(sb.rpc("app_feedback_counts", {"p_app_id": app_id}))
+    except Exception:
+        raise HTTPException(status_code=503, detail="Feedback counts are unavailable. Check the operations migrations or retry after database recovery.")
+    if not isinstance(counts_res.data, dict):
+        raise HTTPException(status_code=503, detail="Feedback counts are unavailable. Check the operations migrations.")
+    return {"items": items, "counts": counts_res.data,
+            "counts_truncated": False,
+            "next_offset": offset + limit if len(rows) > limit else None}
 
 
 class FeedbackUpdate(BaseModel):
@@ -5915,16 +6396,31 @@ async def update_feedback(feedback_id: str, body: FeedbackUpdate, request: Reque
     sb = _service_client()
     if not sb:
         raise HTTPException(status_code=503, detail="Feedback storage is unavailable")
-    res = await db(sb.table("app_feedback").select("id, app_id").eq("id", feedback_id).limit(1))
+    res = await db(sb.table("app_feedback").select("id, app_id, status, note, test_case_id, created_at").eq("id", feedback_id).limit(1))
     item = (res.data or [None])[0]
     if not item:
         raise HTTPException(status_code=404, detail="Feedback not found")
-    caller, _ = await _editable_app(item["app_id"], request)
+    caller, app_row = await _editable_app(item["app_id"], request)
     patch = {k: v for k, v in body.model_dump(exclude_unset=True).items()}
     if "status" in patch and patch["status"] not in FEEDBACK_STATUSES:
         raise HTTPException(status_code=400, detail="Unknown status")
     if not patch:
         raise HTTPException(status_code=400, detail="Nothing to update")
+    if patch.get("status", item.get("status")) == "verified":
+        test_id = patch.get("test_case_id", item.get("test_case_id"))
+        note = patch.get("note", item.get("note"))
+        if not test_id or not note or not note.strip():
+            raise HTTPException(status_code=400, detail="Link a regression test and record verification evidence before marking verified")
+        if not app_row.get("is_published"):
+            raise HTTPException(status_code=409, detail="Publish the fix and check the live app before marking verified")
+        # The fix must have shipped after the report: a release that was
+        # already live when the customer hit the problem can't have fixed it.
+        released, reported = _parse_ts(app_row.get("promoted_at")), _parse_ts(item.get("created_at"))
+        if not released or (reported and released <= reported):
+            raise HTTPException(status_code=409, detail="Publish a release made after this feedback was reported, then check the live app before marking verified")
+        case = await db(sb.table("app_test_cases").select("id").eq("id", test_id).eq("app_id", item["app_id"]).limit(1))
+        if not case.data:
+            raise HTTPException(status_code=400, detail="The linked regression test is unavailable")
     if patch.get("test_case_id"):
         case = await db(sb.table("app_test_cases").select("id").eq("id", patch["test_case_id"]).eq("app_id", item["app_id"]).limit(1))
         if not case.data:
@@ -5953,10 +6449,24 @@ async def list_versions(app_id: str, request: Request):
             "versions": [{**v, "is_live": v["version_num"] == live and bool(app_row.get("is_published"))} for v in (res.data or [])]}
 
 
+def _unchanged_release(query, app_row: dict):
+    """Limit an apps update to the release that was read: if a teammate
+    published or rolled back meanwhile, the update matches nothing."""
+    promoted = app_row.get("promoted_at")
+    return query.eq("promoted_at", promoted) if promoted else query.is_("promoted_at", "null")
+
+
+RELEASE_CHANGED = "Another release was made while you were doing this. Reload to see what's live now, then try again."
+
+
 @app.post("/v1/apps/{app_id}/versions/{version_num}/rollback")
-async def rollback_version(app_id: str, version_num: int, request: Request):
-    """Make an earlier published version live again. The draft isn't changed."""
+async def rollback_version(app_id: str, version_num: int, request: Request, expected_live: Optional[int] = None):
+    """Make an earlier published version live again. The draft isn't changed.
+    expected_live: the live version the developer saw; if it changed since,
+    nothing is rolled back (409)."""
     _, app_row = await _editable_app(app_id, request)
+    if expected_live is not None and app_row.get("live_version") != expected_live:
+        raise HTTPException(status_code=409, detail=RELEASE_CHANGED)
     sb = _service_client()
     if not sb:
         raise HTTPException(status_code=503, detail="Versions aren't configured on this server")
@@ -5966,9 +6476,11 @@ async def rollback_version(app_id: str, version_num: int, request: Request):
     snapshot = res.data[0]["version_data"]
     state = await app_draft_state(app_row)
     now = datetime.now(timezone.utc).isoformat()
-    await db(sb.table("apps").update({"prod_snapshot": snapshot, "promoted_at": now, "is_published": True,
-                                      "live_version": version_num,
-                                      "has_draft_changes": not same_as_live(snapshot, state)}).eq("id", app_id))
+    saved = await db(_unchanged_release(sb.table("apps").update({"prod_snapshot": snapshot, "promoted_at": now, "is_published": True,
+                                                                  "live_version": version_num,
+                                                                  "has_draft_changes": not same_as_live(snapshot, state)}).eq("id", app_id), app_row))
+    if not saved.data:
+        raise HTTPException(status_code=409, detail=RELEASE_CHANGED)
     try:
         await db(sb.table("app_blueprints").update({"blueprint_prod": snapshot.get("blueprint")}).eq("app_id", app_id))
     except Exception as e:
@@ -6031,7 +6543,11 @@ async def promote_app(app_id: str, request: Request):
         update["live_version"] = version
     if app_row.get("change_note"):
         update["change_note"] = None   # now part of this version's history
-    await db(sb.table("apps").update(update).eq("id", app_id))
+    saved = await db(_unchanged_release(sb.table("apps").update(update).eq("id", app_id), app_row))
+    if not saved.data:
+        if version is not None:   # never went live: don't leave it in the history
+            await db(sb.table("app_versions").delete().eq("app_id", app_id).eq("version_num", version))
+        return JSONResponse(status_code=409, content={"code": "release_changed", "error": RELEASE_CHANGED})
     try:
         await db(sb.table("app_blueprints").update({"blueprint_prod": state["blueprint"]}).eq("app_id", app_id))
     except Exception as e:
@@ -6132,6 +6648,232 @@ def health():
         "providers": ["claude", "openai"],
         "limits": {"hourly": HOURLY_LIMIT, "daily": DAILY_LIMIT},
         "timeout": REQUEST_TIMEOUT,
+    }
+
+
+# ─── Your account: export and deletion ───────────────────────────────────────
+# Everything a person owns, as one JSON file (never secret values, key hashes
+# or encrypted tokens), and deletion of the account once nothing depends on it.
+
+EXPORT_ROW_LIMIT = 50000
+# table → (owner column, columns to export)
+EXPORT_TABLES = {
+    "developer_profiles": ("user_id", "*"),
+    "user_api_keys": ("user_id", "provider, is_active, created_at"),           # which providers, never the keys
+    "developer_api_keys": ("user_id", "name, key_prefix, app_ids, created_at"),  # never the key hash
+    "apps": ("created_by", "*"),
+    "flows": ("user_id", "*"),
+    "flow_schedules": ("user_id", "*"),
+    "run_history": ("user_id", "*"),
+    "knowledge_vault": ("user_id", "*"),
+    "user_memory": ("user_id", "*"),
+    "user_goals": ("user_id", "*"),
+    "user_business_profiles": ("user_id", "*"),
+    "user_career_profiles": ("user_id", "*"),
+    "favorites": ("user_id", "*"),
+    "notifications": ("user_id", "*"),
+    "conversation_threads": ("user_id", "*"),
+    "app_reviews": ("user_id", "*"),
+    "app_entitlements": ("user_id", "app_id, plan, status, run_quota, runs_this_period, current_period_end, created_at"),
+    "workspace_members": ("user_id", "workspace_id, role, created_at"),
+}
+APP_CHILD_TABLES = ("app_tools", "app_blueprints", "app_test_cases", "app_versions", "marketplace_listings")
+SECRET_COLUMN_HINTS = ("encrypted", "key_hash", "token")
+
+
+async def _read_owned(sb, table: str, column: str, value, columns: str = "*") -> list[dict]:
+    rows: list[dict] = []
+    while len(rows) < EXPORT_ROW_LIMIT:
+        page = (await db(sb.table(table).select(columns).eq(column, value).range(len(rows), len(rows) + 999))).data or []
+        rows.extend(page)
+        if len(page) < 1000:
+            break
+    return rows
+
+
+def _without_secrets(row: dict) -> dict:
+    return {k: v for k, v in row.items() if not any(x in k for x in SECRET_COLUMN_HINTS)}
+
+
+@app.get("/v1/account/export")
+async def export_account(request: Request):
+    """Download everything this account owns (a GDPR/CCPA access request)."""
+    user_id = await require_verified_user(request)
+    sb = _service_client()
+    if not sb:
+        raise HTTPException(status_code=503, detail="Export isn't available on this server")
+    out: dict = {"exported_at": datetime.now(timezone.utc).isoformat(), "user_id": user_id}
+    unavailable = []
+    for table, (column, columns) in EXPORT_TABLES.items():
+        try:
+            out[table] = [_without_secrets(r) for r in await _read_owned(sb, table, column, user_id, columns)]
+        except Exception:
+            unavailable.append(table)
+    app_ids = [a["id"] for a in out.get("apps", [])]
+    for table in APP_CHILD_TABLES:
+        try:
+            out[table] = [_without_secrets(r) for app_id in app_ids for r in await _read_owned(sb, table, "app_id", app_id)]
+        except Exception:
+            unavailable.append(table)
+    ledger_fields = PURCHASE_FIELDS.replace(", stripe_payment_ref", "")
+    try:
+        out["app_secrets"] = [_without_secrets(r) for app_id in app_ids
+                              for r in await _read_owned(sb, "app_secrets", "app_id", app_id, "app_id, key, created_at, updated_at")]
+        out["purchases_as_buyer"] = await _read_owned(sb, "purchases", "buyer_id", user_id, ledger_fields)
+        out["sales_as_developer"] = await _read_owned(sb, "purchases", "dev_id", user_id, ledger_fields)
+    except Exception:
+        unavailable.append("purchases")
+    out["unavailable"] = unavailable           # what this server couldn't read: the export says so
+    name = f"aistrix-account-{datetime.now(timezone.utc).date().isoformat()}.json"
+    return Response(content=json.dumps(out, default=str, ensure_ascii=False, indent=1), media_type="application/json",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+def _plural(n: int, word: str) -> str:
+    return f"{n} {word}{'' if n == 1 else 's'}"
+
+
+async def account_deletion_blockers(sb, user_id: str) -> list[str]:
+    """What must be sorted out before this account can be deleted, so that
+    nobody else loses access or money and nobody keeps being charged."""
+    blockers = []
+    member = (await db(sb.table("workspace_members").select("workspace_id, role").eq("user_id", user_id))).data or []
+    ids = [m["workspace_id"] for m in member]
+    teams = ((await db(sb.table("workspaces").select("id, name, is_personal").in_("id", ids))).data or []) if ids else []
+    team = {w["id"]: w for w in teams if not w.get("is_personal")}
+    owned = [team[m["workspace_id"]]["name"] for m in member if m["workspace_id"] in team and m.get("role") == "owner"]
+    if owned:
+        blockers.append(f"You own the team workspace(s) {', '.join(owned)}. Make someone else the owner, or delete it.")
+    apps = (await db(sb.table("apps").select("id, name, workspace_id").eq("created_by", user_id))).data or []
+    team_apps = [a.get("name") or "an app" for a in apps if a.get("workspace_id") in team]
+    if team_apps:
+        more = "…" if len(team_apps) > 5 else ""
+        blockers.append(f"You created apps your team uses: {', '.join(team_apps[:5])}{more}. Move or delete them first.")
+    subs = (await db(sb.table("app_entitlements").select("app_id").eq("user_id", user_id)
+                     .eq("plan", "subscription").eq("status", "active"))).data or []
+    if subs:
+        blockers.append(f"You have {_plural(len(subs), 'active subscription')}. Cancel them first so you aren't charged again.")
+    own_ids = [a["id"] for a in apps if a.get("workspace_id") not in team]
+    if own_ids:
+        buyers = (await db(sb.table("app_entitlements").select("user_id").in_("app_id", own_ids)
+                           .eq("plan", "subscription").eq("status", "active"))).data or []
+        if any(b.get("user_id") != user_id for b in buyers):
+            blockers.append("Customers subscribe to your apps. Unpublish them and let the subscriptions end first.")
+    owed = (await db(sb.table("purchases").select("dev_share, gross_amount, refunded_amount").eq("dev_id", user_id)
+                     .in_("payout_status", list(OWED_STATUSES)))).data or []
+    owed_total = sum(_net_share(p) for p in owed)
+    if owed_total > 0:
+        blockers.append(f"You're owed ${owed_total:.2f} in payouts. Send them from Manage → Revenue first.")
+    return blockers
+
+
+@app.get("/v1/account/deletion-check")
+async def account_deletion_check(request: Request):
+    """Whether this account can be deleted now, and if not, what to do first."""
+    user_id = await require_verified_user(request)
+    sb = _service_client()
+    if not sb:
+        raise HTTPException(status_code=503, detail="Account deletion isn't available on this server")
+    blockers = await account_deletion_blockers(sb, user_id)
+    return {"can_delete": not blockers, "blockers": blockers}
+
+
+class AccountDeleteRequest(BaseModel):
+    confirm: str
+
+
+DELETE_CONFIRMATION = "delete my account"
+
+
+@app.post("/v1/account/delete")
+async def delete_account(body: AccountDeleteRequest, request: Request):
+    """Delete this account for good: its personal apps, files, runs, keys and
+    settings. Sales records stay (without the person) for accounting."""
+    user_id = await require_verified_user(request)
+    if body.confirm.strip().lower() != DELETE_CONFIRMATION:
+        raise HTTPException(status_code=400, detail=f'Type "{DELETE_CONFIRMATION}" to confirm')
+    sb = _service_client()
+    if not sb:
+        raise HTTPException(status_code=503, detail="Account deletion isn't available on this server")
+    blockers = await account_deletion_blockers(sb, user_id)
+    if blockers:
+        return JSONResponse(status_code=409, content={"error": blockers[0], "blockers": blockers})
+    app_ids = [a["id"] for a in (await db(sb.table("apps").select("id").eq("created_by", user_id))).data or []]
+    # Uploaded files live in storage, which the database doesn't clean up.
+    files = (await db(sb.table("app_files").select("bucket, storage_path").eq("owner_id", user_id))).data or []
+    if app_ids:
+        files += (await db(sb.table("app_files").select("bucket, storage_path").in_("app_id", app_ids))).data or []
+    by_bucket: dict = defaultdict(set)
+    for f in files:
+        by_bucket[f["bucket"]].add(f["storage_path"])
+    for bucket, paths in by_bucket.items():
+        paths = sorted(paths)
+        for i in range(0, len(paths), 100):
+            try:
+                await asyncio.to_thread(sb.storage.from_(bucket).remove, paths[i:i + 100])
+            except Exception as e:
+                print(f"account deletion: storage cleanup in {bucket} failed: {type(e).__name__}")
+                sentry_sdk.capture_exception(e)
+    if app_ids:
+        await db(sb.table("apps").delete().in_("id", app_ids))      # their tools, tests, versions… go with them
+    try:
+        await asyncio.to_thread(sb.auth.admin.delete_user, user_id)  # the rest is removed by the database
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+        raise HTTPException(status_code=503, detail="Your apps were removed, but the account couldn't be deleted. Try again.") from e
+    print(f"account deleted: {user_id}")
+    return {"ok": True}
+
+
+def production_config_gaps() -> dict:
+    """Settings a public deployment needs (required) or should have
+    (recommended). Names only — never values."""
+    env = lambda k: (os.getenv(k) or "").strip()
+    local = lambda v: not v or "localhost" in v or "127.0.0.1" in v
+    required = [k for k, ok in (
+        ("SUPABASE_URL", bool(SUPABASE_URL)), ("SUPABASE_ANON_KEY", bool(SUPABASE_ANON_KEY)),
+        ("SUPABASE_SERVICE_ROLE_KEY", bool(SUPABASE_SERVICE_ROLE_KEY)), ("SECRET_ENCRYPTION_KEY", bool(_fernet)),
+        ("ALLOWED_ORIGINS (the public site, not localhost)", not all(local(o) for o in ALLOWED_ORIGINS)),
+        ("FRONTEND_URL (the public site, not localhost)", not local(FRONTEND_URL)),
+        ("an AI provider key (ANTHROPIC_API_KEY, OPENAI_API_KEY or GEMINI_API_KEY)",
+         any(env(k) for k in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"))),
+        ("CRON_SECRET or SCHEDULE_SECRET, or the built-in scheduler (SCHEDULER_INTERVAL_SECONDS > 0)",
+         SCHEDULER_INTERVAL_SECONDS > 0 or bool(env("CRON_SECRET") or env("SCHEDULE_SECRET"))),
+    ) if not ok]
+    recommended = [k for k in ("RESEND_API_KEY", "EMAIL_FROM", "SENTRY_DSN", "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET",
+                               "TELEMETRY_OUTBOX_PATH", "OPS_HEALTH_TOKEN", "OPS_ALERT_WEBHOOK_URL") if not env(k)]
+    if not TRUST_PROXY_HEADERS:
+        recommended.append("TRUST_PROXY_HEADERS (behind the host's proxy, so rate limits see real visitor addresses)")
+    return {"environment": os.getenv("ENVIRONMENT", "production"), "missing_required": required, "missing_recommended": recommended}
+
+
+def report_production_config() -> None:
+    """Printed at startup so a deployment with a missing setting is obvious
+    in the host's logs (and in /health/details)."""
+    gaps = production_config_gaps()
+    if gaps["environment"].lower() in ("development", "dev", "local", "test"):
+        return
+    for name in gaps["missing_required"]:
+        print(f"CONFIG REQUIRED for a public deployment, not set: {name}")
+    if gaps["missing_recommended"]:
+        print(f"Config recommended, not set: {', '.join(gaps['missing_recommended'])}")
+
+
+@app.get("/health/details")
+def health_details(request: Request):
+    """Deployment details for the operator (staging verification): which
+    database this server uses, whether run-tracking recovery storage is set,
+    and the process id. Needs the OPS_HEALTH_TOKEN header; 404 otherwise."""
+    token = os.getenv("OPS_HEALTH_TOKEN")
+    given = request.headers.get("x-ops-token", "")
+    if not token or not secrets.compare_digest(given, token):
+        raise HTTPException(status_code=404, detail="Not found")
+    return {
+        **health(),
+        "database_project": urlsplit(SUPABASE_URL or "").hostname,
+        "telemetry_recovery_configured": bool(os.getenv("TELEMETRY_OUTBOX_PATH")),
+        "process_id": os.getpid(),
+        "config": production_config_gaps(),
     }
 
 

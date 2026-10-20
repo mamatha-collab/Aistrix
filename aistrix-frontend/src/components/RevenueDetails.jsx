@@ -9,7 +9,7 @@ const money = value => value == null || !Number.isFinite(Number(value)) ? '—' 
 const PERIODS = [['', 'All time'], ['7', 'Last 7 days'], ['30', 'Last 30 days'], ['90', 'Last 90 days'], ['365', 'Last 12 months']]
 const PAYOUT_STATUS = {
   pending: 'Payout pending', transferred: 'Paid out', no_connect_account: 'Owed: set up payouts to receive it',
-  transfer_failed: 'Payout failed: send again below', refunded: 'Refunded', reversal_failed: 'Refunded: payout reversal needs attention',
+  transfer_failed: 'Payout failed: send again below', transferring: 'Payout being sent', refunded: 'Refunded', reversal_failed: 'Refunded: payout reversal needs attention',
 }
 
 export default function RevenueDetails({ apps, user }) {
@@ -23,7 +23,13 @@ export default function RevenueDetails({ apps, user }) {
     setBusy('payouts')
     try {
       const result = await manageRequest('/stripe/payouts/retry', { method: 'POST' })
-      toast(result.sent ? `Sent ${result.sent} payout${result.sent === 1 ? '' : 's'}${result.failed ? `; ${result.failed} failed` : ''}` : result.failed ? 'Payouts failed. Try again later.' : 'Nothing owed right now', result.failed ? 'error' : 'success')
+      const parts = [
+        result.sent ? `Sent ${result.sent} payout${result.sent === 1 ? '' : 's'}` : '',
+        result.failed ? `${result.failed} failed` : '',
+        result.in_progress ? `${result.in_progress} already being sent` : '',
+        result.remaining ? `${result.remaining} still to send: select Send owed payouts again` : '',
+      ].filter(Boolean)
+      toast(parts.length ? parts.join('; ') : 'Nothing owed right now', result.failed ? 'error' : 'success', result.remaining ? 8000 : 4000)
       refresh()
     } catch (e) { toast(e.message, 'error', 6000) }
     finally { setBusy('') }
@@ -50,6 +56,7 @@ export default function RevenueDetails({ apps, user }) {
     {loading && <p role="status" className="text-sm text-slate-400">Loading revenue…</p>}
     {error && <div role="alert" className={`${card} text-sm text-amber-200`}>Revenue is unavailable: {error}<button className={`${button} block mt-3`} onClick={refresh}>Retry revenue</button></div>}
     {data && <>
+      {data.truncated && <p role="alert" className="text-sm text-amber-200">These totals cover the newest {data.purchase_count?.toLocaleString()} purchases only. Choose a shorter period for complete figures.</p>}
       <div className="grid grid-cols-2 gap-3">
         {[["Your earnings", data.total_dev_share, 'after platform fees and refunds'], ['Pending payout', data.total_pending, data.owed_count ? `${data.owed_count} purchase${data.owed_count === 1 ? '' : 's'}` : 'nothing owed']].map(([label, value, sub]) => <div key={label} className={card}><p className="text-xs text-slate-400">{label}</p><p className="text-xl text-white font-bold mt-2 break-words">{money(value)}</p><p className="text-[11px] text-slate-500 mt-1">{sub}</p></div>)}
       </div>

@@ -86,8 +86,9 @@ class _T:
     def order(self, *a, **k): return self
     def limit(self, *a): return self
     def update(self, patch): self.patch = patch; return self
+    def delete(self): self.patch = "deleted"; return self
     def eq(self, *a): return self
-    def execute(self): UPDATES.append((self.name, self.patch)); return NS(data=[])
+    def execute(self): UPDATES.append((self.name, self.patch)); return NS(data=[self.patch] if isinstance(self.patch, dict) else [])
 main._service_client = lambda: NS(table=lambda t: _T(t))
 CHECKS = {"errors": []}
 async def checks(app_id, jwt): return CHECKS["errors"]
@@ -145,19 +146,28 @@ ok("release: editing the draft shows unpromoted changes", rel["has_changes"] and
 # ── published versions: v1, v2…, history and rollback ──────────────────────
 TABLES = {"app_versions": [], "apps": [], "app_blueprints": []}
 class _Q:
-    def __init__(self, name): self.name, self.f, self.op, self.row, self.patch, self.desc = name, [], "select", None, None, False
+    def __init__(self, name): self.name, self.f, self.op, self.row, self.patch, self.desc, self.neg = name, [], "select", None, None, False, False
     def select(self, *a, **k): return self
     def insert(self, row): self.op, self.row = "insert", row; return self
     def update(self, patch): self.op, self.patch = "update", patch; return self
+    def delete(self): self.op = "delete"; return self
     def eq(self, k, v): self.f.append(lambda r, k=k, v=v: r.get(k) == v); return self
     @property
-    def not_(self): return self
-    def is_(self, k, v): self.f.append(lambda r, k=k: r.get(k) is not None); return self
+    def not_(self): self.neg = True; return self
+    def is_(self, k, v, neg=None):
+        neg, self.neg = self.neg, False
+        self.f.append(lambda r, k=k: (r.get(k) is not None) if neg else (r.get(k) is None)); return self
     def order(self, k, desc=False): self.key, self.desc = k, desc; return self
     def limit(self, n): return self
     def execute(self):
         if self.op == "insert": TABLES[self.name].append(dict(self.row)); return NS(data=[self.row])
-        if self.op == "update": UPDATES.append((self.name, self.patch)); return NS(data=[])
+        if self.op == "delete":
+            hits = [r for r in TABLES[self.name] if all(f(r) for f in self.f)]
+            TABLES[self.name][:] = [r for r in TABLES[self.name] if r not in hits]; return NS(data=hits)
+        if self.op == "update":
+            # apps updates are checked against the current app (what's live now)
+            if self.name == "apps" and not all(f(APP) for f in self.f): return NS(data=[])
+            UPDATES.append((self.name, self.patch)); return NS(data=[self.patch])
         rows = [r for r in TABLES[self.name] if all(f(r) for f in self.f)]
         if hasattr(self, "key"): rows.sort(key=lambda r: r.get(self.key) or 0, reverse=self.desc)
         return NS(data=rows)
@@ -190,6 +200,27 @@ ok("rollback makes v1 live again without touching the draft", r.status_code == 2
 ok("rollback: unknown version → 404", c.post("/v1/apps/app-1/versions/9/rollback", headers=owner).status_code == 404)
 ok("rollback/history: only editors (404)", c.post("/v1/apps/app-1/versions/1/rollback", headers={"Authorization": "Bearer tok-user"}).status_code == 404
    and c.get("/v1/apps/app-1/versions", headers={"Authorization": "Bearer tok-user"}).status_code == 404)
+ok("rollback from a stale screen (live changed meanwhile) changes nothing (409)",
+   c.post("/v1/apps/app-1/versions/1/rollback?expected_live=1", headers=owner).status_code == 409)
+UPDATES.clear()
+ok("rollback with the live version the developer saw goes through",
+   c.post("/v1/apps/app-1/versions/1/rollback?expected_live=2", headers=owner).status_code == 200 and any(t == "apps" for t, _ in UPDATES))
+
+# A teammate publishes or rolls back between our read and our write.
+class Racing(_Q):
+    def execute(self):
+        if self.name == "apps" and self.op == "update": APP["promoted_at"] = "2099-01-01T00:00:00+00:00"
+        return super().execute()
+main._service_client = lambda: NS(table=lambda t: Racing(t))
+saved_at = APP.get("promoted_at"); UPDATES.clear()
+r = c.post("/v1/apps/app-1/versions/1/rollback", headers=owner)
+ok("a rollback racing another release is refused, not applied over it", r.status_code == 409 and not any(t == "apps" for t, _ in UPDATES))
+APP.pop("promoted_at", None); APP["system_prompt"] = "RACE PROMPT"; before = len(TABLES["app_versions"])
+r = c.post("/v1/apps/app-1/promote", headers=owner)
+ok("a publish racing another release is refused and leaves no orphan version", r.status_code == 409
+   and r.json()["code"] == "release_changed" and len(TABLES["app_versions"]) == before)
+APP.pop("promoted_at", None); APP["system_prompt"] = "BETTER PROMPT"
+main._service_client = lambda: NS(table=lambda t: _Q(t))
 ok("change summary ignores the workflow phase", main.describe_changes({"blueprint": {"dev_phase": "test"}}, {"blueprint": {}}) == "Republished (no changes)")
 
 # A failed history write must never publish an unrecoverable live version.

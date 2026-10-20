@@ -11,6 +11,9 @@ reach Anthropic, OpenAI, Stripe, email providers or a real Supabase.
 """
 import os
 import sys
+import tempfile
+import atexit
+import shutil
 from pathlib import Path
 
 BACKEND = Path(__file__).resolve().parents[2]
@@ -24,11 +27,15 @@ _passed = 0
 
 
 def setup(**env: str) -> None:
+    telemetry_dir = tempfile.mkdtemp(prefix="aistrix-telemetry-check-")
+    atexit.register(shutil.rmtree, telemetry_dir, ignore_errors=True)
     os.environ.update({
         "SUPABASE_URL": "http://fake.invalid",
         "SUPABASE_ANON_KEY": "anon",
         "SUPABASE_SERVICE_ROLE_KEY": "svc",
         "SENTRY_DSN": "",
+        "MONITOR_CACHE_SECONDS": "0", "SCHEDULER_INTERVAL_SECONDS": "0",     # checks change data between requests
+        "TELEMETRY_OUTBOX_PATH": str(Path(telemetry_dir) / "outbox.sqlite3"),
         **{k: "" for k in _BLANKED},
         **env,
     })

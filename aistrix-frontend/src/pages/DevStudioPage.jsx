@@ -23,7 +23,6 @@ const TAB_LOADING = <div className="py-16 text-center text-slate-500 text-sm">Lo
 const DeployTab = lazy(() => import('./devstudio/DeployTab').then(m => ({ default: m.DeployTab })))
 const SettingsPage = lazy(() => import('./SettingsPage'))
 const DesignTab = lazy(() => import('./devstudio/DesignTab').then(m => ({ default: m.DesignTab })))
-const QualityPanel = lazy(() => import('./devstudio/QualityPanel'))
 const ImproveTab = lazy(() => import('./devstudio/OperateTabs').then(m => ({ default: m.ImproveTab })))
 const MonetizeTab = lazy(() => import('./devstudio/OperateTabs').then(m => ({ default: m.MonetizeTab })))
 const MonitorPanel = lazy(() => import('./devstudio/MonitorPanel'))
@@ -82,6 +81,7 @@ export default function DevStudioPage({
   const navigationGuardRef = sharedNavigationGuardRef || localNavigationGuardRef
   // The open step and app survive a reload of this browser tab.
   const [tab, setTabState] = useState(() => savedView().tab)
+  const [monitorAppId, setMonitorAppId] = useState(null)
   // Runs a navigation now, or — when the Design editor has unsaved edits —
   // after the developer chooses to discard or save them (its dialog).
   function guarded(action) {
@@ -98,8 +98,8 @@ export default function DevStudioPage({
     return guarded(() => { setSettingsOpen(false); setTabState(next) })
   }
   function openTab(id) {
-    if (id === tab && !pageContent) return
-    guarded(() => { setSettingsOpen(false); setTabState(id); if (['design','test','deploy'].includes(id)) setActiveAppIdState(null) })
+    if (id === tab && !pageContent && id !== 'monitor') return
+    guarded(() => { setSettingsOpen(false); setTabState(id); if (id === 'monitor') setMonitorAppId(null); if (['design','test','deploy'].includes(id)) setActiveAppIdState(null) })
   }
   // Phones: keep the open tab's group (Build / Operate / Manage) in view.
   const ribbonRef = useRef(null)
@@ -125,7 +125,6 @@ export default function DevStudioPage({
   const [selectedRunId, setSelectedRunId] = useState(null)
   const [loadError, setLoadError] = useState('')
   const [totalStats, setTotalStats] = useState({ runs: 0, users: 0, satisfaction: null })
-  const [entitlements, setEntitlements] = useState([])
   const [loading, setLoading] = useState(true)
   const [showHelp, setShowHelp] = useState(false)
   const [accountOpen, setAccountOpen] = useState(false)
@@ -205,18 +204,12 @@ export default function DevStudioPage({
     setApps(myApps)
     setActiveAppId(prev => myApps.some(a => a.id === prev) ? prev : null)
 
-    const [{ data: runData, error: runError }, { data: entData }] = await Promise.all([
-      supabase.from('run_history')
+    const { data: runData, error: runError } = await supabase.from('run_history')
         .select('id, app_id, app_name, created_at, rating_value, user_id, input_tokens, output_tokens, input, output, feedback_text')
-        .in('app_id', myApps.map(a => a.id)).order('created_at', { ascending: false }).limit(500),
-      supabase.from('app_entitlements')
-        .select('id, app_id, user_id, plan, status, runs_this_period, run_quota, current_period_end, created_at')
-        .in('app_id', myApps.map(a => a.id)),
-    ])
+        .in('app_id', myApps.map(a => a.id)).order('created_at', { ascending: false }).limit(500)
     setFeedbackError(runError ? `Run history could not be loaded: ${runError.message}` : '')
     const allRuns = runData || []
     setRuns(allRuns)
-    setEntitlements(entData || [])
 
 
     const allRated = allRuns.filter(r => (r.rating_value === 1 || r.rating_value === -1))
@@ -265,6 +258,7 @@ export default function DevStudioPage({
 
   async function confirmMoveBack(note) {
     const { app, phase } = moveBack
+    note = { ...app.change_note, ...note }
     const { error } = await saveAppFields(supabase, app, { change_note: note })
     if (error) { if (error.current) updateAppInState({ ...app, ...error.current }); toast(error.message, 'error', 7000); return }
     updateAppInState({ ...app, change_note: note })
@@ -282,6 +276,7 @@ export default function DevStudioPage({
     const app = apps.find(a => a.id === appId)
     if (!app) return
     guarded(() => {
+      if (target === 'monitor') setMonitorAppId(appId)
       if (['design', 'test', 'deploy'].includes(target) && getDevPhase(app, phaseByAppId) !== target) {
         moveAppPhase(appId, target)
       } else {
@@ -291,10 +286,30 @@ export default function DevStudioPage({
     })
   }
 
+  // expected: the saved prompt the candidate started from (a newer saved
+  // prompt is a conflict, never silently replaced). source: the customer
+  // feedback item this improvement answers, if one is selected in Eval.
+  async function saveImprovementCandidate(appId, prompt, { expected, source } = {}) {
+    const app = apps.find(item => item.id === appId)
+    if (!app) throw new Error('Select an app first.')
+    const improvementId = crypto.randomUUID()
+    const note = { ...app.change_note, reason: 'Prompt improvement', improvement_id: improvementId,
+      source_run_id: source?.run_id || null, source_feedback_id: source?.id || null,
+      note: `Improvement ${improvementId}.${source ? ` Customer feedback ${source.id}${source.comment ? `: "${source.comment}"` : ''}.` : ''} ${app.change_note?.note || ''} Validate the candidate in Test before publishing.`.slice(0, 500) }
+    const updated = { ...app, system_prompt: prompt, change_note: note }
+    const { error } = await saveAppFields(supabase, app, { system_prompt: prompt, change_note: note },
+      { expected: { system_prompt: expected ?? app.system_prompt ?? '', change_note: app.change_note ?? null } })
+    if (error) throw error
+    updateAppInState(updated)
+    if (getDevPhase(app, phaseByAppId) === 'deploy') {
+      setMoveBack({ app: updated, phase: 'design', initialNote: note })
+    } else await moveAppPhase(appId, 'design', { confirmed: true })
+  }
+
   async function startOperationalFix(appId, run, testCase) {
     const app = apps.find(a => a.id === appId)
     if (!app) return
-    const note = { reason: 'User feedback', note: `Investigate ${run ? `run ${run.id}` : 'app feedback'}.${testCase ? ` Regression: ${testCase.id}.` : ''} ${run?.feedback_text || 'Improve the answer, then validate in Test before publishing.'}`.slice(0, 500) }
+    const note = { ...app.change_note, reason: 'User feedback', note: `Investigate ${run ? `run ${run.id}` : 'app feedback'}.${testCase ? ` Regression: ${testCase.id}.` : ''} ${run?.feedback_text || 'Improve the answer, then validate in Test before publishing.'}`.slice(0, 500) }
     if (getDevPhase(app, phaseByAppId) === 'deploy') {
       setMoveBack({ app, phase: 'design', initialNote: note })
       return
@@ -721,9 +736,8 @@ export default function DevStudioPage({
             <ErrorBoundary compact title={`${LIFECYCLE_TABS.find(t => t.id === tab)?.label || "This"} section couldn't load`} resetKey={`${tab}:${activeAppId}`}>
             <Suspense fallback={TAB_LOADING}>
             {tab === 'sell'     && <SellTab     apps={apps} user={user} onAppUpdated={updateAppInState} />}
-            {tab === 'monitor'  && <MonitorPanel apps={apps} selectedAppId={activeAppId} onSelectApp={setActiveAppId} entitlements={entitlements} />}
-            {tab === 'evaluate' && <QualityPanel app={apps.find(a => a.id === activeAppId) || apps[0]} onNavigate={navigateOperations} />}
-            {tab === 'improve'  && <ImproveTab  apps={apps} user={user} selectedAppId={activeAppId || apps[0]?.id} onSelectApp={setActiveAppId} />}
+            {tab === 'monitor'  && <MonitorPanel apps={apps} selectedAppId={monitorAppId} onSelectApp={id => { setActiveAppId(id); setMonitorAppId(id) }} onNavigate={navigateOperations} />}
+            {tab === 'improve'  && <ImproveTab onSaveCandidate={saveImprovementCandidate} navigationGuardRef={navigationGuardRef} selectedRunId={selectedRunId} apps={apps} user={user} selectedAppId={activeAppId || apps[0]?.id} onSelectApp={setActiveAppId} />}
             {tab === 'version'  && <VersionTab  apps={apps} user={user} onAppUpdated={updateAppInState} selectedAppId={activeAppId} onSelectApp={setActiveAppId} />}
             {tab === 'monetize' && <MonetizeTab apps={apps} runs={runs} loading={loading} user={user} />}
             {tab === 'secrets'  && <SecretsTab  apps={apps} user={user} selectedAppId={activeAppId} onSelectApp={setActiveAppId} />}

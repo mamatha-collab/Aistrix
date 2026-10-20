@@ -24,7 +24,7 @@ export default function PublishedVersions({ app, onAppUpdated, usage = null }) {
   async function rollback(num) {
     setBusy(num)
     try {
-      const res = await rollbackVersion(app.id, num)
+      const res = await rollbackVersion(app.id, num, data?.live_version ?? null)
       toast(`v${num} is live again`, 'success', 3000)
       track(EVENTS.BUILD_ROLLED_BACK, { app_id: app.id, version: num })
       onAppUpdated?.({ ...app, live_version: res.live_version, is_published: true, promoted_at: res.promoted_at,
@@ -32,6 +32,7 @@ export default function PublishedVersions({ app, onAppUpdated, usage = null }) {
       await load()
     } catch (e) {
       toast(e.message, 'error', 6000)
+      if (e.status === 409) await load()      // show what's live now
     } finally {
       setBusy(null)
       setConfirming(null)

@@ -1,0 +1,141 @@
+{
+  "started_at": "2026-10-20T02:45:23.053253+00:00",
+  "database_host": "qhfxnpsvdolaftaljvdp.supabase.co",
+  "api_host": "127.0.0.1",
+  "hosted_app_verified": false,
+  "checks": [
+    {
+      "name": "running API targets the explicitly selected staging database",
+      "passed": true
+    },
+    {
+      "name": "running API has explicit recovery storage",
+      "passed": true
+    },
+    {
+      "name": "deployed schema and permissions pass every readiness check",
+      "passed": true
+    },
+    {
+      "name": "owner, editor and customer have independent authenticated identities",
+      "passed": true
+    },
+    {
+      "name": "real customer model run succeeds",
+      "passed": true
+    },
+    {
+      "name": "customer report reaches editor without private run content or identity",
+      "passed": true
+    },
+    {
+      "name": "customer cannot inspect developer feedback or telemetry",
+      "passed": true
+    },
+    {
+      "name": "anonymous caller cannot inspect telemetry",
+      "passed": true
+    },
+    {
+      "name": "consented evidence is visible to a separate editor",
+      "passed": true
+    },
+    {
+      "name": "withdrawn consent removes previously shared evidence",
+      "passed": true
+    },
+    {
+      "name": "editor cannot bypass consent through raw customer history",
+      "passed": true
+    },
+    {
+      "name": "triage note and regression link persist across independent editor sessions",
+      "passed": true
+    },
+    {
+      "name": "verification refuses empty evidence",
+      "passed": true
+    },
+    {
+      "name": "editor saves a draft fix without modifying the live snapshot",
+      "passed": true
+    },
+    {
+      "name": "linked regression executes and passes on the current draft",
+      "passed": true
+    },
+    {
+      "name": "required edge validation passes and is stored",
+      "passed": true
+    },
+    {
+      "name": "required safety validation passes and is stored",
+      "passed": true
+    },
+    {
+      "name": "required app_specific validation passes and is stored",
+      "passed": true
+    },
+    {
+      "name": "required performance validation passes and is stored",
+      "passed": true
+    },
+    {
+      "name": "current-draft checklist includes the linked saved regression",
+      "passed": true
+    },
+    {
+      "name": "validated draft promotes through the real publish gate",
+      "passed": true
+    },
+    {
+      "name": "independent customer uses the new live release",
+      "passed": true
+    },
+    {
+      "name": "verified reports leave the open queue but remain in history",
+      "passed": true
+    },
+    {
+      "name": "revoked editor loses API access immediately",
+      "passed": true
+    },
+    {
+      "name": "revoked editor loses their own authored regression evidence",
+      "passed": true
+    },
+    {
+      "name": "real staging Monitor reconciles runs beyond API row cap",
+      "passed": true
+    },
+    {
+      "name": "real staging Eval counts and final page exceed API row cap",
+      "passed": true
+    },
+    {
+      "name": "bounded concurrent API load has no failed responses",
+      "passed": true
+    }
+  ],
+  "load": {
+    "requests": 8,
+    "concurrency": 2,
+    "successful": 8,
+    "p50_seconds": 0.777,
+    "p95_seconds": 0.873,
+    "max_seconds": 0.873,
+    "scope": "local API with hosted staging database; synthetic monitoring/feedback reads, no model load"
+  },
+  "fixture_namespace": "ef2556f196b44e868e151597bfb8abfe",
+  "real_customer_run": {
+    "provider": "claude",
+    "model": "claude-haiku-4-5-20251001",
+    "http_status": 200,
+    "succeeded": true,
+    "telemetry_recorded": true,
+    "failed_outcomes": 0
+  },
+  "status": "passed",
+  "fixtures_cleaned": true,
+  "finished_at": "2026-10-20T02:46:09.018143+00:00"
+}

@@ -28,6 +28,7 @@ class Query:
     def order(self, *args, **kwargs): return self
     def limit(self, *a): return self
     def gte(self, *a): return self
+    def range(self, start, end): self.bounds = (start, end); return self
     def delete(self): self.action = "delete"; return self
     def upsert(self, value, **kwargs): self.action = "upsert"; self.value = value; return self
     def execute(self):
@@ -43,6 +44,7 @@ class Query:
             table[:] = [row for row in table if row not in hits]
             return NS(data=hits)
         columns = self.columns.split(",") if self.columns else []
+        if getattr(self, "bounds", None): hits = hits[self.bounds[0]:self.bounds[1] + 1]
         return NS(data=[{key.strip(): row.get(key.strip()) for key in columns} for row in hits])
 
 async def user(request):
@@ -100,6 +102,39 @@ main.SUPABASE_SERVICE_ROLE_KEY = ""
 for method, path, body in [("GET", base, None), ("PUT", base, {"key": "TOKEN", "value": "synthetic"}), ("DELETE", base + "/TOKEN", None)]:
     ok(f"unavailable storage fails closed for {method}", c.request(method, path, headers=headers("owner"), json=body).status_code == 503)
 main.SUPABASE_SERVICE_ROLE_KEY = "svc"
+
+before = len(TABLES["app_secrets"])
+ok("an empty secret value is refused (it would be sent as a blank credential)",
+   c.put(base, headers=headers("owner"), json={"key": "BLANK", "value": "   "}).status_code == 400 and len(TABLES["app_secrets"]) == before)
+
+# ── At run time: a missing secret fails clearly; values never come back ──────
+import asyncio
+SENT = []
+class Reply:
+    status_code, text = 401, "bad key sk-live-fixture-123 for https://api.example.test/sk-live-fixture-123"
+async def fake_fetch(method, url, **kw): SENT.append((url, kw.get("headers"))); return Reply()
+main.fetch_safely = fake_fetch
+lookup = {"name": "Lookup", "type": "http", "config": {"url": "https://api.example.test/{{secrets.token}}", "method": "GET"}}
+out = asyncio.run(main.execute_tool(lookup, {}, {"secrets": {}}))
+ok("a tool whose secret was deleted fails clearly and calls nothing", not SENT and "TOKEN" in out and "Manage → Secrets" in out)
+out = asyncio.run(main.execute_tool(lookup, {}, {"secrets": {"TOKEN": "sk-live-fixture-123"}}))
+ok("the secret reaches only the outbound call", SENT[-1][0] == "https://api.example.test/sk-live-fixture-123")
+ok("a response or error repeating the secret is blanked out", "sk-live-fixture-123" not in out and "••••" in out)
+
+# ── Sign-in checks: a refused token is 401; an Auth outage is not ───────────
+class AuthApiError(Exception):
+    status = 403
+def auth_client(error): return NS(auth=NS(get_user=lambda token: (_ for _ in ()).throw(error)))
+anon = main.get_anon_client
+main.get_anon_client = lambda: auth_client(AuthApiError("Session from session_id claim in JWT does not exist"))
+ok("a revoked session is simply not signed in", asyncio.run(main.verify_user_jwt("revoked")) is None)
+main.get_anon_client = lambda: auth_client(ConnectionError("auth unreachable"))
+try:
+    asyncio.run(main.verify_user_jwt("valid")); outage = None
+except HTTPException as e:
+    outage = e.status_code
+ok("an Auth outage is reported as unavailable (503), not as signed out", outage == 503)
+main.get_anon_client = anon
 
 ok("earnings require sign-in", c.get("/stripe/earnings").status_code == 401)
 owner = c.get("/stripe/earnings", headers=headers("owner"))

@@ -51,3 +51,33 @@ Secret rotation/audit history and complete financial reconciliation remain separ
 - **Secrets:** secrets now belong to the app (not per editor). Each secret shows which tools use it, and secrets a tool needs but the app lacks are listed with an "Add" shortcut. Publishing is blocked until they are added (a missing secret used to become an empty value at run time).
 - **Marketplace:** listings go live only through the server (`POST /v1/apps/{id}/listing/go-live`), which requires a published app and a complete listing. The database refuses a browser setting a listing live, only an app's editors can manage its listing, and a live listing no longer makes an unpublished app readable.
 - Migrations `20261019030000_purchase_refunds` and `20261019040000_marketplace_listing_gate` are required.
+
+## Update — October 20, 2026
+
+Against the requirements baseline in `operate-manage-requirements-2026-10-19.md`.
+
+- **Revenue — payouts can't be sent twice.** Before any transfer the server claims the purchase (`payout_status = 'transferring'`, only if the status and attempt count are still what it read), so of two concurrent attempts exactly one pays. The Stripe idempotency key is the payment plus the attempt number (no longer the hour). A transfer Stripe already made is recorded, not repeated. A claim left by a stopped server is taken over after 15 minutes. A refund that arrives while a payout is being sent is refused with 503 so Stripe retries it once the transfer is recorded; a refund recorded first lowers the payout (the claim reads the current row).
+- **Revenue — complete ledgers.** Earnings and the CSV read every purchase page by page (no more silent 10,000 cap). Past 200,000 in a period, earnings say they're incomplete and the CSV is refused rather than partial. "Send owed payouts" covers all owed purchases (not the first 500), reports any it didn't reach in one request as remaining, and leaves alone a payout another attempt is sending.
+- **Version.** Rollback and publish apply only if what's live hasn't changed since it was read; otherwise 409 "Another release was made…" and nothing changes. A publish refused this way leaves no orphan version in the history. Version's rollback sends the live version on screen.
+- **Secrets.** A tool whose secret is missing (deleted, never added, or unreadable after an encryption-key change) now fails with a clear message and makes no outbound call, instead of sending an empty credential. Secret values are blanked out of tool results and errors before they reach the model, the run log or the person running the app. Empty values are refused; values are limited to 10,000 characters. Undecryptable secrets are reported to the operator.
+- **Market.** Removed the false "Payments are in setup mode" notice, the Stripe registration stub and the price × runs "projected revenue" line. Listings are loaded by app, so every editor sees and edits the same listing; a save over a teammate's newer edit is refused and their version shown. A live listing disappears from the Marketplace while its app is unpublished (and returns on republish). Prices below the $0.50 card minimum are refused in the editor and at go-live (buyers couldn't pay them).
+- **Sign-in checks.** A refused token is still 401; an Auth outage is now 503 and logged, not reported as "Unauthorized". Manage panels say "Your sign-in has ended…" on a 401.
+- Migration `20261020010000_manage_hardening` is required (payout claim columns, listing/review visibility). Until it is applied, "Send owed payouts" fails on that database.
+
+### Verification
+
+- Backend: 17 suites pass (payments 63, release 29, manage 30, listing 8). New checks cover concurrent payout claims, attempt-numbered keys, stale claim takeover, refund during a payout, refund before a payout, paging past 1,000 rows, the truncation flag and CSV refusal, 1,200 owed payouts, rollback/publish races, missing-secret failure, secret redaction, and Auth outage vs refusal.
+- Database (PGlite, every migration): 242 tests pass, including one-claim-wins on purchases, browsers unable to change payout state, unpublish hiding a live listing (and republish restoring it), and teammates reading the app's listing.
+- Browser: 154 tests, 84 passed and 70 viewport-specific skips, none failed. New: stale-screen rollback, teammate listing visibility and conflict, no setup-mode notice, card-minimum pricing, remaining payouts and incomplete totals.
+- Signed-in staging check: Market loaded with listings read by app and without the removed notices. Revenue couldn't be checked: Supabase reported the browser's session no longer exists ("Session from session_id claim in JWT does not exist"), so every API call returned 401.
+
+### Estimates (same baseline, ±5)
+
+| Area | Before | Now | What's left |
+|---|---:|---:|---|
+| Market | 80% | 90% | Buyer discovery → checkout → access on hosted staging. Decide whether the Marketplace's fallback (it lists every published app when no listing is live) should stay. |
+| Version | 90% | 90–95% | Release/rollback seen from a separate end-user session on hosted staging. |
+| Revenue | 80% | 90% | Stripe test-mode journey on hosted staging: checkout, duplicate/out-of-order webhooks, partial/full refunds, disputes, transfer reversals, reconciliation with Stripe's records. |
+| Secrets | 90% | 95% | Hosted encryption key backup/recovery; two-editor access/revocation on hosted staging. |
+
+What stands between these and 95% is now mostly hosted evidence (deployed backend + migrations, Stripe test mode, two real users), not code.

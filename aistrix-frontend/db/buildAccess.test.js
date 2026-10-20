@@ -210,6 +210,23 @@ describe('release gate and revenue records', () => {
   })
 })
 
+describe('Improve comparison history is for the app editors only', () => {
+  const entry = who => as(who, `insert into app_comparisons (app_id, user_id, input, baseline, candidate) values ($1, $2, 'Check invoice', '{"label":"v1","prompt":"SECRET"}', '{"label":"Draft"}') returning id`, [APP, U[who]])
+
+  it('editors save and read comparisons; viewers and outsiders cannot', async () => {
+    expect((await entry('developer')).error).toBeNull()
+    expect((await as('appEditor', `select input from app_comparisons where app_id = $1`, [APP])).rows.length).toBeGreaterThan(0)
+    for (const who of ['member', 'appViewer', 'outsider']) {
+      expect((await entry(who)).error).not.toBeNull()
+      expect((await as(who, `select baseline from app_comparisons where app_id = $1`, [APP])).rows).toHaveLength(0)
+    }
+  })
+
+  it("nobody can record a comparison under someone else's name", async () => {
+    expect((await as('developer', `insert into app_comparisons (app_id, user_id, input, baseline, candidate) values ($1, $2, 'x', '{}', '{}')`, [APP, U.owner])).error).not.toBeNull()
+  })
+})
+
 describe('Marketplace listings go live only through the server', () => {
   it('editors keep a draft listing, but cannot set it live from the browser', async () => {
     const draft = await as('developer', `insert into marketplace_listings (app_id, user_id, title) values ($1, $2, 'Pitch') returning id`, [APP, U.developer])
@@ -224,6 +241,42 @@ describe('Marketplace listings go live only through the server', () => {
     expect((await as('outsider', `insert into marketplace_listings (app_id, user_id, title) values ($1, $2, 'Mine now')`, [other, U.outsider])).error).not.toBeNull()
     await db.query(`insert into marketplace_listings (app_id, user_id, title, status) values ($1, $2, 'Live but unpublished', 'live')`, [other, U.appEditor])
     expect((await as('outsider', `select name from apps where id = $1`, [other])).rows).toHaveLength(0)   // a live listing doesn't publish the app
+    // …and the listing itself stays out of the Marketplace while the app is unpublished.
+    expect((await as('outsider', `select title from marketplace_listings where app_id = $1`, [other])).rows).toHaveLength(0)
+  })
+
+  it('unpublishing takes a live listing out of the Marketplace; republishing brings it back', async () => {
+    const app = '00000000-0000-0000-0000-00000000c0df'
+    await db.query(`insert into apps (id, name, created_by, is_published, visibility) values ($1, 'Listed', $2, true, 'public')`, [app, U.owner])
+    await db.query(`insert into marketplace_listings (app_id, user_id, title, status) values ($1, $2, 'Listed app', 'live')`, [app, U.owner])
+    const visible = async () => (await as('outsider', `select title from marketplace_listings where app_id = $1`, [app])).rows.length
+    expect(await visible()).toBe(1)
+    await db.query(`update apps set is_published = false where id = $1`, [app])
+    expect(await visible()).toBe(0)
+    expect((await as('owner', `select title from marketplace_listings where app_id = $1`, [app])).rows).toHaveLength(1)   // its editors still see it
+    await db.query(`update apps set is_published = true where id = $1`, [app])
+    expect(await visible()).toBe(1)
+  })
+
+  it("every editor of the app sees its listing, whoever created it", async () => {
+    expect((await as('appEditor', `select title from marketplace_listings where app_id = $1`, [APP])).rows).toHaveLength(1)
+  })
+})
+
+describe('payouts are claimed before money moves', () => {
+  it('only one of two concurrent claims on a purchase succeeds', async () => {
+    const { rows } = await db.query(`insert into purchases (app_id, dev_id, plan, gross_amount, dev_share, stripe_payment_ref, payout_status)
+                                     values ($1, $2, 'pay_per_run', 25, 20, 'pi_claim', 'pending') returning id, payout_attempts`, [APP, U.owner])
+    expect(rows[0].payout_attempts).toBe(0)
+    const claim = `update purchases set payout_status = 'transferring', payout_attempts = 1, payout_claimed_at = now()
+                   where id = $1 and payout_status = 'pending' and payout_attempts = 0 returning id`
+    expect((await db.query(claim, [rows[0].id])).rows).toHaveLength(1)
+    expect((await db.query(claim, [rows[0].id])).rows).toHaveLength(0)
+  })
+
+  it('browsers cannot change payout state', async () => {
+    const res = await as('owner', `update purchases set payout_status = 'transferred', payout_attempts = 0 where stripe_payment_ref = 'pi_claim' returning id`)
+    expect(res.error !== null || res.rows.length === 0).toBe(true)
   })
 })
 
@@ -417,5 +470,35 @@ describe('the rest of what Build touches', () => {
 
   it('app secrets are never readable from the browser, even by the owner', async () => {
     expect((await as('owner', `select * from app_secrets`)).rows).toHaveLength(0)
+  })
+})
+
+describe('launch readiness', () => {
+  it('deleting an app keeps its sales records for accounting', async () => {
+    const app = '00000000-0000-0000-0000-00000000c0e1'
+    await db.query(`insert into apps (id, name, created_by, is_published, visibility) values ($1, 'Short-lived', $2, false, 'private')`, [app, U.owner])
+    await db.query(`insert into purchases (app_id, dev_id, plan, gross_amount, stripe_payment_ref) values ($1, $2, 'pay_per_run', 25, 'pi_kept')`, [app, U.owner])
+    await db.query(`delete from apps where id = $1`, [app])
+    const { rows } = await db.query(`select app_id, gross_amount from purchases where stripe_payment_ref = 'pi_kept'`)
+    expect(rows).toHaveLength(1)
+    expect(rows[0].app_id).toBeNull()
+  })
+
+  it('notification records and one-time markers are server-only', async () => {
+    await db.query(`insert into developer_notifications (user_id, kind, ref) values ($1, 'refund', 'pi_1')`, [U.owner])
+    await expect(db.query(`insert into developer_notifications (user_id, kind, ref) values ($1, 'refund', 'pi_1')`, [U.owner])).rejects.toThrow(/duplicate key/)
+    await db.query(`insert into server_once (key) values ('github-state:abc')`)
+    await expect(db.query(`insert into server_once (key) values ('github-state:abc')`)).rejects.toThrow(/duplicate key/)
+    for (const table of ['developer_notifications', 'server_once']) {
+      expect((await as('owner', `select * from ${table}`)).error).not.toBeNull()
+      expect((await as('owner', `insert into ${table} default values`)).error).not.toBeNull()
+    }
+  })
+
+  it('a developer can turn alert emails off on their own profile', async () => {
+    await db.query(`insert into developer_profiles (user_id) values ($1) on conflict do nothing`, [U.developer])
+    const res = await as('developer', `update developer_profiles set email_alerts = false where user_id = $1 returning email_alerts`, [U.developer])
+    expect(res.error).toBeNull()
+    expect(res.rows[0].email_alerts).toBe(false)
   })
 })

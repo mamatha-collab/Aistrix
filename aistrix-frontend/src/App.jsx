@@ -169,21 +169,30 @@ export default function App() {
     setShowOnboarding(false)
   }, [])
 
-  // New developers (no apps yet) get the first-app onboarding; anyone else who
-  // hasn't been welcomed gets the welcome wizard. Never both.
-  const pickOnboarding = useCallback(session => {
+  // The starter popups are for end users. A developer (owns an app or has a
+  // developer profile) never sees them, on any page or browser. New end users
+  // get the first-app onboarding; anyone else not yet welcomed gets the
+  // welcome wizard. Never both.
+  const pickOnboarding = useCallback(async session => {
     if (!session || !shouldShowStarterOnboarding()) return
     const welcomed = !!localStorage.getItem('aistrix_welcomed')
-    if (localStorage.getItem('aistrix:app_onboarding_done')) {
-      if (!welcomed) setShowOnboarding(true)
+    const appOnboardingDone = !!localStorage.getItem('aistrix:app_onboarding_done')
+    if (welcomed && appOnboardingDone) return
+    const userId = session.user.id
+    const [apps, profile] = await Promise.all([
+      supabase.from('apps').select('id', { count: 'exact', head: true }).eq('created_by', userId),
+      supabase.from('developer_profiles').select('user_id').eq('user_id', userId).maybeSingle(),
+    ])
+    // Unknown (a read failed): show nothing rather than the wrong popup.
+    if (apps.error || profile.error) return
+    if ((apps.count || 0) > 0 || profile.data) {
+      localStorage.setItem('aistrix_welcomed', '1')
+      localStorage.setItem('aistrix_onboarding_done', '1')
+      localStorage.setItem('aistrix:app_onboarding_done', '1')
       return
     }
-    supabase.from('apps').select('id', { count: 'exact', head: true })
-      .eq('created_by', session.user.id)
-      .then(({ count }) => {
-        if ((count || 0) === 0) setShowAppOnboarding(true)
-        else if (!welcomed) setShowOnboarding(true)
-      })
+    if (!appOnboardingDone) setShowAppOnboarding(true)
+    else if (!welcomed) setShowOnboarding(true)
   }, [])
 
   function openBuilder(type) {

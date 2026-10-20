@@ -24,12 +24,13 @@ T = {
 
 
 class Q:
-    def __init__(self, t, user=None): self.t, self.user, self.f, self.op, self.val, self.inf = t, user, {}, "select", None, None
+    def __init__(self, t, user=None): self.t, self.user, self.f, self.op, self.val, self.inf = t, user, {}, "select", None, None; self.bounds = None
     def select(self, *a, **k): return self
     def eq(self, k, v): self.f[k] = v; return self
     def in_(self, k, v): self.inf = (k, v); return self
     def order(self, *a, **k): return self
     def limit(self, *a): return self
+    def range(self, start, end): self.bounds = (start, end); return self
     def update(self, v): self.op, self.val = "update", v; return self
     def upsert(self, v, **k): self.op, self.val = "upsert", v; return self
     def execute(self):
@@ -47,6 +48,7 @@ class Q:
             else: rows.append({"id": f"fb-{len(rows) + 1}", "status": "new", "note": None, "test_case_id": None,
                                "created_at": "2026-10-19T10:00:00Z", **self.val})
             return NS(data=[self.val])
+        if self.bounds: hits = hits[self.bounds[0]:self.bounds[1] + 1]
         return NS(data=[dict(r) for r in hits])
 
 
@@ -61,7 +63,11 @@ main.require_verified_user = user
 main.resolve_api_caller = caller
 main.load_app_row = load
 main.workspace_role = none; main.app_member_role = none; main.personal_workspace_id = none
-main._service_client = lambda: NS(table=lambda t: Q(t))
+def rpc(name, params):
+    assert name == "app_feedback_counts"
+    from collections import Counter
+    return NS(execute=lambda: NS(data=dict(Counter(r['status'] for r in T['app_feedback'] if r['app_id'] == params['p_app_id']))))
+main._service_client = lambda: NS(table=lambda t: Q(t), rpc=rpc)
 main.get_supabase_for_user = lambda jwt: NS(table=lambda t: Q(t, user=jwt))
 c = TestClient(main.app)
 as_ = lambda who: {"Authorization": f"Bearer {who}"}
@@ -90,6 +96,7 @@ ok("…but never who gave it", "customer" not in r.text and "user_id" not in ite
 ok("another developer can't read it", c.get("/v1/apps/app-1/feedback", headers=as_("other-dev")).status_code == 404)
 ok("customers can't read the inbox", c.get("/v1/apps/app-1/feedback", headers=as_("customer")).status_code == 404)
 ok("unknown status filter is refused", c.get("/v1/apps/app-1/feedback?status=zzz", headers=as_("dev")).status_code == 400)
+ok("verification needs a linked regression and evidence", c.patch(f"/v1/feedback/{item['id']}", headers=as_("dev"), json={"status": "verified"}).status_code == 400)
 
 r = c.patch(f"/v1/feedback/{item['id']}", headers=as_("dev"), json={"status": "investigating", "test_case_id": "case-1", "note": "Regression saved"})
 ok("triage: status, note and the regression test are saved", r.status_code == 200 and T["app_feedback"][0]["status"] == "investigating"
@@ -97,8 +104,32 @@ ok("triage: status, note and the regression test are saved", r.status_code == 20
 ok("a test from another app can't be linked", c.patch(f"/v1/feedback/{item['id']}", headers=as_("dev"), json={"test_case_id": "case-9"}).status_code == 400)
 ok("unknown status refused", c.patch(f"/v1/feedback/{item['id']}", headers=as_("dev"), json={"status": "done"}).status_code == 400)
 ok("another developer can't triage it", c.patch(f"/v1/feedback/{item['id']}", headers=as_("other-dev"), json={"status": "dismissed"}).status_code == 404)
-c.patch(f"/v1/feedback/{item['id']}", headers=as_("dev"), json={"status": "verified"})
+APPS['app-1']['promoted_at'] = "2026-10-01T00:00:00Z"        # released before the customer reported it
+r = c.patch(f"/v1/feedback/{item['id']}", headers=as_("dev"), json={"status": "verified"})
+ok("a release from before the report can't verify the fix", r.status_code == 409 and "after this feedback" in r.json()["detail"])
+APPS['app-1']['promoted_at'] = "2026-10-20T00:00:00Z"        # the fix shipped afterwards
+r = c.patch(f"/v1/feedback/{item['id']}", headers=as_("dev"), json={"status": "verified"})
+ok("a release after the report, a linked test and a note verify it", r.status_code == 200 and T["app_feedback"][0]["status"] == "verified")
+ok("verified evidence cannot be silently removed", c.patch(f"/v1/feedback/{item['id']}", headers=as_("dev"), json={"note": None}).status_code == 400)
+APPS['app-1']['is_published'] = False
+ok("offline apps cannot be marked verified", c.patch(f"/v1/feedback/{item['id']}", headers=as_("dev"), json={"status": "verified"}).status_code == 409)
+APPS['app-1']['is_published'] = True
 ok("verified items leave the open list but stay in 'all'",
    c.get("/v1/apps/app-1/feedback", headers=as_("dev")).json()["items"] == []
    and len(c.get("/v1/apps/app-1/feedback?status=all", headers=as_("dev")).json()["items"]) == 1)
+c.post("/v1/runs/run-1/feedback", headers=as_("customer"), json={"rating": 1})
+ok("re-rating without consent clears previously shared evidence and comment", T["app_feedback"][0]["shared_input"] is None
+   and T["app_feedback"][0]["shared_output"] is None and T["app_feedback"][0]["comment"] is None
+   and T["app_feedback"][0]["test_case_id"] == "case-1")
+ok("triage notes enforce length", c.patch(f"/v1/feedback/{item['id']}", headers=as_("dev"), json={"note": "x" * 1001}).status_code == 422)
+ok("invalid page sizes and negative offsets refused", c.get("/v1/apps/app-1/feedback?limit=201", headers=as_("dev")).status_code == 400
+   and c.get("/v1/apps/app-1/feedback?offset=-1", headers=as_("dev")).status_code == 400)
+T["app_feedback"] = [{**item, "id": f"page-{i}", "status": "new"} for i in range(205)]
+first = c.get("/v1/apps/app-1/feedback?limit=20", headers=as_("dev")).json()
+second = c.get("/v1/apps/app-1/feedback?limit=20&offset=20", headers=as_("dev")).json()
+last = c.get("/v1/apps/app-1/feedback?limit=20&offset=200", headers=as_("dev")).json()
+ok("feedback beyond the former 200-row cap is accessible with no duplicate pages", len(first["items"]) == 20
+   and first["next_offset"] == 20 and len(second["items"]) == 20
+   and not ({r["id"] for r in first["items"]} & {r["id"] for r in second["items"]})
+   and len(last["items"]) == 5 and last["next_offset"] is None and first["counts"]["new"] == 205)
 finish()

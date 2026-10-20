@@ -53,6 +53,9 @@ APPS["app-1"].update(is_published=True, live_version=1, total_runs=3, is_paid=Tr
 LISTINGS[0].update(tagline="Writes pitches", category="Writing & Content")
 r = go()
 ok("a paid app needs a price before listing", r.status_code == 409 and r.json()["problems"] == ["Paid app has no price — set one in Marketplace"])
+APPS["app-1"]["price_per_run"] = 0.05
+r = go()
+ok("a price below the card minimum can't be listed (buyers couldn't pay)", r.status_code == 409 and "card minimum" in r.json()["problems"][0])
 APPS["app-1"]["price_per_run"] = 2
 r = go()
 ok("a published app with a complete listing goes live", r.status_code == 200 and r.json()["listing"]["status"] == "live" and LISTINGS[0]["status"] == "live")

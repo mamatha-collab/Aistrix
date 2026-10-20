@@ -1,0 +1,30 @@
+{
+  "checked_at": "2026-10-20T02:18:11.932380+00:00",
+  "database_host": "qhfxnpsvdolaftaljvdp.supabase.co",
+  "database_configured": true,
+  "schema": {
+    "rls_enabled": true,
+    "server_only": true,
+    "test_trigger": true,
+    "delivery_unique": true,
+    "feedback_columns": true,
+    "feedback_trigger": true,
+    "telemetry_columns": true,
+    "counts_server_only": true,
+    "test_access_policy": true
+  },
+  "recovery_path_configured_in_selected_env": true,
+  "persistent_volume_verified": false,
+  "hosted_customer_editor_journey_verified": false,
+  "column_checks": {
+    "run_telemetry": true,
+    "feedback": true,
+    "test_case_freshness": true
+  },
+  "column_http_status": {
+    "run_telemetry": 200,
+    "feedback": 200,
+    "test_case_freshness": 200
+  },
+  "database_status": "passed"
+}

@@ -109,3 +109,19 @@ test('payout verification errors remain visible instead of implying a disconnect
   await panel.getByRole('button', { name: 'Refresh payout status' }).click()
   await expect(panel.getByText('Payout account setup is incomplete.', { exact: true })).toBeVisible()
 })
+
+test('revenue says when payouts remain or totals are incomplete', async ({ page, isMobile }) => {
+  test.skip(isMobile, 'Covered on desktop; the phone uses the same component.')
+  await page.goto('/e2e/fixtures/?scenario=operations')
+  await page.evaluate(() => {
+    window.buildFixture.earnings = { total_gross: 5000, total_dev_share: 4000, total_pending: 900, owed_count: 1200, platform_fee_pct: 20,
+      purchase_count: 200000, truncated: true, by_app: [], recent: [] }
+    window.buildFixture.payoutResult = { sent: 700, failed: 0, in_progress: 1, remaining: 499 }
+  })
+  await openSection(page, isMobile, 'revenue')
+  const revenue = page.getByRole('region', { name: 'Revenue details' })
+  await expect(revenue.getByRole('alert')).toContainText('newest 200,000 purchases only')
+  await revenue.getByRole('button', { name: 'Send owed payouts' }).click()
+  await expect(page.getByText('Sent 700 payouts; 1 already being sent; 499 still to send: select Send owed payouts again')).toBeVisible()
+  await expect(revenue.getByRole('button', { name: 'Send owed payouts' })).toBeVisible()
+})

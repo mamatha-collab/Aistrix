@@ -7,6 +7,7 @@ import { getMonitorOverview, pct } from '../../lib/monitor'
 import { getAppFeedback, statusLabel } from '../../lib/feedback'
 import { timeAgo } from '../../utils'
 
+const MonitorPanel = lazy(() => import('./MonitorPanel'))
 const MobileManage = lazy(() => import('./MobileManage'))
 const SettingsPage = lazy(() => import('../SettingsPage'))
 const PublishedVersions = lazy(() => import('../../components/PublishedVersions'))
@@ -14,7 +15,7 @@ const card = 'rounded-2xl border border-white/8 bg-[#171B33] p-4'
 const action = 'min-h-11 rounded-xl px-3 py-2 text-sm font-medium text-slate-200 hover:bg-white/5'
 
 function FeedbackCard({ item }) {
-  const shared = item.shared_input || item.shared_output
+  const shared = item.shared_input != null || item.shared_output != null
   return <details className={card}>
     <summary className="cursor-pointer list-none space-y-1">
       <p className="text-sm text-white leading-relaxed break-words"><span aria-label={item.rating === -1 ? 'Not useful' : 'Useful'} className="mr-1.5">{item.rating === -1 ? '👎' : '👍'}</span><span>{item.comment || 'Answer marked not useful'}</span></p>
@@ -23,7 +24,7 @@ function FeedbackCard({ item }) {
     <div className="mt-4 space-y-3 border-t border-white/8 pt-3">
       {shared ? [['Customer question', item.shared_input], ['Answer they got', item.shared_output]].map(([label, value]) => <div key={label}>
         <p className="text-xs font-semibold text-slate-400 mb-1">{label}</p>
-        <p className="text-sm text-slate-200 whitespace-pre-wrap break-words max-h-64 overflow-y-auto">{value || 'Not shared'}</p>
+        <p className="text-sm text-slate-200 whitespace-pre-wrap break-words max-h-64 overflow-y-auto">{value == null ? 'Not shared' : value === '' ? 'Shared, but empty' : value}</p>
       </div>) : <p className="text-sm text-slate-400">The customer didn't share their question or the answer.</p>}
       <p className="text-xs text-slate-500">Triage and turn it into a regression test in Evaluate on a computer or tablet.</p>
     </div>
@@ -56,6 +57,7 @@ export default function MobileDeveloper({ user, apps, phaseByAppId, loading, err
   const [overviewKey, setOverviewKey] = useState(0)
   const appIds = apps.map(a => a.id).join(',')
   useEffect(() => {
+    if (view === 'monitor') return undefined
     if (!appIds) { setOverview({ loading: false, error: '', apps: [] }); return undefined }
     let active = true
     setOverview(o => ({ ...o, loading: true, error: '' }))
@@ -63,10 +65,8 @@ export default function MobileDeveloper({ user, apps, phaseByAppId, loading, err
       .then(data => { if (active) setOverview({ loading: false, error: '', apps: data.apps || [] }) })
       .catch(e => { if (active) setOverview({ loading: false, error: e.message || 'App health could not be loaded.', apps: [] }) })
     return () => { active = false }
-  }, [appIds, overviewKey])
+  }, [appIds, overviewKey, view])
   const health = id => overview.apps.find(a => a.app_id === id)
-  const openFeedback = overview.apps.reduce((n, a) => n + (a.open_feedback || 0), 0)
-  const alerts = overview.apps.flatMap(a => a.alerts.filter(al => al.level !== 'info').map(al => ({ ...al, app_id: a.app_id })))
   const needsLook = id => { const h = health(id); return !!h && (h.open_feedback > 0 || h.alerts.some(al => al.level !== 'info')) }
   function refreshAll() { onRefresh?.(); setOverviewKey(n => n + 1); setFeedbackKey(n => n + 1) }
 
@@ -79,7 +79,7 @@ export default function MobileDeveloper({ user, apps, phaseByAppId, loading, err
     let active = true
     setInbox({ loading: true, error: '', items: [] })
     getAppFeedback(feedbackApp, 'open')
-      .then(data => { if (active) setInbox({ loading: false, error: '', items: data.items || [] }) })
+      .then(data => { if (active) setInbox({ loading: false, error: '', items: data.items || [], nextOffset: data.next_offset }) })
       .catch(e => { if (active) setInbox({ loading: false, error: e.message || 'Feedback could not be loaded.', items: [] }) })
     return () => { active = false }
   }, [view, feedbackApp, feedbackKey])
@@ -116,27 +116,16 @@ export default function MobileDeveloper({ user, apps, phaseByAppId, loading, err
     <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-5 space-y-5" key={`${view}:${selectedId || ''}`}>
       <div className="flex items-center justify-between gap-3">
         <h1 className="text-xl text-white font-semibold">{selected && view === 'apps' ? 'App details' : view === 'monitor' ? 'Monitor' : view === 'apps' ? 'Apps' : view === 'manage' ? 'Manage' : view === 'settings' ? 'Settings' : 'Feedback'}</h1>
-        {view !== 'manage' && <button className={`${action} !p-2.5 border border-white/8`} aria-label="Refresh app activity" disabled={loading || overview.loading} onClick={refreshAll}><RefreshCw size={18} className={loading || overview.loading ? 'animate-spin' : ''} /></button>}
+        {view !== 'manage' && <button className={`${action} !p-2.5 border border-white/8`} aria-label="Refresh app activity" disabled={loading || (view !== 'monitor' && overview.loading)} onClick={refreshAll}><RefreshCw size={18} className={loading || (view !== 'monitor' && overview.loading) ? 'animate-spin' : ''} /></button>}
       </div>
       {error && view !== 'manage' && <div role="alert" className="rounded-xl border border-amber-400/20 bg-amber-400/5 p-3 text-sm text-amber-200">{error}<button className="block underline min-h-11" onClick={refreshAll}>Try again</button></div>}
       {view === 'settings' ? <ErrorBoundary compact title="Settings could not load"><Suspense fallback={<p role="status" className="text-sm text-slate-400">Loading Settings…</p>}><SettingsPage user={user} developer embedded /></Suspense></ErrorBoundary> : view === 'manage' ? <ErrorBoundary compact title="Manage could not load"><Suspense fallback={<p role="status" className="text-sm text-slate-400">Loading Manage…</p>}><MobileManage apps={apps} user={user} onAppUpdated={onAppUpdated} /></Suspense></ErrorBoundary> : loading && !hasLoaded ? <div role="status" className="space-y-3"><p className="text-sm text-slate-400">Loading app activity…</p>{[0, 1, 2].map(i => <div key={i} className="h-20 rounded-2xl bg-white/5 animate-pulse" />)}</div> : !apps.length && !error ? <div className={`${card} space-y-2`}><h2 className="text-white font-semibold">No apps yet</h2><p className="text-sm text-slate-400 leading-relaxed">Create your first app on a computer or tablet. Check its activity and feedback here.</p></div> : <>
-        {view === 'monitor' && <>
-          <div className="grid grid-cols-2 gap-3">
-            <div className={card}><p className="text-2xl text-white font-bold">{live.length}</p><p className="text-xs text-slate-400 mt-1">Live apps</p></div>
-            <button className={`${card} text-left`} onClick={() => navigate('feedback')}><p className="text-2xl text-amber-300 font-bold">{overview.error || overview.loading ? '—' : openFeedback}</p><p className="text-xs text-slate-400 mt-1">Feedback to review</p></button>
-          </div>
-          {overview.error && <div role="alert" className="rounded-xl border border-amber-400/20 bg-amber-400/5 p-3 text-sm text-amber-200">{overview.error}<button className="block underline min-h-11" onClick={refreshAll}>Try again</button></div>}
-          {!overview.error && <section className="space-y-3"><h2 className="text-sm text-white font-semibold">Needs attention</h2>
-            {overview.loading ? <p role="status" className="text-sm text-slate-400">Checking app health…</p>
-              : alerts.length ? alerts.slice(0, 5).map((al, i) => <button key={`${al.app_id}:${al.kind}:${i}`} className={`${card} w-full text-left space-y-1`} onClick={() => openApp(al.app_id)}>
-              <span className="block text-xs text-slate-400 truncate">{apps.find(a => a.id === al.app_id)?.name}</span><span className={`block text-sm leading-relaxed break-words ${al.level === 'critical' ? 'text-red-200' : 'text-white'}`}>{al.message}</span>
-            </button>) : <p className="text-sm text-slate-400">No problems found in the last 7 days.</p>}
-          </section>}
-          <section className="space-y-3"><div className="flex items-center justify-between"><h2 className="text-sm text-white font-semibold">Live apps</h2><button className={`${action} !text-[#A29BFE]`} onClick={() => navigate('apps')}>View all</button></div>
-            {live.length ? live.slice(0, 5).map(appRow) : <p className="text-sm text-slate-400">Your apps are still in Build.</p>}
-          </section>
-          <p className="text-xs text-slate-500 leading-relaxed">Last 7 days of real runs: customers, API calls and website visitors. Your own draft and test runs aren't counted.</p>
-        </>}
+        {view === 'monitor' && <ErrorBoundary compact title="Monitor could not load"><Suspense fallback={<p role="status" className="text-sm text-slate-400">Loading Monitor…</p>}>
+          <MonitorPanel apps={apps} compact refreshKey={overviewKey} onNavigate={(stage, id) => {
+            if (stage === 'evaluate') { setFilter(id); navigate('feedback') }
+            else { openApp(id); setShowVersions(true) }
+          }} />
+        </Suspense></ErrorBoundary>}
         {view === 'apps' && !selected && <>
           {apps.length > 5 && <input aria-label="Find an app" placeholder="Find an app" className="w-full min-h-11 rounded-xl bg-[#0E1424] border border-white/10 px-3 text-sm text-white" value={search} onChange={e => setSearch(e.target.value)} />}
           {[['Live apps', true], ['In Build', false]].map(([label, published]) => {
@@ -164,6 +153,7 @@ export default function MobileDeveloper({ user, apps, phaseByAppId, loading, err
           <details className={`${card} text-sm text-slate-400`}><summary className="cursor-pointer">Build status</summary><p className="mt-3 leading-relaxed">{({ design: 'Design', test: 'Test', deploy: 'Publish' })[phaseByAppId[selected.id]] || 'Design'} stage. Continue building on a computer or tablet.</p></details>
         </>}
         {view === 'feedback' && <>
+          {inbox.nextOffset != null && <p className="text-xs text-slate-400">Showing the latest 200 reports. Review the full feedback queue in Eval on a computer or tablet.</p>}
           <select aria-label="Filter feedback by app" value={feedbackApp} onChange={e => { setFilter(e.target.value); setLimit(10) }} className="w-full min-h-11 rounded-xl bg-[#0E1424] border border-white/10 px-3 text-sm text-white">{apps.map(a => <option key={a.id} value={a.id}>{a.name}{health(a.id)?.open_feedback ? ` · ${health(a.id).open_feedback} open` : ''}</option>)}</select>
           {inbox.error ? <div role="alert" className="rounded-xl border border-amber-400/20 bg-amber-400/5 p-3 text-sm text-amber-200">{inbox.error}<button className="block underline min-h-11" onClick={() => setFeedbackKey(n => n + 1)}>Try again</button></div>
             : inbox.loading ? <p role="status" className="text-sm text-slate-400">Loading feedback…</p>

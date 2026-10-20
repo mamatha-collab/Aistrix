@@ -138,14 +138,16 @@ Publishing now refuses to go live if it cannot record the version history
 (`app_versions.version_num`), so the database must be migrated **before** the new
 backend serves traffic:
 
-1. Apply the migrations `20261013030000` through `20261019040000` to production
+1. Apply the migrations `20261013030000` through `20261020020000` to production
    (`supabase db push` against the production project). Production already has
    everything through `20261014030000`; the new ones are
    `20261015010000_purchase_payment_ref`, `20261015020000_test_case_updated_at`,
    `20261015030000_github_connection_server_only`,
    `20261015040000_pay_per_run_credits`, `20261019010000_run_telemetry` and
    `20261019020000_app_feedback`, `20261019030000_purchase_refunds` and
-   `20261019040000_marketplace_listing_gate`.
+   `20261019040000_marketplace_listing_gate`, `20261019050000_operations_delivery`,
+   `20261019060000_improve_comparisons`, `20261020010000_manage_hardening` and
+   `20261020020000_launch_readiness`.
 2. Deploy the backend.
 3. Deploy the frontend.
 4. Smoke-check: open Dev Studio, publish or promote a test app, confirm a new
@@ -185,3 +187,17 @@ before this change keep one more run.
 (`https://<api host>/auth/github/callback`, the same URL as in the GitHub OAuth
 app). Migration `20261015030000` drops tokens saved the old way, so developers
 who connected before reconnect once.
+
+**Operations server settings.** `TELEMETRY_OUTBOX_PATH` should point at
+persistent storage (one volume per server); if it's unavailable, runs are
+still served and their outcomes are sent directly. `OPS_HEALTH_TOKEN` enables
+the operator-only `/health/details` (send it as `X-Ops-Token`); public
+`/health` no longer shows the database project or process id.
+`MONITOR_CACHE_SECONDS` (default 20) caches Monitor reads briefly.
+
+**Revenue server settings.** `PAYOUT_CLAIM_STALE_SECONDS` (default 900): a payout
+claimed by a server that stopped mid-transfer is taken over after this long.
+`PAYOUT_BATCH_SECONDS` (default 25): how long one "Send owed payouts" request
+works before reporting the rest as remaining. `PURCHASE_ROW_LIMIT` (default
+200,000): past this many purchases in a period, earnings say they're incomplete
+and the CSV asks for a shorter period.

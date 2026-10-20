@@ -11,7 +11,7 @@ test('phone opens a clean monitoring workspace with four destinations', async ({
   await expect(page.getByRole('button', { name: '+ App', exact: true })).toHaveCount(0)
   // Server health: open customer feedback across apps, and no alerts in this data.
   await expect(page.getByRole('button', { name: /2\s*Feedback to review/ })).toBeVisible()
-  await expect(page.getByText('No problems found in the last 7 days.')).toBeVisible()
+  await expect(page.getByText(/No production traffic to assess yet/)).toBeVisible()
   await expect(page.getByText(/Your own draft and test runs aren't counted/)).toBeVisible()
   await page.screenshot({ path: testInfo.outputPath('mobile-monitor.png') })
   for (const width of [320, 390, 767]) {
@@ -46,10 +46,11 @@ test('apps are grouped and feedback expands only when requested', async ({ page 
 test('phone health errors are visible and refresh recovers', async ({ page }) => {
   await page.goto('/e2e/fixtures/?scenario=operations')
   await expect(page.getByRole('heading', { name: 'Monitor', exact: true })).toBeVisible()
+  await expect(page.getByRole('button', { name: /2\s*Feedback to review/ })).toBeVisible()
   await page.evaluate(() => { window.buildFixture.failures['/v1/monitor'] = 'Health unavailable' })
   await page.getByRole('button', { name: 'Refresh app activity' }).click()
   await expect(page.getByRole('alert')).toContainText('Health unavailable')
-  await expect(page.getByRole('button', { name: /—\s*Feedback to review/ })).toBeVisible()      // not shown as zero
+  await expect(page.getByText(/Showing the last successful update/)).toBeVisible()
   await page.evaluate(() => { delete window.buildFixture.failures['/v1/monitor'] })
   await page.getByRole('button', { name: 'Try again' }).click()
   await expect(page.getByRole('alert')).toHaveCount(0)

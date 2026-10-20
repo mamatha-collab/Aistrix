@@ -5,11 +5,12 @@ import { supabase } from '../supabase'
 import { errorFromResponse } from './runStream'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
-export const MONITOR_PERIODS = [[1, '24 hours'], [7, '7 days'], [30, '30 days'], [90, '90 days']]
+export const MONITOR_PERIODS = [[1, '24 hours'], [7, '7 days'], [30, '30 days']]
 
-async function get(path, fallback) {
+async function get(path, fallback, signal) {
   const { data: { session } } = await supabase.auth.getSession()
   const res = await fetch(`${API_URL}${path}`, {
+    signal,
     headers: session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {},
   })
   if (!res.ok) throw await errorFromResponse(res, fallback)
@@ -17,10 +18,10 @@ async function get(path, fallback) {
 }
 
 // { totals, daily, by_version, by_source, error_kinds, alerts, truncated }
-export const getAppMonitor = (appId, days) => get(`/v1/apps/${appId}/monitor?days=${days}`, 'Could not load monitoring data')
+export const getAppMonitor = (appId, days, signal) => get(`/v1/apps/${encodeURIComponent(appId)}/monitor?days=${days}`, 'Could not load monitoring data', signal)
 // { apps: [{ app_id, totals, alerts }] } — only apps the caller can edit
-export const getMonitorOverview = (appIds, days) =>
-  get(`/v1/monitor?days=${days}&app_ids=${appIds.map(encodeURIComponent).join(',')}`, 'Could not load monitoring data')
+export const getMonitorOverview = (appIds, days, signal) =>
+  get(`/v1/monitor?days=${days}&app_ids=${appIds.map(encodeURIComponent).join(',')}`, 'Could not load monitoring data', signal)
 
 export const pct = rate => rate == null ? '—' : `${Math.round(rate * 1000) / 10}%`
 export const duration = ms => ms == null ? '—' : ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)} s`
@@ -34,4 +35,5 @@ export const ERROR_LABELS = {
   timeout: 'Timed out', provider_error: 'AI provider error', rate_limit: 'Provider rate limit or credit',
   auth: 'Invalid AI key', permission: 'Key lacks model access', bad_request: 'Prompt or settings rejected',
   refusal: 'Model declined', contract: 'Output format not met', unexpected: 'Unexpected server error', unknown: 'Unknown',
+  cancelled: 'Connection or request cancelled', interrupted: 'Run interrupted before completion',
 }

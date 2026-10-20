@@ -225,3 +225,19 @@ test("a rollback from a stale screen never replaces a teammate's newer release",
   await expect(page.getByText(/Another release was made while you were doing this/)).toBeVisible()
   expect(await live()).toEqual({ version: 3, prompt: "Teammate's v3 prompt." })
 })
+
+test("an app's first publish waits for review and says so", async ({ page }) => {
+  await open(page, '?scenario=live')
+  await page.evaluate(() => {
+    window.buildFixture.reviewFirstPublish = true
+    Object.assign(window.buildFixture.tables.apps[0], { publish_approved_at: null })
+  })
+  await page.getByRole('button', { name: /Promote draft to live/ }).click()
+  await page.getByRole('button', { name: 'Next →', exact: true }).click()
+  await page.getByRole('button', { name: /Promote to production/ }).click()
+  await expect(page.getByText(/Submitted for review/)).toBeVisible()
+  await expect(page.getByText('🚀 Changes promoted to production')).toHaveCount(0)
+  const app = await page.evaluate(() => window.buildFixture.tables.apps[0])
+  expect(app.status).toBe('pending')
+  expect(app.is_published).toBe(false)
+})

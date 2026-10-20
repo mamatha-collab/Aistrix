@@ -502,3 +502,55 @@ describe('launch readiness', () => {
     expect(res.rows[0].email_alerts).toBe(false)
   })
 })
+
+describe('developer tiers', () => {
+  const DEV = '00000000-0000-0000-0000-0000000000e1'
+  beforeAll(async () => {
+    await db.query(`insert into auth.users (id, email) values ($1, 'tiered@example.test') on conflict do nothing`, [DEV])
+  })
+  const tier = async user => (await db.query(`select developer_tier($1) t`, [user])).rows[0].t
+  const claim = async user => (await db.query(`select claim_test_run($1) c`, [user])).rows[0].c
+
+  it('everyone starts Free; only staff can make a developer Verified', async () => {
+    expect(await tier(DEV)).toBe('free')
+    await db.query(`insert into developer_profiles (user_id) values ($1) on conflict do nothing`, [DEV])
+    const self = await asUser(db, DEV, tx => tx.query(`update developer_profiles set is_verified = true where user_id = $1 returning is_verified`, [DEV]))
+    expect(self.rows[0].is_verified).toBe(false)                         // ignored: developers can't verify themselves
+    expect(await tier(DEV)).toBe('free')
+    expect((await as('owner', `select tier, draft_apps from developer_limits order by tier`)).rows)
+      .toEqual([{ tier: 'free', draft_apps: 10 }, { tier: 'verified', draft_apps: 30 }])   // the limits are public
+  })
+
+  it('a Free developer can have 10 draft apps', async () => {
+    for (let i = 0; i < 10; i++) {
+      await db.query(`insert into apps (name, created_by, is_published, visibility) values ($1, $2, false, 'private')`, [`Draft ${i}`, DEV])
+    }
+    await expect(db.query(`insert into apps (name, created_by, is_published, visibility) values ('One too many', $1, false, 'private')`, [DEV]))
+      .rejects.toThrow(/up to 10 draft apps/)
+    await db.query(`update developer_profiles set is_verified = true where user_id = $1`, [DEV])     // as staff/server
+    expect(await tier(DEV)).toBe('verified')
+    await db.query(`insert into apps (name, created_by, is_published, visibility) values ('Verified can', $1, false, 'private')`, [DEV])
+  })
+
+  it('test runs are limited per day and at once, and a slot frees on release', async () => {
+    await db.query(`update developer_profiles set is_verified = false where user_id = $1`, [DEV])
+    const first = await claim(DEV)
+    expect(first).toMatchObject({ ok: true, slot: 1, used: 1, limit: 20, tier: 'free' })
+    expect(await claim(DEV)).toMatchObject({ ok: false, reason: 'concurrent', limit: 1 })
+    await db.query(`select release_test_run($1, 1)`, [DEV])
+    await db.query(`update developer_test_usage set runs = 20 where user_id = $1`, [DEV])
+    expect(await claim(DEV)).toMatchObject({ ok: false, reason: 'daily', limit: 20 })
+    expect((await db.query(`select count(*)::int n from developer_test_slots where user_id = $1`, [DEV])).rows[0].n).toBe(0)
+    expect((await as('owner', `select * from developer_test_usage`)).error).not.toBeNull()   // server only
+    expect((await as('owner', `select claim_test_run($1)`, [U.owner])).error).not.toBeNull()
+  })
+
+  it('only staff approval marks an app approved for publishing', async () => {
+    const { rows } = await db.query(`insert into apps (name, created_by, is_published, visibility) values ('Review me', $1, false, 'private') returning id`, [U.owner])
+    const id = rows[0].id
+    const forged = await as('owner', `update apps set publish_approved_at = now() where id = $1 returning publish_approved_at`, [id])
+    expect(forged.rows[0]?.publish_approved_at ?? null).toBeNull()
+    await db.query(`update apps set status = 'approved', is_published = true where id = $1`, [id])         // staff approve (service/staff)
+    expect((await db.query(`select publish_approved_at from apps where id = $1`, [id])).rows[0].publish_approved_at).not.toBeNull()
+  })
+})

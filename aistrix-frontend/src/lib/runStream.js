@@ -84,8 +84,10 @@ export async function generateJSON(systemPrompt, input, { provider, model, signa
     provider = b.provider
     model = (b.provider === 'claude' && model) || b.model   // a requested Claude model (e.g. Haiku) stays on Claude
   }
+  // Only developer tools generate JSON (Build with AI, Create App): they run
+  // on the developer's own AI key.
   const { text } = await streamRun({
-    input, system_prompt: systemPrompt, output_type: 'json', ai_provider: provider, ai_model: model,
+    input, system_prompt: systemPrompt, output_type: 'json', ai_provider: provider, ai_model: model, purpose: 'build',
   }, { signal })
   return parseModelJSON(text)
 }

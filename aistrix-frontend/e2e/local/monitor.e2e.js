@@ -89,3 +89,17 @@ test('new scope never displays the previous period and alerts lead to app diagno
   await page.getByLabel('App to monitor').selectOption('all')
   await page.screenshot({ path: testInfo.outputPath('monitor-overview.png') })
 })
+
+test('Free developers see Basic analytics, with the rest labelled as Verified-only', async ({ page }) => {
+  await page.goto('/e2e/fixtures/?scenario=monitor')
+  await page.evaluate(() => { window.buildFixture.analytics = 'basic' })
+  await tab(page, 'Monitor: Usage')
+  await page.getByLabel('App to monitor').selectOption('app-1')
+  await expect(page.getByText('Typical response')).toBeVisible()
+  await expect(page.getByText('Included for Verified developers').first()).toBeVisible()
+  await expect(page.getByText('No response timings recorded')).toHaveCount(0)
+  await expect(page.getByText(/Alerts .* are included for Verified developers/)).toBeVisible()
+  await expect(page.getByText('No alert thresholds reached in this period.', { exact: false })).toHaveCount(0)
+  await expect(page.getByText(/Per-version health is included for Verified developers/)).toBeVisible()
+  await expect(page.getByRole('row', { name: /v2\s*live/ })).toHaveCount(0)
+})

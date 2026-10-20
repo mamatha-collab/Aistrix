@@ -617,7 +617,7 @@ export function ImproveTab({ apps, user, selectedAppId, selectedRunId, onSaveCan
     const controller = new AbortController()
     requests.current.add(controller)
     try {
-      await streamRun({ input: userMsg, system_prompt: systemPrompt,
+      await streamRun({ purpose: 'build', input: userMsg, system_prompt: systemPrompt,
         ai_provider: appObj.ai_provider || 'claude', ai_model: appObj.ai_model || undefined }, { signal: controller.signal, onToken: text => { if (!controller.signal.aborted) setSuggestion(text) } })
     } catch (e) { if (e.name !== 'AbortError') setOperationError(e.message) }
     finally { requests.current.delete(controller); if (!controller.signal.aborted) setSuggesting(false) }
@@ -641,7 +641,7 @@ export function ImproveTab({ apps, user, selectedAppId, selectedRunId, onSaveCan
     requests.current.add(controller)
     let last = ''
     try {
-      await streamRun({ input: testInput, system_prompt: v.id === 'draft' ? candidate : (v.version_data?.system_prompt ?? v.system_prompt),
+      await streamRun({ purpose: 'build', input: testInput, system_prompt: v.id === 'draft' ? candidate : (v.version_data?.system_prompt ?? v.system_prompt),
         ai_provider: v.version_data?.ai_provider || v.ai_provider || app.ai_provider,
         ai_model: v.version_data?.ai_model || v.ai_model || app.ai_model }, { signal: controller.signal, onToken: text => { if (!controller.signal.aborted) { last = text; setOutput(text) } } })
       if (!controller.signal.aborted) await recordIfComplete(v === vA ? 'A' : 'B', v, last)
@@ -964,7 +964,7 @@ export function VersionTab({ apps, onAppUpdated, selectedAppId }) {
         <div key={a.kind} role="alert" className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">{a.message}</div>
       ))}
       {usage.error && <p className="text-xs text-amber-300">Usage per version isn't available right now ({usage.error}). Versions and roll back still work.</p>}
-      {appObj && <PublishedVersions key={appObj.id} app={appObj} onAppUpdated={onAppUpdated} usage={usage.data?.by_version || null} />}
+      {appObj && <PublishedVersions key={appObj.id} app={appObj} onAppUpdated={onAppUpdated} usage={usage.data?.analytics === 'basic' ? null : usage.data?.by_version || null} />}
     </div>
   )
 }

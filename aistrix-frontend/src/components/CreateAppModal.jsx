@@ -704,6 +704,7 @@ Return ONLY valid JSON with these fields:
     setPreviewRunning(true); setPreviewResult('')
     try {
       await streamRun({
+        purpose: 'build',
         input: previewInput,
         system_prompt: form.system_prompt,
         ai_provider: form.ai_provider,

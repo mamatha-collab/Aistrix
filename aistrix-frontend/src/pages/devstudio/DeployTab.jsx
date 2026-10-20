@@ -66,6 +66,13 @@ function PromoteModal({ app, onClose, onPromoted }) {
     setPromoting(true)
     try {
       const res = await publishApp(app.id)
+      if (res.pending_review) {
+        // An app's first release waits for the Aistrix team; nothing is live yet.
+        toast(res.message, 'info', 9000)
+        onPromoted?.({ ...app, has_draft_changes: false, is_published: false, status: 'pending', ...(res.version ? { live_version: res.version } : {}) })
+        onClose()
+        return
+      }
       toast('🚀 Changes promoted to production', 'success', 3000)
       track(EVENTS.BUILD_PROMOTED, { app_id: app.id, version: res.version ?? null })
       onPromoted?.({ ...app, has_draft_changes: false, is_published: true, promoted_at: res.promoted_at, change_note: null, ...(res.version ? { live_version: res.version } : {}) })
@@ -408,6 +415,14 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
       // Publishing promotes the draft (checks + tests, saves the live version);
       // unpublishing just takes the app offline.
       const res = next ? await publishApp(app.id) : await unpublishApp(app.id)
+      if (next && res?.pending_review) {
+        // An app's first release waits for the Aistrix team; nothing is live yet.
+        const updated = { ...app, is_published: false, status: 'pending', has_draft_changes: false, ...(res.version ? { live_version: res.version } : {}) }
+        setApp(updated)
+        onUpdate?.(updated)
+        toast(res.message, 'info', 9000)
+        return
+      }
       const updated = { ...app, is_published: next, ...(next ? { has_draft_changes: false, promoted_at: res?.promoted_at, change_note: null, ...(res?.version ? { live_version: res.version } : {}) } : {}) }
       setApp(updated)
       onUpdate?.(updated)

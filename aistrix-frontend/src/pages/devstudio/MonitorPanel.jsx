@@ -65,12 +65,16 @@ export default function MonitorPanel({ apps, selectedAppId, onSelectApp, onNavig
   </section>
 }
 
-function HealthSummary({ totals: t }) {
+// Free developers get Basic analytics (totals and errors); the rest is
+// included for Verified developers, so say so instead of "not recorded".
+const VERIFIED_ONLY = 'Included for Verified developers'
+
+function HealthSummary({ totals: t, basic = false }) {
   return <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
     <StatTile label="Runs" value={t.runs.toLocaleString()} sub={`${t.users} signed-in users${t.visitor_runs ? ` · ${t.visitor_runs} visitor runs` : ''}`} />
     <StatTile label="Failure rate" value={pct(t.error_rate)} sub={`${t.errors} failed · ${t.runs - t.errors} successful`} />
-    <StatTile label="Typical response" value={duration(t.latency_p50_ms)} sub={t.latency_p95_ms == null ? 'No response timings recorded' : `p95 ${duration(t.latency_p95_ms)} · 95% finish within this time`} />
-    <StatTile label="Recorded AI cost" value={usd(t.cost_usd)} sub={t.cost_recorded_runs == null ? 'Cost coverage unavailable' : `${t.cost_recorded_runs} of ${t.runs} runs have cost${t.cost_recorded_runs < t.runs ? ' · partial' : ''}`} />
+    <StatTile label="Typical response" value={duration(t.latency_p50_ms)} sub={basic ? VERIFIED_ONLY : t.latency_p95_ms == null ? 'No response timings recorded' : `p95 ${duration(t.latency_p95_ms)} · 95% finish within this time`} />
+    <StatTile label="Recorded AI cost" value={usd(t.cost_usd)} sub={basic ? VERIFIED_ONLY : t.cost_recorded_runs == null ? 'Cost coverage unavailable' : `${t.cost_recorded_runs} of ${t.runs} runs have cost${t.cost_recorded_runs < t.runs ? ' · partial' : ''}`} />
   </div>
 }
 
@@ -92,12 +96,14 @@ function Activity({ daily = [], runs, days }) {
   </section>
 }
 
-function Alerts({ alerts, nameOf, onOpen, onNavigate, appId, days, liveVersion, runs }) {
+function Alerts({ alerts, nameOf, onOpen, onNavigate, appId, days, liveVersion, runs, basic = false }) {
   const [expanded, setExpanded] = useState(false)
   const list = sortAlerts(alerts).filter(a => a.level !== 'info')
   return <section aria-label="Needs attention" className="space-y-2">
     <div className="flex items-center justify-between"><h2 className="text-sm font-semibold text-white">Needs attention{list.length ? ` · ${list.length}` : ''}</h2>{list.length > 3 && <button className="text-xs text-[#A29BFE]" onClick={() => setExpanded(v => !v)}>{expanded ? 'Show less' : 'View all alerts'}</button>}</div>
-    {!list.length && <p className={`${card} text-sm text-slate-400`}>{runs ? 'No alert thresholds reached in this period.' : 'No production traffic to assess yet.'} Alerts require enough runs or ratings to be meaningful.</p>}
+    {!list.length && <p className={`${card} text-sm text-slate-400`}>{basic
+      ? 'Alerts (failing runs, slow responses, a release failing more than the last) are included for Verified developers.'
+      : `${runs ? 'No alert thresholds reached in this period.' : 'No production traffic to assess yet.'} Alerts require enough runs or ratings to be meaningful.`}</p>}
     {(expanded ? list : list.slice(0, 3)).map((a, i) => <div key={`${a.app_id || ''}:${a.kind}:${i}`} role={a.level === 'critical' ? 'alert' : undefined}
       className={`rounded-xl border px-4 py-3 text-sm ${ALERT_STYLE[a.level] || ALERT_STYLE.info}`}>
       {nameOf && a.app_id ? <strong className="font-semibold">{nameOf(a.app_id)}: </strong> : null}{a.message}
@@ -118,10 +124,10 @@ function Overview({ data, nameOf, onOpen, onNavigate, days }) {
   const t = data.summary?.totals
   const runs = t?.runs || rows.reduce((n, r) => n + r.totals.runs, 0)
   return <>
-    {t ? <HealthSummary totals={t} /> : <p role="status" className="text-xs text-amber-300">Overview summaries need the matching backend update. Individual app details remain available.</p>}
+    {t ? <HealthSummary totals={t} basic={data.apps?.some(a => a.analytics === 'basic')} /> : <p role="status" className="text-xs text-amber-300">Overview summaries need the matching backend update. Individual app details remain available.</p>}
     <div className="flex flex-wrap gap-3 items-center justify-between text-xs text-slate-400"><span>{t?.rated ? `${pct(t.satisfaction)} useful · ${t.rated} customer ratings` : 'No customer ratings in this period.'}</span>{onNavigate && <button className="min-h-10 px-3 rounded-lg border border-white/10 text-[#A29BFE]" onClick={() => onNavigate('evaluate', rows.find(r => r.open_feedback > 0)?.app_id || rows[0]?.app_id)}>{rows.reduce((n, r) => n + (r.open_feedback || 0), 0)} Feedback to review</button>}</div>
     <Coverage data={data.summary} limited={data.app_limit_reached} />
-    <Alerts alerts={alerts} nameOf={nameOf} onOpen={onOpen} onNavigate={onNavigate} days={days} runs={runs} />
+    <Alerts alerts={alerts} nameOf={nameOf} onOpen={onOpen} onNavigate={onNavigate} days={days} runs={runs} basic={data.apps?.some(a => a.analytics === 'basic')} />
     {data.summary && <Activity daily={data.summary.daily} runs={runs} days={days} />}
     <div className={`${card} overflow-x-auto`}>
       <p className={`${label} mb-3`}>Apps</p>
@@ -153,9 +159,9 @@ function AppHealth({ data, days, onNavigate, appId }) {
   const sources = Object.entries(data.by_source || {}).sort((a, b) => b[1] - a[1])
   const errorKinds = Object.entries(data.error_kinds || {})
   return <>
-    <HealthSummary totals={t} />
+    <HealthSummary totals={t} basic={data.analytics === 'basic'} />
     <Coverage data={data} />
-    <Alerts alerts={data.alerts} appId={appId} onNavigate={onNavigate} liveVersion={data.live_version} days={days} runs={t.runs} />
+    <Alerts alerts={data.alerts} appId={appId} onNavigate={onNavigate} liveVersion={data.live_version} days={days} runs={t.runs} basic={data.analytics === 'basic'} />
 
     <Activity daily={data.daily} runs={t.runs} days={days} />
     <div className={`${card} flex flex-wrap items-center justify-between gap-3`}>
@@ -172,7 +178,7 @@ function AppHealth({ data, days, onNavigate, appId }) {
             <td className="py-2">{v.version == null ? 'Version not recorded' : `v${v.version}`}{v.version != null && v.version === data.live_version && <span className="ml-2 text-[10px] text-emerald-300">live</span>}</td>
             <td>{v.runs.toLocaleString()}</td><td className={v.error_rate >= 0.05 ? 'text-amber-300' : ''}>{pct(v.error_rate)}</td><td>{duration(v.latency_p95_ms)}</td>
           </tr>)}</tbody>
-        </table> : <p className="text-sm text-slate-400">No runs yet.</p>}
+        </table> : <p className="text-sm text-slate-400">{data.analytics === 'basic' ? 'Per-version health is included for Verified developers.' : 'No runs yet.'}</p>}
         <p className="text-[11px] text-slate-500 mt-3">Compare releases with enough traffic before deciding whether to roll back.</p>
       </div>
       <div className={`${card} space-y-4`}>

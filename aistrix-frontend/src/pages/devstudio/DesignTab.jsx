@@ -1391,9 +1391,9 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
       const res = await fetch(`${API_URL}/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(session ? { Authorization: `Bearer ${session.access_token}` } : {}) },
-        body: JSON.stringify({ app_id: null, input: copilot, system_prompt: systemPrompt, ai_provider: 'claude', ai_model: null }),
+        body: JSON.stringify({ app_id: null, purpose: 'build', input: copilot, system_prompt: systemPrompt, ai_provider: 'claude', ai_model: null }),
       })
-      if (!res.ok) throw new Error('Copilot request failed')
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Copilot request failed')
       const reader = res.body.getReader(); const decoder = new TextDecoder()
       let buf = ''; let raw = ''
       while (true) {

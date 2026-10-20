@@ -322,7 +322,10 @@ export default function AppGrid({ onSelectApp, selectedApp, user, search, runCou
     const next = !app.is_published
     try {
       // Publishing promotes the draft: it needs the publish checks and passing tests.
-      if (next) await publishApp(app.id)
+      if (next) {
+        const res = await publishApp(app.id)
+        if (res?.pending_review) { toast(res.message, 'info', 9000); return }   // first release waits for review
+      }
       else await unpublishApp(app.id)
     } catch (e) {
       toast(`Publish blocked: ${e.message}`, 'error', 9000)

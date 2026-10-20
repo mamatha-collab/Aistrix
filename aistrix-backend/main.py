@@ -843,8 +843,14 @@ async def _log_app_run(app_id: str, user_id: Optional[str], source: str, usage: 
     except Exception:
         durable = False
         print("Telemetry recovery storage unavailable; delivering this outcome directly")
-    # The customer's run doesn't wait for the database write.
-    _spawn_telemetry(_deliver_telemetry(row, 0, durable))
+    if durable:
+        # The customer's run doesn't wait for the database write; the local
+        # copy is replayed if this delivery is lost.
+        _spawn_telemetry(_deliver_telemetry(row, 0, True))
+    else:
+        # No local copy: a background send lost at shutdown would lose the
+        # outcome for good, so this rare case finishes it first.
+        await _deliver_telemetry(row, 0, False)
 
 
 _telemetry_tasks: set = set()
@@ -1304,6 +1310,100 @@ def platform_key(provider: str) -> Optional[str]:
     return os.getenv(PROVIDERS.get(provider, {}).get("env_key", "")) or None
 
 
+# Developers always use their own AI keys, never Aistrix's: their apps (tests,
+# previews, end users' runs, scheduled flows, AI-graded checks) and the
+# developer tools (Build with AI, Create App, Prompt Studio, Design copilot,
+# Improve). Aistrix's keys serve only Aistrix's own apps and business-user
+# features. AISTRIX_TESTS_ALLOW_PLATFORM_KEYS exists for the older test
+# suites only; it isn't a deployment setting.
+PLATFORM_KEYS_FOR_DEVELOPER_APPS = os.getenv("AISTRIX_TESTS_ALLOW_PLATFORM_KEYS", "") == "1"
+
+# ─── Developer tiers (both free) ──────────────────────────────────────────────
+# Free and Verified (staff mark a developer verified). The limits live in the
+# developer_limits table; these defaults apply when it can't be read. Staff
+# have no limits.
+DEFAULT_TIER_LIMITS = {
+    "free": {"draft_apps": 10, "published_apps": 1, "tests_per_day": 20, "concurrent_tests": 1, "analytics": "basic"},
+    "verified": {"draft_apps": 30, "published_apps": 5, "tests_per_day": 100, "concurrent_tests": 3, "analytics": "standard"},
+}
+TIER_LABELS = {"free": "Free developer", "verified": "Verified developer", "staff": "Aistrix staff"}
+# DEVELOPER_TIERS=0 turns tiers off (no limits, no first-publish review, full
+# analytics) — e.g. for a private deployment.
+DEVELOPER_TIERS = os.getenv("DEVELOPER_TIERS", "1").lower() not in ("0", "false", "no")
+TIER_CACHE_SECONDS = 30
+_tier_cache: dict = {}
+
+
+async def tier_limits() -> dict:
+    hit = _tier_cache.get("__limits__")
+    if hit and time.monotonic() - hit[0] < TIER_CACHE_SECONDS:
+        return hit[1]
+    limits = {tier: dict(values) for tier, values in DEFAULT_TIER_LIMITS.items()}
+    sb = _service_client()
+    try:
+        for row in ((await db(sb.table("developer_limits").select("*"))).data or []) if sb else []:
+            if row.get("tier") in limits:
+                limits[row["tier"]].update({k: row[k] for k in limits[row["tier"]] if row.get(k) is not None})
+    except Exception as e:
+        print(f"developer limits unreadable, using defaults: {type(e).__name__}")
+    _tier_cache["__limits__"] = (time.monotonic(), limits)
+    return limits
+
+
+async def developer_tier(user_id: Optional[str]) -> str:
+    """'staff' | 'verified' | 'free' (unknown → 'free')."""
+    if not user_id:
+        return "free"
+    hit = _tier_cache.get(user_id)
+    if hit and time.monotonic() - hit[0] < TIER_CACHE_SECONDS:
+        return hit[1]
+    tier = "free"
+    sb = _service_client()
+    try:
+        res = await db(sb.rpc("developer_tier", {"p_user": user_id}))
+        value = res.data[0] if isinstance(res.data, list) and res.data else res.data
+        if isinstance(value, dict):
+            value = next(iter(value.values()), None)
+        if value in ("staff", "verified", "free"):
+            tier = value
+    except Exception as e:
+        print(f"developer tier unreadable for {user_id}: {type(e).__name__}")
+    if len(_tier_cache) > 5000:
+        _tier_cache.clear()
+    _tier_cache[user_id] = (time.monotonic(), tier)
+    return tier
+
+
+async def developer_limits_for(user_id: Optional[str]) -> tuple[str, Optional[dict]]:
+    """(tier, limits); limits is None for staff (no limits) or with tiers off."""
+    if not DEVELOPER_TIERS:
+        return "staff", None
+    tier = await developer_tier(user_id)
+    return tier, (None if tier == "staff" else (await tier_limits())[tier])
+
+
+async def published_app_count(user_id: str, excluding: Optional[str] = None) -> int:
+    """Apps this developer has live or waiting for review."""
+    sb = _service_client()
+    rows = (await db(sb.table("apps").select("id, is_published, status").eq("created_by", user_id))).data or []
+    return sum(1 for r in rows if r.get("id") != excluding and (r.get("is_published") or r.get("status") == "pending"))
+
+
+async def published_limit_problem(app_row: dict) -> Optional[str]:
+    """Why this app can't go live under its owner's tier (None = fine)."""
+    owner = app_row.get("created_by")
+    if not owner or app_row.get("is_published"):
+        return None
+    tier, limits = await developer_limits_for(owner)
+    if limits is None:
+        return None
+    if await published_app_count(owner, excluding=app_row.get("id")) >= limits["published_apps"]:
+        n = limits["published_apps"]
+        more = " Verified developers can publish 5." if tier == "free" else ""
+        return f"{TIER_LABELS[tier]}s can have {n} published app{'s' if n != 1 else ''}. Unpublish one first.{more}"
+    return None
+
+
 def stream_fn_for(provider: str):
     """Streaming function for a provider (looked up at call time so tests can
     swap stream_claude / stream_openai)."""
@@ -1510,6 +1610,9 @@ class RunRequest(BaseModel):
     # How the runner frames the app's prompt. The server appends the matching
     # instruction itself, so non-owners never need (or get to send) a prompt.
     run_mode: Optional[str] = Field(default=None, pattern="^(agent|conversation)$")
+    # "build": a developer tool (Build with AI, Create App, Prompt Studio, the
+    # Design copilot, Improve) — always the developer's own AI key.
+    purpose: Optional[str] = Field(default=None, pattern="^build$")
     page_index: Optional[int] = Field(default=None, ge=0, le=50)   # multi-page apps
     # Form apps: field values for {{Field Name}} placeholders in the prompt.
     field_values: Optional[dict[str, Any]] = None
@@ -1885,6 +1988,30 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
             user_api_key, key_source = own_key, "own"
         else:
             user_api_key, key_source = None, "platform"
+
+    # Developer tools never run on Aistrix's key.
+    if req.purpose == "build" and not app_row and key_source == "platform" and not custom and not PLATFORM_KEYS_FOR_DEVELOPER_APPS:
+        return JSONResponse(status_code=409, content={
+            "code": "needs_own_key", "provider": provider,
+            "error": f"Developer tools run on your own {label} API key. Add it in Settings → Keys to use them."})
+
+    # Bring your own key: a developer's app never runs on Aistrix's key. A
+    # teammate building it uses their own key, else the owner's.
+    if app_row and key_source == "platform" and not custom and not PLATFORM_KEYS_FOR_DEVELOPER_APPS:
+        owner_key = (await fetch_user_api_key_by_id(owner_id, provider)
+                     if is_editor and owner_id and owner_id != caller_id else None)
+        if owner_key:
+            user_api_key, key_source = owner_key, "owner"
+        # Building or testing always needs a developer's key (staff too); only
+        # customers of Aistrix's own apps run on Aistrix's key.
+        elif is_editor or await developer_tier(owner_id) != "staff":
+            if is_editor:
+                return JSONResponse(status_code=409, content={
+                    "code": "needs_own_key", "provider": provider,
+                    "error": f"This app runs on your own {label} API key. Add it in Settings → Keys to build and test it."})
+            return JSONResponse(status_code=503, content={
+                "code": "app_needs_developer_key", "provider": provider,
+                "error": "This app isn't available right now: its developer hasn't connected an AI key. Try again later."})
 
     if custom:
         model = req.custom_model_name
@@ -3196,7 +3323,11 @@ def pdf_reader_for(request: Request, user_id: Optional[str], user_jwt: Optional[
     if visitor_app:
         async def owner_key():
             owner = visitor_app.get("created_by")
-            return await fetch_user_api_key_by_id(owner, "claude") if owner else None
+            key = await fetch_user_api_key_by_id(owner, "claude") if owner else None
+            # A developer's app reads scanned pages on the developer's key only.
+            if not key and not PLATFORM_KEYS_FOR_DEVELOPER_APPS and await developer_tier(owner) != "staff":
+                raise OcrError("This app can't read scanned pages right now: its developer hasn't connected a Claude key.", 503)
+            return key
         return owner_key, EMBED_VISITOR_OCR_MAX_PAGES
     return (lambda: ocr_key_for(request, user_jwt, user_id)), None
 
@@ -3505,12 +3636,24 @@ def merge_memory(prev: dict, fresh: dict) -> dict:
     return next_mem
 
 
-async def run_text(system: str, user_input: str, provider: str, model: str) -> str:
-    fn = stream_openai if provider == "openai" else stream_claude
+async def run_text(system: str, user_input: str, provider: str, model: str, api_key: Optional[str] = None) -> str:
+    fn = stream_fn_for(provider)            # Gemini apps used to be sent to Claude
     chunks = []
-    async for tok in fn(system, user_input, model):
+    async for tok in fn(system, user_input, model, api_key):
         chunks.append(tok)
     return "".join(chunks)
+
+
+async def scheduled_step_key(app_row: dict, runner_id: Optional[str], provider: str) -> tuple[Optional[str], Optional[str]]:
+    """(key, problem) for one scheduled flow step: the person who scheduled
+    it pays with their own key, else the app's developer; Aistrix's key only
+    for staff's own apps."""
+    key = await fetch_user_api_key_by_id(runner_id, provider) if runner_id else None
+    key = key or await fetch_user_api_key_by_id(app_row.get("created_by"), provider)
+    if key or PLATFORM_KEYS_FOR_DEVELOPER_APPS or await developer_tier(app_row.get("created_by")) == "staff":
+        return key, None
+    label = PROVIDERS.get(provider, {}).get("label", "AI")
+    return None, f"needs a {label} API key: add yours in Settings → Keys"
 
 
 async def extract_facts_headless(text: str) -> dict:
@@ -3554,10 +3697,13 @@ async def run_scheduled_workspace(sb_service: Client, schedule: dict):
     current_input = schedule.get("seed_input") or ""
 
     for idx, step in enumerate(steps):
-        app_res = await db(sb_service.table("apps").select("system_prompt, ai_provider, ai_model").eq("id", step["app_id"]).single())
+        app_res = await db(sb_service.table("apps").select("system_prompt, ai_provider, ai_model, created_by").eq("id", step["app_id"]).single())
         app_data = app_res.data or {}
         provider = app_data.get("ai_provider") or "claude"
         model = validate_model(provider, app_data.get("ai_model") or get_default_model(provider))
+        step_key, key_problem = await scheduled_step_key(app_data, schedule.get("user_id"), provider)
+        if key_problem:
+            raise RuntimeError(f"Step {idx + 1} ({step.get('app_name') or 'app'}) {key_problem}")
 
         blocks = []
         if flow.get("gpt_instructions"):
@@ -3585,7 +3731,7 @@ async def run_scheduled_workspace(sb_service: Client, schedule: dict):
         if blocks:
             system = f"<user_context>\n{chr(10).join(blocks)}\n</user_context>\n\n{system}"
 
-        full = await run_text(system, current_input, provider, model)
+        full = await run_text(system, current_input, provider, model, step_key)
         results.append(full)
 
         await db(sb_service.table("run_history").insert({
@@ -3983,6 +4129,8 @@ async def _send_monitor_alert_emails() -> int:
         row = await load_app_row(app_id)
         if not row or not row.get("is_published"):
             continue
+        if await analytics_level(row.get("created_by")) != "standard":
+            continue                                      # alerts are part of Standard analytics
         runs, ratings, truncated = await _monitor_rows(app_id, 7, row.get("created_by"))
         summary = monitor_summary(runs, ratings, 7, published=True, truncated=truncated, live_version=row.get("live_version"))
         name = html_escape(row.get("name") or "your app")
@@ -5546,13 +5694,21 @@ def model_cost_usd(model: Optional[str], usage: Optional[dict]) -> Optional[floa
     return round(((usage.get("input_tokens") or 0) * pin + (usage.get("output_tokens") or 0) * pout) / 1_000_000, 6)
 
 
-async def judge_output(criteria: str, test_input: str, output: str, api_key: Optional[str]) -> tuple[bool, str]:
-    """AI-graded check: does the answer meet the criteria? (Haiku)"""
+JUDGE_MODELS = {"openai": "gpt-4o-mini", "gemini": "gemini-3.8-flash"}     # Claude grades with JUDGE_MODEL
+
+
+async def judge_output(criteria: str, test_input: str, output: str, api_key: Optional[str],
+                       provider: str = "claude") -> tuple[bool, str]:
+    """AI-graded check: does the answer meet the criteria? (a small, fast model
+    of the provider whose key grades it)"""
     system = ("You grade one answer from an AI app during testing. Decide strictly whether the ANSWER meets the "
               "CRITERIA for the given INPUT. Reply with ONLY JSON: {\"pass\": true or false, \"reason\": \"one short sentence\"}.")
     prompt = f"CRITERIA:\n{criteria[:2000]}\n\nINPUT:\n{test_input[:6000]}\n\nANSWER:\n{output[:12000]}"
     # Room for the model's own thinking before the short JSON reply.
-    text = "".join([t async for t in stream_claude(system, prompt, JUDGE_MODEL, api_key, max_tokens=1500, temperature=0)])
+    if provider == "claude":
+        text = "".join([t async for t in stream_claude(system, prompt, JUDGE_MODEL, api_key, max_tokens=1500, temperature=0)])
+    else:
+        text = "".join([t async for t in stream_fn_for(provider)(system, prompt, JUDGE_MODELS[provider], api_key, max_tokens=1500, temperature=0)])
     parsed, errs = _parse_json_output(text)
     if errs:   # tolerate a sentence around the JSON object
         found = re.search(r"\{[^{}]*\"pass\"[^{}]*\}", text)
@@ -5571,7 +5727,7 @@ async def _regex_search(pattern: str, text: str) -> bool:
 
 
 async def evaluate_checks(checks: list[dict], output: str, test_input: str, blueprint: dict,
-                          judge_key: Optional[str], system_prompt: str = "") -> tuple[list[str], int]:
+                          judge_key: Optional[str], system_prompt: str = "", judge_provider: str = "claude") -> tuple[list[str], int]:
     """Problems with an output (empty = pass), and how many AI-graded checks ran."""
     errors: list[str] = []
     judged = 0
@@ -5615,7 +5771,7 @@ async def evaluate_checks(checks: list[dict], output: str, test_input: str, blue
                     continue
                 judged += 1
                 try:
-                    passed, reason = await judge_output(criteria, test_input, output, judge_key)
+                    passed, reason = await judge_output(criteria, test_input, output, judge_key, judge_provider)
                 except Exception as e:
                     # A grader problem fails this check; it must not crash the whole test run.
                     print(f"Judge error [{type(e).__name__}]: {e}")
@@ -5675,10 +5831,65 @@ async def _editable_app(app_id: str, request: Request) -> tuple["ApiCaller", dic
     return caller, app_row
 
 
+async def claim_test_slot(user_id: Optional[str]) -> tuple[Optional[int], Optional[str]]:
+    """(slot, problem): a test-run slot under the developer's tier. If the
+    limits can't be checked (e.g. the database is busy), the test runs: it
+    uses the developer's own AI key, so nothing is lost to abuse."""
+    sb = _service_client()
+    if not (sb and user_id and DEVELOPER_TIERS):
+        return None, None
+    try:
+        res = await db(sb.rpc("claim_test_run", {"p_user": user_id}))
+        claim = res.data[0] if isinstance(res.data, list) and res.data else res.data
+    except Exception as e:
+        print(f"test limits unavailable, running anyway: {type(e).__name__}")
+        return None, None
+    if not isinstance(claim, dict) or claim.get("ok"):
+        return (claim or {}).get("slot") if isinstance(claim, dict) else None, None
+    tier = TIER_LABELS.get(claim.get("tier"), "Developer")
+    n = claim.get("limit")
+    if claim.get("reason") == "daily":
+        more = " Verified developers get 100." if claim.get("tier") == "free" else ""
+        return None, f"Daily test limit reached: {tier}s can run {n} tests a day. It resets at midnight UTC.{more}"
+    return None, f"{tier}s can run {n} test{'s' if n != 1 else ''} at a time. Wait for the running one to finish."
+
+
+async def release_test_slot(user_id: Optional[str], slot: Optional[int]) -> None:
+    sb = _service_client()
+    if sb and user_id and slot is not None:
+        try:
+            await db(sb.rpc("release_test_run", {"p_user": user_id, "p_slot": slot}))
+        except Exception as e:
+            print(f"test slot not released (frees itself in 10 minutes): {type(e).__name__}")
+
+
+async def judge_key_for(caller_id: Optional[str], owner_id: Optional[str]) -> tuple[Optional[str], str]:
+    """(key, provider) for AI-graded checks: the tester's own key, else the
+    app owner's, any provider. Never Aistrix's key: testing is developer work."""
+    for who in [u for u in dict.fromkeys((caller_id, owner_id)) if u]:
+        for provider in ("claude", "openai", "gemini"):
+            key = await fetch_user_api_key_by_id(who, provider)
+            if key:
+                return key, provider
+    if PLATFORM_KEYS_FOR_DEVELOPER_APPS:
+        return None, "claude"                 # older test suites only
+    return None, ""
+
+
 @app.post("/v1/apps/{app_id}/tests/run")
 async def run_app_test(app_id: str, body: AppTestCase, request: Request):
     """Run one test case against the app's draft, grade it, and record it."""
     caller, app_row = await _editable_app(app_id, request)
+    slot, limit_problem = await claim_test_slot(caller.user_id)
+    if limit_problem:
+        raise HTTPException(status_code=429, detail=limit_problem)
+    try:
+        return await _run_app_test(app_id, body, request, caller, app_row)
+    finally:
+        await release_test_slot(caller.user_id, slot)
+
+
+async def _run_app_test(app_id: str, body: "AppTestCase", request: Request, caller, app_row: dict):
     state = await app_draft_state(app_row)
     draft = state_hash(state)
     test_input = body.input or "(no input)"
@@ -5702,12 +5913,16 @@ async def run_app_test(app_id: str, body: AppTestCase, request: Request):
     usage = result.get("usage") or {}
     judged = 0
     if result.get("ok"):
-        judge_key = await fetch_user_api_key_by_id(caller.user_id, "claude") if caller.user_id else None
-        if not (judge_key or platform_key("claude")) and any((c.get("type") in ("judge", "fallback", "safety", "no_refusal_bypass")) for c in body.checks):
+        judge_key, judge_provider = await judge_key_for(caller.user_id, app_row.get("created_by"))
+        ai_graded = any((c.get("type") in ("judge", "fallback", "safety", "no_refusal_bypass")) for c in body.checks)
+        if ai_graded and not judge_provider:
+            errors = ["AI-graded checks need an AI key (Claude, OpenAI or Gemini) — add one in Settings → Keys"]
+        elif ai_graded and not judge_key and not platform_key("claude"):
             errors = ["AI-graded checks need a Claude key — add one in Settings → Keys"]
         else:
             errors, judged = await evaluate_checks(body.checks, output, test_input, state["blueprint"], judge_key,
-                                                   system_prompt=state.get("system_prompt") or "")
+                                                   system_prompt=state.get("system_prompt") or "",
+                                                   judge_provider=judge_provider or "claude")
             if judged and not judge_key and caller.user_id:
                 await record_metered_run(caller.user_id, app_id, "test_judge", caller.workspace_id)
     else:
@@ -6249,6 +6464,22 @@ def _monitor_days(days: int) -> int:
     return days
 
 
+BASIC_HIDDEN_TOTALS = ("latency_p50_ms", "latency_p95_ms", "cost_usd", "cost_per_run_usd", "cost_recorded_runs", "latency_recorded_runs")
+
+
+def basic_analytics(summary: dict) -> dict:
+    """Free developers see totals, errors and satisfaction; per-version health,
+    response times, cost and alerts are Standard (Verified developers)."""
+    totals = {k: (None if k in BASIC_HIDDEN_TOTALS else v) for k, v in summary.get("totals", {}).items()}
+    daily = [{k: (None if k == "cost_usd" else v) for k, v in d.items()} for d in summary.get("daily", [])]
+    return {**summary, "totals": totals, "daily": daily, "by_version": [], "alerts": [], "analytics": "basic"}
+
+
+async def analytics_level(user_id: Optional[str]) -> str:
+    tier, limits = await developer_limits_for(user_id)
+    return "standard" if limits is None else limits["analytics"]
+
+
 @app.get("/v1/apps/{app_id}/monitor")
 async def app_monitor(app_id: str, request: Request, days: int = 30):
     """Production health of one app (editors only): every real run —
@@ -6256,9 +6487,10 @@ async def app_monitor(app_id: str, request: Request, days: int = 30):
     _, app_row = await _editable_app(app_id, request)
     days = _monitor_days(days)
     runs, ratings, truncated = await _monitor_rows(app_id, days, app_row.get("created_by"))
+    summary = monitor_summary(runs, ratings, days, published=bool(app_row.get("is_published")), truncated=truncated, live_version=app_row.get("live_version"))
+    summary = basic_analytics(summary) if await analytics_level(app_row.get("created_by")) == "basic" else {**summary, "analytics": "standard"}
     return {"app_id": app_id, "live_version": app_row.get("live_version"),
-            "telemetry_health": await _telemetry_health([app_id]),
-            **monitor_summary(runs, ratings, days, published=bool(app_row.get("is_published")), truncated=truncated, live_version=app_row.get("live_version"))}
+            "telemetry_health": await _telemetry_health([app_id]), **summary}
 
 
 @app.get("/v1/monitor")
@@ -6282,8 +6514,11 @@ async def monitor_overview(request: Request, app_ids: str = "", days: int = 7):
         all_runs.extend(runs)
         all_ratings.extend(ratings)
         summary = monitor_summary(runs, ratings, days, published=bool(row.get("is_published")), truncated=truncated, live_version=row.get("live_version"))
+        level = await analytics_level(row.get("created_by"))
+        if level == "basic":
+            summary = basic_analytics(summary)
         return {"app_id": app_id, "live_version": row.get("live_version"), "published": bool(row.get("is_published")), "totals": summary["totals"], "alerts": summary["alerts"], "truncated": truncated,
-                "open_feedback": open_res.count or 0}
+                "open_feedback": open_res.count or 0, "analytics": level}
 
     semaphore = asyncio.Semaphore(4)
     async def bounded(app_id):
@@ -6292,6 +6527,8 @@ async def monitor_overview(request: Request, app_ids: str = "", days: int = 7):
     results = await asyncio.gather(*(bounded(a) for a in ids))
     rows = [r for r in results if r]
     combined = monitor_summary(all_runs, all_ratings, days, truncated=any(r["truncated"] for r in rows))
+    if any(r["analytics"] == "basic" for r in rows):
+        combined = basic_analytics(combined)          # never more detail combined than per app
     return {"days": days, "apps": rows, "summary": {k: combined[k] for k in ("totals", "daily", "truncated")},
             "app_limit_reached": len(requested) > len(ids), "telemetry_health": await _telemetry_health([r["app_id"] for r in rows])}
 
@@ -6467,6 +6704,12 @@ async def rollback_version(app_id: str, version_num: int, request: Request, expe
     _, app_row = await _editable_app(app_id, request)
     if expected_live is not None and app_row.get("live_version") != expected_live:
         raise HTTPException(status_code=409, detail=RELEASE_CHANGED)
+    if await needs_first_review(app_row):
+        raise HTTPException(status_code=409, detail=IN_REVIEW if app_row.get("status") == "pending" else
+                            "This app hasn't been approved yet. Publish it from Deploy to send it for review.")
+    limit_problem = await published_limit_problem(app_row)
+    if limit_problem:
+        raise HTTPException(status_code=409, detail=limit_problem)
     sb = _service_client()
     if not sb:
         raise HTTPException(status_code=503, detail="Versions aren't configured on this server")
@@ -6505,7 +6748,24 @@ async def get_release(app_id: str, request: Request):
         "has_changes": not same_as_live(prod, state),
         "checks": checks, "tests": tests, "test_problems": _test_problems(tests),
         "ready": not checks and not _test_problems(tests),
+        # First publish: none (approved, or staff) | required | pending | rejected
+        "review": ("none" if not await needs_first_review(app_row) else
+                   app_row.get("status") if app_row.get("status") in ("pending", "rejected") else "required"),
+        "review_notes": app_row.get("review_notes") if app_row.get("status") == "rejected" else None,
     }
+
+
+IN_REVIEW = "This app is waiting for review by the Aistrix team. It goes live as soon as it's approved."
+SUBMITTED_FOR_REVIEW = ("Submitted for review. An app's first release is checked by the Aistrix team; "
+                        "it goes live as soon as it's approved, and later releases go live straight away.")
+
+
+async def needs_first_review(app_row: dict) -> bool:
+    """An app's first publish waits for staff (once approved, releases go
+    live straight away). Staff's own apps don't wait."""
+    if app_row.get("publish_approved_at") or not DEVELOPER_TIERS:
+        return False
+    return await developer_tier(app_row.get("created_by")) != "staff"
 
 
 @app.post("/v1/apps/{app_id}/promote")
@@ -6525,6 +6785,12 @@ async def promote_app(app_id: str, request: Request):
     sb = _service_client()
     if not sb:
         raise HTTPException(status_code=503, detail="Publishing isn't configured on this server")
+    limit_problem = await published_limit_problem(app_row)
+    if limit_problem:
+        return JSONResponse(status_code=409, content={"code": "published_limit", "error": limit_problem})
+    if app_row.get("status") == "pending" and not app_row.get("publish_approved_at"):
+        return JSONResponse(status_code=409, content={"code": "in_review", "error": IN_REVIEW})
+    review = await needs_first_review(app_row)
     now = datetime.now(timezone.utc).isoformat()
     prod = app_row.get("prod_snapshot") if isinstance(app_row.get("prod_snapshot"), dict) else None
     if same_as_live(prod, state):
@@ -6534,11 +6800,18 @@ async def promote_app(app_id: str, request: Request):
         if app_row.get("is_published"):
             return JSONResponse(status_code=409, content={
                 "code": "no_changes", "error": f"Nothing to promote: the draft is the same as {'v' + str(live) if live else 'the live version'}."})
+        if review:
+            await db(sb.table("apps").update({"status": "pending", "has_draft_changes": False}).eq("id", app_id))
+            return {"ok": True, "pending_review": True, "is_published": False, "version": live, "unchanged": True,
+                    "draft_hash": state_hash(state), "message": SUBMITTED_FOR_REVIEW}
         await db(sb.table("apps").update({"is_published": True, "has_draft_changes": False}).eq("id", app_id))
         return {"ok": True, "promoted_at": app_row.get("promoted_at"), "draft_hash": state_hash(state), "is_published": True,
                 "version": live, "unchanged": True}
     version = await _save_published_version(sb, app_row, state, tests, caller.user_id)
     update = {"prod_snapshot": state, "promoted_at": now, "is_published": True, "has_draft_changes": False}
+    if review:
+        # Saved as the version staff will review; it goes live when approved.
+        update.update(is_published=False, status="pending", review_notes=None)
     if version is not None:
         update["live_version"] = version
     if app_row.get("change_note"):
@@ -6552,6 +6825,9 @@ async def promote_app(app_id: str, request: Request):
         await db(sb.table("app_blueprints").update({"blueprint_prod": state["blueprint"]}).eq("app_id", app_id))
     except Exception as e:
         print(f"blueprint_prod update skipped: {type(e).__name__}")
+    if review:
+        return {"ok": True, "pending_review": True, "is_published": False, "promoted_at": now, "draft_hash": state_hash(state),
+                "version": version, "message": SUBMITTED_FOR_REVIEW}
     return {"ok": True, "promoted_at": now, "draft_hash": state_hash(state), "is_published": True, "version": version}
 
 
@@ -6649,6 +6925,56 @@ def health():
         "limits": {"hourly": HOURLY_LIMIT, "daily": DAILY_LIMIT},
         "timeout": REQUEST_TIMEOUT,
     }
+
+
+# ─── Your developer plan ─────────────────────────────────────────────────────
+@app.get("/v1/developer/plan")
+async def developer_plan(request: Request):
+    """The caller's tier, its limits and current usage (for Settings / Dev Studio)."""
+    user_id = await require_verified_user(request)
+    tier, limits = await developer_limits_for(user_id)
+    sb = _service_client()
+    if not sb:
+        raise HTTPException(status_code=503, detail="Plans aren't available on this server")
+    apps = (await db(sb.table("apps").select("id, is_published, status").eq("created_by", user_id))).data or []
+    today = datetime.now(timezone.utc).date().isoformat()
+    try:
+        usage = (await db(sb.table("developer_test_usage").select("runs").eq("user_id", user_id).eq("day", today))).data or []
+    except Exception:
+        usage = []
+    return {
+        "tier": tier, "label": TIER_LABELS[tier], "limits": limits, "all_limits": await tier_limits(),
+        "usage": {"draft_apps": sum(1 for a in apps if not a.get("is_published")),
+                  "published_apps": sum(1 for a in apps if a.get("is_published") or a.get("status") == "pending"),
+                  "tests_today": (usage[0]["runs"] if usage else 0)},
+        "ai_usage": "Your own AI keys (Settings → Keys)",
+        "publish_approval": "An app's first release is reviewed by the Aistrix team",
+    }
+
+
+async def is_staff_user(user_id: Optional[str]) -> bool:
+    return await developer_tier(user_id) == "staff"
+
+
+class VerificationRequest(BaseModel):
+    verified: bool
+
+
+@app.post("/v1/admin/developers/{developer_id}/verification")
+async def set_developer_verification(developer_id: str, body: VerificationRequest, request: Request):
+    """Staff mark a developer Verified (or take it back)."""
+    staff_id = await require_verified_user(request)
+    if not await is_staff_user(staff_id):
+        raise HTTPException(status_code=404, detail="Not found")
+    if not _UUID_RE.fullmatch(developer_id):
+        raise HTTPException(status_code=422, detail="Invalid developer id")
+    sb = _service_client()
+    if not sb:
+        raise HTTPException(status_code=503, detail="Not available on this server")
+    await db(sb.table("developer_profiles").upsert({"user_id": developer_id, "is_verified": body.verified}, on_conflict="user_id"))
+    _tier_cache.pop(developer_id, None)
+    print(f"developer {developer_id} verification set to {body.verified} by {staff_id}")
+    return {"ok": True, "developer_id": developer_id, "tier": "verified" if body.verified else "free"}
 
 
 # ─── Your account: export and deletion ───────────────────────────────────────

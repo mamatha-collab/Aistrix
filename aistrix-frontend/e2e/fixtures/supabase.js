@@ -291,7 +291,15 @@ window.fetch = async (input, init = {}) => {
       return response({ days, telemetry_health: state.telemetryHealth, summary: monitorFor(ids.includes('app-1') ? 'app-1' : '', days), apps: ids.filter(i => state.tables.apps.some(a => a.id === i)).map(i => ({ app_id: i, live_version: state.tables.apps.find(a => a.id === i)?.live_version, ...monitorFor(i, days),
         open_feedback: (state.feedback || []).filter(f => f.app_id === i && ['new', 'investigating'].includes(f.status)).length })) })
     }
-    return response({ app_id: path.split('/')[3], live_version: 2, telemetry_health: state.telemetryHealth, ...monitorFor(path.split('/')[3], days) })
+    const health = monitorFor(path.split('/')[3], days)
+    if (state.analytics === 'basic') {
+      // Free developers: totals and errors only (same as the server's basic_analytics).
+      const hidden = ['latency_p50_ms', 'latency_p95_ms', 'cost_usd', 'cost_per_run_usd', 'cost_recorded_runs', 'latency_recorded_runs']
+      return response({ app_id: path.split('/')[3], live_version: 2, telemetry_health: state.telemetryHealth, ...health, analytics: 'basic',
+        totals: Object.fromEntries(Object.entries(health.totals).map(([k, v]) => [k, hidden.includes(k) ? null : v])),
+        daily: health.daily.map(d => ({ ...d, cost_usd: null })), by_version: [], alerts: [] })
+    }
+    return response({ app_id: path.split('/')[3], live_version: 2, telemetry_health: state.telemetryHealth, ...health })
   }
   const id = path.split('/')[3]
   const current = state.tables.apps.find(row => row.id === id)
@@ -311,6 +319,14 @@ window.fetch = async (input, init = {}) => {
   if (path.endsWith('/promote')) {
     if (!status(id).all_passed) return response({ error: 'Tests required', test_problems: ['Run tests.'] }, 409)
     const version = (current.live_version || 0) + 1
+    if (state.reviewFirstPublish && !current.publish_approved_at) {
+      // Same contract as the server: the first release waits for staff.
+      current.prod_snapshot = snapshot(current)
+      Object.assign(current, { live_version: version, is_published: false, status: 'pending', has_draft_changes: false })
+      state.tables.app_versions.push({ app_id: id, version_num: version, version_data: copy(current.prod_snapshot), created_at: new Date().toISOString(), changelog: `Release ${version}` })
+      return response({ ok: true, pending_review: true, is_published: false, version,
+        message: "Submitted for review. An app's first release is checked by the Aistrix team; it goes live as soon as it's approved, and later releases go live straight away." })
+    }
     current.prod_snapshot = snapshot(current)
     Object.assign(current, { live_version: version, is_published: true, has_draft_changes: false })
     state.tables.app_versions.push({ app_id: id, version_num: version, version_data: copy(current.prod_snapshot), created_at: new Date().toISOString(), changelog: `Release ${version}` })

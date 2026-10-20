@@ -35,6 +35,9 @@ def setup(**env: str) -> None:
         "SUPABASE_SERVICE_ROLE_KEY": "svc",
         "SENTRY_DSN": "",
         "MONITOR_CACHE_SECONDS": "0", "SCHEDULER_INTERVAL_SECONDS": "0",     # checks change data between requests
+        # Suites written before developer tiers: Aistrix pays, no tier limits.
+        # check_tiers.py turns both on.
+        "DEVELOPER_TIERS": "0", "AISTRIX_TESTS_ALLOW_PLATFORM_KEYS": "1",
         "TELEMETRY_OUTBOX_PATH": str(Path(telemetry_dir) / "outbox.sqlite3"),
         **{k: "" for k in _BLANKED},
         **env,

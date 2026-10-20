@@ -211,6 +211,7 @@ function TestRunPanel({ config }) {
     setRunning(true); setResult('')
     try {
       await streamRun({
+        purpose: 'build',
         input: fields.length ? formInput : input,
         ...(fields.length ? { field_values: Object.fromEntries(fields.map(f => [f.label, formValues[f.id] ?? ''])) } : {}),
         system_prompt: config.system_prompt,

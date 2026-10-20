@@ -281,6 +281,7 @@ export default function PromptStudio({ app: initialApp, onClose, onSaved, mode =
           'Authorization': `Bearer ${session?.access_token}`,
         },
         body: JSON.stringify({
+          purpose: 'build',
           input: sampleInput || '(no input)',
           system_prompt: prompt,
           ai_provider: initialApp.ai_provider || 'claude',

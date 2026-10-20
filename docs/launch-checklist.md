@@ -45,14 +45,32 @@ Status: ✅ done in code · 🟡 code ready, needs a setting or account · ⬜ n
 | 🟡 | Opt-out | `developer_profiles.email_alerts` (default on) is respected; a toggle on screen is your design call. |
 | ⬜ | Welcome email; receipts beyond Stripe's | Not built. |
 
-## 4. Charging developers ❓
+## 4. Developer tiers (both free) ✅
+
+| | Free developer | Verified developer |
+|---|---|---|
+| Account cost | $0 | $0 |
+| Draft apps | 10 | 30 |
+| Published apps (incl. waiting for review) | 1 | 5 |
+| Test runs | 20 a day, 1 at a time | 100 a day, 3 at a time |
+| AI usage | Developer's own keys for everything their apps run | same |
+| Publish approval | First publish reviewed by staff (Moderator → Approve); later releases go live | same |
+| Usage analytics | Basic: runs, users, errors, satisfaction | Standard: + response times, cost, per-version health, alerts (and alert emails) |
+
+- Limits live in `developer_limits` (change them without a deploy); staff have none. `DEVELOPER_TIERS=0` turns tiers off.
+- Verified: staff call `POST /v1/admin/developers/{id}/verification` (or set `developer_profiles.is_verified`); developers can't set it themselves.
+- `GET /v1/developer/plan` returns the tier, limits and usage, ready for a screen (placement is a design call).
+- Developers always use their own AI keys, never Aistrix's: their apps (tests, previews, customers' runs, scheduled flows, AI-graded checks — graded with whichever provider key they have) and the developer tools (Build with AI, Create App, Prompt Studio, Design copilot, Improve). Aistrix's keys serve only Aistrix's own (staff) apps and business-user features (Reports, Flows).
+- Apps already published or released before tiers count as approved.
+
+## 5. Charging developers ❓
 
 Aistrix doesn't charge developers today (money flows from app buyers). If
 "paid developers" means developers paying for a plan: plans, checkout, plan
 limits (apps, runs, seats), upgrade/downgrade/cancel, failed-payment handling
 and invoices all need to be designed first.
 
-## 5. Operations
+## 6. Operations
 
 | | Item | Notes |
 |---|---|---|

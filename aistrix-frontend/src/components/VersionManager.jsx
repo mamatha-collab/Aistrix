@@ -72,7 +72,7 @@ export function VersionSetupCard({ onRetry }) {
 // ─── Version list ─────────────────────────────────────────────────────────────
 
 export default function VersionManager({ app, user, onRollback, selectedId, onSelect }) {
-  const { versions, loading, needsSetup, reload, setVersions } = useVersions(app.id, user.id)
+  const { versions, loading, needsSetup, reload, setVersions } = useVersions(app.id)
   const [saving, setSaving]           = useState(false)
   const [bumpType, setBumpType]       = useState('patch')   // patch | minor | major
   const [changelog, setChangelog]     = useState('')

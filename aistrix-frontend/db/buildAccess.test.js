@@ -210,6 +210,23 @@ describe('release gate and revenue records', () => {
   })
 })
 
+describe('Marketplace listings go live only through the server', () => {
+  it('editors keep a draft listing, but cannot set it live from the browser', async () => {
+    const draft = await as('developer', `insert into marketplace_listings (app_id, user_id, title) values ($1, $2, 'Pitch') returning id`, [APP, U.developer])
+    expect(draft.error).toBeNull()
+    expect((await as('developer', `update marketplace_listings set status = 'live' where app_id = $1`, [APP])).error?.message).toMatch(/go live from Dev Studio/)
+    expect((await as('owner', `update marketplace_listings set title = 'Pitch writer' where app_id = $1 returning id`, [APP])).rows).toHaveLength(1)
+  })
+
+  it('nobody can list (or expose) an app they cannot edit', async () => {
+    const other = '00000000-0000-0000-0000-00000000c0de'
+    await db.query(`insert into apps (id, name, created_by, is_published, visibility) values ($1, 'Private draft', $2, false, 'private')`, [other, U.appEditor])
+    expect((await as('outsider', `insert into marketplace_listings (app_id, user_id, title) values ($1, $2, 'Mine now')`, [other, U.outsider])).error).not.toBeNull()
+    await db.query(`insert into marketplace_listings (app_id, user_id, title, status) values ($1, $2, 'Live but unpublished', 'live')`, [other, U.appEditor])
+    expect((await as('outsider', `select name from apps where id = $1`, [other])).rows).toHaveLength(0)   // a live listing doesn't publish the app
+  })
+})
+
 describe('customer feedback and run telemetry are server-only', () => {
   it('nobody reads or writes the feedback inbox from the browser (the API checks editors and hides customers)', async () => {
     await db.query(`insert into run_history (id, user_id, app_name, input, app_id) values ('00000000-0000-0000-0000-0000000000f1', $1, 'Pitch', 'private question', $2)`, [U.outsider, APP])
@@ -256,6 +273,17 @@ describe('pay-per-run: each purchase is one run', () => {
     await db.query(`select record_purchase($1::jsonb, 1)`, [{ app_id: APP, buyer_id: U.billing, dev_id: U.owner, plan: 'pay_per_run', stripe_payment_ref: 'pi_sub_holder' }])
     const { rows } = await db.query(`select plan, run_quota from app_entitlements where app_id = $1 and user_id = $2`, [APP, U.billing])
     expect(rows).toEqual([{ plan: 'subscription', run_quota: null }])
+  })
+
+  it('a full refund takes back the run it bought only if it was not used', async () => {
+    const quota = async () => (await db.query(`select run_quota, runs_this_period from app_entitlements where app_id = $1 and user_id = $2`, [APP, U.outsider])).rows[0]
+    await buy('pi_refund_me')
+    const before = await quota()
+    expect((await db.query(`select revoke_purchased_run($1, $2) ok`, [APP, U.outsider])).rows[0].ok).toBe(true)
+    expect((await quota()).run_quota).toBe(before.run_quota - 1)
+    await db.query(`update app_entitlements set runs_this_period = run_quota where app_id = $1 and user_id = $2`, [APP, U.outsider])
+    expect((await db.query(`select revoke_purchased_run($1, $2) ok`, [APP, U.outsider])).rows[0].ok).toBe(false)   // already used
+    expect((await as('outsider', `select revoke_purchased_run('${APP}', '${U.outsider}')`)).error).not.toBeNull()
   })
 
   it('one access record per buyer and app', async () => {

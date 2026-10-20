@@ -122,6 +122,15 @@ ok("an issue is filed server-side with the stored token", r.status_code == 200 a
 ok("runs of apps the developer can't edit can't be filed", c.post("/github/issues", headers=dev, json={"run_id": "run-2"}).status_code == 404)
 ok("unknown runs can't be filed", c.post("/github/issues", headers=dev, json={"run_id": "nope"}).status_code == 404)
 ok("filing needs a GitHub connection", c.post("/github/issues", headers={"Authorization": "Bearer other"}, json={"run_id": "run-1"}).status_code == 409)
+FEEDBACK = [{"id": "fb-1", "app_id": "app-1", "rating": -1, "comment": "It made up a date", "shared_input": None, "shared_output": None, "created_at": "2026-10-19"},
+            {"id": "fb-2", "app_id": "app-other", "rating": -1, "comment": "x", "shared_input": None, "shared_output": None, "created_at": "2026-10-19"}]
+TABLES["app_feedback"] = FEEDBACK
+r = c.post("/github/issues", headers=dev, json={"feedback_id": "fb-1"})
+sent = [g for g in GITHUB if g[1].endswith("/repos/acme/app/issues")][-1]
+ok("customer feedback can be filed: its comment, never who gave it", r.status_code == 200 and "It made up a date" in sent[3]["body"]
+   and "PRIVATE" not in sent[3]["body"] and "**Input:**" not in sent[3]["body"])
+ok("feedback for an app the developer can't edit can't be filed", c.post("/github/issues", headers=dev, json={"feedback_id": "fb-2"}).status_code == 404)
+ok("send a run or a feedback item, not both", c.post("/github/issues", headers=dev, json={"run_id": "run-1", "feedback_id": "fb-1"}).status_code == 400)
 GITHUB_STATUS["issues"] = 401
 r = c.post("/github/issues", headers=dev, json={"run_id": "run-1"})
 ok("a revoked GitHub token asks to reconnect", r.status_code == 409 and "Reconnect" in r.json()["detail"])

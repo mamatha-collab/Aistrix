@@ -17,6 +17,7 @@ const app = {
 export const state = window.buildFixture = {
   tables: {
     apps: [app, { ...app, id: 'app-2', name: 'Second Assistant' }],
+    marketplace_listings: [],
     app_blueprints: ['app-1', 'app-2'].map(app_id => ({ app_id, user_id: 'fixture-user', blueprint: copy(blueprint), updated_at: '2026-10-14T12:00:00.000Z' })),
     app_tools: [], app_test_cases: [], app_versions: [],
   },
@@ -150,7 +151,7 @@ if (scenario === 'operations') {
     { id: 'run-invoice', app_id: 'app-1', app_name: 'Fixture Assistant', user_id: 'fixture-user', created_at: now, rating_value: -1, feedback_text: 'The answer invented an invoice number.', input: 'Check invoice with no invoice number.', output: 'Invoice 123 is complete.' },
     { id: 'run-other', app_id: 'app-2', app_name: 'Second Assistant', user_id: 'fixture-user', created_at: now, rating_value: -1, feedback_text: 'The translation ignored the glossary.', input: 'Translate the receipt.', output: 'Incorrect translation.' },
   ]
-  Object.assign(app, { is_published: true, live_version: 1, prod_snapshot: snapshot(app) })
+  Object.assign(app, { is_published: true, live_version: 1, total_runs: 4, prod_snapshot: snapshot(app) })
   state.tables.app_blueprints[0].blueprint.dev_phase = 'deploy'
   // What the server shares with the developers (customers chose to include the run).
   state.feedback = state.tables.run_history.map((r, i) => ({ id: `fb-${i + 1}`, app_id: r.app_id, run_id: r.id, rating: r.rating_value,
@@ -195,9 +196,19 @@ window.fetch = async (input, init = {}) => {
     state.requests.push({ path: '/run', method: 'POST' })
     return fakeModelReply(JSON.parse(init.body || '{}'))
   }
+  if (url.pathname === '/stripe/earnings.csv') {
+    state.requests.push({ path: url.pathname + url.search, method: 'GET' })
+    return new Response('date,app,plan,sale_usd\n2026-10-19,Fixture Assistant,pay_per_run,2.5\n', { status: 200,
+      headers: { 'Content-Type': 'text/csv', 'Content-Disposition': 'attachment; filename="aistrix-revenue-30d-2026-10-19.csv"' } })
+  }
+  if (url.pathname === '/stripe/payouts/retry') {
+    state.requests.push({ path: url.pathname, method: 'POST' })
+    if (state.earnings) Object.assign(state.earnings, { total_pending: 0, owed_count: 0 })
+    return new Response(JSON.stringify({ sent: 2, failed: 0 }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+  }
   if (url.pathname === '/stripe/earnings' || url.pathname === '/stripe/connect/status' || /^\/apps\/[^/]+\/secrets(?:\/[^/]+)?$/.test(url.pathname)) {
     const path = url.pathname
-    state.requests.push({ path, method: init.method || 'GET', authorized: init.headers?.Authorization === 'Bearer fixture-token' })
+    state.requests.push({ path, search: url.search, method: init.method || 'GET', authorized: init.headers?.Authorization === 'Bearer fixture-token' })
     const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
     if (state.failures[path]) return json({ detail: state.failures[path] }, 503)
     if (path === '/stripe/earnings') return json(state.earnings || { total_gross: 0, total_dev_share: 0, total_pending: 0, platform_fee_pct: 20, by_app: [], recent: [] })
@@ -216,7 +227,10 @@ window.fetch = async (input, init = {}) => {
       else secrets.push({ key, updated_at: new Date().toISOString() })
       return json({ key })
     }
-    return json({ secrets })
+    // secretsNeeded: names the app's tools use ({{secrets.NAME}}), as the server reports them.
+    const needed = (state.secretsNeeded || {})[appId] || []
+    return json({ secrets: secrets.map(s => ({ ...s, used_by: needed.filter(n => n.key === s.key).flatMap(n => n.used_by) })),
+      missing: needed.filter(n => !secrets.some(s => s.key === n.key)) })
   }
   if (!url.pathname.startsWith('/v1/')) return nativeFetch(input, init)
   const path = url.pathname
@@ -226,6 +240,13 @@ window.fetch = async (input, init = {}) => {
   // scenario=…nokey: the developer has no OpenAI key saved.
   if (path === '/v1/providers') return response({ providers: [{ id: 'openai', label: 'OpenAI', connected: !scenario.includes('nokey'), default_model: 'gpt-4o', models: [{ id: 'gpt-4o', label: 'GPT-4o' }] }] })
   if (path === '/v1/usage') return response({ daily: { used: 0, limit: 100 }, has_keys: true })
+  // Marketplace: the server puts a listing live (the browser can't).
+  if (/^\/v1\/apps\/[^/]+\/listing\/go-live$/.test(path)) {
+    const listing = (state.tables.marketplace_listings || []).find(l => l.app_id === path.split('/')[3])
+    if (!listing) return response({ error: 'Save a listing first', detail: 'Save a listing first' }, 409)
+    listing.status = 'live'
+    return response({ ok: true, listing })
+  }
   // Customer feedback inbox and ratings (server side).
   state.feedback ||= []
   if (/^\/v1\/apps\/[^/]+\/feedback$/.test(path)) {

@@ -723,7 +723,7 @@ export default function DevStudioPage({
             {tab === 'sell'     && <SellTab     apps={apps} user={user} onAppUpdated={updateAppInState} />}
             {tab === 'monitor'  && <MonitorPanel apps={apps} selectedAppId={activeAppId} onSelectApp={setActiveAppId} entitlements={entitlements} />}
             {tab === 'evaluate' && <QualityPanel app={apps.find(a => a.id === activeAppId) || apps[0]} onNavigate={navigateOperations} />}
-            {tab === 'improve'  && <ImproveTab  apps={apps} user={user} runs={runs} selectedAppId={activeAppId || apps[0]?.id} onSelectApp={setActiveAppId} />}
+            {tab === 'improve'  && <ImproveTab  apps={apps} user={user} selectedAppId={activeAppId || apps[0]?.id} onSelectApp={setActiveAppId} />}
             {tab === 'version'  && <VersionTab  apps={apps} user={user} onAppUpdated={updateAppInState} selectedAppId={activeAppId} onSelectApp={setActiveAppId} />}
             {tab === 'monetize' && <MonetizeTab apps={apps} runs={runs} loading={loading} user={user} />}
             {tab === 'secrets'  && <SecretsTab  apps={apps} user={user} selectedAppId={activeAppId} onSelectApp={setActiveAppId} />}

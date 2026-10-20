@@ -936,6 +936,28 @@ def safe_calculate(expression: str) -> str:
 _SECRET_REF = re.compile(r"\{\{\s*secrets\.([A-Za-z0-9_]+)\s*\}\}")
 
 
+async def required_secrets(app_id: str) -> dict[str, list[str]]:
+    """Secret names the app's tools refer to ({{secrets.NAME}}), with the
+    tools that use each one."""
+    used: dict[str, list[str]] = {}
+    for tool in await fetch_app_tools(app_id):
+        for name in sorted({m.upper() for m in _SECRET_REF.findall(json.dumps(tool.get("config") or {}, default=str))}):
+            used.setdefault(name, []).append(tool.get("name") or "a tool")
+    return used
+
+
+async def _missing_secret_checks(app_id: str) -> list[str]:
+    """Publish problems for secrets the tools need but the app doesn't have:
+    a missing secret is sent as an empty value and the tool fails."""
+    used = await required_secrets(app_id)
+    if not used:
+        return []
+    res = await db(_service_client().table("app_secrets").select("key").eq("app_id", app_id))
+    saved = {r["key"] for r in (res.data or [])}
+    return [f"Add the secret {name} in Manage → Secrets (used by {', '.join(tools)})"
+            for name, tools in used.items() if name not in saved]
+
+
 def resolve_secret_refs(value: Any, secrets_map: dict[str, str]) -> Any:
     """Replace {{secrets.KEY}} placeholders in a tool config with decrypted
     secret values. Secrets only ever reach outbound tool calls — never the
@@ -3720,6 +3742,44 @@ def _stripe_dict(obj) -> dict:
     return obj.to_dict() if hasattr(obj, "to_dict") else {}
 
 
+def _net_share(purchase: dict) -> float:
+    """The developer's share after any refund."""
+    gross = float(purchase.get("gross_amount") or 0)
+    share = float(purchase.get("dev_share") or 0)
+    refunded = float(purchase.get("refunded_amount") or 0)
+    return round(share * max(0.0, 1 - refunded / gross), 6) if gross else 0.0
+
+
+async def _pay_out(sb, purchase: dict, stripe_account_id: str) -> str:
+    """Send the developer their share of one purchase. Safe to retry: a
+    transfer already made for this payment (its transfer group) is found and
+    recorded, never sent twice."""
+    import stripe
+    stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+    ref = purchase["stripe_payment_ref"]
+    group = f"aistrix-{ref}"
+    amount = int(round(_net_share(purchase) * 100))
+    transfer_id = None
+    try:
+        existing = _stripe_dict(await asyncio.to_thread(stripe.Transfer.list, transfer_group=group, limit=1))
+        if existing.get("data"):
+            transfer_id = existing["data"][0]["id"]
+        elif amount > 0:
+            transfer = await asyncio.to_thread(
+                stripe.Transfer.create, amount=amount, currency="usd", destination=stripe_account_id,
+                transfer_group=group, metadata={"app_id": purchase.get("app_id"), "plan": purchase.get("plan"), "payment": ref},
+                # Per hour: a failed attempt can be retried later; the group check above prevents doubles.
+                idempotency_key=f"aistrix-payout-{ref}-{int(time.time() // 3600)}")
+            transfer_id = _stripe_dict(transfer).get("id")
+        status = "transferred"
+    except Exception as te:
+        print(f"Stripe transfer failed for {ref}: {type(te).__name__}")
+        sentry_sdk.capture_exception(te)
+        status = "transfer_failed"
+    await db(sb.table("purchases").update({"payout_status": status, "stripe_transfer_id": transfer_id}).eq("id", purchase["id"]))
+    return status
+
+
 async def _record_payment(
     app_id: str, buyer_id: str, plan: str, amount_cents: int, payment_ref: str,
     stripe_customer_id: Optional[str] = None, stripe_sub_id: Optional[str] = None,
@@ -3765,23 +3825,8 @@ async def _record_payment(
     if not purchase_id:
         return False              # already recorded by an earlier delivery
 
-    if stripe_account_id and dev_share > 0:
-        import stripe
-        stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
-        try:
-            await asyncio.to_thread(
-                stripe.Transfer.create,
-                amount=int(round(dev_share * 100)), currency="usd", destination=stripe_account_id,
-                metadata={"app_id": app_id, "buyer_id": buyer_id, "plan": plan, "payment": payment_ref},
-                idempotency_key=f"aistrix-payout-{payment_ref}",
-            )
-            status = "transferred"
-        except Exception as te:
-            print(f"Stripe transfer failed for {payment_ref}: {type(te).__name__}")
-            sentry_sdk.capture_exception(te)
-            status = "transfer_failed"
-        if purchase_id:
-            await db(sb.table("purchases").update({"payout_status": status}).eq("id", purchase_id))
+    if stripe_account_id and dev_share > 0 and purchase_id:
+        await _pay_out(sb, {**row, "id": purchase_id}, stripe_account_id)
 
     app_name = app_row.get("name") or "your app"
     safe_name = html_escape(app_name)
@@ -3894,6 +3939,49 @@ async def confirm_card_payment(body: PaymentConfirmRequest, request: Request):
         raise HTTPException(status_code=409, detail="This payment hasn't completed")
     await _fulfil_card_payment(intent)
     return {"ok": True, "app_id": meta["app_id"]}
+
+
+async def _record_refund(charge: dict) -> None:
+    """A refund (full or partial) reduces the sale and the developer's share,
+    takes back that part of a payout already sent, and — for a fully refunded
+    pay-per-run purchase — the run it bought, if unused."""
+    import stripe
+    sb = _service_client()
+    if not sb:
+        raise HTTPException(status_code=503, detail="Payment storage is unavailable")   # Stripe retries
+    refs = [r for r in (charge.get("payment_intent"), charge.get("invoice")) if r]
+    if not refs:
+        return
+    res = await db(sb.table("purchases").select("id, app_id, buyer_id, plan, gross_amount, dev_share, refunded_amount, "
+                                                 "stripe_payment_ref, stripe_transfer_id, payout_status")
+                   .in_("stripe_payment_ref", refs).limit(1))
+    purchase = (res.data or [None])[0]
+    if not purchase:
+        return                                    # not an Aistrix purchase
+    gross = float(purchase.get("gross_amount") or 0)
+    refunded = min(gross, round(int(charge.get("amount_refunded") or 0) / 100, 2))
+    previous = float(purchase.get("refunded_amount") or 0)
+    if refunded <= previous:
+        return                                    # already recorded (Stripe redelivery)
+    full = refunded >= gross - 0.005
+    patch = {"refunded_amount": refunded, "refunded_at": datetime.now(timezone.utc).isoformat()}
+    if full:
+        patch["payout_status"] = "refunded"
+    # Take back the developer's share of the refunded part of a payout already sent.
+    if purchase.get("stripe_transfer_id") and gross:
+        back = int(round(float(purchase.get("dev_share") or 0) * (refunded - previous) / gross * 100))
+        if back > 0:
+            stripe.api_key = os.getenv("STRIPE_SECRET_KEY")
+            try:
+                await asyncio.to_thread(stripe.Transfer.create_reversal, purchase["stripe_transfer_id"], amount=back,
+                                        idempotency_key=f"aistrix-reversal-{purchase['stripe_payment_ref']}-{int(round(refunded * 100))}")
+            except Exception as e:
+                print(f"Transfer reversal failed for {purchase['stripe_payment_ref']}: {type(e).__name__}")
+                sentry_sdk.capture_exception(e)
+                patch["payout_status"] = "reversal_failed"
+    await db(sb.table("purchases").update(patch).eq("id", purchase["id"]))
+    if full and purchase.get("plan") == "pay_per_run" and purchase.get("buyer_id"):
+        await db(sb.rpc("revoke_purchased_run", {"p_app_id": purchase["app_id"], "p_user_id": purchase["buyer_id"]}))
 
 
 def _unsigned_webhooks_allowed() -> bool:
@@ -4012,6 +4100,15 @@ async def stripe_webhook(request: Request):
                 period_start=datetime.fromtimestamp(period_start, tz=timezone.utc).isoformat() if period_start else None,
                 period_end=datetime.fromtimestamp(period, tz=timezone.utc).isoformat() if period else None,
             )
+
+    elif event_type == "charge.refunded":
+        await _record_refund(obj)
+
+    elif event_type == "charge.dispute.created":
+        refs = [r for r in (obj.get("payment_intent"), obj.get("charge")) if r]
+        sb = _service_client()
+        if refs and sb:
+            await db(sb.table("purchases").update({"disputed": True}).in_("stripe_payment_ref", refs))
 
     elif event_type == "customer.subscription.deleted":
         sub_id = obj.get("id")
@@ -4176,47 +4273,111 @@ async def stripe_connect_status(request: Request):
         return {"connected": False, "stripe_account_id": stripe_account_id, "error": str(e)}
 
 
-@app.get("/stripe/earnings")
-async def stripe_earnings(request: Request):
-    """Return the developer's earnings summary from the purchases table."""
-    dev_id = await require_verified_user(request)
+PURCHASE_FIELDS = ("id, app_id, plan, gross_amount, platform_fee, dev_share, refunded_amount, refunded_at, "
+                   "disputed, payout_status, created_at, stripe_payment_ref")
+OWED_STATUSES = ("pending", "no_connect_account", "transfer_failed")
 
+
+async def _dev_purchases(dev_id: str, days: Optional[int]) -> list[dict]:
     if not SUPABASE_SERVICE_ROLE_KEY:
         raise HTTPException(status_code=503, detail="Service role key not configured")
-    sb = _service_client()
+    if days is not None and days not in (7, 30, 90, 365):
+        raise HTTPException(status_code=400, detail="days must be 7, 30, 90 or 365 (or omitted for all time)")
+    q = _service_client().table("purchases").select(PURCHASE_FIELDS).eq("dev_id", dev_id)
+    if days:
+        q = q.gte("created_at", (datetime.now(timezone.utc) - timedelta(days=days)).isoformat())
+    res = await db(q.order("created_at", desc=True).limit(10000))
+    return res.data or []
 
-    purchases = await asyncio.to_thread(
-        lambda: sb.table("purchases")
-            .select("app_id, plan, gross_amount, platform_fee, dev_share, payout_status, created_at")
-            .eq("dev_id", dev_id)
-            .order("created_at", desc=True)
-            .execute()
-    )
-    rows = purchases.data or []
 
-    total_gross   = sum(r.get("gross_amount", 0) or 0 for r in rows)
-    total_dev     = sum(r.get("dev_share", 0) or 0 for r in rows)
-    # Owed but not yet paid out: waiting for a transfer, for the developer's
-    # payout account, or for a failed transfer to be retried.
-    total_pending = sum(r.get("dev_share", 0) or 0 for r in rows
-                        if r.get("payout_status") in ("pending", "no_connect_account", "transfer_failed"))
+@app.get("/stripe/earnings")
+async def stripe_earnings(request: Request, days: Optional[int] = None):
+    """The developer's earnings from recorded purchases, net of refunds.
+    days: 7, 30, 90 or 365 (omit for all time)."""
+    dev_id = await require_verified_user(request)
+    rows = await _dev_purchases(dev_id, days)
+
+    def net_gross(r): return max(0.0, float(r.get("gross_amount") or 0) - float(r.get("refunded_amount") or 0))
+    owed = [r for r in rows if r.get("payout_status") in OWED_STATUSES]
     by_app: dict = {}
     for r in rows:
-        aid = r["app_id"]
-        if aid not in by_app:
-            by_app[aid] = {"app_id": aid, "total_gross": 0, "total_dev_share": 0, "sale_count": 0}
-        by_app[aid]["total_gross"]     += r.get("gross_amount", 0) or 0
-        by_app[aid]["total_dev_share"] += r.get("dev_share", 0) or 0
-        by_app[aid]["sale_count"]      += 1
-
+        a = by_app.setdefault(r["app_id"], {"app_id": r["app_id"], "total_gross": 0.0, "total_dev_share": 0.0, "sale_count": 0, "refunded": 0.0})
+        a["total_gross"] += net_gross(r)
+        a["total_dev_share"] += _net_share(r)
+        a["sale_count"] += 1
+        a["refunded"] += float(r.get("refunded_amount") or 0)
+    for a in by_app.values():
+        for k in ("total_gross", "total_dev_share", "refunded"):
+            a[k] = round(a[k], 2)
     return {
-        "total_gross":       round(total_gross, 2),
-        "total_dev_share":   round(total_dev, 2),
-        "total_pending":     round(total_pending, 2),
+        "days":              days,
+        "total_gross":       round(sum(net_gross(r) for r in rows), 2),
+        "total_dev_share":   round(sum(_net_share(r) for r in rows), 2),
+        # Owed but not yet paid out: waiting for a transfer, for the developer's
+        # payout account, or for a failed transfer to be retried.
+        "total_pending":     round(sum(_net_share(r) for r in owed), 2),
+        "owed_count":        len(owed),
+        "total_refunded":    round(sum(float(r.get("refunded_amount") or 0) for r in rows), 2),
+        "disputed_count":    sum(1 for r in rows if r.get("disputed")),
         "platform_fee_pct":  STRIPE_PLATFORM_FEE_PCT,
-        "by_app":            list(by_app.values()),
-        "recent":            rows[:20],
+        "by_app":            sorted(by_app.values(), key=lambda a: -a["total_dev_share"]),
+        "recent":            [{k: v for k, v in r.items() if k not in ("id", "stripe_payment_ref")} for r in rows[:20]],
     }
+
+
+@app.get("/stripe/earnings.csv")
+async def stripe_earnings_csv(request: Request, days: Optional[int] = None):
+    """Every recorded purchase in the period as CSV, for accounting."""
+    dev_id = await require_verified_user(request)
+    rows = await _dev_purchases(dev_id, days)
+    names = {}
+    app_ids = list({r["app_id"] for r in rows})
+    if app_ids:
+        res = await db(_service_client().table("apps").select("id, name").in_("id", app_ids))
+        names = {a["id"]: a.get("name") or "" for a in (res.data or [])}
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["date", "app", "plan", "sale_usd", "platform_fee_usd", "your_share_usd", "refunded_usd", "your_share_after_refunds_usd", "payout_status", "disputed"])
+    for r in rows:
+        w.writerow([r.get("created_at"), names.get(r["app_id"], ""), r.get("plan"), r.get("gross_amount"), r.get("platform_fee"),
+                    r.get("dev_share"), r.get("refunded_amount") or 0, _net_share(r), r.get("payout_status"), bool(r.get("disputed"))])
+    name = f"aistrix-revenue-{'all' if not days else f'{days}d'}-{datetime.now(timezone.utc).date().isoformat()}.csv"
+    return StreamingResponse(iter([buf.getvalue()]), media_type="text/csv",
+                             headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@app.post("/stripe/payouts/retry")
+async def stripe_payouts_retry(request: Request):
+    """Send payouts still owed (sales made before the payout account was set
+    up, or failed transfers). Never pays the same purchase twice."""
+    import stripe
+    dev_id = await require_verified_user(request)
+    secret_key = os.getenv("STRIPE_SECRET_KEY")
+    if not secret_key or not SUPABASE_SERVICE_ROLE_KEY:
+        raise HTTPException(status_code=503, detail="Stripe not configured")
+    sb = _service_client()
+    prof = await db(sb.table("developer_profiles").select("stripe_account_id").eq("user_id", dev_id).limit(1))
+    account_id = ((prof.data or [None])[0] or {}).get("stripe_account_id")
+    if not account_id:
+        raise HTTPException(status_code=409, detail="Set up your payout account first")
+    stripe.api_key = secret_key
+    try:
+        account = _stripe_dict(await asyncio.to_thread(stripe.Account.retrieve, account_id))
+    except Exception:
+        raise HTTPException(status_code=502, detail="Couldn't check your payout account with Stripe. Try again.")
+    if not account.get("payouts_enabled"):
+        raise HTTPException(status_code=409, detail="Your payout account isn't ready for payouts yet. Finish setting it up with Stripe.")
+    res = await db(sb.table("purchases").select("id, app_id, plan, gross_amount, dev_share, refunded_amount, stripe_payment_ref, payout_status")
+                   .eq("dev_id", dev_id).in_("payout_status", ["no_connect_account", "transfer_failed", "pending"]).limit(500))
+    sent = failed = 0
+    for purchase in res.data or []:
+        if not purchase.get("stripe_payment_ref") or _net_share(purchase) <= 0:
+            continue
+        if await _pay_out(sb, purchase, account_id) == "transferred":
+            sent += 1
+        else:
+            failed += 1
+    return {"sent": sent, "failed": failed}
 
 
 # ─── GitHub OAuth ─────────────────────────────────────────────────────────────
@@ -4338,12 +4499,15 @@ async def github_disconnect(request: Request):
 
 
 class GitHubIssueRequest(BaseModel):
-    run_id: str
+    run_id: Optional[str] = None        # one of your own runs
+    feedback_id: Optional[str] = None   # customer feedback (only what the customer shared)
 
 
 @app.post("/github/issues")
 async def github_create_issue(body: GitHubIssueRequest, request: Request):
-    """File a GitHub issue for a run the developer can see, in their repo."""
+    """File a GitHub issue in the developer's repo for one of their own runs,
+    or for customer feedback (its comment, plus the question and answer only
+    if the customer shared them; never who gave it)."""
     user_id = await require_verified_user(request)
     user_jwt = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
     row = await _github_row(user_id)
@@ -4351,15 +4515,30 @@ async def github_create_issue(body: GitHubIssueRequest, request: Request):
         raise HTTPException(status_code=409, detail="Connect GitHub first")
     if not row.get("repo"):
         raise HTTPException(status_code=409, detail="Choose a repository for issues first")
-    # Read the run as the developer, so only runs they can already see can be filed.
-    res = await db(get_supabase_for_user(user_jwt).table("run_history")
-                   .select("id, app_id, app_name, input, output, rating_value, created_at")
-                   .eq("id", body.run_id).limit(1))
-    run = (res.data or [None])[0]
-    if not run:
-        raise HTTPException(status_code=404, detail="Run not found")
-    if not await can_edit_app(await load_app_row(run["app_id"]), ApiCaller(user_id=user_id)):
-        raise HTTPException(status_code=404, detail="Run not found")
+    if bool(body.run_id) == bool(body.feedback_id):
+        raise HTTPException(status_code=400, detail="Send a run_id or a feedback_id")
+    if body.feedback_id:
+        sb = _service_client()
+        if not sb:
+            raise HTTPException(status_code=503, detail="Feedback storage is unavailable")
+        res = await db(sb.table("app_feedback").select("app_id, rating, comment, shared_input, shared_output, created_at")
+                       .eq("id", body.feedback_id).limit(1))
+        fb = (res.data or [None])[0]
+        app_row = await load_app_row(fb["app_id"]) if fb else None
+        if not fb or not await can_edit_app(app_row, ApiCaller(user_id=user_id)):
+            raise HTTPException(status_code=404, detail="Feedback not found")
+        run = {"app_name": app_row.get("name"), "rating_value": fb["rating"], "created_at": fb["created_at"],
+               "comment": fb.get("comment"), "input": fb.get("shared_input"), "output": fb.get("shared_output")}
+    else:
+        # Read the run as the developer, so only runs they can already see can be filed.
+        res = await db(get_supabase_for_user(user_jwt).table("run_history")
+                       .select("id, app_id, app_name, input, output, rating_value, created_at")
+                       .eq("id", body.run_id).limit(1))
+        run = (res.data or [None])[0]
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        if not await can_edit_app(await load_app_row(run["app_id"]), ApiCaller(user_id=user_id)):
+            raise HTTPException(status_code=404, detail="Run not found")
     try:
         token = _decrypt(row["token_encrypted"])
     except Exception:
@@ -4368,6 +4547,7 @@ async def github_create_issue(body: GitHubIssueRequest, request: Request):
     text = "\n".join(part for part in [
         f"**App:** {app_name}",
         "**Feedback:** 👎" if run.get("rating_value") == -1 else "",
+        f"**Customer comment:** {run['comment'][:1000]}" if run.get("comment") else "",
         f"**Date:** {run.get('created_at')}",
         f"\n**Input:**\n```\n{(run.get('input') or '')[:4000]}\n```" if run.get("input") else "",
         f"\n**Output:**\n```\n{(run.get('output') or '')[:4000]}\n```" if run.get("output") else "",
@@ -4411,7 +4591,11 @@ async def list_secrets(app_id: str, request: Request):
             .eq("app_id", app_id)
             .order("key").execute()
     )
-    return {"secrets": rows.data or []}
+    secrets_list = rows.data or []
+    used = await required_secrets(app_id)
+    saved = {r["key"] for r in secrets_list}
+    return {"secrets": [{**r, "used_by": used.get(r["key"], [])} for r in secrets_list],
+            "missing": [{"key": k, "used_by": tools} for k, tools in used.items() if k not in saved]}
 
 @app.put("/apps/{app_id}/secrets")
 async def upsert_secret(app_id: str, body: SecretUpsert, request: Request):
@@ -4831,34 +5015,50 @@ async def trigger_via_webhook(token: str, request: Request):
     }
 
 
+def listing_problems(app_row: dict, listing: Optional[dict]) -> list[str]:
+    """What stops a Marketplace listing from going live."""
+    problems = []
+    if not app_row.get("is_published") or not app_row.get("live_version"):
+        problems.append("Publish the app in Deploy first (it must pass its tests)")
+    if app_row.get("is_paid") and not (float(app_row.get("price_per_run") or 0) > 0):
+        problems.append("Paid app has no price — set one in Marketplace")
+    if not listing:
+        problems.append("Save a listing first")
+    else:
+        if not (listing.get("title") or "").strip():
+            problems.append("Listing title is missing")
+        if not (listing.get("tagline") or "").strip():
+            problems.append("Tagline is missing")
+        if not listing.get("category"):
+            problems.append("Category not selected")
+    if not (app_row.get("total_runs") or 0) > 0:
+        problems.append("No runs yet — run the app at least once")
+    return problems
+
+
+@app.post("/v1/apps/{app_id}/listing/go-live")
+async def listing_go_live(app_id: str, request: Request):
+    """Put the app's Marketplace listing live (editors only). Listings are
+    approved automatically once the app is published and the listing is
+    complete; browsers can't set a listing live themselves."""
+    _, app_row = await _editable_app(app_id, request)
+    sb = _service_client()
+    if not sb:
+        raise HTTPException(status_code=503, detail="Marketplace isn't available on this server")
+    res = await db(sb.table("marketplace_listings").select("*").eq("app_id", app_id).limit(1))
+    listing = (res.data or [None])[0]
+    problems = listing_problems(app_row, listing)
+    if problems:
+        return JSONResponse(status_code=409, content={"error": problems[0], "problems": problems})
+    updated = await db(sb.table("marketplace_listings").update({"status": "live", "updated_at": datetime.now(timezone.utc).isoformat()})
+                       .eq("id", listing["id"]))
+    return {"ok": True, "listing": (updated.data or [None])[0] or {**listing, "status": "live"}}
+
+
 @app.post("/apps/{app_id}/publish")
 async def publish_app(app_id: str, request: Request):
-    """Validate publish criteria server-side and set status='live'."""
-    user_id = await require_verified_user(request)
-    if not SUPABASE_SERVICE_ROLE_KEY:
-        raise HTTPException(status_code=503, detail="Service not configured")
-    sb = _service_client()
-    app_row = await asyncio.to_thread(
-        lambda: sb.table("apps")
-            .select("id, name, system_prompt, created_by")
-            .eq("id", app_id).eq("created_by", user_id).maybe_single().execute()
-    )
-    if not app_row or not app_row.data:
-        raise HTTPException(status_code=404, detail="App not found")
-    data = app_row.data
-    errors = []
-    if not (data.get("name") or "").strip():
-        errors.append("App name is required")
-    if not (data.get("system_prompt") or "").strip():
-        errors.append("System prompt is required")
-    if errors:
-        raise HTTPException(status_code=422, detail="; ".join(errors))
-    await asyncio.to_thread(
-        lambda: sb.table("marketplace_listings")
-            .update({"status": "live"})
-            .eq("app_id", app_id).eq("user_id", user_id).execute()
-    )
-    return {"status": "live"}
+    """Older name for putting a Marketplace listing live; same checks."""
+    return await listing_go_live(app_id, request)
 
 
 # ── App tests (Dev Studio → Test) ────────────────────────────────────────────
@@ -5786,7 +5986,7 @@ async def get_release(app_id: str, request: Request):
     draft = state_hash(state)
     prod = app_row.get("prod_snapshot") if isinstance(app_row.get("prod_snapshot"), dict) else None
     tests = await app_test_status(app_row, caller.user_id)
-    checks = await _publish_checks(app_id, caller.user_jwt)
+    checks = await _publish_checks(app_id, caller.user_jwt) + await _missing_secret_checks(app_id)
     return {
         "is_published": bool(app_row.get("is_published")), "promoted_at": app_row.get("promoted_at"),
         "live_version": app_row.get("live_version"), "has_live_version": bool(prod), "draft_hash": draft, "live_hash": state_hash(prod) if prod else None,
@@ -5801,7 +6001,7 @@ async def promote_app(app_id: str, request: Request):
     """Make the current draft the live version and publish the app. Requires
     the publish checks and passing tests for this exact draft."""
     caller, app_row = await _editable_app(app_id, request)
-    checks = await _publish_checks(app_id, caller.user_jwt)
+    checks = await _publish_checks(app_id, caller.user_jwt) + await _missing_secret_checks(app_id)
     tests = await app_test_status(app_row, caller.user_id)
     problems = _test_problems(tests)
     if checks or problems:

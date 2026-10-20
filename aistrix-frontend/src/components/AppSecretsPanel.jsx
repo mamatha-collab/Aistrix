@@ -16,6 +16,7 @@ export default function AppSecretsPanel({ appId, user }) {
   const [success, setSuccess] = useState('')
   const [confirming, setConfirming] = useState(false)
   const [removing, setRemoving] = useState(null)
+  const [formOpen, setFormOpen] = useState(false)
 
   async function save() {
     setSaving(true); setProblem(''); setSuccess('')
@@ -41,9 +42,17 @@ export default function AppSecretsPanel({ appId, user }) {
     {error && <p role="alert" className="text-sm text-amber-200">{error}</p>}
     {data?.warning && <p role="alert" className="text-sm text-amber-200">{data.warning}</p>}
     {problem && <p role="alert" className="text-sm text-amber-200">{problem}</p>}
-    {data && !data.warning && <div className="space-y-2">{data.secrets?.length ? data.secrets.map(secret => <div key={secret.key} className={`${card} flex items-center gap-3`}><div className="min-w-0 flex-1"><p className="font-mono text-sm text-[#A29BFE] break-all">{secret.key}</p><p className="text-xs text-slate-400 mt-2">Value hidden · {secret.updated_at ? `Updated ${new Date(secret.updated_at).toLocaleDateString()}` : 'Update date not recorded'}</p></div><button className={`${button} !text-red-300 shrink-0`} aria-label={`Remove ${secret.key}`} disabled={saving || loading} onClick={() => setRemoving(secret.key)}>Remove</button></div>) : <p className="text-sm text-slate-400">No secrets configured for this app.</p>}</div>}
+    {!!data?.missing?.length && <div role="alert" className={`${card} border-amber-500/30 space-y-2`}>
+      <p className="text-sm text-amber-200 font-semibold">Missing secrets: this app can't be published until they're added</p>
+      {data.missing.map(m => <div key={m.key} className="flex flex-wrap items-center gap-3 text-sm">
+        <span className="font-mono text-amber-100 break-all">{m.key}</span>
+        <span className="flex-1 min-w-32 text-xs text-slate-400">used by {m.used_by.join(', ')}</span>
+        <button className={button} onClick={() => { setKey(m.key); setValue(''); setSuccess(''); setFormOpen(true) }}>Add</button>
+      </div>)}
+    </div>}
+    {data && !data.warning && <div className="space-y-2">{data.secrets?.length ? data.secrets.map(secret => <div key={secret.key} className={`${card} flex items-center gap-3`}><div className="min-w-0 flex-1"><p className="font-mono text-sm text-[#A29BFE] break-all">{secret.key}</p><p className="text-xs text-slate-400 mt-2">Value hidden · {secret.updated_at ? `Updated ${new Date(secret.updated_at).toLocaleDateString()}` : 'Update date not recorded'}</p><p className="text-xs text-slate-500 mt-1">{secret.used_by?.length ? `Used by ${secret.used_by.join(', ')}` : 'Not used by any tool yet'}</p></div><button className={`${button} !text-red-300 shrink-0`} aria-label={`Remove ${secret.key}`} disabled={saving || loading} onClick={() => setRemoving(secret.key)}>Remove</button></div>) : <p className="text-sm text-slate-400">No secrets configured for this app.</p>}</div>}
     {success && <p role="status" className="text-sm text-emerald-300">{success}</p>}
-    <details className={card}><summary className="min-h-7 cursor-pointer font-semibold text-sm text-white">Add or replace a secret</summary><div className="mt-4 space-y-3">
+    <details className={card} open={formOpen} onToggle={e => setFormOpen(e.currentTarget.open)}><summary className="min-h-7 cursor-pointer font-semibold text-sm text-white">Add or replace a secret</summary><div className="mt-4 space-y-3">
       <label className="block text-xs text-slate-400">Secret name<input aria-label="Secret name" className={`${field} mt-1`} autoCapitalize="characters" value={key} onChange={e => { setKey(e.target.value.toUpperCase().replace(/[^A-Z0-9_]/g, '')); setSuccess('') }} /></label>
       <label className="block text-xs text-slate-400">New value<input aria-label="Secret value" type="password" autoComplete="new-password" className={`${field} mt-1`} value={value} onChange={e => setValue(e.target.value)} /></label>
       <button className={`${button} !bg-[#6C5CE7] w-full`} disabled={saving || loading || !!error || !!data?.warning || !key.trim() || !value.trim()} onClick={() => data?.secrets?.some(s => s.key === key.trim()) ? setConfirming(true) : save()}>{saving ? 'Saving…' : 'Save secret'}</button>

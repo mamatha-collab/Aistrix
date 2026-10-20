@@ -31,6 +31,8 @@ class Query:
     def __init__(self, table): self.table, self.filters, self.action, self.value = table, {}, "select", None
     def select(self, *a, **k): return self
     def eq(self, key, value): self.filters[key] = value; return self
+    def in_(self, key, values): self.filters[key] = ("in", tuple(values)); return self
+    def gte(self, *a): return self
     def limit(self, *a): return self
     def order(self, *a, **k): return self
     def insert(self, value): self.action, self.value = "insert", value; return self
@@ -38,7 +40,7 @@ class Query:
     def upsert(self, value, **k): self.action, self.value = "upsert", value; return self
     def execute(self):
         rows = TABLES[self.table]
-        hits = [r for r in rows if all(r.get(k) == v for k, v in self.filters.items())]
+        hits = [r for r in rows if all((r.get(k) in v[1]) if isinstance(v, tuple) else r.get(k) == v for k, v in self.filters.items())]
         if self.action == "insert":
             ref = self.value.get("stripe_payment_ref")
             if ref and any(r.get("stripe_payment_ref") == ref for r in rows):
@@ -74,7 +76,11 @@ def record_purchase(p, runs):
             ent.update(plan="pay_per_run", status="active", run_quota=runs, runs_this_period=0)
     return row["id"]
 
+REVOKED = []
 def rpc(name, params):
+    if name == "revoke_purchased_run":
+        REVOKED.append((params["p_app_id"], params["p_user_id"]))
+        return NS(execute=lambda: NS(data=True))
     assert name == "record_purchase"
     return NS(execute=lambda: NS(data=record_purchase(params["p_purchase"], params["p_grant_runs"])))
 
@@ -90,7 +96,11 @@ async def user(request):
 main._lookup_email = lookup_email
 main.send_email = send_email
 main.require_verified_user = user
-stripe.Transfer.create = lambda **kw: TRANSFERS.append(kw) or NS(id="tr_1")
+def create_transfer(**kw):
+    TRANSFERS.append(kw)
+    return {"id": f"tr_{len(TRANSFERS)}"}
+stripe.Transfer.create = create_transfer
+stripe.Transfer.list = lambda transfer_group, limit=1: {"data": [{"id": f"tr_{i + 1}"} for i, t in enumerate(TRANSFERS) if t.get("transfer_group") == transfer_group][:limit]}
 stripe.PaymentIntent.create = lambda **kw: INTENTS.append(kw) or NS(client_secret="pi_secret_fixture")
 
 c = TestClient(main.app, raise_server_exceptions=False)
@@ -133,7 +143,8 @@ ok("the purchase buys exactly one run", [(e["plan"], e["run_quota"], e["runs_thi
 ok("the payment is recorded at the amount Stripe charged",
    len(TABLES["purchases"]) == 1 and TABLES["purchases"][0]["gross_amount"] == 25 and TABLES["purchases"][0]["dev_share"] == 20)
 ok("the developer is paid their share once, with an idempotency key",
-   len(TRANSFERS) == 1 and TRANSFERS[0]["amount"] == 2000 and TRANSFERS[0]["idempotency_key"] == "aistrix-payout-pi_1")
+   len(TRANSFERS) == 1 and TRANSFERS[0]["amount"] == 2000 and TRANSFERS[0]["idempotency_key"].startswith("aistrix-payout-pi_1-")
+   and TRANSFERS[0]["transfer_group"] == "aistrix-pi_1")
 ok("payout status records the transfer", TABLES["purchases"][0]["payout_status"] == "transferred")
 ok("buyer and developer are each emailed once", sorted(e[0] for e in EMAILS) == ["buyer@example.test", "dev@example.test"])
 ok("app names are escaped in email HTML", all("<b>App</b>" not in e[2] for e in EMAILS))
@@ -205,5 +216,56 @@ deliver("payment_intent.succeeded", {**paid_intent, "id": "pi_fail"})
 row = next(p for p in TABLES["purchases"] if p["stripe_payment_ref"] == "pi_fail")
 ok("a failed transfer is marked, not silently lost", row["payout_status"] == "transfer_failed")
 earnings = c.get("/stripe/earnings", headers={"Authorization": "Bearer dev"}).json()
-ok("money not yet paid out counts as pending", earnings["total_pending"] == 20)
+ok("money not yet paid out counts as pending", earnings["total_pending"] == 20 and earnings["owed_count"] == 1)
+stripe.Transfer.create = create_transfer
+dev = {"Authorization": "Bearer dev"}
+
+# ── Refunds take back the sale, the developer's share and the unused run ───────
+REVERSALS = []
+stripe.Transfer.create_reversal = lambda transfer_id, **kw: REVERSALS.append((transfer_id, kw)) or {"id": "trr_1"}
+by_ref = lambda ref: next(p for p in TABLES["purchases"] if p["stripe_payment_ref"] == ref)
+before_runs = TABLES["app_entitlements"][0]["run_quota"]
+deliver("charge.refunded", {"id": "ch_1", "payment_intent": "pi_1", "amount_refunded": 2500})
+ok("a full refund marks the purchase refunded", by_ref("pi_1")["payout_status"] == "refunded" and by_ref("pi_1")["refunded_amount"] == 25)
+ok("…takes back the developer's share of the payout", REVERSALS == [(by_ref("pi_1")["stripe_transfer_id"], {"amount": 2000, "idempotency_key": "aistrix-reversal-pi_1-2500"})])
+ok("…and the run it bought, if unused", REVOKED == [("paid-app", "buyer")])
+deliver("charge.refunded", {"id": "ch_1", "payment_intent": "pi_1", "amount_refunded": 2500})
+ok("a redelivered refund changes nothing more", len(REVERSALS) == 1 and len(REVOKED) == 1)
+deliver("charge.refunded", {"id": "ch_2", "payment_intent": "pi_2", "amount_refunded": 1000})
+ok("a partial refund reduces the sale and reverses that part of the payout",
+   by_ref("pi_2")["refunded_amount"] == 10 and by_ref("pi_2")["payout_status"] == "transferred" and REVERSALS[-1][1]["amount"] == 800
+   and len(REVOKED) == 1)
+ok("a refund for a charge Aistrix didn't sell is ignored", deliver("charge.refunded", {"id": "ch_x", "payment_intent": "pi_unknown", "amount_refunded": 100}).status_code == 200)
+deliver("charge.dispute.created", {"id": "dp_1", "payment_intent": "pi_2", "charge": "ch_2"})
+ok("a chargeback flags the purchase", by_ref("pi_2")["disputed"] is True)
+
+earnings = c.get("/stripe/earnings", headers=dev).json()
+ok("earnings are net of refunds, with refunds and disputes shown", earnings["total_refunded"] == 35 and earnings["disputed_count"] == 1
+   and earnings["total_gross"] == round(sum(p["gross_amount"] for p in TABLES["purchases"]) - 35, 2))
+ok("purchase ids and Stripe references aren't sent to the browser", "stripe_payment_ref" not in str(earnings["recent"]) and "'id'" not in str(earnings["recent"]))
+ok("periods are 7, 30, 90, 365 days or all time", c.get("/stripe/earnings?days=30", headers=dev).status_code == 200
+   and c.get("/stripe/earnings?days=5", headers=dev).status_code == 400)
+r = c.get("/stripe/earnings.csv", headers=dev)
+ok("CSV export lists every purchase for accounting", r.status_code == 200 and r.headers["content-type"].startswith("text/csv")
+   and r.text.splitlines()[0].startswith("date,app,plan,sale_usd") and len(r.text.splitlines()) == 1 + len(TABLES["purchases"])
+   and "attachment" in r.headers["content-disposition"])
+ok("CSV needs sign-in", c.get("/stripe/earnings.csv").status_code == 401)
+
+# ── Owed payouts can be sent later, never twice ──────────────────────────────
+TABLES["purchases"].append({"id": "p-owed", "app_id": "paid-app", "buyer_id": "buyer", "dev_id": "dev", "plan": "pay_per_run",
+                            "gross_amount": 25, "platform_fee": 5, "dev_share": 20, "refunded_amount": 0,
+                            "stripe_payment_ref": "pi_before_connect", "payout_status": "no_connect_account"})
+stripe.Account.retrieve = lambda acct: {"id": acct, "payouts_enabled": True}
+before = len(TRANSFERS)
+r = c.post("/stripe/payouts/retry", headers=dev)
+ok("owed payouts are sent once the payout account is ready", r.status_code == 200 and r.json()["sent"] == 2
+   and by_ref("pi_before_connect")["payout_status"] == "transferred" and by_ref("pi_fail")["payout_status"] == "transferred"
+   and len(TRANSFERS) == before + 2)
+r = c.post("/stripe/payouts/retry", headers=dev)
+ok("sending again pays nothing twice", r.json()["sent"] == 0 and len(TRANSFERS) == before + 2)
+by_ref("pi_fail")["payout_status"] = "transfer_failed"          # e.g. the response was lost after Stripe paid
+c.post("/stripe/payouts/retry", headers=dev)
+ok("a transfer Stripe already made is found and recorded, not repeated", len(TRANSFERS) == before + 2 and by_ref("pi_fail")["payout_status"] == "transferred")
+stripe.Account.retrieve = lambda acct: {"id": acct, "payouts_enabled": False}
+ok("payouts wait until Stripe enables the account", c.post("/stripe/payouts/retry", headers=dev).status_code == 409)
 finish()

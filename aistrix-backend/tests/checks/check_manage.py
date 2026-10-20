@@ -26,6 +26,8 @@ class Query:
     def select(self, columns): self.columns = columns; return self
     def eq(self, key, value): self.filters[key] = value; return self
     def order(self, *args, **kwargs): return self
+    def limit(self, *a): return self
+    def gte(self, *a): return self
     def delete(self): self.action = "delete"; return self
     def upsert(self, value, **kwargs): self.action = "upsert"; self.value = value; return self
     def execute(self):
@@ -83,6 +85,13 @@ ok("revoked edit permission blocks deletion even for a secret's original author"
 ROLE["editor"] = "developer"
 ok("author with current edit permission can remove a secret", c.delete(base + "/EDITOR_TOKEN", headers=headers("editor")).status_code == 200 and not any(r["key"] == "EDITOR_TOKEN" for r in TABLES["app_secrets"]))
 
+async def tools_using_secrets(app_id):
+    return [{"name": "Lookup", "config": {"url": "https://api.example.test/{{secrets.token}}"}},
+            {"name": "Notify", "config": {"headers": {"X-Key": "{{ secrets.WEBHOOK_KEY }}"}}}]
+main.fetch_app_tools = tools_using_secrets
+listing = c.get(base, headers=headers("owner")).json()
+ok("each saved secret shows which tools use it", listing["secrets"][0]["key"] == "TOKEN" and listing["secrets"][0]["used_by"] == ["Lookup"])
+ok("secrets a tool needs but the app lacks are listed (names only)", listing["missing"] == [{"key": "WEBHOOK_KEY", "used_by": ["Notify"]}])
 encryption = main._fernet
 main._fernet = None
 ok("unavailable encryption is an error, not an empty secret list", c.get(base, headers=headers("owner")).status_code == 503)

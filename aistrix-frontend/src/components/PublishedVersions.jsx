@@ -7,7 +7,8 @@ import ConfirmDialog from './ConfirmDialog'
 
 // Every publish saves a numbered version (v1, v2…). End users run the live
 // one; any earlier version can be made live again. The draft isn't changed.
-export default function PublishedVersions({ app, onAppUpdated }) {
+// `usage` (optional): Monitor's per-version split, shown next to each version.
+export default function PublishedVersions({ app, onAppUpdated, usage = null }) {
   const toast = useToast()
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
@@ -64,6 +65,12 @@ export default function PublishedVersions({ app, onAppUpdated }) {
               <p className="text-[11px] text-slate-500 mt-0.5">
                 {timeAgo(v.created_at)}{v.tests?.total ? ` · ${v.tests.passed}/${v.tests.total} test checks passed` : ''}
               </p>
+              {usage && (() => {
+                const u = usage.find(x => x.version === v.version_num)
+                return <p className={`text-[11px] mt-0.5 ${u?.error_rate >= 0.05 ? 'text-amber-300' : 'text-slate-400'}`}>
+                  {u ? `${u.runs.toLocaleString()} runs in 30 days · ${Math.round(u.error_rate * 1000) / 10}% failed` : 'No runs in 30 days'}
+                </p>
+              })()}
             </div>
             {!v.is_live && (
               <button onClick={() => setConfirming(v.version_num)} disabled={busy != null}

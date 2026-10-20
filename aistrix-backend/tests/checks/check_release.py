@@ -108,6 +108,15 @@ CHECKS["errors"] = ["Description is required"]
 r = c.post("/v1/apps/app-1/promote", headers=owner)
 ok("promote blocked by the publish checks", r.status_code == 409 and r.json()["checks"] == ["Description is required"])
 CHECKS["errors"] = []
+SECRET_TOOL = [{"name": "crm_lookup", "description": "d", "type": "http", "input_schema": {},
+                "config": {"headers": {"Authorization": "Bearer {{ secrets.crm_key }}"}}}]
+async def secret_tools(app_id): return SECRET_TOOL
+main.fetch_app_tools = secret_tools
+r = c.post("/v1/apps/app-1/promote", headers=owner)
+ok("promote blocked while a secret a tool needs is missing (says which and where)", r.status_code == 409
+   and any("CRM_KEY" in m and "crm_lookup" in m and "Manage → Secrets" in m for m in r.json()["checks"]))
+main.fetch_app_tools = draft_tools
+UPDATES.clear()
 ok("only editors can promote (404)", c.post("/v1/apps/app-1/promote", headers={"Authorization": "Bearer tok-user"}).status_code == 404)
 
 r = c.post("/v1/apps/app-1/promote", headers=owner)

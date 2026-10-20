@@ -2,6 +2,8 @@ import RevenueDetails from '../../components/RevenueDetails'
 import AppSecretsPanel from '../../components/AppSecretsPanel'
 import { useManageRecord } from '../../hooks/useManageRecord'
 import { manageRequest } from '../../lib/manageApi'
+import { getAppFeedback } from '../../lib/feedback'
+import { getAppMonitor } from '../../lib/monitor'
 import { useState, useEffect, useMemo, useRef, Suspense } from 'react'
 import { streamRun } from '../../lib/runStream'
 import { saveAppFields } from '../../lib/appFields'
@@ -12,7 +14,7 @@ import { timeAgo } from '../../utils'
 import { VersionSetupCard } from '../../components/VersionManager'
 import PublishedVersions from '../../components/PublishedVersions'
 import { useVersions } from '../../hooks/useVersions'
-import { ComingSoonCard, DeveloperProfileEditor, DiffEditor, StatTile, modelCost } from './shared'
+import { DeveloperProfileEditor, DiffEditor, StatTile, modelCost } from './shared'
 
 
 // ─── Marketplace listing helpers ─────────────────────────────────────────────
@@ -133,11 +135,11 @@ function MarketplaceListings({ apps, user }) {
     const app = apps.find(a => a.id === appId)
     const errs = publishGateErrors(app || {})
     if (errs.length) { toast(errs[0].label, 'error', 3500); return }
-    // Auto-approve: go live immediately (admin review can be added later)
-    const { data, error } = await supabase.from('marketplace_listings')
-      .update({ status: 'live', updated_at: new Date().toISOString() })
-      .eq('id', l.id).select().single()
-    if (error) { toast(error.message, 'error'); return }
+    // The server re-checks the same gates (published app, complete listing)
+    // and approves it automatically; browsers can't set a listing live.
+    let data
+    try { data = (await manageRequest(`/v1/apps/${encodeURIComponent(appId)}/listing/go-live`, { method: 'POST' })).listing }
+    catch (e) { toast(e.message, 'error', 5000); return }
     setListings(prev => prev.map(x => x.id === data.id ? data : x))
     toast('🎉 Your app is live on the Marketplace!', 'success', 4000)
     track(EVENTS.LISTING_SUBMITTED, { app_id: appId })
@@ -435,7 +437,7 @@ export function SellTab({ apps, user, onAppUpdated }) {
 // Inline sparkline — no chart library needed
 // ─── Tab: Improve ─────────────────────────────────────────────────────────────
 
-export function ImproveTab({ apps, user, runs, selectedAppId }) {
+export function ImproveTab({ apps, selectedAppId }) {
   const [selectedApp, setSelectedApp] = useState(selectedAppId || apps[0]?.id || null)
   useEffect(() => { if (selectedAppId) { setSelectedApp(selectedAppId); setVA(null); setVB(null); setOutputA(''); setOutputB(''); setSuggestion(''); setTestInput(''); setSuggesting(false); setRunningA(false); setRunningB(false) } }, [selectedAppId])
   const [vA, setVA] = useState(null)   // version left
@@ -479,22 +481,31 @@ export function ImproveTab({ apps, user, runs, selectedAppId }) {
   }
 
   const appObj = apps.find(a => a.id === selectedApp) || null
-  const { versions, loading: vLoading, needsSetup } = useVersions(selectedApp, user?.id)
+  const { versions, loading: vLoading, needsSetup } = useVersions(selectedApp)
 
   // Worst-rated runs for selected app (for AI suggestions + GitHub tracker)
-  const worstRuns = useMemo(() =>
-    runs
-      .filter(r => r.app_id === selectedApp && r.rating_value === -1)
-      .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-      .slice(0, 10)
-  , [runs, selectedApp])
+  // Customer feedback marked "not useful" (what customers chose to share).
+  const [feedback, setFeedback] = useState({ items: [], error: '' })
+  useEffect(() => {
+    if (!selectedApp) return undefined
+    let active = true
+    getAppFeedback(selectedApp, 'all')
+      .then(data => { if (active) setFeedback({ items: data.items || [], error: '' }) })
+      .catch(e => { if (active) setFeedback({ items: [], error: e.message || 'Feedback could not be loaded.' }) })
+    return () => { active = false }
+  }, [selectedApp])
+  const worstRuns = useMemo(() => feedback.items
+    .filter(f => f.rating === -1 && f.status !== 'dismissed')
+    .slice(0, 10)
+    .map(f => ({ id: f.id, input: f.shared_input, output: f.shared_output, feedback_text: f.comment, created_at: f.created_at, app_name: apps.find(a => a.id === f.app_id)?.name }))
+  , [feedback.items, apps])
 
   async function runAISuggestion() {
     if (!appObj) return
     setSuggesting(true)
     setSuggestion('')
     const examples = worstRuns.slice(0, 5)
-      .map((r, i) => `Example ${i + 1}:\nInput: ${r.input || "Not recorded"}\nAnswer: ${r.output || "Not recorded"}\nFeedback: ${r.feedback_text || "Not useful"}`)
+      .map((r, i) => `Example ${i + 1}:\nInput: ${r.input || "Not shared by the customer"}\nAnswer: ${r.output || "Not shared by the customer"}\nFeedback: ${r.feedback_text || "Not useful"}`)
       .join('\n\n')
     const systemPrompt = `You are an expert prompt engineer. Analyse the following low-rated AI app runs and suggest specific, actionable improvements to the system prompt to address the issues. Be concrete — rewrite problem sections rather than giving vague advice. Focus on tone, specificity, constraints, and output format.`
     const userMsg = `App: ${appObj.name}\nCurrent system prompt:\n${appObj.system_prompt || '(none)'}\n\nLow-rated runs:\n${examples || 'No rated runs yet — provide general improvement suggestions based on the prompt.'}`
@@ -502,7 +513,7 @@ export function ImproveTab({ apps, user, runs, selectedAppId }) {
     requests.current.add(controller)
     try {
       await streamRun({ input: userMsg, system_prompt: systemPrompt,
-        ai_provider: appObj.ai_provider || 'anthropic', ai_model: appObj.ai_model || 'claude-haiku-4-5' }, { signal: controller.signal, onToken: setSuggestion })
+        ai_provider: appObj.ai_provider || 'claude', ai_model: appObj.ai_model || undefined }, { signal: controller.signal, onToken: setSuggestion })
     } catch (e) { if (e.name !== 'AbortError') toast(e.message, 'error') }
     finally { requests.current.delete(controller); if (!controller.signal.aborted) setSuggesting(false) }
   }
@@ -511,7 +522,7 @@ export function ImproveTab({ apps, user, runs, selectedAppId }) {
     if (!ghConnected || !ghRepo) { toast('Connect GitHub first', 'error', 2000); return }
     setCreatingIssue(run.id)
     try {
-      const issue = await manageRequest('/github/issues', { method: 'POST', body: JSON.stringify({ run_id: run.id }) })
+      const issue = await manageRequest('/github/issues', { method: 'POST', body: JSON.stringify({ feedback_id: run.id }) })
       toast(`Issue #${issue.number} created`, 'success', 3000)
     } catch (e) { toast(e.message, 'error') }
     finally { setCreatingIssue(null) }
@@ -735,30 +746,6 @@ export function ImproveTab({ apps, user, runs, selectedAppId }) {
         )}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <ComingSoonCard
-          icon="🔄"
-          title="A/B Testing"
-          desc="Split live traffic between two prompt or model variants and let real usage decide the winner."
-          bullets={[
-            'Configure traffic split (50/50, 80/20, etc.)',
-            'Auto-promote when statistical significance reached',
-            'Per-variant cost and quality metrics',
-            'Works across model providers',
-          ]}
-        />
-        <ComingSoonCard
-          icon="💡"
-          title="Model Swap Advisor"
-          desc="Running on GPT-4o for every run? Aistrix detects tasks where a cheaper model would match quality."
-          bullets={[
-            'Benchmark cheaper model against your test suite',
-            'Projected cost saving shown before you swap',
-            'One-click model switch with rollback',
-            'Supports cross-provider comparison',
-          ]}
-        />
-      </div>
     </div>
   )
 }
@@ -768,39 +755,35 @@ export function ImproveTab({ apps, user, runs, selectedAppId }) {
 export function VersionTab({ apps, onAppUpdated, selectedAppId }) {
   const [selectedApp, setSelectedApp] = useState(selectedAppId || apps[0]?.id || null)
   const appObj = apps.find(a => a.id === selectedApp) || null
+  const [usage, setUsage] = useState({ data: null, error: '' })
 
   useEffect(() => { if (selectedAppId) setSelectedApp(selectedAppId) }, [selectedAppId])
+  // Real-world runs per version (last 30 days) from Monitor.
+  useEffect(() => {
+    if (!appObj?.id) return undefined
+    let active = true
+    setUsage({ data: null, error: '' })
+    getAppMonitor(appObj.id, 30)
+      .then(data => { if (active) setUsage({ data, error: '' }) })
+      .catch(e => { if (active) setUsage({ data: null, error: e.message || 'Usage per version could not be loaded.' }) })
+    return () => { active = false }
+  }, [appObj?.id])
 
   return (
-    <div className="space-y-5">
-      {/* App selector */}
-
-      {appObj && <PublishedVersions app={appObj} onAppUpdated={onAppUpdated} />}
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <ComingSoonCard
-          icon="📦"
-          title="Staged Rollouts"
-          desc="Deploy a new version to 10% of users first, watch quality metrics, then roll out to everyone."
-          bullets={[
-            'Canary releases by user percentage',
-            'Automatic rollback if quality drops',
-            'Enterprise clients can be pinned to a version',
-            'Changelog visible to users on the app page',
-          ]}
-        />
-        <ComingSoonCard
-          icon="🔒"
-          title="Enterprise Version Locking"
-          desc="Lock a specific client or team to a version they approved so a new deployment never breaks their workflow."
-          bullets={[
-            'Per-organisation version pins',
-            'Audit log of who approved which version',
-            'Upgrade request flow (client approves)',
-            'LTS (long-term support) version flag',
-          ]}
-        />
-      </div>
+    <div className="space-y-4">
+      {apps.length > 1 && (
+        <label className="block text-xs text-slate-400 max-w-sm">App
+          <select aria-label="App versions" value={appObj?.id || ''} onChange={e => setSelectedApp(e.target.value)}
+            className="mt-1 w-full bg-[#0E1424] border border-white/10 rounded-lg px-3 h-9 text-sm text-white">
+            {apps.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+          </select>
+        </label>
+      )}
+      {(usage.data?.alerts || []).filter(a => a.kind === 'version').map(a => (
+        <div key={a.kind} role="alert" className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">{a.message}</div>
+      ))}
+      {usage.error && <p className="text-xs text-amber-300">Usage per version isn't available right now ({usage.error}). Versions and roll back still work.</p>}
+      {appObj && <PublishedVersions key={appObj.id} app={appObj} onAppUpdated={onAppUpdated} usage={usage.data?.by_version || null} />}
     </div>
   )
 }

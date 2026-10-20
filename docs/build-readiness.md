@@ -138,13 +138,14 @@ Publishing now refuses to go live if it cannot record the version history
 (`app_versions.version_num`), so the database must be migrated **before** the new
 backend serves traffic:
 
-1. Apply the migrations `20261013030000` through `20261019020000` to production
+1. Apply the migrations `20261013030000` through `20261019040000` to production
    (`supabase db push` against the production project). Production already has
    everything through `20261014030000`; the new ones are
    `20261015010000_purchase_payment_ref`, `20261015020000_test_case_updated_at`,
    `20261015030000_github_connection_server_only`,
    `20261015040000_pay_per_run_credits`, `20261019010000_run_telemetry` and
-   `20261019020000_app_feedback`.
+   `20261019020000_app_feedback`, `20261019030000_purchase_refunds` and
+   `20261019040000_marketplace_listing_gate`.
 2. Deploy the backend.
 3. Deploy the frontend.
 4. Smoke-check: open Dev Studio, publish or promote a test app, confirm a new
@@ -164,7 +165,8 @@ unless `STRIPE_WEBHOOK_SECRET` is set (only `ENVIRONMENT=development`/`test`
 accepts unsigned ones). In the Stripe dashboard, point the webhook at
 `/stripe/webhook` and send these events: `checkout.session.completed`,
 `payment_intent.succeeded`, `invoice.paid`, `customer.subscription.created`,
-`customer.subscription.updated` and `customer.subscription.deleted`.
+`customer.subscription.updated`, `customer.subscription.deleted`,
+`charge.refunded` and `charge.dispute.created`.
 Revenue is recorded from `invoice.paid` (subscriptions, including renewals)
 and from one-time payments, once per Stripe payment.
 

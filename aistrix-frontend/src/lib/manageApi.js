@@ -13,10 +13,27 @@ export async function manageRequest(path, options = {}) {
   if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : data.error || 'This information could not be loaded.')
   if (!options.method || options.method === 'GET') {
     if (path.endsWith('/secrets') && !Array.isArray(data.secrets)) throw new Error('Secret metadata could not be verified. Please retry before making changes.')
-    if (path === '/stripe/earnings' && (!['total_gross', 'total_dev_share', 'total_pending'].every(key => typeof data[key] === 'number' && Number.isFinite(data[key])) || !Array.isArray(data.by_app) || !Array.isArray(data.recent))) {
+    if (path.split('?')[0] === '/stripe/earnings' && (!['total_gross', 'total_dev_share', 'total_pending'].every(key => typeof data[key] === 'number' && Number.isFinite(data[key])) || !Array.isArray(data.by_app) || !Array.isArray(data.recent))) {
       throw new Error('The revenue response is incomplete. Please retry.')
     }
   }
   return data
 }
 
+// Downloads a file the server generates for the signed-in developer (e.g. the revenue CSV).
+export async function downloadManageFile(path, fallbackName) {
+  const { data: { session } } = await supabase.auth.getSession()
+  if (!session?.access_token) throw new Error('Sign in again to download this file.')
+  const response = await fetch(`${API_URL}${path}`, { headers: { Authorization: `Bearer ${session.access_token}` } })
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}))
+    throw new Error(typeof data.detail === 'string' ? data.detail : 'The file could not be downloaded.')
+  }
+  const name = /filename="([^"]+)"/.exec(response.headers.get('Content-Disposition') || '')?.[1] || fallbackName
+  const url = URL.createObjectURL(await response.blob())
+  const link = Object.assign(document.createElement('a'), { href: url, download: name })
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}

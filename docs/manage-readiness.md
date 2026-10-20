@@ -42,3 +42,12 @@ The local process has no `E2E_BASE_URL`, `E2E_EMAIL`, or `E2E_PASSWORD` configur
 5. Verify a disposable app's release/rollback with a separate end-user session. The local live-account smoke check only opened and cancelled the confirmation.
 
 Secret rotation/audit history and complete financial reconciliation remain separate work items. Do not infer full production readiness from passing fixture tests.
+
+## Update — October 19, 2026
+
+- **Version:** each published version shows its real-world runs and failure rate (last 30 days, from Monitor), and a release that fails noticeably more than the previous one is flagged with a suggestion to roll back. The "Coming soon" cards were removed.
+- **Revenue:** totals are net of refunds; refunds and chargebacks are shown; a period filter (7/30/90/365 days, all time) and a CSV export for accounting were added. Payouts owed (sales before the payout account was ready, or failed transfers) can be sent with "Send owed payouts" — never twice: each payout carries a transfer group that is checked before sending.
+- **Refunds (server):** `charge.refunded` reduces the sale and the developer's share, reverses that part of a payout already sent, and takes back an unused pay-per-run run on a full refund. `charge.dispute.created` flags the purchase.
+- **Secrets:** secrets now belong to the app (not per editor). Each secret shows which tools use it, and secrets a tool needs but the app lacks are listed with an "Add" shortcut. Publishing is blocked until they are added (a missing secret used to become an empty value at run time).
+- **Marketplace:** listings go live only through the server (`POST /v1/apps/{id}/listing/go-live`), which requires a published app and a complete listing. The database refuses a browser setting a listing live, only an app's editors can manage its listing, and a live listing no longer makes an unpublished app readable.
+- Migrations `20261019030000_purchase_refunds` and `20261019040000_marketplace_listing_gate` are required.

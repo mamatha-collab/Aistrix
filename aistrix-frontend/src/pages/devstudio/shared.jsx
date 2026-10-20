@@ -597,30 +597,6 @@ export function StatTile({ label, value, color = '#6C5CE7', sub }) {
   )
 }
 
-export function ComingSoonCard({ icon, title, desc, bullets }) {
-  return (
-    <div className="bg-[#171B33] border border-white/5 rounded-2xl p-6 flex flex-col gap-3">
-      <div className="text-3xl">{icon}</div>
-      <div>
-        <p className="text-white font-semibold">{title}</p>
-        <p className="text-slate-400 text-sm mt-1 leading-relaxed">{desc}</p>
-      </div>
-      {bullets?.length > 0 && (
-        <ul className="space-y-1.5">
-          {bullets.map(b => (
-            <li key={b} className="flex items-start gap-2 text-[12px] text-slate-400">
-              <span className="text-[#6C5CE7] mt-0.5 shrink-0">◈</span>{b}
-            </li>
-          ))}
-        </ul>
-      )}
-      <span className="self-start text-[10px] font-semibold px-2.5 py-1 rounded-full bg-[#6C5CE7]/15 text-[#A29BFE] border border-[#6C5CE7]/25 mt-1">
-        Coming soon
-      </span>
-    </div>
-  )
-}
-
 export const RUNTIME_TYPES = [
   { id: 'prompt',    label: 'Prompt app',     desc: 'Single model call with generated UI' },
   { id: 'workflow',  label: 'Workflow app',   desc: 'Multi-step AI/API flow' },

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { APP_PUBLIC_SELECT, asPublicApp } from '../lib/appColumns'
+import { APP_PUBLIC_SELECT } from '../lib/appColumns'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { supabase } from '../supabase'
 import { track, EVENTS } from '../lib/analytics'
@@ -38,37 +38,15 @@ export function MarketplacePage() {
       .eq('status', 'live')
       .order('updated_at', { ascending: false })
 
-    if (listingRows && listingRows.length > 0) {
-      const userIds = [...new Set(listingRows.map(r => r.user_id).filter(Boolean))]
-      const { data: profiles } = userIds.length
-        ? await supabase.from('developer_profiles').select('user_id, display_name').in('user_id', userIds)
-        : { data: [] }
-      const profileMap = Object.fromEntries((profiles || []).map(p => [p.user_id, p]))
-      setListings(listingRows.map(r => ({ ...r, developer_profiles: profileMap[r.user_id] ?? null })))
-      return
-    }
-
-    // Fallback: any published app without a formal listing
-    const { data: appRows } = await supabase
-      .from('apps')
-      .select('id, name, description, ai_model, ai_provider, price_per_run, is_paid, app_type, created_at, updated_at')
-      .eq('is_published', true)
-      .order('updated_at', { ascending: false })
-
-    const synthetic = (appRows || []).map(a => ({
-      id: a.id,
-      app_id: a.id,
-      title: a.name,
-      tagline: a.description || '',
-      description: a.description || '',
-      category: null,
-      tags: [],
-      status: 'live',
-      updated_at: a.updated_at,
-      apps: { name: a.name, description: a.description, ai_model: a.ai_model, ai_provider: a.ai_provider, price_per_run: a.price_per_run, is_paid: a.is_paid },
-      developer_profiles: null,
-    }))
-    setListings(synthetic)
+    // Only apps their developers listed (and that are published) appear here:
+    // publishing an app doesn't put it on the Marketplace.
+    const rows = listingRows || []
+    const userIds = [...new Set(rows.map(r => r.user_id).filter(Boolean))]
+    const { data: profiles } = userIds.length
+      ? await supabase.from('developer_profiles').select('user_id, display_name').in('user_id', userIds)
+      : { data: [] }
+    const profileMap = Object.fromEntries((profiles || []).map(p => [p.user_id, p]))
+    setListings(rows.map(r => ({ ...r, developer_profiles: profileMap[r.user_id] ?? null })))
   }
 
   const categories = listings
@@ -203,12 +181,8 @@ export function MarketplaceAppPage({ appId }) {
       .eq('status', 'live')
       .single()
     if (!data) {
-      // Fallback: try loading published app directly
-      const { data: appRow } = await supabase.from('apps').select(APP_PUBLIC_SELECT).eq('id', id).eq('is_published', true).single()
-      const appData = asPublicApp(appRow)
-      if (!appData) { setNotFound(true); return }
-      setListing({ title: appData.name, tagline: appData.description, description: appData.description, tags: [], category: null, user_id: appData.created_by, developer_profiles: null })
-      setApp(appData)
+      // Not listed (or its app isn't published): not a Marketplace page.
+      setNotFound(true); return
     } else {
       // Fetch developer profile separately (no FK between marketplace_listings and developer_profiles)
       const { data: profile } = data.user_id

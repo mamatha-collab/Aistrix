@@ -83,6 +83,13 @@ const PATH_VIEW_MAP = {
   '/marketplace': 'marketplace',
 }
 
+// Business-user screens. The Developer workspace never shows them: a link,
+// notification, back button or old bookmark that leads to one from Developer
+// stays in Dev Studio. Business is reached only with the Business/Developer
+// switch. (Settings, Admin, Moderator and the Marketplace belong to both.)
+const BUSINESS_VIEWS = new Set(['apps', 'overview', 'profiles', 'flows', 'history', 'goals', 'events', 'analytics',
+  'reports', 'alerts', 'data_sources', 'integrations', 'knowledge_vault'])
+
 function isDeveloperExperiencePath(pathname) {
   return pathname === '/developer'
     || pathname === '/dev-studio'
@@ -302,6 +309,22 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- activeView is read, not a trigger; only re-run on path changes
   }, [location.pathname])
 
+  // Keep the workspaces separate: opening Dev Studio (link, bookmark, sign-in)
+  // puts you in Developer mode, and Developer mode never renders a business
+  // screen — only the Business/Developer switch leaves it.
+  useEffect(() => {
+    if (activeView === 'developer' && mode !== 'developer') {
+      setMode('developer')
+      localStorage.setItem('aistrix_mode', 'developer')
+      return
+    }
+    if (mode === 'developer' && BUSINESS_VIEWS.has(activeView)) {
+      setActiveView('developer')
+      if (location.pathname !== VIEW_PATH_MAP.developer) navigate(VIEW_PATH_MAP.developer, { replace: true })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- runs when the mode or screen changes
+  }, [mode, activeView])
+
   // Allow deep components (AppRunner, etc.) to trigger navigation without prop-drilling
   useEffect(() => {
     const handler = e => changeView(e.detail)
@@ -426,7 +449,7 @@ export default function App() {
     reports:     <ReportsPage     user={session.user} />,
     settings:    <SettingsPage    user={session.user} />,
     alerts:      <AlertsPage      user={session.user} />,
-    developer:   <DevStudioPage creationContent={creationFlow} navigationGuardRef={buildNavigationGuardRef} user={session.user} onOpenCreate={() => setShowTypeSelector(true)} onShowHistory={() => setShowHistory(true)} onShowSettings={() => setShowSettings(true)} onShowProfile={() => setShowProfile(true)} noKeys={noKeys} onNavChange={changeView} search={search} onSearch={setSearch} searchRef={searchInputRef} createdApp={createdApp} onCreatedAppConsumed={() => setCreatedApp(null)} />,
+    developer:   <DevStudioPage creationContent={creationFlow} navigationGuardRef={buildNavigationGuardRef} user={session.user} onOpenCreate={() => setShowTypeSelector(true)} onShowSettings={() => setShowSettings(true)} onShowProfile={() => setShowProfile(true)} noKeys={noKeys} onNavChange={changeView} search={search} onSearch={setSearch} searchRef={searchInputRef} createdApp={createdApp} onCreatedAppConsumed={() => setCreatedApp(null)} />,
     data_sources:<DataSourcesPage user={session.user} />,
     integrations:<IntegrationsPage user={session.user} />,
     admin:          isAdmin(userRole)     ? <AdminPage          user={session.user} /> : null,
@@ -594,7 +617,6 @@ export default function App() {
             {(mode === 'developer' ? [
               { view: 'developer', Icon: Code2,    label: 'Studio',   action: () => changeView('developer') },
               { view: 'keys',      Icon: Settings, label: 'Keys',     action: () => setShowSettings(true) },
-              { view: 'history',   Icon: History,  label: 'Runs',     action: () => setShowHistory(true) },
               { view: 'account',   Icon: User,     label: 'Account',  action: () => setShowProfile(true) },
             ] : [
               { view: 'apps',      Icon: LayoutGrid, label: 'Apps' },

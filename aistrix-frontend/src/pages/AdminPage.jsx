@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { timeAgo } from '../utils'
+import { manageRequest } from '../lib/manageApi'
 
 // ─── Stat card ────────────────────────────────────────────────────────────────
 function StatCard({ label, value, sub, color = '#6C5CE7', icon }) {
@@ -355,6 +356,60 @@ function RolesTab({ toast }) {
   )
 }
 
+// ─── Developers tab: Free / Verified ──────────────────────────────────────────
+const TIER_BADGE = { staff: 'bg-red-400/15 text-red-400', verified: 'bg-blue-400/15 text-blue-400', free: 'bg-white/5 text-slate-400' }
+
+function DevelopersTab({ toast }) {
+  const [devs, setDevs] = useState(null)
+  const [error, setError] = useState('')
+  const [busy, setBusy] = useState(null)
+  const [search, setSearch] = useState('')
+
+  useEffect(() => {
+    manageRequest('/v1/admin/developers').then(r => setDevs(r.developers)).catch(e => setError(e.message))
+  }, [])
+
+  async function setVerified(dev, verified) {
+    setBusy(dev.user_id)
+    try {
+      await manageRequest(`/v1/admin/developers/${dev.user_id}/verification`, { method: 'POST', body: JSON.stringify({ verified }) })
+      setDevs(prev => prev.map(d => d.user_id === dev.user_id ? { ...d, verified, tier: d.tier === 'staff' ? 'staff' : verified ? 'verified' : 'free' } : d))
+      toast(verified ? 'Developer verified' : 'Verification removed', 'success', 2000)
+    } catch (e) { toast(e.message, 'error') }
+    finally { setBusy(null) }
+  }
+
+  if (error) return <p role="alert" className="text-sm text-amber-200">Developers couldn&apos;t be loaded: {error}</p>
+  if (!devs) return <p className="text-slate-500 text-sm">Loading developers...</p>
+  const q = search.trim().toLowerCase()
+  const shown = devs.filter(d => !q || (d.display_name || '').toLowerCase().includes(q) || d.user_id.includes(q))
+  return (
+    <div className="space-y-4 max-w-3xl">
+      <p className="text-xs text-slate-400">Verified developers get 10 drafts, 6 published apps, 100 test runs a day (3 at a time) and Standard analytics. Free: 5 drafts, 3 published, 20 test runs (1 at a time), Basic.</p>
+      <input className="w-full bg-[#1F2444] border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-[#6C5CE7]"
+        placeholder="Search by name or user id" value={search} onChange={e => setSearch(e.target.value)} aria-label="Search developers" />
+      <p className="text-xs text-slate-500 uppercase">{shown.length} developers</p>
+      <div className="space-y-2">
+        {shown.map(d => (
+          <div key={d.user_id} className="bg-[#171B33] border border-white/5 rounded-xl px-4 py-3 flex items-center gap-3">
+            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${TIER_BADGE[d.tier]}`}>{d.tier}</span>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm text-white truncate">{d.display_name || 'No display name'}</p>
+              <p className="text-[10px] text-slate-500 font-mono truncate">{d.user_id} · {d.published_apps} published · {d.draft_apps} drafts</p>
+            </div>
+            {d.tier !== 'staff' && (
+              <button onClick={() => setVerified(d, !d.verified)} disabled={busy === d.user_id}
+                className={`text-xs px-3 py-1.5 rounded-lg transition-colors disabled:opacity-40 ${d.verified ? 'text-slate-400 hover:text-red-400' : 'bg-blue-400/15 text-blue-300 hover:bg-blue-400/25'}`}>
+                {busy === d.user_id ? '…' : d.verified ? 'Remove verified' : 'Verify'}
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 // ─── Main Admin Page ──────────────────────────────────────────────────────────
 export default function AdminPage() {
   const [tab, setTab] = useState('overview')
@@ -389,6 +444,7 @@ export default function AdminPage() {
     { id: 'apps',     label: '🧩 Apps' },
     { id: 'domains',  label: '🗂 Categories' },
     { id: 'roles',    label: '🔑 Roles' },
+    { id: 'developers', label: '✓ Developers' },
   ]
 
   return (
@@ -449,6 +505,7 @@ export default function AdminPage() {
       {tab === 'apps'    && <AppsTab    toast={toast} />}
       {tab === 'domains' && <DomainsTab toast={toast} />}
       {tab === 'roles'   && <RolesTab   toast={toast} />}
+      {tab === 'developers' && <DevelopersTab toast={toast} />}
     </div>
   )
 }

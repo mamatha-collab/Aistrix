@@ -597,6 +597,9 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
   // ── Launch status: what's true now, and the one thing to do next ──
   const live = app.is_published
   const wasLive = !!release?.has_live_version
+  // An app's first release waits for the Aistrix team (release.review).
+  const inReview = release?.review === 'pending'
+  const changesRequested = release?.review === 'rejected'
   const steps = [
     { label: 'Draft', ok: !hasChanges || !live,
       value: !release ? '…' : live ? (hasChanges ? `Changed since ${app.live_version ? `v${app.live_version}` : 'live'}` : 'Same as live') : wasLive ? (hasChanges ? 'Changed' : 'Unchanged') : 'New app' },
@@ -605,11 +608,13 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
     { label: 'Publish checks', ok: !serverChecks.length,
       value: !release ? '…' : serverChecks.length ? `${serverChecks.length} to fix` : 'All pass' },
     { label: 'Live version', ok: live,
-      value: live ? (app.live_version ? `v${app.live_version}` : 'Live') : wasLive ? 'Offline' : 'Not live' },
+      value: live ? (app.live_version ? `v${app.live_version}` : 'Live') : inReview ? 'In review' : wasLive ? 'Offline' : 'Not live' },
   ]
   const fixCount = blockers.length
   const action = !release
     ? { label: 'Checking…', disabled: true }
+    : inReview
+      ? { label: '⏳ Waiting for review', disabled: true }
     : !live
       ? (canPublish ? { label: wasLive && !hasChanges ? '🚀 Put it back online' : '🚀 Publish app', onClick: togglePublish }
                     : { label: `Fix ${fixCount} item${fixCount === 1 ? '' : 's'} to publish`, onClick: () => publishRef.current?.scrollIntoView({ behavior: 'smooth' }), soft: true })
@@ -620,6 +625,8 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
           : { label: `Fix ${fixCount} item${fixCount === 1 ? '' : 's'} to promote`, onClick: () => publishRef.current?.scrollIntoView({ behavior: 'smooth' }), soft: true }
   const headline = !release
     ? (releaseError ? null : 'Checking this draft…')
+    : inReview ? "Waiting for review by the Aistrix team. It goes live as soon as it's approved."
+    : changesRequested && !fixCount ? "The Aistrix team asked for changes. Publish again once they're made."
     : fixCount ? `${live ? "Can't promote" : "Can't publish"} yet — ${fixCount} thing${fixCount === 1 ? '' : 's'} to fix`
       : !live ? (wasLive ? 'Ready to go back online' : 'Ready to publish')
         : hasChanges ? 'Your changes are ready to go live' : 'Live and up to date'
@@ -711,6 +718,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
         ) : (
           <div className="space-y-1.5">
             <p className={`text-sm font-semibold ${!release ? 'text-slate-500' : fixCount ? 'text-amber-200' : 'text-green-300'}`}>{headline}</p>
+            {changesRequested && release.review_notes && <p className="text-xs text-amber-200">Review notes: {release.review_notes}</p>}
             {fixCount > 0 && <div className="space-y-0.5">{blockers.map(checkRow)}</div>}
           </div>
         )}

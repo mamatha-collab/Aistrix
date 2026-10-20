@@ -4,7 +4,7 @@ import { supabase } from '../supabase'
 import { useParams, useNavigate } from 'react-router-dom'
 import { fieldKeyFromLabel } from '../utils/schemaContracts'
 
-const API_BASE = `${(import.meta.env.VITE_API_URL || 'https://api.aistrix.com').replace(/\/$/, '')}/v1`
+const API_BASE = `${(import.meta.env.VITE_API_URL || 'https://api.aistrix.ai').replace(/\/$/, '')}/v1`
 const API_ROOT = API_BASE.replace(/\/v1$/, '')
 
 function CodeBlock({ code }) {

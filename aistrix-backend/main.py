@@ -156,6 +156,35 @@ class CatchServerErrors:
 
 app.add_middleware(CatchServerErrors)
 
+# ALLOWED_CLIENT_IPS: a private deployment (e.g. hosted staging before launch)
+# answers only these addresses or ranges ("203.0.113.7, 198.51.100.0/24").
+# Empty = open to everyone. /health stays open for the host's health check.
+# Behind the host's proxy, set TRUST_PROXY_HEADERS=1 so the real address is seen.
+ALLOWED_CLIENT_IPS = [ipaddress.ip_network(x.strip(), strict=False)
+                      for x in os.getenv("ALLOWED_CLIENT_IPS", "").split(",") if x.strip()]
+
+
+class OnlyAllowedClients:
+    def __init__(self, app_): self.app = app_
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or not ALLOWED_CLIENT_IPS or scope.get("path") == "/health":
+            return await self.app(scope, receive, send)
+        ip = (scope.get("client") or ("", 0))[0]
+        if os.getenv("TRUST_PROXY_HEADERS", "").lower() in ("1", "true", "yes"):
+            fwd = dict(scope.get("headers") or []).get(b"x-forwarded-for", b"").decode()
+            ip = fwd.split(",")[0].strip() or ip
+        try:
+            allowed = any(ipaddress.ip_address(ip) in net for net in ALLOWED_CLIENT_IPS)
+        except ValueError:
+            allowed = False
+        if not allowed:
+            return await JSONResponse(status_code=403, content={"error": "This Aistrix server isn't open to your network."})(scope, receive, send)
+        return await self.app(scope, receive, send)
+
+
+app.add_middleware(OnlyAllowedClients)
+
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
 app.add_middleware(
     CORSMiddleware,
@@ -169,12 +198,12 @@ SUPABASE_URL              = os.getenv("SUPABASE_URL")
 SUPABASE_ANON_KEY         = os.getenv("SUPABASE_ANON_KEY")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 RESEND_API_KEY            = os.getenv("RESEND_API_KEY")
-EMAIL_FROM                = os.getenv("EMAIL_FROM", "Aistrix <noreply@aistrix.app>")
+EMAIL_FROM                = os.getenv("EMAIL_FROM", "Aistrix <noreply@aistrix.ai>")
 STRIPE_PLATFORM_FEE_PCT   = float(os.getenv("STRIPE_PLATFORM_FEE_PCT", "20"))  # % Aistrix keeps
 FRONTEND_URL              = os.getenv("FRONTEND_URL", "http://localhost:5173")
 GITHUB_CLIENT_ID          = os.getenv("GITHUB_CLIENT_ID")
 GITHUB_CLIENT_SECRET      = os.getenv("GITHUB_CLIENT_SECRET")
-GITHUB_REDIRECT_URI       = os.getenv("GITHUB_REDIRECT_URI")  # e.g. https://api.aistrix.app/auth/github/callback
+GITHUB_REDIRECT_URI       = os.getenv("GITHUB_REDIRECT_URI")  # e.g. https://api.aistrix.ai/auth/github/callback
 
 # Short-lived nonce store for GitHub OAuth CSRF protection: nonce → (user_id, expiry_ts)
 OAUTH_STATE_SECONDS = 600   # how long a "Connect GitHub" link stays valid
@@ -1323,8 +1352,8 @@ PLATFORM_KEYS_FOR_DEVELOPER_APPS = os.getenv("AISTRIX_TESTS_ALLOW_PLATFORM_KEYS"
 # developer_limits table; these defaults apply when it can't be read. Staff
 # have no limits.
 DEFAULT_TIER_LIMITS = {
-    "free": {"draft_apps": 10, "published_apps": 1, "tests_per_day": 20, "concurrent_tests": 1, "analytics": "basic"},
-    "verified": {"draft_apps": 30, "published_apps": 5, "tests_per_day": 100, "concurrent_tests": 3, "analytics": "standard"},
+    "free": {"draft_apps": 5, "published_apps": 3, "tests_per_day": 20, "concurrent_tests": 1, "analytics": "basic"},
+    "verified": {"draft_apps": 10, "published_apps": 6, "tests_per_day": 100, "concurrent_tests": 3, "analytics": "standard"},
 }
 TIER_LABELS = {"free": "Free developer", "verified": "Verified developer", "staff": "Aistrix staff"}
 # DEVELOPER_TIERS=0 turns tiers off (no limits, no first-publish review, full
@@ -1399,7 +1428,7 @@ async def published_limit_problem(app_row: dict) -> Optional[str]:
         return None
     if await published_app_count(owner, excluding=app_row.get("id")) >= limits["published_apps"]:
         n = limits["published_apps"]
-        more = " Verified developers can publish 5." if tier == "free" else ""
+        more = f" Verified developers can publish {(await tier_limits())['verified']['published_apps']}." if tier == "free" else ""
         return f"{TIER_LABELS[tier]}s can have {n} published app{'s' if n != 1 else ''}. Unpublish one first.{more}"
     return None
 
@@ -3317,9 +3346,20 @@ async def file_caller(request: Request, app_id: Optional[str]) -> tuple[Optional
     return None, None, app_row
 
 
-def pdf_reader_for(request: Request, user_id: Optional[str], user_jwt: Optional[str], visitor_app: Optional[dict]):
+def pdf_reader_for(request: Request, user_id: Optional[str], user_jwt: Optional[str], visitor_app: Optional[dict],
+                   app_row: Optional[dict] = None):
     """(get_ocr_key, max_pages) for extract_pdf_text. Visitors use the app
-    owner's Claude key when saved, and a smaller scanned-page cap."""
+    owner's Claude key when saved, and a smaller scanned-page cap. A signed-in
+    user of a developer's app (app_row) uses their own Claude key, else the
+    developer's — never Aistrix's."""
+    if user_id and app_row and not visitor_app:
+        async def app_key():
+            key = (await fetch_user_api_key(user_jwt, "claude") if user_jwt else None) or                   await fetch_user_api_key_by_id(app_row.get("created_by"), "claude")
+            if not key and not PLATFORM_KEYS_FOR_DEVELOPER_APPS and await developer_tier(app_row.get("created_by")) != "staff":
+                raise OcrError("This app can't read scanned pages right now: add your own Claude key in Settings → Keys, "
+                               "or ask the app's developer to connect one.", 503)
+            return key
+        return app_key, None
     if visitor_app:
         async def owner_key():
             owner = visitor_app.get("created_by")
@@ -3409,7 +3449,8 @@ async def extract_file_text(req: ExtractRequest, request: Request):
     ocr_pages = 0
     try:
         if ext == "pdf":
-            get_key, max_pages = pdf_reader_for(request, user_id, user_jwt, visitor_app)
+            app_row = await load_app_row(req.app_id) if (user_id and req.app_id) else None
+            get_key, max_pages = pdf_reader_for(request, user_id, user_jwt, visitor_app, app_row)
             text, ocr_pages = await extract_pdf_text(data, get_key, max_pages)
         else:
             text = await asyncio.to_thread(extractor, data)
@@ -4042,7 +4083,7 @@ def _email_base(title: str, body: str, cta_url: str = "", cta_label: str = "") -
   <div style="height:2px;width:32px;background:#6C5CE7;border-radius:2px;margin:12px 0 20px"></div>
   <div style="font-size:14px;line-height:1.7;color:#94A3B8">{body}</div>
   {cta}
-  <p style="margin:32px 0 0;font-size:11px;color:#334155">Aistrix · You're receiving this because you have an account on aistrix.app</p>
+  <p style="margin:32px 0 0;font-size:11px;color:#334155">Aistrix · You're receiving this because you have an account on aistrix.ai</p>
 </div></body></html>"""
 
 
@@ -4296,7 +4337,7 @@ async def _record_payment(
             html=_email_base(
                 title=f"Welcome to {safe_name} 🎉",
                 body=f"Your {plan_label} is confirmed. You can run <strong style='color:#fff'>{safe_name}</strong> from your Aistrix dashboard any time.",
-                cta_url="https://aistrix.app",
+                cta_url=FRONTEND_URL,
                 cta_label="Open Aistrix →",
             ),
         )
@@ -4309,7 +4350,7 @@ async def _record_payment(
                 html=_email_base(
                     title=f"You have a new {plan_label}! 💰",
                     body=f"Someone just paid ${gross:.2f} for <strong style='color:#fff'>{safe_name}</strong>. See it under Manage → Revenue.",
-                    cta_url="https://aistrix.app",
+                    cta_url=FRONTEND_URL,
                     cta_label="View in Dev Studio →",
                 ),
             )
@@ -4628,7 +4669,7 @@ async def stripe_webhook(request: Request):
                         html=_email_base(
                             title=f"Subscription cancelled",
                             body=f"Your subscription to <strong style='color:#fff'>{app_name}</strong> has been cancelled. You can re-subscribe any time from the app page.",
-                            cta_url="https://aistrix.app",
+                            cta_url=FRONTEND_URL,
                             cta_label="Open Aistrix →",
                         ),
                     )
@@ -4659,7 +4700,7 @@ async def notify_quota_warning(body: QuotaWarningRequest, request: Request):
                 body=f"You've used <strong style='color:#fff'>{body.runs_used} of {body.run_quota} runs</strong> ({pct}%). "
                      f"You have <strong style='color:#fff'>{remaining} run{'s' if remaining != 1 else ''}</strong> left in your current period. "
                      f"Top up any time from the app page.",
-                cta_url="https://aistrix.app",
+                cta_url=FRONTEND_URL,
                 cta_label="Top up →",
             ),
         )
@@ -5419,7 +5460,7 @@ async def scrape_website(body: ScrapeRequest, request: Request):
         url = "https://" + url
     try:
         headers = {
-            "User-Agent": "Mozilla/5.0 (compatible; Aistrix/1.0; +https://aistrix.app)",
+            "User-Agent": "Mozilla/5.0 (compatible; Aistrix/1.0; +https://aistrix.ai)",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5",
         }
@@ -5432,7 +5473,8 @@ async def scrape_website(body: ScrapeRequest, request: Request):
             raise HTTPException(status_code=413, detail=f"That file is larger than {MAX_EXTRACT_BYTES // (1024 * 1024)} MB")
 
         if ctype == "application/pdf" or path.endswith(".pdf"):
-            get_key, max_pages = pdf_reader_for(request, scrape_user_id, scrape_jwt, visitor_app)
+            app_row = await load_app_row(body.app_id) if (scrape_user_id and body.app_id) else None
+            get_key, max_pages = pdf_reader_for(request, scrape_user_id, scrape_jwt, visitor_app, app_row)
             try:
                 text, _ = await extract_pdf_text(resp.content, get_key, max_pages)
                 kind = "text"
@@ -6954,6 +6996,78 @@ async def developer_plan(request: Request):
 
 async def is_staff_user(user_id: Optional[str]) -> bool:
     return await developer_tier(user_id) == "staff"
+
+
+async def _require_staff(request: Request) -> str:
+    staff_id = await require_verified_user(request)
+    if not await is_staff_user(staff_id):
+        raise HTTPException(status_code=404, detail="Not found")
+    if not _service_client():
+        raise HTTPException(status_code=503, detail="Not available on this server")
+    return staff_id
+
+
+@app.get("/v1/admin/developers")
+async def admin_developers(request: Request, verified: Optional[bool] = None):
+    """Staff: developers (people who created apps or have a developer
+    profile), with their tier and app counts."""
+    await _require_staff(request)
+    sb = _service_client()
+    apps = (await db(sb.table("apps").select("created_by, is_published").range(0, 9999))).data or []
+    profiles = (await db(sb.table("developer_profiles").select("user_id, display_name, is_verified").range(0, 9999))).data or []
+    staff = {r["user_id"] for r in (await db(sb.table("user_roles").select("user_id").range(0, 9999))).data or []}
+    devs: dict = {}
+    for p in profiles:
+        devs[p["user_id"]] = {"user_id": p["user_id"], "display_name": p.get("display_name"), "verified": bool(p.get("is_verified")),
+                              "published_apps": 0, "draft_apps": 0}
+    for a in apps:
+        if not a.get("created_by"):
+            continue
+        d = devs.setdefault(a["created_by"], {"user_id": a["created_by"], "display_name": None, "verified": False,
+                                              "published_apps": 0, "draft_apps": 0})
+        d["published_apps" if a.get("is_published") else "draft_apps"] += 1
+    rows = [{**d, "tier": "staff" if d["user_id"] in staff else "verified" if d["verified"] else "free"} for d in devs.values()]
+    if verified is not None:
+        rows = [r for r in rows if r["verified"] == verified]
+    rows.sort(key=lambda r: (-(r["published_apps"] + r["draft_apps"]), r["display_name"] or r["user_id"]))
+    return {"developers": rows[:500], "total": len(rows)}
+
+
+class ReviewDecision(BaseModel):
+    decision: str = Field(..., pattern="^(approve|reject)$")
+    note: str = Field(default="", max_length=2000)
+
+
+@app.post("/v1/admin/apps/{app_id}/review")
+async def review_app(app_id: str, body: ReviewDecision, request: Request):
+    """Staff approve or send back an app waiting for review (or a flagged one),
+    and the developer is emailed the outcome."""
+    staff_id = await _require_staff(request)
+    app_row = await load_app_row(app_id)
+    if not app_row:
+        raise HTTPException(status_code=404, detail="App not found")
+    if body.decision == "reject" and not body.note.strip():
+        raise HTTPException(status_code=400, detail="Say what the developer should change")
+    if body.decision == "approve" and not isinstance(app_row.get("prod_snapshot"), dict):
+        raise HTTPException(status_code=409, detail="This app has no submitted release to approve")
+    now = datetime.now(timezone.utc).isoformat()
+    patch = ({"status": "approved", "is_published": True, "review_notes": body.note.strip() or None,
+              "publish_approved_at": app_row.get("publish_approved_at") or now}
+             if body.decision == "approve" else
+             {"status": "rejected", "is_published": False, "review_notes": body.note.strip()})
+    await db(_service_client().table("apps").update(patch).eq("id", app_id))
+    name = html_escape(app_row.get("name") or "your app")
+    approved = body.decision == "approve"
+    await notify_developer(app_row.get("created_by"), f"review_{body.decision}", f"{app_id}:{now}",
+                           subject=f"{app_row.get('name') or 'Your app'} is live" if approved else f"Changes requested for {app_row.get('name') or 'your app'}",
+                           title=f"{name} is live" if approved else f"Changes requested for {name}",
+                           body=("The Aistrix team approved your app; it's live now, and your later releases go live straight away."
+                                 if approved else
+                                 f"The Aistrix team reviewed your app and asked for changes:<br><br>{html_escape(body.note.strip())}<br><br>"
+                                 "Make them in Dev Studio, then publish again from Deploy."),
+                           cta_label="Open Deploy →")
+    print(f"app {app_id} review: {body.decision} by {staff_id}")
+    return {"ok": True, "status": patch["status"], "is_published": patch["is_published"]}
 
 
 class VerificationRequest(BaseModel):

@@ -241,3 +241,15 @@ test("an app's first publish waits for review and says so", async ({ page }) => 
   expect(app.status).toBe('pending')
   expect(app.is_published).toBe(false)
 })
+
+test('Deploy shows an app waiting for review, and the notes when changes are requested', async ({ page }) => {
+  await open(page, '?scenario=live')
+  const reopenDeploy = async () => { await stage(page, 'Design'); await stage(page, 'Deploy'); await pickApp(page) }
+  await page.evaluate(() => Object.assign(window.buildFixture.tables.apps[0], { status: 'pending', is_published: false }))
+  await reopenDeploy()
+  await expect(page.getByText(/Waiting for review by the Aistrix team/)).toBeVisible()
+  await expect(page.getByRole('button', { name: /Waiting for review/ })).toBeDisabled()
+  await page.evaluate(() => Object.assign(window.buildFixture.tables.apps[0], { status: 'rejected', review_notes: 'Add a privacy notice' }))
+  await reopenDeploy()
+  await expect(page.getByText('Review notes: Add a privacy notice')).toBeVisible()
+})

@@ -18,8 +18,8 @@ FREE, VERIFIED, STAFF, TEAMMATE, CUSTOMER = "free-dev", "verified-dev", "staff-1
 TIERS = {FREE: "free", VERIFIED: "verified", STAFF: "staff", TEAMMATE: "free", CUSTOMER: "free"}
 KEYS: dict = {}                                  # (user, provider) → key
 TABLES: dict = {}
-LIMITS = [{"tier": "free", "draft_apps": 10, "published_apps": 1, "tests_per_day": 20, "concurrent_tests": 1, "analytics": "basic"},
-          {"tier": "verified", "draft_apps": 30, "published_apps": 5, "tests_per_day": 100, "concurrent_tests": 3, "analytics": "standard"}]
+LIMITS = [{"tier": "free", "draft_apps": 5, "published_apps": 3, "tests_per_day": 20, "concurrent_tests": 1, "analytics": "basic"},
+          {"tier": "verified", "draft_apps": 10, "published_apps": 6, "tests_per_day": 100, "concurrent_tests": 3, "analytics": "standard"}]
 
 
 def app_row(app_id, owner, **extra):
@@ -224,10 +224,11 @@ app.update(status="approved", is_published=True, publish_approved_at="2026-10-20
 app["system_prompt"] = "BETTER"
 r = c.post("/v1/apps/app-free/promote", headers=as_(FREE))
 ok("once approved, later releases go live straight away", r.status_code == 200 and r.json()["is_published"] and not r.json().get("pending_review"))
-TABLES["apps"].append(app_row("app-free-2", FREE))
-r = c.post("/v1/apps/app-free-2/promote", headers=as_(FREE))
-ok("Free developers can have 1 published app (says what Verified gets)", r.status_code == 409 and r.json()["code"] == "published_limit"
-   and "Unpublish one first" in r.json()["error"] and "Verified developers can publish 5" in r.json()["error"])
+TABLES["apps"] += [app_row("app-free-2", FREE, is_published=True), app_row("app-free-3", FREE, status="pending"), app_row("app-free-4", FREE)]
+r = c.post("/v1/apps/app-free-4/promote", headers=as_(FREE))
+ok("Free developers can have 3 published apps, counting one in review (says what Verified gets)", r.status_code == 409
+   and r.json()["code"] == "published_limit" and "can have 3 published apps" in r.json()["error"]
+   and "Unpublish one first" in r.json()["error"] and "Verified developers can publish 6" in r.json()["error"])
 reset(app_row("app-staff", STAFF))
 r = c.post("/v1/apps/app-staff/promote", headers=as_(STAFF))
 ok("staff's own apps don't wait for review", r.status_code == 200 and r.json()["is_published"])
@@ -253,13 +254,50 @@ ok("Standard: all of it", standard["analytics"] == "standard" and standard["tota
 reset(app_row("a1", FREE), app_row("a2", FREE, is_published=True), app_row("a3", FREE, status="pending"))
 TABLES["developer_test_usage"].append({"user_id": FREE, "day": datetime.now(timezone.utc).date().isoformat(), "runs": 7})
 plan = c.get("/v1/developer/plan", headers=as_(FREE)).json()
-ok("the plan shows the tier, its limits and usage", plan["tier"] == "free" and plan["limits"]["draft_apps"] == 10
-   and plan["usage"] == {"draft_apps": 2, "published_apps": 2, "tests_today": 7} and plan["all_limits"]["verified"]["published_apps"] == 5)
+ok("the plan shows the tier, its limits and usage", plan["tier"] == "free" and plan["limits"]["draft_apps"] == 5
+   and plan["limits"]["published_apps"] == 3
+   and plan["usage"] == {"draft_apps": 2, "published_apps": 2, "tests_today": 7} and plan["all_limits"]["verified"]["published_apps"] == 6)
 dev_id = "00000000-0000-0000-0000-00000000d001"
 ok("only staff can verify a developer", c.post(f"/v1/admin/developers/{dev_id}/verification", json={"verified": True}, headers=as_(FREE)).status_code == 404
    and not TABLES["developer_profiles"])
 r = c.post(f"/v1/admin/developers/{dev_id}/verification", json={"verified": True}, headers=as_(STAFF))
 ok("staff mark a developer Verified", r.status_code == 200 and TABLES["developer_profiles"][0] == {"user_id": dev_id, "is_verified": True})
+
+# ── Staff: developer list and app review (the developer is emailed) ────────
+EMAILS = []
+async def notify(user_id, kind, ref, subject, title, body, **kw): EMAILS.append((user_id, kind, subject, body)); return True
+main.notify_developer = notify
+reset(app_row("in-review", FREE, status="pending", prod_snapshot={"system_prompt": "P"}, live_version=1), app_row("other", VERIFIED, is_published=True))
+TABLES["developer_profiles"] = [{"user_id": VERIFIED, "display_name": "Vera", "is_verified": True}]
+TABLES["user_roles"] = [{"user_id": STAFF}]
+ok("only staff list developers", c.get("/v1/admin/developers", headers=as_(FREE)).status_code == 404)
+devs = {d["user_id"]: d for d in c.get("/v1/admin/developers", headers=as_(STAFF)).json()["developers"]}
+ok("staff see each developer's tier and app counts", devs[FREE]["tier"] == "free" and devs[FREE]["draft_apps"] == 1
+   and devs[VERIFIED]["tier"] == "verified" and devs[VERIFIED]["display_name"] == "Vera" and devs[VERIFIED]["published_apps"] == 1)
+ok("sending an app back needs a note", c.post("/v1/admin/apps/in-review/review", json={"decision": "reject", "note": " "}, headers=as_(STAFF)).status_code == 400)
+r = c.post("/v1/admin/apps/in-review/review", json={"decision": "reject", "note": "Add a privacy notice"}, headers=as_(STAFF))
+app = TABLES["apps"][0]
+ok("staff can ask for changes; the app stays offline and the developer is emailed the note", r.status_code == 200 and app["status"] == "rejected"
+   and not app["is_published"] and EMAILS[-1][0] == FREE and "Add a privacy notice" in EMAILS[-1][3])
+ok("…and Deploy shows the notes", c.get("/v1/apps/in-review/release", headers=as_(FREE)).json()["review_notes"] == "Add a privacy notice")
+r = c.post("/v1/admin/apps/in-review/review", json={"decision": "approve"}, headers=as_(STAFF))
+ok("approving puts it live, marks it approved and emails the developer", r.status_code == 200 and app["is_published"]
+   and app["status"] == "approved" and app["publish_approved_at"] and EMAILS[-1][1] == "review_approve")
+ok("only staff review apps", c.post("/v1/admin/apps/in-review/review", json={"decision": "approve"}, headers=as_(FREE)).status_code == 404)
+
+# Signed-in users of a developer's Data app: scanned PDFs on their key or the developer's.
+KEYS.clear()
+get_key, _ = main.pdf_reader_for(None, CUSTOMER, "tok-customer", None, {"created_by": FREE})
+try:
+    run(get_key()); refused = False
+except main.OcrError:
+    refused = True
+ok("a signed-in user's scanned PDF in a developer's app never uses Aistrix's key", refused)
+KEYS[(FREE, "claude")] = "sk-ant-free-dev"
+ok("…it uses the developer's key", run(get_key()) == "sk-ant-free-dev")
+KEYS[(CUSTOMER, "claude")] = "sk-ant-customer"
+ok("…or the user's own, first", run(get_key()) == "sk-ant-customer")
+KEYS.clear()
 
 # ── Scheduled flows: the scheduler's or developer's key, never Aistrix's ────
 KEYS.clear()

@@ -5,7 +5,7 @@ Run your Aistrix apps from code or the terminal.
 ```bash
 pip install aistrix
 export AISTRIX_API_KEY=ak_live_...        # create one in Dev Studio → Deploy → API keys
-export AISTRIX_API_URL=https://api.aistrix.com
+export AISTRIX_API_URL=https://api.aistrix.ai
 ```
 
 ## Run an app

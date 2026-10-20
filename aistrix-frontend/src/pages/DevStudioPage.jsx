@@ -14,7 +14,7 @@ import ErrorBoundary from '../components/ErrorBoundary'
 import ConfirmDialog from '../components/ConfirmDialog'
 import { scopeToWorkspace } from '../lib/workspace'
 import NotificationsPanel from '../components/NotificationsPanel'
-import { ArrowLeft, ChartNoAxesColumn, ChevronDown, CircleHelp, CirclePlay, ClipboardCheck, Database, History, KeyRound, LockKeyhole, LogOut, Megaphone, Moon, PenLine, Play, Plus, Search, Send, Settings, Sun, TrendingUp, X } from 'lucide-react'
+import { ArrowLeft, ChartNoAxesColumn, ChevronDown, CircleHelp, CirclePlay, ClipboardCheck, Database, History, KeyRound, LockKeyhole, LogOut, Megaphone, Moon, PenLine, Plus, Search, Send, Settings, Sun, TrendingUp, X } from 'lucide-react'
 import { applyTheme } from '../utils/theme'
 import { AppEmojiWithType, AppNavigator, DEV_PHASES, EMPTY_BP, HelpPanel, MoveBackModal, WelcomeScreen, calcReadiness, getDevPhase, migrateBlueprint, normalizeDevPhase } from './devstudio/shared'
 
@@ -65,7 +65,6 @@ export default function DevStudioPage({
   user,
   onOpenCreate: requestCreate,
   creationContent = null,
-  onShowHistory,
   onShowSettings,
   noKeys = false,
   onNavChange,
@@ -398,7 +397,6 @@ export default function DevStudioPage({
 
   if (isPhone) return <MobileDeveloper user={user} apps={apps} phaseByAppId={phaseByAppId} loading={loading}
     error={loadError || feedbackError} onRefresh={load} onAppUpdated={updateAppInState}
-    onShowHistory={onShowHistory}
     onSignOut={signOut} onToggleTheme={toggleTheme} />
 
   return (
@@ -469,11 +467,6 @@ export default function DevStudioPage({
                 </div>
                 <div className="flex items-center gap-1">
                   <NotificationsPanel user={user} onNavChange={onNavChange} />
-                  <button onClick={onShowHistory}
-                    title="Run history"
-                    className="inline-flex items-center gap-2 h-9 px-3 rounded-lg text-sm text-slate-200 hover:text-white hover:bg-white/5 transition-colors whitespace-nowrap">
-                    <Play size={16} strokeWidth={1.75} aria-hidden="true" /> Runs
-                  </button>
                   <button
                     onClick={() => openSettings('keys')}
                     aria-label={noKeys ? 'Keys — no AI key added yet' : undefined}

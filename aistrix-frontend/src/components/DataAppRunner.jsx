@@ -145,7 +145,7 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
         const res = await fetch(`${API_URL}/v1/files/extract`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', ...(session ? { Authorization: `Bearer ${session.access_token}` } : {}) },
-          body: JSON.stringify({ file_name: file.name, content_b64: await fileToBase64(file), ...(visitor ? { app_id: app.id } : {}) }),
+          body: JSON.stringify({ file_name: file.name, content_b64: await fileToBase64(file), app_id: app.id }),
         })
         const body = await res.json().catch(() => ({}))
         if (!res.ok) {
@@ -224,7 +224,7 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
       let source = rawData, sourceIsCsv = dataType === 'csv', sourceHeader = header
       if (dataType === 'url') {
         setProgressLabel('Reading the URL…')
-        const page = await readUrl(normaliseUrl(rawData), { maxChars: maxAnalysisChars, appId: visitor ? app.id : undefined })
+        const page = await readUrl(normaliseUrl(rawData), { maxChars: maxAnalysisChars, appId: app.id })
         source = page.text
         sourceIsCsv = page.kind === 'csv'
         sourceHeader = `Data source: ${page.url}${page.truncated ? ` (first ${page.text.length.toLocaleString()} of ${page.chars.toLocaleString()} characters)` : ''}`

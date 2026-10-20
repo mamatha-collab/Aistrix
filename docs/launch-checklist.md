@@ -50,8 +50,8 @@ Status: ✅ done in code · 🟡 code ready, needs a setting or account · ⬜ n
 | | Free developer | Verified developer |
 |---|---|---|
 | Account cost | $0 | $0 |
-| Draft apps | 10 | 30 |
-| Published apps (incl. waiting for review) | 1 | 5 |
+| Draft apps | 5 | 10 |
+| Published apps (incl. waiting for review) | 3 | 6 |
 | Test runs | 20 a day, 1 at a time | 100 a day, 3 at a time |
 | AI usage | Developer's own keys for everything their apps run | same |
 | Publish approval | First publish reviewed by staff (Moderator → Approve); later releases go live | same |

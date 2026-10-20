@@ -49,7 +49,7 @@ test('purple light mode keeps all grouped Developer steps available', async ({ p
   await expect(design).toHaveCSS('background-color', 'rgb(238, 232, 248)')
   const header = page.getByRole('banner', { name: 'Developer header' })
   await expect(header).toHaveCSS('background-color', 'rgb(255, 255, 255)')
-  await expect(header.getByRole('button', { name: 'Runs', exact: true }).locator('svg')).toBeVisible()
+  await expect(header.getByRole('button', { name: 'Runs', exact: true })).toHaveCount(0)   // business run history isn't in Developer
   await expect(header.getByRole('button', { name: '+ App', exact: true })).toHaveCSS('color', 'rgb(255, 255, 255)')
   await row.locator('button[title="Revenue: Profit"]').click()
   await expect(page.getByRole('heading', { name: 'Revenue', exact: true })).toBeVisible()
@@ -176,4 +176,35 @@ test('Keys opens Settings at API Keys; phones have one Settings item', async ({ 
   await page.getByRole('button', { name: /^Keys/ }).filter({ visible: true }).click()
   const keys = page.getByTestId('developer-settings').locator('#settings-api-keys')
   await expect(keys).toBeInViewport()
+})
+
+test('Settings shows the developer plan and the account data controls', async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name === 'mobile', 'The phone account menu keeps its own short list.')
+  await page.goto('/e2e/fixtures/?scenario=shared-row')
+  await page.getByRole('button', { name: 'Account menu', exact: true }).click()
+  await page.getByRole('menu').getByRole('button', { name: 'Settings', exact: true }).click()
+  const settings = page.getByTestId('developer-settings')
+  await expect(settings.getByText('Free developer', { exact: true })).toBeVisible()
+  await expect(settings.getByText('2 of 5', { exact: true })).toBeVisible()           // drafts used of the limit
+  await expect(settings.getByText('1 of 3', { exact: true })).toBeVisible()           // published apps
+  await expect(settings.getByText('4 of 20', { exact: true })).toBeVisible()          // test runs today
+  await expect(settings.getByText(/Verified developers get 10 drafts, 6 published apps/)).toBeVisible()
+  await expect(settings.getByRole('switch', { name: 'Developer alert emails' })).toBeVisible()
+
+  const [download] = await Promise.all([page.waitForEvent('download'), settings.getByRole('button', { name: 'Download my data' }).click()])
+  expect(download.suggestedFilename()).toBe('aistrix-account-2026-10-20.json')
+
+  await page.evaluate(() => { window.buildFixture.deletionCheck = { can_delete: false, blockers: ["You're owed $20.00 in payouts. Send them from Manage → Revenue first."] } })
+  await settings.getByRole('button', { name: 'Delete account' }).click()
+  await expect(settings.getByRole('alert')).toContainText("You're owed $20.00 in payouts")
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+
+  await page.evaluate(() => { window.buildFixture.deletionCheck = { can_delete: true, blockers: [] } })
+  await settings.getByRole('button', { name: 'Delete account' }).click()
+  const dialog = page.getByRole('dialog', { name: 'Delete your account?' })
+  await expect(dialog.getByRole('button', { name: 'Delete account' })).toBeDisabled()
+  await dialog.getByLabel('Type delete my account to confirm').fill('delete my account')
+  await expect(dialog.getByRole('button', { name: 'Delete account' })).toBeEnabled()
+  await dialog.getByRole('button', { name: 'Cancel' }).click()
+  expect(await page.evaluate(() => window.buildFixture.deletedAccount)).toBeUndefined()
 })

@@ -518,15 +518,15 @@ describe('developer tiers', () => {
     expect(self.rows[0].is_verified).toBe(false)                         // ignored: developers can't verify themselves
     expect(await tier(DEV)).toBe('free')
     expect((await as('owner', `select tier, draft_apps from developer_limits order by tier`)).rows)
-      .toEqual([{ tier: 'free', draft_apps: 10 }, { tier: 'verified', draft_apps: 30 }])   // the limits are public
+      .toEqual([{ tier: 'free', draft_apps: 5 }, { tier: 'verified', draft_apps: 10 }])   // the limits are public
   })
 
-  it('a Free developer can have 10 draft apps', async () => {
-    for (let i = 0; i < 10; i++) {
+  it('a Free developer can have 5 draft apps', async () => {
+    for (let i = 0; i < 5; i++) {
       await db.query(`insert into apps (name, created_by, is_published, visibility) values ($1, $2, false, 'private')`, [`Draft ${i}`, DEV])
     }
     await expect(db.query(`insert into apps (name, created_by, is_published, visibility) values ('One too many', $1, false, 'private')`, [DEV]))
-      .rejects.toThrow(/up to 10 draft apps/)
+      .rejects.toThrow(/up to 5 draft apps/)
     await db.query(`update developer_profiles set is_verified = true where user_id = $1`, [DEV])     // as staff/server
     expect(await tier(DEV)).toBe('verified')
     await db.query(`insert into apps (name, created_by, is_published, visibility) values ('Verified can', $1, false, 'private')`, [DEV])

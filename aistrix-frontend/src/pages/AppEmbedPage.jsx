@@ -97,7 +97,7 @@ export default function AppEmbedPage() {
     <div style={css.loader}>
       <div style={{ textAlign: 'center' }}>
         <p style={css.loaderText}>{blockedHost ? 'This widget is not enabled for this website' : 'App not found'}</p>
-        <a href="https://aistrix.com" style={{ ...css.brand, opacity: 1, fontSize: 12, marginLeft: 0 }}>← Aistrix</a>
+        <a href="https://aistrix.ai" style={{ ...css.brand, opacity: 1, fontSize: 12, marginLeft: 0 }}>← Aistrix</a>
       </div>
     </div>
   )

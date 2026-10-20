@@ -4,6 +4,7 @@ respected), Monitor alert emails, account export (no secrets) and deletion
 (refused while others depend on the account), and the production-config
 report. Fake Supabase, fake email only."""
 import asyncio
+import os
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace as NS
 
@@ -192,12 +193,21 @@ r = c.post("/v1/account/delete", headers=me, json={"confirm": "Delete my account
 ok("with nothing depending on it, the account, its apps and its files are deleted",
    r.status_code == 200 and DELETED_USERS == ["dev"] and not TABLES["apps"] and REMOVED_FILES == [("app-files", "dev/a.pdf")])
 
+# ── Private deployment: only allowed addresses reach the API ────────────────
+import ipaddress
+main.ALLOWED_CLIENT_IPS = [ipaddress.ip_network("203.0.113.7/32"), ipaddress.ip_network("198.51.100.0/24")]
+os.environ["TRUST_PROXY_HEADERS"] = "1"
+ok("an address that isn't allowed is refused", c.get("/v1/developer/plan", headers={**me, "X-Forwarded-For": "8.8.8.8"}).status_code == 403)
+ok("an allowed address (or range) gets through", c.get("/v1/account/deletion-check", headers={**me, "X-Forwarded-For": "198.51.100.42"}).status_code != 403)
+ok("the host's health check is never blocked", c.get("/health", headers={"X-Forwarded-For": "8.8.8.8"}).status_code == 200)
+main.ALLOWED_CLIENT_IPS = []
+os.environ["TRUST_PROXY_HEADERS"] = ""
+
 # ── Production configuration report ──────────────────────────────────────────
 main._fernet, main.FRONTEND_URL = None, "http://localhost:5173"
 gaps = main.production_config_gaps()
 ok("missing production settings are named (never their values)", any("SECRET_ENCRYPTION_KEY" in g for g in gaps["missing_required"])
    and any("FRONTEND_URL" in g for g in gaps["missing_required"]) and "RESEND_API_KEY" in gaps["missing_recommended"])
-main.OPS_TOKEN = None
 import os
 os.environ["OPS_HEALTH_TOKEN"] = "ops-secret"
 details = c.get("/health/details", headers={"X-Ops-Token": "ops-secret"}).json()

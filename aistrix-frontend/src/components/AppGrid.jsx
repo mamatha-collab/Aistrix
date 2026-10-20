@@ -683,7 +683,7 @@ export default function AppGrid({ onSelectApp, selectedApp, user, search, runCou
                   {i > 0 && <span>·</span>}
                   <a href={
                       link === 'App Gallery' ? '/gallery'
-                      : link === 'Support' ? 'mailto:support@aistrix.com'
+                      : link === 'Support' ? 'mailto:support@aistrix.ai'
                       : link === 'Privacy Policy' ? '/privacy'
                       : '/terms'
                     }

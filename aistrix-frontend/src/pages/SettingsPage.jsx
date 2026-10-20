@@ -3,6 +3,7 @@ import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { applyTheme } from '../utils/theme'
 import { PROVIDER_STYLE, removeProviderKey, saveProviderKey, useProviders } from '../lib/providers'
+import { AccountData, DeveloperEmailAlerts, DeveloperPlan } from '../components/AccountSettings'
 
 const AVATAR_COLORS = ['#6C5CE7','#E84393','#00B894','#0984E3','#FDCB6E','#E17055','#74B9FF','#A29BFE','#55EFC4','#FD79A8']
 
@@ -210,7 +211,9 @@ export default function SettingsPage({ user, developer = false, focus = null, em
       </div>
       <div className="space-y-5 min-w-0">
       {/* API Keys */}
-      <Section id="settings-api-keys" title="API Keys" description="Use your own keys — they never leave the server and don't count against your quota.">
+      <Section id="settings-api-keys" title="API Keys" description={developer
+        ? 'Your apps, tests and developer tools run on your own keys. They never leave the server.'
+        : "Use your own keys — they never leave the server and don't count against your quota."}>
         <div className="space-y-4">
           {PROVIDERS.map(p => (
             <div key={p.id} className="bg-[#1F2444] border border-white/5 rounded-xl p-4">
@@ -294,6 +297,15 @@ export default function SettingsPage({ user, developer = false, focus = null, em
             <span className="text-xs text-slate-400">Update in browser settings</span>
           )}
         </div>
+        {developer && user && <DeveloperEmailAlerts user={user} />}
+      </Section>
+
+      {developer && <Section id="settings-plan" title="Developer plan" description="Your tier, its limits and what you've used.">
+        <DeveloperPlan />
+      </Section>}
+
+      <Section id="settings-account" title="Your account" description="Download your data or delete your account.">
+        <AccountData />
       </Section>
 
       {/* AI Memory */}

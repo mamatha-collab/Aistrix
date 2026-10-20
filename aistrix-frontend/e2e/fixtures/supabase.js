@@ -248,6 +248,21 @@ window.fetch = async (input, init = {}) => {
   // scenario=…nokey: the developer has no OpenAI key saved.
   if (path === '/v1/providers') return response({ providers: [{ id: 'openai', label: 'OpenAI', connected: !scenario.includes('nokey'), default_model: 'gpt-4o', models: [{ id: 'gpt-4o', label: 'GPT-4o' }] }] })
   if (path === '/v1/usage') return response({ daily: { used: 0, limit: 100 }, has_keys: true })
+  // Developer plan and the account's data (same shapes as the server).
+  if (path === '/v1/developer/plan') {
+    const limits = { draft_apps: 5, published_apps: 3, tests_per_day: 20, concurrent_tests: 1, analytics: 'basic' }
+    return response(state.plan || { tier: 'free', label: 'Free developer', limits, usage: { draft_apps: 2, published_apps: 1, tests_today: 4 },
+      all_limits: { free: limits, verified: { draft_apps: 10, published_apps: 6, tests_per_day: 100, concurrent_tests: 3, analytics: 'standard' } } })
+  }
+  if (path === '/v1/account/deletion-check') return response(state.deletionCheck || { can_delete: true, blockers: [] })
+  if (path === '/v1/account/delete') {
+    state.deletedAccount = JSON.parse(init.body || '{}').confirm
+    return response({ ok: true })
+  }
+  if (path === '/v1/account/export') {
+    return new Response(JSON.stringify({ user_id: 'fixture-user', apps: state.tables.apps }), { status: 200,
+      headers: { 'Content-Type': 'application/json', 'Content-Disposition': 'attachment; filename="aistrix-account-2026-10-20.json"' } })
+  }
   // Marketplace: the server puts a listing live (the browser can't).
   if (/^\/v1\/apps\/[^/]+\/listing\/go-live$/.test(path)) {
     const listing = (state.tables.marketplace_listings || []).find(l => l.app_id === path.split('/')[3])
@@ -314,7 +329,8 @@ window.fetch = async (input, init = {}) => {
   if (path.endsWith('/release')) {
     const tests = status(id)
     return response({ ready: tests.all_passed, tests, checks: [], test_problems: tests.all_passed ? [] : ['Run the current draft tests.'],
-      has_changes: JSON.stringify(current?.prod_snapshot) !== JSON.stringify(snapshot(current)), has_live_version: !!current?.prod_snapshot })
+      has_changes: JSON.stringify(current?.prod_snapshot) !== JSON.stringify(snapshot(current)), has_live_version: !!current?.prod_snapshot,
+      review: ['pending', 'rejected'].includes(current?.status) ? current.status : 'none', review_notes: current?.status === 'rejected' ? current.review_notes : null })
   }
   if (path.endsWith('/promote')) {
     if (!status(id).all_passed) return response({ error: 'Tests required', test_problems: ['Run tests.'] }, 409)

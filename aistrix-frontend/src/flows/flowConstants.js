@@ -238,7 +238,7 @@ export const APP_DEFAULT_FIELDS = {
     { id: 'topic',     label: 'Topic or Content',  placeholder: 'e.g. Our new AI feature launch',            required: true  },
     { id: 'platform',  label: 'Platform',          placeholder: 'LinkedIn / Twitter / Instagram / Facebook', required: true  },
     { id: 'tone',      label: 'Tone',              placeholder: 'e.g. Enthusiastic, professional, witty',    required: false },
-    { id: 'cta',       label: 'Key Message / CTA', placeholder: 'e.g. Drive signups to aistrix.app',         required: false },
+    { id: 'cta',       label: 'Key Message / CTA', placeholder: 'e.g. Drive signups to aistrix.ai',         required: false },
   ],
   'market research assistant': [
     { id: 'industry',  label: 'Industry / Market',       placeholder: 'e.g. EdTech SaaS',                   required: true  },

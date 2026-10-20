@@ -12,7 +12,7 @@ from typing import Any, Optional, Union
 
 import httpx
 
-DEFAULT_API_URL = "https://api.aistrix.com"
+DEFAULT_API_URL = "https://api.aistrix.ai"
 FileArg = Union[str, Path, "tuple[str, bytes]"]
 
 

@@ -4,7 +4,8 @@ import { useState } from 'react'
 // (replace a link, turn something off, change the live version). Same look
 // as Dev Studio's other dialogs. onConfirm may be async; the dialog shows
 // busyLabel until it settles, then the caller closes it.
-export default function ConfirmDialog({ title, subtitle, children, confirmLabel, busyLabel, danger = false, onCancel, onConfirm }) {
+// confirmDisabled: e.g. until a typed confirmation matches.
+export default function ConfirmDialog({ title, subtitle, children, confirmLabel, busyLabel, danger = false, confirmDisabled = false, onCancel, onConfirm }) {
   const [busy, setBusy] = useState(false)
 
   async function confirm() {
@@ -29,7 +30,7 @@ export default function ConfirmDialog({ title, subtitle, children, confirmLabel,
         </div>
         <div className="flex items-center justify-between px-5 py-3 border-t border-white/8">
           <button onClick={onCancel} disabled={busy} className="text-xs text-slate-500 hover:text-white transition-colors">Cancel</button>
-          <button onClick={confirm} disabled={busy}
+          <button onClick={confirm} disabled={busy || confirmDisabled}
             className={`text-xs font-semibold px-4 py-2 rounded-xl disabled:opacity-40 text-white transition-colors ${danger ? 'bg-red-500/80 hover:bg-red-500' : 'bg-[#6C5CE7] hover:bg-[#7C6CFF]'}`}>
             {busy ? (busyLabel || 'Working…') : confirmLabel}
           </button>

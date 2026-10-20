@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { withPrivateFields } from '../lib/appColumns'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
+import { manageRequest } from '../lib/manageApi'
 import { timeAgo } from '../utils'
 
 const BADGE_KEYS = [
@@ -30,6 +31,16 @@ function ReviewQueue({ toast }) {
 
   async function setStatus(id, status) {
     const note = notes[id] || ''
+    if (status === 'approved' || status === 'rejected') {
+      // Through the server: it records the decision and emails the developer.
+      try {
+        await manageRequest(`/v1/admin/apps/${encodeURIComponent(id)}/review`, { method: 'POST',
+          body: JSON.stringify({ decision: status === 'approved' ? 'approve' : 'reject', note }) })
+      } catch (e) { toast(e.message, 'error', 6000); return }
+      setApps(prev => prev.filter(a => a.id !== id))
+      toast(`App ${status}`, status === 'approved' ? 'success' : 'info')
+      return
+    }
     const { error } = await supabase.from('apps').update({ status, review_notes: note, is_published: status === 'approved' }).eq('id', id)
     if (error) { toast(error.message, 'error'); return }
     setApps(prev => prev.filter(a => a.id !== id))

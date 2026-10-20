@@ -31,7 +31,7 @@ function FeedbackCard({ item }) {
   </details>
 }
 
-export default function MobileDeveloper({ user, apps, phaseByAppId, loading, error, onRefresh, onAppUpdated, onShowHistory, onSignOut, onToggleTheme }) {
+export default function MobileDeveloper({ user, apps, phaseByAppId, loading, error, onRefresh, onAppUpdated, onSignOut, onToggleTheme }) {
   const [view, setView] = useState('monitor')
   const [selectedId, setSelectedId] = useState(null)
   const [filter, setFilter] = useState('')
@@ -106,7 +106,7 @@ export default function MobileDeveloper({ user, apps, phaseByAppId, loading, err
           <button aria-label="Close account menu" className="fixed inset-0 z-40 cursor-default" onClick={() => setAccountOpen(false)} />
           <div role="menu" className="absolute top-full right-0 mt-2 z-50 w-60 rounded-2xl border border-white/10 bg-[#111827] shadow-2xl p-2">
             <p className="truncate text-xs text-slate-400 px-3 py-3 border-b border-white/8 mb-1">{user.email}</p>
-            {[['Settings', () => navigate('settings')], ['Run history', onShowHistory], ['Change theme', onToggleTheme]].map(([label, handler]) => <button key={label} className={`${action} w-full text-left`} onClick={() => { setAccountOpen(false); handler?.() }}>{label}</button>)}
+            {[['Settings', () => navigate('settings')], ['Change theme', onToggleTheme]].map(([label, handler]) => <button key={label} className={`${action} w-full text-left`} onClick={() => { setAccountOpen(false); handler?.() }}>{label}</button>)}
             <button className={`${action} !text-red-300 w-full text-left border-t border-white/8 mt-1`} onClick={() => { setAccountOpen(false); setConfirmSignOut(true) }}>Sign out</button>
           </div>
         </>}

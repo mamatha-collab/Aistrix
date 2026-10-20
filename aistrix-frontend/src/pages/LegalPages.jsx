@@ -51,7 +51,7 @@ export function PrivacyPage() {
         time. Contact us to request full account deletion.
       </p>
       <h2 className="text-white font-semibold text-base mt-6">Contact</h2>
-      <p>Questions about this policy: <a className="text-[#A29BFE] underline" href="mailto:support@aistrix.com">support@aistrix.com</a></p>
+      <p>Questions about this policy: <a className="text-[#A29BFE] underline" href="mailto:support@aistrix.ai">support@aistrix.ai</a></p>
     </LegalShell>
   )
 }
@@ -72,7 +72,7 @@ export function TermsPage() {
       <h2 className="text-white font-semibold text-base mt-6">Paid apps</h2>
       <p>
         Some apps charge per run via Stripe. Each purchase buys one run; if a run fails, it isn't
-        used up and you can run again. Refund requests go to support@aistrix.com.
+        used up and you can run again. Refund requests go to support@aistrix.ai.
       </p>
       <h2 className="text-white font-semibold text-base mt-6">Your content</h2>
       <p>
@@ -86,7 +86,7 @@ export function TermsPage() {
         relying on it for important decisions.
       </p>
       <h2 className="text-white font-semibold text-base mt-6">Contact</h2>
-      <p>Questions about these terms: <a className="text-[#A29BFE] underline" href="mailto:support@aistrix.com">support@aistrix.com</a></p>
+      <p>Questions about these terms: <a className="text-[#A29BFE] underline" href="mailto:support@aistrix.ai">support@aistrix.ai</a></p>
     </LegalShell>
   )
 }

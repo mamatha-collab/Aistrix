@@ -24,11 +24,11 @@ At 768px and above, the full Build and Operate workspace remains available. Phon
 
 ## Limits and recommended next work
 
-1. Add version-attributed production telemetry before implementing before/after release comparisons. Current run history has no reliable published-version, failure-status, latency, or cost fields; token usage is not an actual cost measurement. Keep test profile measurements separate from production metrics.
-2. Design a privacy-aware developer feedback feed. Current charts show only histories the signed-in user can already read. App ownership does not silently grant access to another customer's private inputs or answers. Prefer aggregate health and customer-approved, redacted examples across workspaces.
+1. Done: every real run (customers, API, triggers, website visitors; failures included) is logged in `app_runs` with status, error kind, response time, model, cost and the published version that answered. `GET /v1/apps/{id}/monitor` and `GET /v1/monitor` return aggregates only (never inputs or answers); Monitor shows them per app and across apps, with a per-version comparison. Draft and test runs are not counted.
+2. Done: customer feedback reaches developers through `app_feedback` (server only). A rating's comment is shared; the customer's question and the answer only when they tick "Include my question and the answer". Who gave the feedback is never returned.
 3. Done: the server release gate has a "Your saved tests" requirement. Every test the developer saved (including regressions from feedback) must have passed on the current draft, recorded after the test's last edit (`app_test_cases.updated_at`).
-4. Add persisted issue triage (new/in progress/verified), ownership, and a release observation window. A saved test or published update must not automatically mark the source issue resolved.
-5. Implement threshold alerts after production instrumentation is trustworthy. Define minimum sample sizes and observation windows; do not infer app quality from an absence of feedback.
+4. Done: each feedback item has a status (new, investigating, fixed, verified, dismissed), a note and the regression test it led to. Saving a regression moves it to investigating, never to fixed; the developer marks it verified once the fix is live and Monitor looks healthy.
+5. Done: alerts with minimum samples — ≥10% failed in 24h (≥20 runs, critical), ≥5% failed in the period (≥50 runs), slowest 5% ≥30s, <70% useful in 7 days (≥10 ratings), a release failing ≥5 points more than the previous one (≥20 runs each), and no runs in 7 days for a published app. Shown in Monitor (desktop and phone); no email yet.
 6. Done for now: the unwired integration cards (Langfuse, Sentry, Promptfoo, DeepEval, Ragas, Unleash, Flagsmith, PostHog flags, Stripe keys) were removed; the GitHub tracker runs through the server and never exposes its token. Any future integration must be verified against its API before showing "connected". Keep Marketplace listing optional until the app is published, useful to its audience, and documented.
 
 ## Verification

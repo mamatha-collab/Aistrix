@@ -123,7 +123,7 @@ test('one Settings page opens inside the Developer workspace and tabs leave it',
   await expect(page.getByRole('button', { name: 'Developer', exact: true })).toBeVisible()      // still the Developer workspace
   await page.locator('button[title="Monitor: Usage"]').filter({ visible: true }).click()
   await expect(page.getByTestId('developer-settings')).toHaveCount(0)
-  await expect(page.getByRole('region', { name: 'Operate and Grow workflow' })).toBeVisible()
+  await expect(page.getByLabel('App to monitor')).toBeVisible()
 })
 
 test('search filters the app list and says when nothing matches', async ({ page }, testInfo) => {

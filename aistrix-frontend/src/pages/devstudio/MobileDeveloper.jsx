@@ -3,7 +3,8 @@ import { Activity, ChevronLeft, LayoutGrid, MessageSquare, RefreshCw, Settings2 
 import AistrixWordmark from '../../components/AistrixWordmark'
 import ConfirmDialog from '../../components/ConfirmDialog'
 import ErrorBoundary from '../../components/ErrorBoundary'
-import { feedbackSummary } from '../../lib/operationsLoop'
+import { getMonitorOverview, pct } from '../../lib/monitor'
+import { getAppFeedback, statusLabel } from '../../lib/feedback'
 import { timeAgo } from '../../utils'
 
 const MobileManage = lazy(() => import('./MobileManage'))
@@ -12,23 +13,24 @@ const PublishedVersions = lazy(() => import('../../components/PublishedVersions'
 const card = 'rounded-2xl border border-white/8 bg-[#171B33] p-4'
 const action = 'min-h-11 rounded-xl px-3 py-2 text-sm font-medium text-slate-200 hover:bg-white/5'
 
-function RunCard({ run, appName }) {
+function FeedbackCard({ item }) {
+  const shared = item.shared_input || item.shared_output
   return <details className={card}>
     <summary className="cursor-pointer list-none space-y-1">
-      {appName && <p className="text-xs text-slate-400 truncate">{appName}</p>}
-      <p className="text-sm text-white leading-relaxed break-words">{run.feedback_text || (run.rating_value === -1 ? 'Answer marked not useful' : run.input?.slice(0, 100) || 'App run')}</p>
-      <p className="text-xs text-slate-400">{timeAgo(run.created_at)} · Tap for details</p>
+      <p className="text-sm text-white leading-relaxed break-words"><span aria-label={item.rating === -1 ? 'Not useful' : 'Useful'} className="mr-1.5">{item.rating === -1 ? '👎' : '👍'}</span><span>{item.comment || 'Answer marked not useful'}</span></p>
+      <p className="text-xs text-slate-400">{timeAgo(item.created_at)} · {statusLabel(item.status)}{shared ? ' · Tap for details' : ''}</p>
     </summary>
     <div className="mt-4 space-y-3 border-t border-white/8 pt-3">
-      {[['Input', run.input], ['Answer', run.output]].map(([label, value]) => <div key={label}>
+      {shared ? [['Customer question', item.shared_input], ['Answer they got', item.shared_output]].map(([label, value]) => <div key={label}>
         <p className="text-xs font-semibold text-slate-400 mb-1">{label}</p>
-        <p className="text-sm text-slate-200 whitespace-pre-wrap break-words max-h-64 overflow-y-auto">{value || 'Not recorded'}</p>
-      </div>)}
+        <p className="text-sm text-slate-200 whitespace-pre-wrap break-words max-h-64 overflow-y-auto">{value || 'Not shared'}</p>
+      </div>) : <p className="text-sm text-slate-400">The customer didn't share their question or the answer.</p>}
+      <p className="text-xs text-slate-500">Triage and turn it into a regression test in Evaluate on a computer or tablet.</p>
     </div>
   </details>
 }
 
-export default function MobileDeveloper({ user, apps, runs, phaseByAppId, loading, error, onRefresh, onAppUpdated, onShowHistory, onSignOut, onToggleTheme }) {
+export default function MobileDeveloper({ user, apps, phaseByAppId, loading, error, onRefresh, onAppUpdated, onShowHistory, onSignOut, onToggleTheme }) {
   const [view, setView] = useState('monitor')
   const [selectedId, setSelectedId] = useState(null)
   const [filter, setFilter] = useState('')
@@ -47,12 +49,40 @@ export default function MobileDeveloper({ user, apps, runs, phaseByAppId, loadin
   }, [accountOpen])
   const selected = apps.find(a => a.id === selectedId)
   const live = apps.filter(a => a.is_published)
-  const issues = runs.filter(r => r.rating_value === -1)
-  const feedback = issues.filter(r => !filter || r.app_id === filter)
-  const selectedRuns = runs.filter(r => r.app_id === selectedId)
-  const selectedFeedback = selectedRuns.filter(r => r.rating_value === -1)
-  const summary = feedbackSummary(selectedRuns)
   const filteredApps = apps.filter(a => a.name.toLowerCase().includes(search.toLowerCase()))
+
+  // Health of the last 7 days from the server: real runs, alerts, open feedback.
+  const [overview, setOverview] = useState({ loading: true, error: '', apps: [] })
+  const [overviewKey, setOverviewKey] = useState(0)
+  const appIds = apps.map(a => a.id).join(',')
+  useEffect(() => {
+    if (!appIds) { setOverview({ loading: false, error: '', apps: [] }); return undefined }
+    let active = true
+    setOverview(o => ({ ...o, loading: true, error: '' }))
+    getMonitorOverview(appIds.split(','), 7)
+      .then(data => { if (active) setOverview({ loading: false, error: '', apps: data.apps || [] }) })
+      .catch(e => { if (active) setOverview({ loading: false, error: e.message || 'App health could not be loaded.', apps: [] }) })
+    return () => { active = false }
+  }, [appIds, overviewKey])
+  const health = id => overview.apps.find(a => a.app_id === id)
+  const openFeedback = overview.apps.reduce((n, a) => n + (a.open_feedback || 0), 0)
+  const alerts = overview.apps.flatMap(a => a.alerts.filter(al => al.level !== 'info').map(al => ({ ...al, app_id: a.app_id })))
+  const needsLook = id => { const h = health(id); return !!h && (h.open_feedback > 0 || h.alerts.some(al => al.level !== 'info')) }
+  function refreshAll() { onRefresh?.(); setOverviewKey(n => n + 1); setFeedbackKey(n => n + 1) }
+
+  // Feedback view: one app's open customer feedback.
+  const feedbackApp = filter || overview.apps.find(a => a.open_feedback > 0)?.app_id || live[0]?.id || apps[0]?.id || ''
+  const [inbox, setInbox] = useState({ loading: false, error: '', items: [] })
+  const [feedbackKey, setFeedbackKey] = useState(0)
+  useEffect(() => {
+    if (view !== 'feedback' || !feedbackApp) return undefined
+    let active = true
+    setInbox({ loading: true, error: '', items: [] })
+    getAppFeedback(feedbackApp, 'open')
+      .then(data => { if (active) setInbox({ loading: false, error: '', items: data.items || [] }) })
+      .catch(e => { if (active) setInbox({ loading: false, error: e.message || 'Feedback could not be loaded.', items: [] }) })
+    return () => { active = false }
+  }, [view, feedbackApp, feedbackKey])
 
   function openApp(id) { setSelectedId(id); setShowVersions(false); setView('apps') }
   function navigate(next) { setView(next); setSelectedId(null); setShowVersions(false); setLimit(10) }
@@ -62,7 +92,7 @@ export default function MobileDeveloper({ user, apps, runs, phaseByAppId, loadin
     <span className="min-w-0 flex-1"><span className="block font-semibold text-white text-sm truncate">{app.name}</span>
       <span className="block text-xs text-slate-400 mt-1">{app.is_published ? `Live${app.live_version ? ` · v${app.live_version}` : ''}` : 'Draft · In Build'}</span>
     </span>
-    {issues.some(r => r.app_id === app.id) && <span className="h-2 w-2 rounded-full bg-amber-400 shrink-0" aria-label="Has feedback to review" />}
+    {needsLook(app.id) && <span className="h-2 w-2 rounded-full bg-amber-400 shrink-0" aria-label="Needs attention" />}
   </button>
 
   return <div className="developer-content flex-1 min-w-0 min-h-0 flex flex-col bg-[#09101F]" data-testid="mobile-developer">
@@ -86,24 +116,26 @@ export default function MobileDeveloper({ user, apps, runs, phaseByAppId, loadin
     <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-5 space-y-5" key={`${view}:${selectedId || ''}`}>
       <div className="flex items-center justify-between gap-3">
         <h1 className="text-xl text-white font-semibold">{selected && view === 'apps' ? 'App details' : view === 'monitor' ? 'Monitor' : view === 'apps' ? 'Apps' : view === 'manage' ? 'Manage' : view === 'settings' ? 'Settings' : 'Feedback'}</h1>
-        {view !== 'manage' && <button className={`${action} !p-2.5 border border-white/8`} aria-label="Refresh app activity" disabled={loading} onClick={onRefresh}><RefreshCw size={18} className={loading ? 'animate-spin' : ''} /></button>}
+        {view !== 'manage' && <button className={`${action} !p-2.5 border border-white/8`} aria-label="Refresh app activity" disabled={loading || overview.loading} onClick={refreshAll}><RefreshCw size={18} className={loading || overview.loading ? 'animate-spin' : ''} /></button>}
       </div>
-      {error && view !== 'manage' && <div role="alert" className="rounded-xl border border-amber-400/20 bg-amber-400/5 p-3 text-sm text-amber-200">{error}<button className="block underline min-h-11" onClick={onRefresh}>Try again</button></div>}
+      {error && view !== 'manage' && <div role="alert" className="rounded-xl border border-amber-400/20 bg-amber-400/5 p-3 text-sm text-amber-200">{error}<button className="block underline min-h-11" onClick={refreshAll}>Try again</button></div>}
       {view === 'settings' ? <ErrorBoundary compact title="Settings could not load"><Suspense fallback={<p role="status" className="text-sm text-slate-400">Loading Settings…</p>}><SettingsPage user={user} developer embedded /></Suspense></ErrorBoundary> : view === 'manage' ? <ErrorBoundary compact title="Manage could not load"><Suspense fallback={<p role="status" className="text-sm text-slate-400">Loading Manage…</p>}><MobileManage apps={apps} user={user} onAppUpdated={onAppUpdated} /></Suspense></ErrorBoundary> : loading && !hasLoaded ? <div role="status" className="space-y-3"><p className="text-sm text-slate-400">Loading app activity…</p>{[0, 1, 2].map(i => <div key={i} className="h-20 rounded-2xl bg-white/5 animate-pulse" />)}</div> : !apps.length && !error ? <div className={`${card} space-y-2`}><h2 className="text-white font-semibold">No apps yet</h2><p className="text-sm text-slate-400 leading-relaxed">Create your first app on a computer or tablet. Check its activity and feedback here.</p></div> : <>
         {view === 'monitor' && <>
           <div className="grid grid-cols-2 gap-3">
             <div className={card}><p className="text-2xl text-white font-bold">{live.length}</p><p className="text-xs text-slate-400 mt-1">Live apps</p></div>
-            <button className={`${card} text-left`} onClick={() => navigate('feedback')}><p className="text-2xl text-amber-300 font-bold">{error ? '—' : issues.length}</p><p className="text-xs text-slate-400 mt-1">Feedback to review</p></button>
+            <button className={`${card} text-left`} onClick={() => navigate('feedback')}><p className="text-2xl text-amber-300 font-bold">{overview.error || overview.loading ? '—' : openFeedback}</p><p className="text-xs text-slate-400 mt-1">Feedback to review</p></button>
           </div>
-          {!error && <section className="space-y-3"><h2 className="text-sm text-white font-semibold">Needs attention</h2>
-            {issues.length ? issues.slice(0, 3).map(r => <button key={r.id} className={`${card} w-full text-left space-y-1`} onClick={() => { setFilter(r.app_id); navigate('feedback') }}>
-              <span className="block text-xs text-slate-400 truncate">{apps.find(a => a.id === r.app_id)?.name}</span><span className="block text-sm text-white leading-relaxed break-words">{r.feedback_text || 'Answer marked not useful'}</span>
-            </button>) : <p className="text-sm text-slate-400">{runs.length ? 'No negative feedback in the available runs.' : 'No activity recorded yet.'}</p>}
+          {overview.error && <div role="alert" className="rounded-xl border border-amber-400/20 bg-amber-400/5 p-3 text-sm text-amber-200">{overview.error}<button className="block underline min-h-11" onClick={refreshAll}>Try again</button></div>}
+          {!overview.error && <section className="space-y-3"><h2 className="text-sm text-white font-semibold">Needs attention</h2>
+            {overview.loading ? <p role="status" className="text-sm text-slate-400">Checking app health…</p>
+              : alerts.length ? alerts.slice(0, 5).map((al, i) => <button key={`${al.app_id}:${al.kind}:${i}`} className={`${card} w-full text-left space-y-1`} onClick={() => openApp(al.app_id)}>
+              <span className="block text-xs text-slate-400 truncate">{apps.find(a => a.id === al.app_id)?.name}</span><span className={`block text-sm leading-relaxed break-words ${al.level === 'critical' ? 'text-red-200' : 'text-white'}`}>{al.message}</span>
+            </button>) : <p className="text-sm text-slate-400">No problems found in the last 7 days.</p>}
           </section>}
           <section className="space-y-3"><div className="flex items-center justify-between"><h2 className="text-sm text-white font-semibold">Live apps</h2><button className={`${action} !text-[#A29BFE]`} onClick={() => navigate('apps')}>View all</button></div>
             {live.length ? live.slice(0, 5).map(appRow) : <p className="text-sm text-slate-400">Your apps are still in Build.</p>}
           </section>
-          <p className="text-xs text-slate-500 leading-relaxed">Based on your latest accessible run history. Feedback is a signal to investigate, not a confirmed incident.</p>
+          <p className="text-xs text-slate-500 leading-relaxed">Last 7 days of real runs: customers, API calls and website visitors. Your own draft and test runs aren't counted.</p>
         </>}
         {view === 'apps' && !selected && <>
           {apps.length > 5 && <input aria-label="Find an app" placeholder="Find an app" className="w-full min-h-11 rounded-xl bg-[#0E1424] border border-white/10 px-3 text-sm text-white" value={search} onChange={e => setSearch(e.target.value)} />}
@@ -119,17 +151,24 @@ export default function MobileDeveloper({ user, apps, runs, phaseByAppId, loadin
             {selected.description && <p className="text-sm text-slate-300 leading-relaxed break-words">{selected.description}</p>}
             {selected.is_published && <a href={`/app/${selected.id}`} target="_blank" rel="noreferrer" className={`${action} inline-flex items-center bg-[#6C5CE7] !text-white`}>Open live app ↗</a>}
           </div>
-          {!error && <div className="flex flex-wrap gap-x-5 gap-y-2 text-sm text-slate-400"><span>{selectedRuns.length} loaded runs</span><span>{summary.satisfaction == null ? 'No rated feedback' : `${summary.satisfaction}% useful · ${summary.rated} rated`}</span></div>}
-          <button className={`${action} w-full text-left border border-white/8`} onClick={() => { setFilter(selected.id); navigate('feedback') }}>Feedback to review · {error ? '—' : selectedFeedback.length} →</button>
+          {health(selected.id) && <div className="flex flex-wrap gap-x-5 gap-y-2 text-sm text-slate-400">
+            <span>{health(selected.id).totals.runs} runs this week</span>
+            <span>{health(selected.id).totals.rated ? `${pct(health(selected.id).totals.satisfaction)} useful · ${health(selected.id).totals.rated} rated` : 'No ratings yet'}</span>
+            {health(selected.id).totals.errors > 0 && <span className="text-amber-300">{pct(health(selected.id).totals.error_rate)} failed</span>}
+          </div>}
+          {(health(selected.id)?.alerts || []).filter(al => al.level !== 'info').map(al => <p key={al.kind} className={`text-sm ${al.level === 'critical' ? 'text-red-200' : 'text-amber-200'}`}>{al.message}</p>)}
+          <button className={`${action} w-full text-left border border-white/8`} onClick={() => { setFilter(selected.id); navigate('feedback') }}>Feedback to review · {health(selected.id) ? health(selected.id).open_feedback : '—'} →</button>
           {(selected.is_published || selected.live_version) && <section className="space-y-3 [&_button]:min-h-11"><button className={`${action} w-full text-left border border-white/8`} aria-expanded={showVersions} onClick={() => setShowVersions(v => !v)}>{showVersions ? 'Hide release history' : 'Release history'}</button>
             {showVersions && <ErrorBoundary compact title="Release history could not load"><Suspense fallback={<p className="text-sm text-slate-400">Loading releases…</p>}><PublishedVersions app={selected} onAppUpdated={onAppUpdated} /></Suspense></ErrorBoundary>}
           </section>}
           <details className={`${card} text-sm text-slate-400`}><summary className="cursor-pointer">Build status</summary><p className="mt-3 leading-relaxed">{({ design: 'Design', test: 'Test', deploy: 'Publish' })[phaseByAppId[selected.id]] || 'Design'} stage. Continue building on a computer or tablet.</p></details>
-          {!error && selectedRuns.length > 0 && <section className="space-y-3"><h2 className="text-sm text-white font-semibold">Recent runs</h2>{selectedRuns.slice(0, 5).map(r => <RunCard key={r.id} run={r} />)}</section>}
         </>}
         {view === 'feedback' && <>
-          <select aria-label="Filter feedback by app" value={filter} onChange={e => { setFilter(e.target.value); setLimit(10) }} className="w-full min-h-11 rounded-xl bg-[#0E1424] border border-white/10 px-3 text-sm text-white"><option value="">All apps</option>{apps.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select>
-          {!error && (feedback.length ? <div className="space-y-3">{feedback.slice(0, limit).map(r => <RunCard key={r.id} run={r} appName={apps.find(a => a.id === r.app_id)?.name} />)}{feedback.length > limit && <button className={`${action} w-full border border-white/8`} onClick={() => setLimit(n => n + 10)}>Show more feedback</button>}</div> : <p className="text-sm text-slate-400">No negative feedback in the available runs.</p>)}
+          <select aria-label="Filter feedback by app" value={feedbackApp} onChange={e => { setFilter(e.target.value); setLimit(10) }} className="w-full min-h-11 rounded-xl bg-[#0E1424] border border-white/10 px-3 text-sm text-white">{apps.map(a => <option key={a.id} value={a.id}>{a.name}{health(a.id)?.open_feedback ? ` · ${health(a.id).open_feedback} open` : ''}</option>)}</select>
+          {inbox.error ? <div role="alert" className="rounded-xl border border-amber-400/20 bg-amber-400/5 p-3 text-sm text-amber-200">{inbox.error}<button className="block underline min-h-11" onClick={() => setFeedbackKey(n => n + 1)}>Try again</button></div>
+            : inbox.loading ? <p role="status" className="text-sm text-slate-400">Loading feedback…</p>
+            : inbox.items.length ? <div className="space-y-3">{inbox.items.slice(0, limit).map(i => <FeedbackCard key={i.id} item={i} />)}{inbox.items.length > limit && <button className={`${action} w-full border border-white/8`} onClick={() => setLimit(n => n + 10)}>Show more feedback</button>}</div>
+            : <p className="text-sm text-slate-400">No open feedback for this app. When customers mark an answer "not useful", it appears here.</p>}
         </>}
       </>}
     </div>

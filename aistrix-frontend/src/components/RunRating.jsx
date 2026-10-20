@@ -1,13 +1,16 @@
 import { useState } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
+import { rateRun } from '../lib/feedback'
 
-// run_history stores rating_type/rating_value/feedback_text; thread_messages
-// only has a `rating` column. table defaults to run_history.
+// run_history ratings go through the server: the rating and comment reach
+// the app's developers (the question and answer only if the user ticks the
+// box); thread_messages only has a `rating` column. table defaults to run_history.
 export default function RunRating({ runId, table = 'run_history' }) {
   const [value, setValue] = useState(null)   // 1 | -1 | null
   const [showFeedback, setShowFeedback] = useState(false)
   const [feedbackText, setFeedbackText] = useState('')
+  const [shareRun, setShareRun] = useState(false)
   const [saving, setSaving] = useState(false)
   const toast = useToast()
 
@@ -15,15 +18,23 @@ export default function RunRating({ runId, table = 'run_history' }) {
 
   async function submit(v, text = '') {
     setSaving(true)
-    const patch = table === 'thread_messages'
-      ? { rating: v }
-      : { rating_type: 'thumb', rating_value: v, feedback_text: text || null }
-    const { error } = await supabase.from(table).update(patch).eq('id', runId)
+    let shared = false
+    try {
+      if (table === 'thread_messages') {
+        const { error } = await supabase.from(table).update({ rating: v }).eq('id', runId)
+        if (error) throw error
+      } else {
+        shared = (await rateRun(runId, { rating: v, comment: text, shareRun: v === -1 && shareRun })).shared_with_developer
+      }
+    } catch (error) {
+      setSaving(false)
+      toast(error.message || 'Could not save your rating', 'error')
+      return
+    }
     setSaving(false)
-    if (error) { toast(error.message, 'error'); return }
     setValue(v)
     setShowFeedback(false)
-    toast(v === 1 ? 'Thanks! 👍' : "Got it — we'll use this to improve 👎", 'info', 2500)
+    toast(v === 1 ? 'Thanks! 👍' : shared ? "Thanks — sent to the app's developer 👎" : 'Thanks for the feedback 👎', 'info', 2500)
   }
 
   if (value !== null) {
@@ -57,6 +68,12 @@ export default function RunRating({ runId, table = 'run_history' }) {
             Send
           </button>
         </div>
+      )}
+      {showFeedback && table !== 'thread_messages' && (
+        <label className="flex items-center gap-1.5 text-[10px] text-slate-400 max-w-56 text-right">
+          <input type="checkbox" checked={shareRun} onChange={e => setShareRun(e.target.checked)} className="accent-[#6C5CE7]" />
+          Include my question and the answer so the developer can fix it
+        </label>
       )}
     </div>
   )

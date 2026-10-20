@@ -138,12 +138,13 @@ Publishing now refuses to go live if it cannot record the version history
 (`app_versions.version_num`), so the database must be migrated **before** the new
 backend serves traffic:
 
-1. Apply the migrations `20261013030000` through `20261015040000` to production
+1. Apply the migrations `20261013030000` through `20261019020000` to production
    (`supabase db push` against the production project). Production already has
    everything through `20261014030000`; the new ones are
    `20261015010000_purchase_payment_ref`, `20261015020000_test_case_updated_at`,
-   `20261015030000_github_connection_server_only` and
-   `20261015040000_pay_per_run_credits`.
+   `20261015030000_github_connection_server_only`,
+   `20261015040000_pay_per_run_credits`, `20261019010000_run_telemetry` and
+   `20261019020000_app_feedback`.
 2. Deploy the backend.
 3. Deploy the frontend.
 4. Smoke-check: open Dev Studio, publish or promote a test app, confirm a new

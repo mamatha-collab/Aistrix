@@ -787,11 +787,21 @@ async def claim_app_daily_run(app_id: str, limit: int) -> bool:
         return True
 
 
-async def _log_app_run(app_id: str, user_id: Optional[str], source: str, usage: Optional[dict]) -> None:
+async def _log_app_run(app_id: str, user_id: Optional[str], source: str, usage: Optional[dict], *,
+                       status: str = "ok", error_kind: Optional[str] = None, latency_ms: Optional[int] = None,
+                       live_version: Optional[int] = None, model: Optional[str] = None) -> None:
+    """One row per real run (failures too) for Monitor: outcome, time, cost, version."""
+    usage = usage or {}
+    try:
+        cost = model_cost_usd(model, usage) if model and usage.get("input_tokens") else None
+    except Exception:
+        cost = None
     try:
         await db(_service_client().table("app_runs").insert({
             "app_id": app_id, "user_id": user_id, "source": source,
-            "input_tokens": (usage or {}).get("input_tokens"), "output_tokens": (usage or {}).get("output_tokens")}))
+            "input_tokens": usage.get("input_tokens"), "output_tokens": usage.get("output_tokens"),
+            "status": status, "error_kind": error_kind, "latency_ms": latency_ms,
+            "live_version": live_version, "model": model, "cost_usd": cost}))
     except Exception as e:
         print(f"app run log skipped: {type(e).__name__}: {str(e)[:120]}")
 
@@ -1830,11 +1840,25 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
         log_source = ("trigger" if caller.live else "embed" if embed_visitor
                       else "api" if (caller.via_key or not user_jwt) else "app")
 
+    started = time.monotonic()
+    run_version = app_row.get("live_version") if (app_row and prod) else None   # None: the draft answered
+
+    def outcome(success: bool, kind: Optional[str] = None):
+        """Final outcome of this run: ops alerting, plus the app's run log
+        (failures included) so Monitor shows error rates and response times."""
+        _record_run_outcome(success, kind)
+        if success or not log_source or run_state.get("logged"):
+            return
+        run_state["logged"] = True
+        asyncio.create_task(_log_app_run(app_row["id"], None if caller.live else caller_id, log_source, usage,
+                                         status="error", error_kind=kind, latency_ms=int((time.monotonic() - started) * 1000),
+                                         live_version=run_version, model=model))
+
     async def finish(full_result: str):
         # Side effects first: consumers (stream=false, batches, clients that
         # disconnect on "done") stop reading at the done event, so anything
         # after that yield would never run.
-        _record_run_outcome(True)
+        outcome(True)
         run_state["finished"] = True
         if entitlement and entitlement_used:
             asyncio.create_task(notify_low_runs(entitlement, entitlement_used, app_name))
@@ -1842,7 +1866,10 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
             asyncio.create_task(_fire_webhook(webhook_url, req.app_id, req.input, full_result, provider, model))
         if log_source:
             # Trigger runs act as the developer: not a person using the app.
-            asyncio.create_task(_log_app_run(app_row["id"], None if caller.live else caller_id, log_source, usage))
+            run_state["logged"] = True
+            asyncio.create_task(_log_app_run(app_row["id"], None if caller.live else caller_id, log_source, usage,
+                                             latency_ms=int((time.monotonic() - started) * 1000),
+                                             live_version=run_version, model=model))
         if on_complete:
             # Awaited (not a task) so server-side history is written before the
             # caller's next run is rate-limit checked against it.
@@ -1893,7 +1920,7 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
                     errs = errs or _validate_schema_value(parsed, contract_fields)
                     if errs:
                         yield _sse({"contract_error": errs})
-                        _record_run_outcome(False, "contract")
+                        outcome(False, "contract")
                         return
 
             # ── Structured output: buffer, validate, one self-repair retry ──
@@ -1905,7 +1932,7 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
                     parts = [t async for t in stream_fn(system, attempt_input, model, user_api_key,
                                                         temperature=min(temp, 0.3), usage_holder=attempt_usage)]
                     if attempt_usage.pop("_stop", None) == "refusal":
-                        _record_run_outcome(False, "refusal")
+                        outcome(False, "refusal")
                         yield _sse({"error": REFUSAL_MESSAGE})
                         return
                     for k, v in attempt_usage.items():
@@ -1922,7 +1949,7 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
                     )
                 if errs:
                     yield _sse({"contract_error": errs})
-                    _record_run_outcome(False, "contract")
+                    outcome(False, "contract")
                     return
                 collected.append(text)
                 for i in range(0, len(text), 200):
@@ -1935,7 +1962,7 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
                     yield _sse({"token": token})
                 stop = usage.pop("_stop", None)
                 if stop == "refusal":
-                    _record_run_outcome(False, "refusal")
+                    outcome(False, "refusal")
                     yield _sse({"error": REFUSAL_MESSAGE})
                     return
                 if stop == "max_tokens":
@@ -1947,13 +1974,13 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
                 yield ev
 
         except (anthropic.AuthenticationError, openai.AuthenticationError):
-            _record_run_outcome(False, "auth")
+            outcome(False, "auth")
             yield _sse({"error": f"Invalid {provider} API key — check Settings → Keys and make sure the key is active."})
         except (anthropic.PermissionDeniedError,):
-            _record_run_outcome(False, "permission")
+            outcome(False, "permission")
             yield _sse({"error": f"API key does not have permission for this model. Check your {provider} account."})
         except (anthropic.RateLimitError, openai.RateLimitError) as e:
-            _record_run_outcome(False, "rate_limit")
+            outcome(False, "rate_limit")
             # OpenAI answers 429 both for "too many requests" and for "no credit left".
             out_of_credit = "insufficient_quota" in (getattr(e, "code", None), getattr(e, "type", None))
             if key_source == "platform":
@@ -1967,17 +1994,17 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
                 yield _sse({"error": f"{label} turned this run away: {whose} {label} account hit its rate limit or is out of credit. "
                                      f"Check the account's usage and billing, or wait a moment and try again."})
         except (anthropic.BadRequestError, openai.BadRequestError) as e:
-            _record_run_outcome(False, "bad_request")
+            outcome(False, "bad_request")
             yield _sse({"error": f"Prompt config error: {str(e)[:200]}"})
         except (anthropic.InternalServerError, openai.InternalServerError):
-            _record_run_outcome(False, "provider_error")
+            outcome(False, "provider_error")
             yield _sse({"error": f"{provider.capitalize()} service error — try again in a moment."})
         except asyncio.TimeoutError:
-            _record_run_outcome(False, "timeout")
+            outcome(False, "timeout")
             yield _sse({"error": f"Request timed out after {REQUEST_TIMEOUT} seconds. Try a shorter input or switch to a faster model (e.g. Haiku)."})
         except Exception as e:
             # Full detail goes to Sentry/logs only — never to the client.
-            _record_run_outcome(False, "unexpected")
+            outcome(False, "unexpected")
             sentry_sdk.capture_exception(e)
             print(f"Streaming error [{type(e).__name__}]: {e}")
             yield _sse({"error": "Unexpected backend error. This has been logged — please try again."})
@@ -1988,7 +2015,7 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
                 async for chunk in generate():
                     yield chunk
         except asyncio.TimeoutError:
-            _record_run_outcome(False, "timeout")
+            outcome(False, "timeout")
             yield _sse({"error": f"Request timed out after {REQUEST_TIMEOUT}s. Try a shorter input or faster model."})
         finally:
             if entitlement and not run_state["finished"]:
@@ -5452,6 +5479,259 @@ async def app_run_stats(app_id: str, request: Request):
         "last_run": rows[0]["created_at"] if rows else None,
         "sample": len(rows),
     }
+
+
+# ── Monitor: production health from the run log (aggregates only) ────────────
+MONITOR_ROW_LIMIT = 20000
+# Alert thresholds. Each needs a minimum sample so a handful of runs can't
+# raise (or hide) a problem.
+ALERT_ERROR_RATE_24H, ALERT_MIN_RUNS_24H = 0.10, 20
+ALERT_ERROR_RATE, ALERT_MIN_RUNS = 0.05, 50
+ALERT_P95_MS = 30000
+ALERT_SATISFACTION, ALERT_MIN_RATINGS = 0.70, 10
+ALERT_VERSION_DELTA, ALERT_MIN_VERSION_RUNS = 0.05, 20
+
+
+def _rate(part: int, whole: int) -> Optional[float]:
+    return round(part / whole, 4) if whole else None
+
+
+def _ts(row: dict) -> datetime:
+    return datetime.fromisoformat(str(row["created_at"]).replace("Z", "+00:00"))
+
+
+def monitor_summary(runs: list[dict], ratings: list[dict], days: int, now: Optional[datetime] = None,
+                    published: bool = False, truncated: bool = False) -> dict:
+    """Health of one app over `days`: totals, a daily series, per-version and
+    per-source splits, error kinds, and alerts. Only counts and timings —
+    never inputs or answers."""
+    now = now or datetime.now(timezone.utc)
+    lat = [r["latency_ms"] for r in runs if r.get("latency_ms") is not None]
+    errors = [r for r in runs if r.get("status") == "error"]
+    costs = [float(r["cost_usd"]) for r in runs if r.get("cost_usd") is not None]
+    up = sum(1 for r in ratings if r.get("rating_value") == 1)
+    rated = sum(1 for r in ratings if r.get("rating_value") in (1, -1))
+    totals = {
+        "runs": len(runs), "users": len({r["user_id"] for r in runs if r.get("user_id")}),
+        "visitor_runs": sum(1 for r in runs if r.get("source") == "embed"),
+        "errors": len(errors), "error_rate": _rate(len(errors), len(runs)),
+        "latency_p50_ms": _percentile(lat, 50), "latency_p95_ms": _percentile(lat, 95),
+        "cost_usd": round(sum(costs), 4) if costs else None,
+        "cost_per_run_usd": round(sum(costs) / len(costs), 6) if costs else None,
+        "rated": rated, "satisfaction": _rate(up, rated),
+        "last_run": max((r["created_at"] for r in runs), default=None),
+    }
+
+    start = (now - timedelta(days=days - 1)).date()
+    daily = {(start + timedelta(days=i)).isoformat(): {"runs": 0, "errors": 0, "rated": 0, "up": 0, "cost_usd": 0.0}
+             for i in range(days)}
+    for r in runs:
+        d = daily.get(_ts(r).date().isoformat())
+        if d is not None:
+            d["runs"] += 1
+            d["errors"] += r.get("status") == "error"
+            d["cost_usd"] += float(r.get("cost_usd") or 0)
+    for r in ratings:
+        d = daily.get(_ts(r).date().isoformat())
+        if d is not None and r.get("rating_value") in (1, -1):
+            d["rated"] += 1
+            d["up"] += r["rating_value"] == 1
+    series = [{"date": k, "runs": v["runs"], "errors": v["errors"], "cost_usd": round(v["cost_usd"], 4),
+               "satisfaction": _rate(v["up"], v["rated"]), "rated": v["rated"]} for k, v in daily.items()]
+
+    versions: dict = {}
+    for r in runs:
+        v = versions.setdefault(r.get("live_version"), {"runs": 0, "errors": 0, "lat": []})
+        v["runs"] += 1
+        v["errors"] += r.get("status") == "error"
+        if r.get("latency_ms") is not None:
+            v["lat"].append(r["latency_ms"])
+    by_version = sorted(({"version": k, "runs": v["runs"], "errors": v["errors"], "error_rate": _rate(v["errors"], v["runs"]),
+                          "latency_p95_ms": _percentile(v["lat"], 95)} for k, v in versions.items()),
+                        key=lambda v: (v["version"] is None, -(v["version"] or 0)))
+    by_source = dict(Counter(r.get("source") or "app" for r in runs))
+    error_kinds = dict(Counter(r.get("error_kind") or "unknown" for r in errors).most_common(6))
+
+    alerts = []
+    day_ago = now - timedelta(hours=24)
+    recent = [r for r in runs if _ts(r) >= day_ago]
+    recent_errors = sum(1 for r in recent if r.get("status") == "error")
+    if len(recent) >= ALERT_MIN_RUNS_24H and recent_errors / len(recent) >= ALERT_ERROR_RATE_24H:
+        alerts.append({"level": "critical", "kind": "errors_24h",
+                       "message": f"{round(100 * recent_errors / len(recent))}% of runs failed in the last 24 hours ({recent_errors} of {len(recent)})."})
+    elif len(runs) >= ALERT_MIN_RUNS and (totals["error_rate"] or 0) >= ALERT_ERROR_RATE:
+        alerts.append({"level": "warning", "kind": "errors",
+                       "message": f"{round(100 * totals['error_rate'])}% of runs failed in the last {days} days."})
+    if len(lat) >= ALERT_MIN_RUNS_24H and (totals["latency_p95_ms"] or 0) >= ALERT_P95_MS:
+        alerts.append({"level": "warning", "kind": "latency",
+                       "message": f"1 in 20 runs takes {round(totals['latency_p95_ms'] / 1000)}s or longer."})
+    week_ratings = [r for r in ratings if _ts(r) >= now - timedelta(days=7) and r.get("rating_value") in (1, -1)]
+    if len(week_ratings) >= ALERT_MIN_RATINGS:
+        week_sat = sum(1 for r in week_ratings if r["rating_value"] == 1) / len(week_ratings)
+        if week_sat < ALERT_SATISFACTION:
+            alerts.append({"level": "warning", "kind": "satisfaction",
+                           "message": f"Only {round(100 * week_sat)}% of ratings in the last 7 days were useful ({len(week_ratings)} ratings)."})
+    released = [v for v in by_version if v["version"] is not None and v["runs"] >= ALERT_MIN_VERSION_RUNS]
+    if len(released) >= 2 and released[0]["error_rate"] is not None and released[1]["error_rate"] is not None \
+            and released[0]["error_rate"] - released[1]["error_rate"] >= ALERT_VERSION_DELTA:
+        alerts.append({"level": "warning", "kind": "version",
+                       "message": f"v{released[0]['version']} fails more often than v{released[1]['version']} "
+                                  f"({round(100 * released[0]['error_rate'])}% vs {round(100 * released[1]['error_rate'])}%). Consider rolling back."})
+    if published and not any(_ts(r) >= now - timedelta(days=7) for r in runs):
+        alerts.append({"level": "info", "kind": "idle", "message": "No runs in the last 7 days."})
+    return {"days": days, "totals": totals, "daily": series, "by_version": by_version, "by_source": by_source,
+            "error_kinds": error_kinds, "alerts": alerts, "truncated": truncated}
+
+
+async def _monitor_rows(app_id: str, days: int, owner_id: Optional[str] = None) -> tuple[list[dict], list[dict], bool]:
+    """Run log and customer ratings (the developer's own ratings don't count)."""
+    sb = _service_client()
+    if not sb:
+        raise HTTPException(status_code=503, detail="Monitoring isn't available on this server")
+    since = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    runs_res, ratings_res = await asyncio.gather(
+        db(sb.table("app_runs").select("created_at, user_id, source, status, error_kind, latency_ms, live_version, cost_usd")
+           .eq("app_id", app_id).gte("created_at", since).order("created_at", desc=True).limit(MONITOR_ROW_LIMIT)),
+        db(sb.table("run_history").select("created_at, rating_value, user_id")
+           .eq("app_id", app_id).gte("created_at", since).not_.is_("rating_value", "null").limit(MONITOR_ROW_LIMIT)))
+    runs = runs_res.data or []
+    ratings = [r for r in (ratings_res.data or []) if not owner_id or r.get("user_id") != owner_id]
+    return runs, ratings, len(runs) >= MONITOR_ROW_LIMIT
+
+
+def _monitor_days(days: int) -> int:
+    if days not in (1, 7, 30, 90):
+        raise HTTPException(status_code=400, detail="days must be 1, 7, 30 or 90")
+    return days
+
+
+@app.get("/v1/apps/{app_id}/monitor")
+async def app_monitor(app_id: str, request: Request, days: int = 30):
+    """Production health of one app (editors only): every real run —
+    customers, API, triggers and website visitors — not draft or test runs."""
+    _, app_row = await _editable_app(app_id, request)
+    days = _monitor_days(days)
+    runs, ratings, truncated = await _monitor_rows(app_id, days, app_row.get("created_by"))
+    return {"app_id": app_id, "live_version": app_row.get("live_version"),
+            **monitor_summary(runs, ratings, days, published=bool(app_row.get("is_published")), truncated=truncated)}
+
+
+@app.get("/v1/monitor")
+async def monitor_overview(request: Request, app_ids: str = "", days: int = 7):
+    """Health of several apps at once (the ones the caller can edit; others
+    are skipped): totals and alerts per app, for the Monitor overview."""
+    days = _monitor_days(days)
+    ids = [a for a in dict.fromkeys(app_ids.split(",")) if a][:50]
+    caller = await resolve_api_caller(request, required=True)
+
+    async def one(app_id: str):
+        row = await load_app_row(app_id)
+        if not (row and await can_edit_app(row, caller)):
+            return None
+        (runs, ratings, truncated), open_res = await asyncio.gather(
+            _monitor_rows(app_id, days, row.get("created_by")),
+            db(_service_client().table("app_feedback").select("id", count="exact", head=True)
+               .eq("app_id", app_id).in_("status", ["new", "investigating"])))
+        summary = monitor_summary(runs, ratings, days, published=bool(row.get("is_published")), truncated=truncated)
+        return {"app_id": app_id, "totals": summary["totals"], "alerts": summary["alerts"], "truncated": truncated,
+                "open_feedback": open_res.count or 0}
+
+    results = await asyncio.gather(*(one(a) for a in ids))
+    return {"days": days, "apps": [r for r in results if r]}
+
+
+# ── Customer feedback (shared with the app's developers) ─────────────────────
+FEEDBACK_STATUSES = ("new", "investigating", "fixed", "verified", "dismissed")
+FEEDBACK_FIELDS = "id, app_id, run_id, rating, comment, shared_input, shared_output, status, note, test_case_id, created_at, updated_at"
+
+
+class RunFeedback(BaseModel):
+    rating: int = Field(..., ge=-1, le=1)
+    comment: Optional[str] = Field(None, max_length=1000)
+    share_run: bool = False           # include the question and the answer
+
+
+@app.post("/v1/runs/{run_id}/feedback")
+async def rate_run(run_id: str, body: RunFeedback, request: Request):
+    """Rate one of your own runs. The rating and comment reach the app's
+    developers; the question and answer only with share_run. Who rated is
+    never shown to them."""
+    user_id = await require_verified_user(request)
+    if body.rating not in (1, -1):
+        raise HTTPException(status_code=400, detail="Rating must be 1 (useful) or -1 (not useful)")
+    user_jwt = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+    user_db = get_supabase_for_user(user_jwt)
+    res = await db(user_db.table("run_history").select("id, user_id, app_id, input, output").eq("id", run_id).limit(1))
+    run = (res.data or [None])[0]
+    if not run or run.get("user_id") != user_id:
+        raise HTTPException(status_code=404, detail="Run not found")
+    comment = (body.comment or "").strip() or None
+    await db(user_db.table("run_history").update({"rating_type": "thumb", "rating_value": body.rating, "feedback_text": comment})
+             .eq("id", run_id))
+    shared = False
+    # Developers get every "not useful" and any rating with a comment or the run attached.
+    if run.get("app_id") and (body.rating == -1 or comment or body.share_run):
+        sb = _service_client()
+        if not sb:
+            raise HTTPException(status_code=503, detail="Feedback storage is unavailable")
+        row = {"app_id": run["app_id"], "run_id": run_id, "rating": body.rating, "comment": comment,
+               "shared_input": (run.get("input") or "")[:4000] if body.share_run else None,
+               "shared_output": (run.get("output") or "")[:8000] if body.share_run else None}
+        await db(sb.table("app_feedback").upsert(row, on_conflict="run_id"))
+        shared = True
+    return {"ok": True, "shared_with_developer": shared}
+
+
+@app.get("/v1/apps/{app_id}/feedback")
+async def list_feedback(app_id: str, request: Request, status: str = "open"):
+    """Customer feedback for an app (editors only), newest first. `open`:
+    new and investigating; `all`: everything; or one status."""
+    await _editable_app(app_id, request)
+    sb = _service_client()
+    if not sb:
+        raise HTTPException(status_code=503, detail="Feedback storage is unavailable")
+    q = sb.table("app_feedback").select(FEEDBACK_FIELDS).eq("app_id", app_id)
+    if status == "open":
+        q = q.in_("status", ["new", "investigating"])
+    elif status in FEEDBACK_STATUSES:
+        q = q.eq("status", status)
+    elif status != "all":
+        raise HTTPException(status_code=400, detail="Unknown status")
+    res = await db(q.order("created_at", desc=True).limit(200))
+    items = res.data or []
+    counts_res = await db(sb.table("app_feedback").select("status").eq("app_id", app_id).limit(5000))
+    return {"items": items, "counts": dict(Counter(r["status"] for r in (counts_res.data or [])))}
+
+
+class FeedbackUpdate(BaseModel):
+    status: Optional[str] = None
+    note: Optional[str] = Field(None, max_length=1000)
+    test_case_id: Optional[str] = None
+
+
+@app.patch("/v1/feedback/{feedback_id}")
+async def update_feedback(feedback_id: str, body: FeedbackUpdate, request: Request):
+    """Triage one feedback item (editors of its app)."""
+    sb = _service_client()
+    if not sb:
+        raise HTTPException(status_code=503, detail="Feedback storage is unavailable")
+    res = await db(sb.table("app_feedback").select("id, app_id").eq("id", feedback_id).limit(1))
+    item = (res.data or [None])[0]
+    if not item:
+        raise HTTPException(status_code=404, detail="Feedback not found")
+    caller, _ = await _editable_app(item["app_id"], request)
+    patch = {k: v for k, v in body.model_dump(exclude_unset=True).items()}
+    if "status" in patch and patch["status"] not in FEEDBACK_STATUSES:
+        raise HTTPException(status_code=400, detail="Unknown status")
+    if not patch:
+        raise HTTPException(status_code=400, detail="Nothing to update")
+    if patch.get("test_case_id"):
+        case = await db(sb.table("app_test_cases").select("id").eq("id", patch["test_case_id"]).eq("app_id", item["app_id"]).limit(1))
+        if not case.data:
+            raise HTTPException(status_code=400, detail="That test isn't one of this app's tests")
+    patch["updated_by"] = caller.user_id
+    updated = await db(sb.table("app_feedback").update(patch).eq("id", feedback_id))
+    return {"ok": True, "item": (updated.data or [None])[0]}
 
 
 @app.get("/v1/apps/{app_id}/versions")

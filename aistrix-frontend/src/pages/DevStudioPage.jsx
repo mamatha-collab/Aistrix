@@ -23,10 +23,10 @@ const TAB_LOADING = <div className="py-16 text-center text-slate-500 text-sm">Lo
 const DeployTab = lazy(() => import('./devstudio/DeployTab').then(m => ({ default: m.DeployTab })))
 const SettingsPage = lazy(() => import('./SettingsPage'))
 const DesignTab = lazy(() => import('./devstudio/DesignTab').then(m => ({ default: m.DesignTab })))
-const EvaluateTab = lazy(() => import('./devstudio/OperateTabs').then(m => ({ default: m.EvaluateTab })))
+const QualityPanel = lazy(() => import('./devstudio/QualityPanel'))
 const ImproveTab = lazy(() => import('./devstudio/OperateTabs').then(m => ({ default: m.ImproveTab })))
 const MonetizeTab = lazy(() => import('./devstudio/OperateTabs').then(m => ({ default: m.MonetizeTab })))
-const MonitorTab = lazy(() => import('./devstudio/OperateTabs').then(m => ({ default: m.MonitorTab })))
+const MonitorPanel = lazy(() => import('./devstudio/MonitorPanel'))
 const SecretsTab = lazy(() => import('./devstudio/OperateTabs').then(m => ({ default: m.SecretsTab })))
 const SellTab = lazy(() => import('./devstudio/OperateTabs').then(m => ({ default: m.SellTab })))
 const VersionTab = lazy(() => import('./devstudio/OperateTabs').then(m => ({ default: m.VersionTab })))
@@ -124,7 +124,6 @@ export default function DevStudioPage({
   const [feedbackError, setFeedbackError] = useState('')
   const [selectedRunId, setSelectedRunId] = useState(null)
   const [loadError, setLoadError] = useState('')
-  const [appStats, setAppStats] = useState({})
   const [totalStats, setTotalStats] = useState({ runs: 0, users: 0, satisfaction: null })
   const [entitlements, setEntitlements] = useState([])
   const [loading, setLoading] = useState(true)
@@ -219,20 +218,6 @@ export default function DevStudioPage({
     setRuns(allRuns)
     setEntitlements(entData || [])
 
-    const sevenDaysAgo = new Date(); sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
-    const statsMap = {}
-    myApps.forEach(app => {
-      const appRuns = allRuns.filter(r => r.app_id === app.id)
-      const recent  = appRuns.filter(r => new Date(r.created_at) >= sevenDaysAgo)
-      const daily   = Array.from({ length: 7 }, (_, i) => {
-        const d = new Date(); d.setDate(d.getDate() - (6 - i)); d.setHours(0,0,0,0)
-        const next = new Date(d); next.setDate(next.getDate() + 1)
-        return recent.filter(r => new Date(r.created_at) >= d && new Date(r.created_at) < next).length
-      })
-      const rated = appRuns.filter(r => (r.rating_value === 1 || r.rating_value === -1))
-      statsMap[app.id] = { uniqueUsers: new Set(appRuns.map(r => r.user_id)).size, thumbsUp: rated.filter(r => r.rating_value === 1).length, rated: rated.length, daily }
-    })
-    setAppStats(statsMap)
 
     const allRated = allRuns.filter(r => (r.rating_value === 1 || r.rating_value === -1))
     setTotalStats({
@@ -396,7 +381,7 @@ export default function DevStudioPage({
     </ErrorBoundary>
   ) : null)
 
-  if (isPhone) return <MobileDeveloper user={user} apps={apps} runs={runs} phaseByAppId={phaseByAppId} loading={loading}
+  if (isPhone) return <MobileDeveloper user={user} apps={apps} phaseByAppId={phaseByAppId} loading={loading}
     error={loadError || feedbackError} onRefresh={load} onAppUpdated={updateAppInState}
     onShowHistory={onShowHistory}
     onSignOut={signOut} onToggleTheme={toggleTheme} />
@@ -729,15 +714,15 @@ export default function DevStudioPage({
                 })()
               )
             ) : null}
-            {['monitor','evaluate','improve','sell'].includes(tab) && <OperationsWorkflow stage={tab} apps={apps} runs={runs} user={user}
+            {['evaluate','improve','sell'].includes(tab) && <OperationsWorkflow stage={tab} apps={apps} user={user}
               selectedAppId={activeAppId} onSelectApp={setActiveAppId} selectedRunId={selectedRunId} onSelectRun={setSelectedRunId}
-              onNavigate={navigateOperations} onFix={startOperationalFix} loading={loading} error={feedbackError} onRefresh={load} />}
+              onNavigate={navigateOperations} onFix={startOperationalFix} />}
             {!['design','test','deploy'].includes(tab) && (
             <ErrorBoundary compact title={`${LIFECYCLE_TABS.find(t => t.id === tab)?.label || "This"} section couldn't load`} resetKey={`${tab}:${activeAppId}`}>
             <Suspense fallback={TAB_LOADING}>
             {tab === 'sell'     && <SellTab     apps={apps} user={user} onAppUpdated={updateAppInState} />}
-            {!feedbackError && tab === 'monitor'  && <MonitorTab  apps={apps} appStats={appStats} loading={loading} totalStats={totalStats} runs={runs} entitlements={entitlements} user={user} />}
-            {!feedbackError && tab === 'evaluate' && <EvaluateTab apps={apps} appStats={appStats} runs={runs} user={user} selectedAppId={activeAppId || apps[0]?.id} onSelectApp={setActiveAppId} />}
+            {tab === 'monitor'  && <MonitorPanel apps={apps} selectedAppId={activeAppId} onSelectApp={setActiveAppId} entitlements={entitlements} />}
+            {tab === 'evaluate' && <QualityPanel app={apps.find(a => a.id === activeAppId) || apps[0]} onNavigate={navigateOperations} />}
             {tab === 'improve'  && <ImproveTab  apps={apps} user={user} runs={runs} selectedAppId={activeAppId || apps[0]?.id} onSelectApp={setActiveAppId} />}
             {tab === 'version'  && <VersionTab  apps={apps} user={user} onAppUpdated={updateAppInState} selectedAppId={activeAppId} onSelectApp={setActiveAppId} />}
             {tab === 'monetize' && <MonetizeTab apps={apps} runs={runs} loading={loading} user={user} />}

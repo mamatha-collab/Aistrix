@@ -70,6 +70,9 @@ async def reserve(e):
     e["runs_this_period"] += 1; consumed.append(e["id"]); return e["runs_this_period"]
 async def release(e): e["runs_this_period"] -= 1; released.append(e["id"])
 async def no_notice(*a): return None
+LOGGED = []
+async def log_run(app_id, user_id, source, usage, **kw): LOGGED.append({"app_id": app_id, "user_id": user_id, "source": source, **kw})
+main._log_app_run = log_run
 main.reserve_entitlement_run = reserve
 main.release_entitlement_run = release
 main.notify_low_runs = no_notice
@@ -102,6 +105,12 @@ main.stream_claude = broken_stream
 code, body = run({"app_id": "paid", "input": "hi"}, "tok-buyer")
 time.sleep(0.2)
 main.stream_claude = fake_stream
+ok("a failed customer run is logged for Monitor with its error kind and time",
+   any(l["app_id"] == "paid" and l.get("status") == "error" and l.get("error_kind") == "unexpected" and isinstance(l.get("latency_ms"), int) for l in LOGGED))
+ok("successful customer runs are logged as ok with their model",
+   any(l["app_id"] == "paid" and l.get("status", "ok") == "ok" and l.get("model") == "claude-sonnet-5-5" and l["source"] == "app" for l in LOGGED))
+ok("the developer trying their own draft is not logged",
+   not any(l["user_id"] == "owner" for l in LOGGED))
 ok("a failed run gives the purchased run back", '"error"' in body and released == ["e1"] and ENT[("paid", "buyer")]["runs_this_period"] == 3)
 ENT[("paid", "buyer")].update(plan="subscription", run_quota=5, runs_this_period=5)
 code, body = run({"app_id": "paid", "input": "hi"}, "tok-buyer")

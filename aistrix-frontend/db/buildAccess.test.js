@@ -210,6 +210,22 @@ describe('release gate and revenue records', () => {
   })
 })
 
+describe('customer feedback and run telemetry are server-only', () => {
+  it('nobody reads or writes the feedback inbox from the browser (the API checks editors and hides customers)', async () => {
+    await db.query(`insert into run_history (id, user_id, app_name, input, app_id) values ('00000000-0000-0000-0000-0000000000f1', $1, 'Pitch', 'private question', $2)`, [U.outsider, APP])
+    await db.query(`insert into app_feedback (app_id, run_id, rating, comment) values ($1, '00000000-0000-0000-0000-0000000000f1', -1, 'wrong')`, [APP])
+    for (const who of ['owner', 'developer', 'outsider']) {
+      expect((await as(who, `select comment from app_feedback`)).error).not.toBeNull()
+      expect((await as(who, `update app_feedback set status = 'verified'`)).error).not.toBeNull()
+    }
+  })
+
+  it('the run log keeps outcome, time, cost and version, and browsers cannot read it', async () => {
+    await db.query(`insert into app_runs (app_id, source, status, error_kind, latency_ms, live_version, model, cost_usd) values ($1, 'app', 'error', 'timeout', 61000, 2, 'gpt-4o', 0.002)`, [APP])
+    expect((await as('owner', `select status from app_runs`)).rows).toHaveLength(0)
+  })
+})
+
 describe('pay-per-run: each purchase is one run', () => {
   const buy = (ref, runs = 1) => db.query(`select record_purchase($1::jsonb, $2) id`, [
     { app_id: APP, buyer_id: U.outsider, dev_id: U.owner, plan: 'pay_per_run', gross_amount: 2, platform_fee: 0.4, dev_share: 1.6, stripe_payment_ref: ref }, runs])

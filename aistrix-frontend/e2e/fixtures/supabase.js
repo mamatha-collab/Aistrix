@@ -152,6 +152,9 @@ if (scenario === 'operations') {
   ]
   Object.assign(app, { is_published: true, live_version: 1, prod_snapshot: snapshot(app) })
   state.tables.app_blueprints[0].blueprint.dev_phase = 'deploy'
+  // What the server shares with the developers (customers chose to include the run).
+  state.feedback = state.tables.run_history.map((r, i) => ({ id: `fb-${i + 1}`, app_id: r.app_id, run_id: r.id, rating: r.rating_value,
+    comment: r.feedback_text, shared_input: r.input, shared_output: r.output, status: 'new', note: null, test_case_id: null, created_at: now, updated_at: now }))
 }
 
 // Build with AI: the two model calls (follow-up questions, then the app
@@ -165,6 +168,25 @@ function fakeModelReply(body) {
     : { questions: [{ id: 'q1', question: 'Who will use it?', options: ['Finance team', 'Freelancers'] }] }
   const events = [JSON.stringify({ token: JSON.stringify(json) }), JSON.stringify({ done: true, provider: 'openai', model: 'gpt-4o' })]
   return new Response(events.map(e => `data: ${e}\n\n`).join(''), { status: 200, headers: { 'Content-Type': 'text/event-stream' } })
+}
+
+function monitorFor(appId, days) {
+  const busy = scenario === 'monitor' && appId === 'app-1'
+  const daily = Array.from({ length: days }, (_, i) => {
+    const d = new Date(); d.setDate(d.getDate() - (days - 1 - i))
+    return { date: d.toISOString().slice(0, 10), runs: busy ? 10 : 0, errors: busy && i === days - 1 ? 4 : 0, cost_usd: busy ? 0.02 : 0, satisfaction: null, rated: 0 }
+  })
+  const runs = daily.reduce((n, d) => n + d.runs, 0), errors = daily.reduce((n, d) => n + d.errors, 0)
+  return {
+    days, daily, truncated: false,
+    totals: { runs, users: busy ? 6 : 0, visitor_runs: busy ? 3 : 0, errors, error_rate: runs ? errors / runs : null,
+      latency_p50_ms: busy ? 1200 : null, latency_p95_ms: busy ? 4200 : null, cost_usd: busy ? 0.02 * days : null,
+      cost_per_run_usd: busy ? 0.002 : null, rated: busy ? 8 : 0, satisfaction: busy ? 0.75 : null, last_run: null },
+    by_version: busy ? [{ version: 2, runs: runs - 20, errors, error_rate: errors / (runs - 20), latency_p95_ms: 4200 }, { version: 1, runs: 20, errors: 0, error_rate: 0, latency_p95_ms: 3000 }] : [],
+    by_source: busy ? { app: runs - 3, embed: 3 } : {},
+    error_kinds: busy ? { timeout: errors } : {},
+    alerts: busy ? [{ level: 'critical', kind: 'errors_24h', message: '40% of runs failed in the last 24 hours (4 of 10).' }] : [],
+  }
 }
 
 window.fetch = async (input, init = {}) => {
@@ -204,6 +226,43 @@ window.fetch = async (input, init = {}) => {
   // scenario=…nokey: the developer has no OpenAI key saved.
   if (path === '/v1/providers') return response({ providers: [{ id: 'openai', label: 'OpenAI', connected: !scenario.includes('nokey'), default_model: 'gpt-4o', models: [{ id: 'gpt-4o', label: 'GPT-4o' }] }] })
   if (path === '/v1/usage') return response({ daily: { used: 0, limit: 100 }, has_keys: true })
+  // Customer feedback inbox and ratings (server side).
+  state.feedback ||= []
+  if (/^\/v1\/apps\/[^/]+\/feedback$/.test(path)) {
+    const appId = path.split('/')[3], status = url.searchParams.get('status') || 'open'
+    const mine = state.feedback.filter(f => f.app_id === appId)
+    const items = mine.filter(f => status === 'all' || (status === 'open' ? ['new', 'investigating'].includes(f.status) : f.status === status))
+    const counts = {}
+    for (const f of mine) counts[f.status] = (counts[f.status] || 0) + 1
+    return response({ items, counts })
+  }
+  if (/^\/v1\/feedback\/[^/]+$/.test(path) && init.method === 'PATCH') {
+    const item = state.feedback.find(f => f.id === path.split('/')[3])
+    if (!item) return response({ detail: 'Feedback not found' }, 404)
+    Object.assign(item, JSON.parse(init.body))
+    return response({ ok: true, item })
+  }
+  if (/^\/v1\/runs\/[^/]+\/feedback$/.test(path)) {
+    const body = JSON.parse(init.body), runId = path.split('/')[3]
+    const run = state.tables.run_history.find(r => r.id === runId)
+    if (!run) return response({ detail: 'Run not found' }, 404)
+    Object.assign(run, { rating_value: body.rating, feedback_text: body.comment })
+    const shared = body.rating === -1 || !!body.comment || body.share_run
+    if (shared) state.feedback.push({ id: `fb-${state.feedback.length + 1}`, app_id: run.app_id, run_id: runId, rating: body.rating, comment: body.comment,
+      shared_input: body.share_run ? run.input : null, shared_output: body.share_run ? run.output : null, status: 'new', created_at: new Date().toISOString() })
+    return response({ ok: true, shared_with_developer: shared })
+  }
+  // Monitor: server aggregates. scenario=monitor gives app-1 traffic, a
+  // failing release and alerts; otherwise apps have no runs yet.
+  if (path === '/v1/monitor' || /^\/v1\/apps\/[^/]+\/monitor$/.test(path)) {
+    const days = Number(url.searchParams.get('days') || 7)
+    if (path === '/v1/monitor') {
+      const ids = (url.searchParams.get('app_ids') || '').split(',').filter(Boolean)
+      return response({ days, apps: ids.filter(i => state.tables.apps.some(a => a.id === i)).map(i => ({ app_id: i, ...monitorFor(i, days),
+        open_feedback: (state.feedback || []).filter(f => f.app_id === i && ['new', 'investigating'].includes(f.status)).length })) })
+    }
+    return response({ app_id: path.split('/')[3], live_version: 2, ...monitorFor(path.split('/')[3], days) })
+  }
   const id = path.split('/')[3]
   const current = state.tables.apps.find(row => row.id === id)
   if (path.endsWith('/tests/status')) return response(status(id))

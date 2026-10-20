@@ -4,7 +4,8 @@ import { supabase } from '../supabase'
 import { useParams, useNavigate } from 'react-router-dom'
 import { fieldKeyFromLabel } from '../utils/schemaContracts'
 
-const API_BASE = `${(import.meta.env.VITE_API_URL || 'https://api.aistrix.ai').replace(/\/$/, '')}/v1`
+import { BRAND, BRAND_DOMAIN } from '../lib/brand'
+const API_BASE = `${(import.meta.env.VITE_API_URL || `https://api.${BRAND_DOMAIN}`).replace(/\/$/, '')}/v1`
 const API_ROOT = API_BASE.replace(/\/v1$/, '')
 
 function CodeBlock({ code }) {
@@ -262,7 +263,7 @@ POST ${API_BASE}/batches/{batch_id}/retry   # resume rows that failed or hit a l
         </Section>
 
         <Section title="Batches">
-          <p className="text-slate-400 text-sm">Run many inputs through this app server-side — the job keeps going if your process exits. Rows that hit a rate limit or quota stay queued; call <code className="text-[#6C5CE7]">retry</code> to resume. Add your own provider key in Aistrix to remove platform limits.</p>
+          <p className="text-slate-400 text-sm">Run many inputs through this app server-side — the job keeps going if your process exits. Rows that hit a rate limit or quota stay queued; call <code className="text-[#6C5CE7]">retry</code> to resume. Add your own provider key in {BRAND} to remove platform limits.</p>
           <CodeBlock code={batchExample} />
         </Section>
 

@@ -1,6 +1,7 @@
 import { useState, lazy } from 'react'
 import { inferPromptOutputFormat } from '../../utils/starterBlueprint'
 
+import { BRAND } from '../../lib/brand'
 export const PUBLIC_API_URL = (import.meta.env.VITE_PUBLIC_API_URL || import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '')
 
 export const PromptStudio = lazy(() => import('../../components/PromptStudio'))
@@ -250,7 +251,7 @@ export function WelcomeScreen({ onCreateApp }) {
       {/* Hero */}
       <div className="bg-gradient-to-br from-[#6C5CE7]/20 to-[#0E1424] border border-[#6C5CE7]/20 rounded-2xl p-8 text-center">
         <div className="text-5xl mb-3">🧩</div>
-        <h2 className="text-2xl font-bold text-white mb-2">Welcome to Aistrix Dev Studio</h2>
+        <h2 className="text-2xl font-bold text-white mb-2">Welcome to {BRAND} Dev Studio</h2>
         <p className="text-slate-400 text-sm max-w-lg mx-auto leading-relaxed">
           Build, test, and sell AI-powered apps — without managing any infrastructure.
           Write a prompt, pick a model, and you have a live app in minutes.
@@ -606,7 +607,7 @@ export const RUNTIME_TYPES = [
   { id: 'media',     label: 'Media app',      desc: 'Image/audio/video generation pipeline' },
   { id: 'cli',       label: 'CLI app',        desc: 'Command-line tool wrapped as an app' },
   { id: 'container', label: 'Container app',  desc: 'Dockerized GitHub or custom app' },
-  { id: 'webui',     label: 'Hosted WebUI',   desc: 'Full web app hosted behind Aistrix auth' },
+  { id: 'webui',     label: 'Hosted WebUI',   desc: `Full web app hosted behind ${BRAND} auth` },
 ]
 
 export const COMMON_SECRET_TEMPLATES = [

@@ -19,6 +19,7 @@ import { useVersions } from '../../hooks/useVersions'
 import { DeveloperProfileEditor, DiffEditor, StatTile, modelCost } from './shared'
 
 
+import { BRAND } from '../../lib/brand'
 // ─── Marketplace listing helpers ─────────────────────────────────────────────
 
 const LISTING_CATEGORIES = [
@@ -42,7 +43,7 @@ function ListingSetupCard({ onRetry }) {
       <div>
         <p className="text-white font-semibold text-sm">Marketplace setup in progress</p>
         <p className="text-slate-400 text-sm mt-1">
-          Marketplace listings are managed automatically by Aistrix.<br />
+          Marketplace listings are managed automatically by {BRAND}.<br />
           This feature will be available shortly — no action needed on your end.
         </p>
       </div>
@@ -868,7 +869,7 @@ export function ImproveTab({ apps, user, selectedAppId, selectedRunId, onSaveCan
               <div className="flex-1 min-w-0">
                 <p className="text-white text-sm font-medium">Connect via GitHub OAuth</p>
                 <p className="text-slate-300 text-xs mt-1 leading-relaxed">
-                  Authorise Aistrix with GitHub — no personal access tokens needed.
+                  Authorise {BRAND} with GitHub — no personal access tokens needed.
                   Your token is stored server-side only.
                 </p>
               </div>
@@ -1006,7 +1007,7 @@ function EntitlementsSection({ apps }) {
       <div>
         <p className="text-white font-semibold text-sm">Entitlements managed automatically</p>
         <p className="text-slate-400 text-sm mt-1">
-          Versioning and entitlements are handled by Aistrix during deployment.<br />
+          Versioning and entitlements are handled by {BRAND} during deployment.<br />
           No manual setup required.
         </p>
       </div>

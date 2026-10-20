@@ -3,10 +3,11 @@ import { Box, Clock, KeyRound, LayoutGrid, Menu, Search, Sparkles, Workflow, X }
 import NotificationsPanel from './NotificationsPanel'
 import WorkspaceSwitcher from './WorkspaceSwitcher'
 
+import { BRAND } from '../lib/brand'
 const VIEW_META = {
   apps:        { title: 'AI Apps',        subtitle: 'Build and run AI-powered apps', icon: LayoutGrid, label: 'AI APPS', buildView: true },
   flows:       { title: 'AI Workflows',   subtitle: 'Ready-to-run workflows - install and run in seconds', icon: Workflow, label: 'AI WORKFLOWS', buildView: true },
-  overview:    { title: 'Overview',        subtitle: 'Aistrix designs, runs, and improves AI workflows from your business goal.' },
+  overview:    { title: 'Overview',        subtitle: `${BRAND} designs, runs, and improves AI workflows from your business goal.` },
   analytics:   { title: 'Analytics',       subtitle: 'Usage trends and performance' },
   reports:     { title: 'Reports',         subtitle: 'Scheduled and on-demand reports' },
   events:      { title: 'Events',          subtitle: 'Scheduled and triggered runs' },
@@ -19,7 +20,7 @@ const VIEW_META = {
   data_sources:{ title: 'Data Sources',    subtitle: 'Manage your data connections' },
   admin:       { title: 'Admin',           subtitle: 'Platform administration' },
   moderator:   { title: 'Moderator',       subtitle: 'Content moderation tools' },
-  marketplace: { title: 'Marketplace',     subtitle: 'Discover AI apps built on Aistrix' },
+  marketplace: { title: 'Marketplace',     subtitle: `Discover AI apps built on ${BRAND}` },
 }
 
 export default function TopBarClean({ onShowHistory, onShowSettings, noKeys = false, onToggleSidebar, onShowCreate, onShowWorkspace, search, onSearch, searchRef, user, onNavChange, activeView,
@@ -56,7 +57,7 @@ export default function TopBarClean({ onShowHistory, onShowSettings, noKeys = fa
         </div>
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <span className={meta.buildView ? 'header-build-title' : 'header-kicker hidden lg:inline-flex'}>{meta.label || 'Aistrix'}</span>
+            <span className={meta.buildView ? 'header-build-title' : 'header-kicker hidden lg:inline-flex'}>{meta.label || `${BRAND}`}</span>
             {!meta.buildView && <h1 className="header-title-text truncate">{meta.title}</h1>}
           </div>
           <p className="text-xs text-slate-300 truncate mt-0.5">{meta.subtitle}</p>
@@ -114,12 +115,12 @@ export default function TopBarClean({ onShowHistory, onShowSettings, noKeys = fa
           <div ref={buildRef} className="relative shrink-0">
             <button
               onClick={() => setBuildOpen(v => !v)}
-              aria-label="Aistrix BUILD - open build menu"
+              aria-label={`${BRAND} BUILD - open build menu`}
               aria-haspopup="true"
               aria-expanded={buildOpen}
               className="flex items-center gap-1.5 text-white text-xs font-semibold px-3 py-1.5 rounded-lg border border-[#6C5CE7] bg-[#6C5CE7]/15 hover:bg-[#6C5CE7]/25 transition-all"
             >
-              <Sparkles size={14} /> <span className="hidden md:inline">Aistrix <span className="font-bold tracking-widest uppercase">BUILD</span></span>
+              <Sparkles size={14} /> <span className="hidden md:inline">{BRAND} <span className="font-bold tracking-widest uppercase">BUILD</span></span>
             </button>
             {buildOpen && (
               <div className="app-build-menu absolute right-0 top-full mt-2 w-52 bg-[#1A2038] border border-white/20 rounded-xl shadow-xl overflow-hidden z-50">

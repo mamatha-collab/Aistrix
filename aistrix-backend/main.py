@@ -45,6 +45,13 @@ from supabase.lib.client_options import SyncClientOptions
 from telemetry import configured_outbox
 
 load_dotenv()
+
+# The product's name and domain, in one place (a rename is BRAND_NAME /
+# BRAND_DOMAIN; the frontend has VITE_BRAND_NAME / VITE_BRAND_DOMAIN).
+# Protocol names developers rely on (the X-Aistrix-Signature webhook header,
+# the SDK) stay fixed.
+BRAND_NAME = os.getenv("BRAND_NAME", "Aistrix")
+BRAND_DOMAIN = os.getenv("BRAND_DOMAIN", "aistrix.ai")
 _telemetry_outbox = configured_outbox()
 _telemetry_client = None
 
@@ -102,7 +109,7 @@ async def lifespan(_app):
         await asyncio.gather(supervisor, telemetry_worker, scheduler, return_exceptions=True)
 
 
-app = FastAPI(title="Aistrix API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title=f"{BRAND_NAME} API", version="1.0.0", lifespan=lifespan)
 
 
 @app.exception_handler(RequestValidationError)
@@ -179,7 +186,7 @@ class OnlyAllowedClients:
         except ValueError:
             allowed = False
         if not allowed:
-            return await JSONResponse(status_code=403, content={"error": "This Aistrix server isn't open to your network."})(scope, receive, send)
+            return await JSONResponse(status_code=403, content={"error": f"This {BRAND_NAME} server isn't open to your network."})(scope, receive, send)
         return await self.app(scope, receive, send)
 
 
@@ -198,7 +205,7 @@ SUPABASE_URL              = os.getenv("SUPABASE_URL")
 SUPABASE_ANON_KEY         = os.getenv("SUPABASE_ANON_KEY")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 RESEND_API_KEY            = os.getenv("RESEND_API_KEY")
-EMAIL_FROM                = os.getenv("EMAIL_FROM", "Aistrix <noreply@aistrix.ai>")
+EMAIL_FROM                = os.getenv("EMAIL_FROM", f"{BRAND_NAME} <noreply@{BRAND_DOMAIN}>")
 STRIPE_PLATFORM_FEE_PCT   = float(os.getenv("STRIPE_PLATFORM_FEE_PCT", "20"))  # % Aistrix keeps
 FRONTEND_URL              = os.getenv("FRONTEND_URL", "http://localhost:5173")
 GITHUB_CLIENT_ID          = os.getenv("GITHUB_CLIENT_ID")
@@ -1147,7 +1154,7 @@ async def _execute_tool(tool: dict, tool_input: dict, ctx: dict) -> str:
         elif tool_type == "fetch":
             url = tool_input.get("url", "")
             try:
-                r = await fetch_safely("GET", url, timeout=10, headers={"User-Agent": "Aistrix/1.0"})
+                r = await fetch_safely("GET", url, timeout=10, headers={"User-Agent": f"{BRAND_NAME}/1.0"})
             except ValueError as e:
                 return f"Invalid URL: {e}"
             text = re.sub(r"<[^>]+>", " ", r.text)
@@ -1251,7 +1258,7 @@ async def _execute_tool(tool: dict, tool_input: dict, ctx: dict) -> str:
 
         elif tool_type == "email":
             to = tool_input.get("to", "").strip()
-            subject = tool_input.get("subject", "Message from Aistrix")
+            subject = tool_input.get("subject", f"Message from {BRAND_NAME}")
             body = tool_input.get("body", "")
             if not to or not body:
                 return "Missing 'to' or 'body' for email."
@@ -1267,7 +1274,7 @@ async def _execute_tool(tool: dict, tool_input: dict, ctx: dict) -> str:
                         "https://api.sendgrid.com/v3/mail/send",
                         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                         json={"personalizations": [{"to": [{"email": to}]}],
-                              "from": {"email": config.get("from", "noreply@aistrix.ai")},
+                              "from": {"email": config.get("from", f"noreply@{BRAND_DOMAIN}")},
                               "subject": subject, "content": [{"type": "text/plain", "value": body}]},
                     )
                 if r.status_code >= 400:
@@ -1355,7 +1362,7 @@ DEFAULT_TIER_LIMITS = {
     "free": {"draft_apps": 5, "published_apps": 3, "tests_per_day": 20, "concurrent_tests": 1, "analytics": "basic"},
     "verified": {"draft_apps": 10, "published_apps": 6, "tests_per_day": 100, "concurrent_tests": 3, "analytics": "standard"},
 }
-TIER_LABELS = {"free": "Free developer", "verified": "Verified developer", "staff": "Aistrix staff"}
+TIER_LABELS = {"free": "Free developer", "verified": "Verified developer", "staff": f"{BRAND_NAME} staff"}
 # DEVELOPER_TIERS=0 turns tiers off (no limits, no first-publish review, full
 # analytics) — e.g. for a private deployment.
 DEVELOPER_TIERS = os.getenv("DEVELOPER_TIERS", "1").lower() not in ("0", "false", "no")
@@ -2006,7 +2013,7 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
             return JSONResponse(status_code=401 if not caller_id else 403, content={
                 "code": "needs_own_key", "provider": provider,
                 "error": (f"This app runs on your own {label} API key. "
-                          + ("Sign in to Aistrix and add it in Settings → Keys." if not caller_id else "Add it in Settings → Keys to run it."))})
+                          + (f"Sign in to {BRAND_NAME} and add it in Settings → Keys." if not caller_id else "Add it in Settings → Keys to run it."))})
         user_api_key, key_source = own_key, "own"
     else:
         dev_key = (await fetch_user_api_key_by_id(owner_id, provider)
@@ -2057,7 +2064,7 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
         # Origin, so other websites can't call the app directly as a visitor.
         if (request.headers.get("origin") or "").rstrip("/") not in [o.rstrip("/") for o in ALLOWED_ORIGINS]:
             return JSONResponse(status_code=403, content={
-                "error": "Website visitors can use this app only through its Aistrix embed. Sign in to run it here."})
+                "error": f"Website visitors can use this app only through its {BRAND_NAME} embed. Sign in to run it here."})
         allowed, rate_msg = check_embed_visitor_rate_limit(client_ip(request), app_row["id"])
         if not allowed:
             return JSONResponse(status_code=429, content={"error": rate_msg})
@@ -2828,7 +2835,7 @@ async def invite_to_workspace(workspace_id: str, body: WorkspaceInviteRequest, r
     invite_url = f"{FRONTEND_URL.rstrip('/')}/invite/{inv['token']}"
     sent = await send_email(
         to=email,
-        subject=f"You're invited to {ws[0]['name']} on Aistrix",
+        subject=f"You're invited to {ws[0]['name']} on {BRAND_NAME}",
         html=_email_base(
             title=f"Join {ws[0]['name']}",
             body=f"You've been invited to the <strong style='color:#fff'>{ws[0]['name']}</strong> workspace "
@@ -3589,7 +3596,7 @@ async def _post_webhook(webhook_url: str, app_id: str, payload: dict) -> int:
     sig = hmac.new(webhook_secret(app_id).encode(), ts.encode() + b"." + body, hashlib.sha256).hexdigest()
     async with httpx.AsyncClient(timeout=10) as client:
         res = await client.post(webhook_url, content=body, headers={
-            "Content-Type": "application/json", "User-Agent": "Aistrix-Webhook/1.0",
+            "Content-Type": "application/json", "User-Agent": f"{BRAND_NAME}-Webhook/1.0",
             "X-Aistrix-Signature": f"t={ts},v1={sig}"})
     return res.status_code
 
@@ -3645,14 +3652,14 @@ def _record_run_outcome(success: bool, error_kind: Optional[str] = None):
 async def _fire_ops_alert(failures: int, total: int, rate: float, top_kinds: str):
     window_min = OPS_ALERT_WINDOW_SECONDS // 60
     text = (
-        f":rotating_light: Aistrix: {rate:.0%} of /run requests failed in the last {window_min} min "
+        f":rotating_light: {BRAND_NAME}: {rate:.0%} of /run requests failed in the last {window_min} min "
         f"({failures}/{total}). Top error types: {top_kinds}"
     )
     try:
         async with httpx.AsyncClient(timeout=10) as client:
             # {"text": ...} is a Slack incoming-webhook payload; any other
             # receiver can read the same field, so no receiver-specific branching.
-            await client.post(OPS_ALERT_WEBHOOK_URL, json={"text": text}, headers={"Content-Type": "application/json", "User-Agent": "Aistrix-OpsAlert/1.0"})
+            await client.post(OPS_ALERT_WEBHOOK_URL, json={"text": text}, headers={"Content-Type": "application/json", "User-Agent": f"{BRAND_NAME}-OpsAlert/1.0"})
     except Exception as e:
         print(f"Ops alert webhook failed: {e}")
 
@@ -4083,7 +4090,7 @@ def _email_base(title: str, body: str, cta_url: str = "", cta_label: str = "") -
   <div style="height:2px;width:32px;background:#6C5CE7;border-radius:2px;margin:12px 0 20px"></div>
   <div style="font-size:14px;line-height:1.7;color:#94A3B8">{body}</div>
   {cta}
-  <p style="margin:32px 0 0;font-size:11px;color:#334155">Aistrix · You're receiving this because you have an account on aistrix.ai</p>
+  <p style="margin:32px 0 0;font-size:11px;color:#334155">{BRAND_NAME} · You're receiving this because you have an account on {BRAND_DOMAIN}</p>
 </div></body></html>"""
 
 
@@ -4336,9 +4343,9 @@ async def _record_payment(
             subject=f"You now have access to {app_name}",
             html=_email_base(
                 title=f"Welcome to {safe_name} 🎉",
-                body=f"Your {plan_label} is confirmed. You can run <strong style='color:#fff'>{safe_name}</strong> from your Aistrix dashboard any time.",
+                body=f"Your {plan_label} is confirmed. You can run <strong style='color:#fff'>{safe_name}</strong> from your {BRAND_NAME} dashboard any time.",
                 cta_url=FRONTEND_URL,
-                cta_label="Open Aistrix →",
+                cta_label=f"Open {BRAND_NAME} →",
             ),
         )
     if dev_id != buyer_id:
@@ -4670,7 +4677,7 @@ async def stripe_webhook(request: Request):
                             title=f"Subscription cancelled",
                             body=f"Your subscription to <strong style='color:#fff'>{app_name}</strong> has been cancelled. You can re-subscribe any time from the app page.",
                             cta_url=FRONTEND_URL,
-                            cta_label="Open Aistrix →",
+                            cta_label=f"Open {BRAND_NAME} →",
                         ),
                     )
 
@@ -5126,7 +5133,7 @@ async def github_create_issue(body: GitHubIssueRequest, request: Request):
         f"**Date:** {run.get('created_at')}",
         f"\n**Input:**\n```\n{(run.get('input') or '')[:4000]}\n```" if run.get("input") else "",
         f"\n**Output:**\n```\n{(run.get('output') or '')[:4000]}\n```" if run.get("output") else "",
-        "\n---\n*Created from Aistrix Improve*",
+        f"\n---\n*Created from {BRAND_NAME} Improve*",
     ] if part)
     async with httpx.AsyncClient(timeout=15) as c:
         r = await c.post(f"https://api.github.com/repos/{row['repo']}/issues",
@@ -5340,7 +5347,7 @@ async def proxy_request(body: ProxyRequest, request: Request):
         raise HTTPException(status_code=400, detail=f"Unsupported method: {method}")
 
     req_headers = {
-        "User-Agent": "Aistrix-Workspace/1.0",
+        "User-Agent": f"{BRAND_NAME}-Workspace/1.0",
         "Accept": "application/json, text/plain, */*",
     }
     if body.headers:
@@ -5460,7 +5467,7 @@ async def scrape_website(body: ScrapeRequest, request: Request):
         url = "https://" + url
     try:
         headers = {
-            "User-Agent": "Mozilla/5.0 (compatible; Aistrix/1.0; +https://aistrix.ai)",
+            "User-Agent": f"Mozilla/5.0 (compatible; {BRAND_NAME}/1.0; +https://{BRAND_DOMAIN})",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.5",
         }
@@ -6797,8 +6804,8 @@ async def get_release(app_id: str, request: Request):
     }
 
 
-IN_REVIEW = "This app is waiting for review by the Aistrix team. It goes live as soon as it's approved."
-SUBMITTED_FOR_REVIEW = ("Submitted for review. An app's first release is checked by the Aistrix team; "
+IN_REVIEW = f"This app is waiting for review by the {BRAND_NAME} team. It goes live as soon as it's approved."
+SUBMITTED_FOR_REVIEW = (f"Submitted for review. An app's first release is checked by the {BRAND_NAME} team; "
                         "it goes live as soon as it's approved, and later releases go live straight away.")
 
 
@@ -6990,7 +6997,7 @@ async def developer_plan(request: Request):
                   "published_apps": sum(1 for a in apps if a.get("is_published") or a.get("status") == "pending"),
                   "tests_today": (usage[0]["runs"] if usage else 0)},
         "ai_usage": "Your own AI keys (Settings → Keys)",
-        "publish_approval": "An app's first release is reviewed by the Aistrix team",
+        "publish_approval": f"An app's first release is reviewed by the {BRAND_NAME} team",
     }
 
 
@@ -7061,9 +7068,9 @@ async def review_app(app_id: str, body: ReviewDecision, request: Request):
     await notify_developer(app_row.get("created_by"), f"review_{body.decision}", f"{app_id}:{now}",
                            subject=f"{app_row.get('name') or 'Your app'} is live" if approved else f"Changes requested for {app_row.get('name') or 'your app'}",
                            title=f"{name} is live" if approved else f"Changes requested for {name}",
-                           body=("The Aistrix team approved your app; it's live now, and your later releases go live straight away."
+                           body=(f"The {BRAND_NAME} team approved your app; it's live now, and your later releases go live straight away."
                                  if approved else
-                                 f"The Aistrix team reviewed your app and asked for changes:<br><br>{html_escape(body.note.strip())}<br><br>"
+                                 f"The {BRAND_NAME} team reviewed your app and asked for changes:<br><br>{html_escape(body.note.strip())}<br><br>"
                                  "Make them in Dev Studio, then publish again from Deploy."),
                            cta_label="Open Deploy →")
     print(f"app {app_id} review: {body.decision} by {staff_id}")
@@ -7319,4 +7326,4 @@ def health_details(request: Request):
 
 @app.get("/")
 def root():
-    return {"message": "Aistrix API", "version": "1.0.0", "docs": "/docs"}
+    return {"message": f"{BRAND_NAME} API", "version": "1.0.0", "docs": "/docs"}

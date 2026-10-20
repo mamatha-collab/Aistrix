@@ -3,8 +3,9 @@ import { saveAppFields } from '../lib/appFields'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 
+import { BRAND } from '../lib/brand'
 const VISIBILITY_OPTIONS = [
-  { id: 'public',  icon: '🌐', label: 'Public',  desc: 'Anyone on Aistrix can discover and use this app' },
+  { id: 'public',  icon: '🌐', label: 'Public',  desc: `Anyone on ${BRAND} can discover and use this app` },
   { id: 'private', icon: '🔒', label: 'Private', desc: 'Only you can see and run this app' },
   { id: 'invite',  icon: '✉️', label: 'Invite only', desc: 'Only people you invite can use this app' },
 ]

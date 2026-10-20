@@ -3,6 +3,7 @@ import { saveAppFields } from '../lib/appFields'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 
+import { BRAND } from '../lib/brand'
 const SIZES = [
   { id: 'compact',  label: 'Compact',   height: 400 },
   { id: 'medium',   label: 'Medium',    height: 600 },
@@ -175,7 +176,7 @@ export default function EmbedCodeModal({ app, onClose }) {
               <div className="space-y-2">
                 {[
                   { key: 'hideHeader', label: 'Hide header', value: hideHeader, set: setHideHeader },
-                  { key: 'hideBranding', label: 'Hide "Powered by Aistrix"', value: hideBranding, set: setHideBranding },
+                  { key: 'hideBranding', label: `Hide "Powered by ${BRAND}"`, value: hideBranding, set: setHideBranding },
                 ].map(opt => (
                   <label key={opt.key} className="flex items-center gap-2 cursor-pointer">
                     <button onClick={() => opt.set(v => !v)}
@@ -200,7 +201,7 @@ export default function EmbedCodeModal({ app, onClose }) {
                 <input type="checkbox" className="mt-0.5" disabled={app.is_paid}
                   checked={visitorAccess && !app.is_paid} onChange={e => setVisitorAccess(e.target.checked)} />
                 <span className="text-xs text-slate-400">
-                  Let website visitors use it without an Aistrix account
+                  Let website visitors use it without an {BRAND} account
                   <span className="block text-[10px] text-slate-600 mt-0.5">
                     {app.is_paid
                       ? 'Not available for paid apps.'
@@ -280,7 +281,7 @@ export default function EmbedCodeModal({ app, onClose }) {
                 {[
                   ['theme', 'dark | light', 'Color theme of the embed'],
                   ['accent', '#hex', 'Button and highlight color'],
-                  ['hide_branding', '1', 'Remove "Powered by Aistrix"'],
+                  ['hide_branding', '1', `Remove "Powered by ${BRAND}"`],
                   ['hide_header', '1', 'Remove the app name header'],
                 ].map(([param, val, desc]) => (
                   <div key={param} className="flex items-start gap-3 text-[10px]">

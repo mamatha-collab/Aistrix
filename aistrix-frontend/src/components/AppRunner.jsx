@@ -15,6 +15,7 @@ import { buildBatchRows, csvEscape, looksLikeCSV } from '../utils/csv'
 import { getInputSchemaFields, getOutputSchemaFields, parseSchemaValue, validateJsonOutput, validateSchemaObject } from '../utils/schemaContracts'
 import { scopeToWorkspace } from '../lib/workspace'
 
+import { BRAND } from '../lib/brand'
 // Lazy-loaded — keeps the Stripe SDK out of the main bundle until a paid app is actually run
 const PaymentModal = lazy(() => import('./PaymentModal'))
 
@@ -178,7 +179,7 @@ async function checkAlerts(userId, input, result, toast) {
 
     if (triggered) {
       toast(`🔔 ${message}`, 'info', 5000)
-      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') new Notification('Aistrix Alert', { body: message })
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') new Notification(`${BRAND} Alert`, { body: message })
       // Push to notifications center
       await createNotification(userId, { type: 'alert', title: 'Alert triggered', message, link_view: 'alerts' })
     }

@@ -28,6 +28,7 @@ import { track, EVENTS } from '../lib/analytics'
 import { evaluateCase } from '../lib/promptTests'
 import { isRealCheck, appTypeOf, appTypeLabel, outputSchemaFields, judge, buildTemplateCases, PERSONA_PACKS, PROFILE_INPUTS } from '../lib/testTemplates'
 
+import { BRAND } from '../lib/brand'
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 // ─── Rule types ───────────────────────────────────────────────────────────────
@@ -108,7 +109,7 @@ function SetupCard({ onRetry }) {
       <div>
         <p className="text-white font-semibold text-sm">Test suites managed automatically</p>
         <p className="text-slate-400 text-sm mt-1">
-          Test case storage is handled by Aistrix during deployment.<br />
+          Test case storage is handled by {BRAND} during deployment.<br />
           No manual setup required.
         </p>
       </div>
@@ -382,7 +383,7 @@ function QualityGatePlan({ app, requirements, storageMissing, onAddTemplates, on
     <div className="bg-[#171B33] border border-white/10 rounded-2xl overflow-hidden">
       <div className="px-5 py-4 border-b border-white/10 flex items-start gap-4">
         <div className="flex-1">
-          <p className="text-white font-semibold text-sm">Aistrix Quality Gate</p>
+          <p className="text-white font-semibold text-sm">{BRAND} Quality Gate</p>
           <p className="text-slate-400 text-xs mt-1">
             Required checks for this {appTypeLabel(app)} before it moves to Deploy.
           </p>

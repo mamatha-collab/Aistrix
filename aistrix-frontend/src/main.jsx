@@ -28,6 +28,7 @@ import './index.css'
 import App from './App.jsx'
 import { ToastProvider } from './components/Toast.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
+import CookieConsent from './components/CookieConsent.jsx'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
@@ -35,6 +36,7 @@ createRoot(document.getElementById('root')).render(
       <BrowserRouter>
         <ToastProvider>
           <App />
+          <CookieConsent />
         </ToastProvider>
       </BrowserRouter>
     </ErrorBoundary>

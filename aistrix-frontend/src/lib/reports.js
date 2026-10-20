@@ -1,3 +1,4 @@
+import { BRAND as BRAND_NAME } from './brand'
 // PDF reports for the Build steps (Design, Test, Deploy). jsPDF is loaded
 // only when a report is downloaded, so it doesn't slow down Dev Studio.
 //
@@ -37,7 +38,7 @@ export async function downloadReport({ kind, app, title, subtitle, sections }) {
   doc.setTextColor(255, 255, 255).setFont('helvetica', 'bold').setFontSize(16)
   doc.text(pdfText(title), M, 30)
   doc.setFont('helvetica', 'normal').setFontSize(8.5)
-  doc.text(pdfText(`Generated ${new Date().toLocaleString()} · Aistrix`), W - M, 28, { align: 'right' })
+  doc.text(pdfText(`Generated ${new Date().toLocaleString()} · ${BRAND_NAME}`), W - M, 28, { align: 'right' })
   doc.setFontSize(10)
   doc.text(doc.splitTextToSize(pdfText(`${app?.name || 'App'}${subtitle ? ' · ' + subtitle : ''}`), W - 2 * M)[0], M, 48)
   y = 88

@@ -6,6 +6,7 @@ import { runAppTest, rulesToChecks } from '../lib/appTests'
 import { useVersions } from '../hooks/useVersions'
 import { track, EVENTS } from '../lib/analytics'
 
+import { BRAND } from '../lib/brand'
 export const VERSION_SETUP_SQL = `create table app_versions (
   id            uuid primary key default gen_random_uuid(),
   app_id        uuid references apps(id) on delete cascade,
@@ -57,7 +58,7 @@ export function VersionSetupCard({ onRetry }) {
       <div>
         <p className="text-white font-semibold text-sm">Versioning managed automatically</p>
         <p className="text-slate-400 text-sm mt-1">
-          Version history is handled by Aistrix during deployment.<br />
+          Version history is handled by {BRAND} during deployment.<br />
           No manual setup required.
         </p>
       </div>

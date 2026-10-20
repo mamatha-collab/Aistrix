@@ -3,6 +3,7 @@ import { sessionExpired } from '../lib/session'
 import { useState } from 'react'
 import { supabase } from '../supabase'
 
+import { BRAND } from '../lib/brand'
 // RFC 5322-ish, practical email check — accepts plus-addressing (name+tag@domain.com),
 // requires a real-looking domain with a TLD so bare strings like "example.com"
 // (missing the local part) are correctly rejected as malformed, not silently sent to Supabase.
@@ -119,9 +120,9 @@ export default function Auth({ developer = false }) {
           {isReset
             ? "Enter your email and we'll send a reset link"
             : developer
-              ? 'Build, test, and publish your AI apps with Aistrix.'
+              ? `Build, test, and publish your AI apps with ${BRAND}.`
             : isLogin
-              ? 'Sign in to your Aistrix account'
+              ? `Sign in to your ${BRAND} account`
               : 'Start using AI-powered apps today'}
         </p>
 

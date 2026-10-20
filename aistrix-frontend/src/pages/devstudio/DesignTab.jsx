@@ -15,6 +15,7 @@ import SafeCard from '../../components/SafeCard'
 import { ALL_FIELD_TYPES, AppEmojiWithType, getAppTypeLabel, COMMON_SECRET_TEMPLATES, DEV_PHASES, EMPTY_BP, MODEL_HINTS, PromptStudio, RUNTIME_TYPES, appOutputTypeFor, calcReadiness, estimateMonthlyCost, getDevPhase, getInputSchemaFields, getOutputSchemaFields, inputsToSchema, invalidInputFields, isMissingBlueprintTable, migrateBlueprint, mismatchLabel, moduleIds, normalizeDeployment, outputContractMismatch, outputRulesSatisfied, readinessChecks, validInputFields } from './shared'
 
 
+import { BRAND } from '../../lib/brand'
 // ─── Tab: Design — Aistrix Blueprint Studio ──────────────────────────────────
 
 const INPUT_TYPES = ['short_text','long_text','number','select','multi_select','file','image','audio','video','document','url','date','boolean','json','csv']
@@ -363,7 +364,7 @@ const PRODUCTION_MODULES = [
     name: 'Hosted WebUI',
     icon: '🖥️',
     group: 'Runtime',
-    what: 'Hosts a full external WebUI inside Aistrix.',
+    what: `Hosts a full external WebUI inside ${BRAND}.`,
     tech: ['reverse proxy', 'auth wrapper', 'sandbox routing'],
     aistrix: 'missing',
     effort: 'Hard',
@@ -704,7 +705,7 @@ function ProductionModulePlanner({ app, bp, setBp }) {
         <div>
           <p className="text-xs font-bold text-white uppercase tracking-wider">Build capabilities</p>
           <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
-            Pick what the app needs in plain language. Aistrix turns these choices into the technical modules and deployment blueprint.
+            Pick what the app needs in plain language. {BRAND} turns these choices into the technical modules and deployment blueprint.
           </p>
         </div>
         <button onClick={applyShortVideoTemplate}
@@ -740,7 +741,7 @@ function ProductionModulePlanner({ app, bp, setBp }) {
         </div>
         <div className="bg-[#0E1424] border border-white/5 rounded-xl p-3">
           <p className="text-lg font-bold text-amber-300">{partial.length}</p>
-          <p className="text-[10px] text-slate-500 uppercase font-semibold">Partial in Aistrix</p>
+          <p className="text-[10px] text-slate-500 uppercase font-semibold">Partial in {BRAND}</p>
         </div>
         <div className="bg-[#0E1424] border border-white/5 rounded-xl p-3">
           <p className="text-lg font-bold text-slate-300">{missing.length}</p>
@@ -795,7 +796,7 @@ function ProductionModulePlanner({ app, bp, setBp }) {
           </div>
           {missing.length > 0 && (
             <p className="text-[11px] text-slate-400 leading-relaxed">
-              This design needs new Aistrix platform primitives before full production: {missing.map(m => m.name).join(', ')}.
+              This design needs new {BRAND} platform primitives before full production: {missing.map(m => m.name).join(', ')}.
             </p>
           )}
         </div>
@@ -869,7 +870,7 @@ function DeploymentBlueprintPanel({ app, bp, setBp }) {
         <div>
           <p className="text-xs font-bold text-white uppercase tracking-wider">Runtime, files, secrets, outputs and cost</p>
           <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
-            Plain-language settings for how this app will run after Build. Advanced users can still export the Aistrix manifest below.
+            Plain-language settings for how this app will run after Build. Advanced users can still export the {BRAND} manifest below.
           </p>
         </div>
         <div className="text-right shrink-0">
@@ -1051,7 +1052,7 @@ function DeploymentBlueprintPanel({ app, bp, setBp }) {
       <div className="bg-[#0A0E1A] border border-[#6C5CE7]/15 rounded-xl p-4 space-y-3">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <p className="text-[10px] text-[#A29BFE] uppercase font-bold tracking-wider">Aistrix manifest</p>
+            <p className="text-[10px] text-[#A29BFE] uppercase font-bold tracking-wider">{BRAND} manifest</p>
             <p className="text-[11px] text-slate-500">Portable deployment definition generated from this Design blueprint.</p>
           </div>
           <div className="flex items-center gap-2">
@@ -1105,7 +1106,7 @@ function FormatRulesEditor({ label, hint, rulesKey, bp, setBp }) {
   )
 }
 
-const APP_BLUEPRINTS_SQL = `-- Aistrix Developer Studio: App Blueprints
+const APP_BLUEPRINTS_SQL = `-- ${BRAND} Developer Studio: App Blueprints
 -- Run this in the Supabase SQL editor, then refresh the app.
 
 create table if not exists public.app_blueprints (
@@ -1387,7 +1388,7 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
     setCopilotOutput('')
     try {
       const { data: { session } } = await supabase.auth.getSession()
-      const systemPrompt = `You are an AI app design assistant for the Aistrix platform. Given a developer's app idea, return a JSON blueprint with these exact keys: business_problem, audience, inputs (array of {key, label, type, required, pii}), input_schema ({type:"object", fields:[{field,type,required,description,enum_values?}]}), output_contract ({format, fields: [{field, type, required, description, enum_values?, nested_fields?}]}), output_schema ({type:"object", fields:[{field,type,required,description,enum_values?,nested_fields?}]}), production_modules (array of ids from this list when relevant: ${PRODUCTION_MODULES.map(m => m.id).join(', ')}), system_prompt_hint, marketplace_tagline. Be concise and practical. Return ONLY valid JSON, no markdown fences.`
+      const systemPrompt = `You are an AI app design assistant for the ${BRAND} platform. Given a developer's app idea, return a JSON blueprint with these exact keys: business_problem, audience, inputs (array of {key, label, type, required, pii}), input_schema ({type:"object", fields:[{field,type,required,description,enum_values?}]}), output_contract ({format, fields: [{field, type, required, description, enum_values?, nested_fields?}]}), output_schema ({type:"object", fields:[{field,type,required,description,enum_values?,nested_fields?}]}), production_modules (array of ids from this list when relevant: ${PRODUCTION_MODULES.map(m => m.id).join(', ')}), system_prompt_hint, marketplace_tagline. Be concise and practical. Return ONLY valid JSON, no markdown fences.`
       const res = await fetch(`${API_URL}/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', ...(session ? { Authorization: `Bearer ${session.access_token}` } : {}) },
@@ -1602,7 +1603,7 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
           )}
           {invalidInputs.length > 0 && (
             <p className="text-xs text-slate-300">
-              {invalidInputs.length} input field{invalidInputs.length !== 1 ? 's' : ''} need a valid key, label, and type before Aistrix can generate reliable UI, API params, and tests.
+              {invalidInputs.length} input field{invalidInputs.length !== 1 ? 's' : ''} need a valid key, label, and type before {BRAND} can generate reliable UI, API params, and tests.
             </p>
           )}
         </div>
@@ -1611,7 +1612,7 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
       {/* Copilot */}
       <SafeCard name="Blueprint copilot">{() => (
       <div className="bg-[#171B33] border border-[#6C5CE7]/20 rounded-2xl p-5 space-y-3">
-        <p className="text-xs font-semibold text-[#A29BFE] uppercase tracking-wider">✦ Aistrix Copilot</p>
+        <p className="text-xs font-semibold text-[#A29BFE] uppercase tracking-wider">✦ {BRAND} Copilot</p>
         <p className="text-[11px] text-slate-300">Describe your app idea and Copilot will fill the blueprint for you.</p>
         <div className="flex gap-2">
           <input value={copilot} onChange={e => setCopilot(e.target.value)}

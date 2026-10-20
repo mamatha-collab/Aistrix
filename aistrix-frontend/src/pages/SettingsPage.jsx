@@ -5,6 +5,7 @@ import { applyTheme } from '../utils/theme'
 import { PROVIDER_STYLE, removeProviderKey, saveProviderKey, useProviders } from '../lib/providers'
 import { AccountData, DeveloperEmailAlerts, DeveloperPlan } from '../components/AccountSettings'
 
+import { BRAND } from '../lib/brand'
 const AVATAR_COLORS = ['#6C5CE7','#E84393','#00B894','#0984E3','#FDCB6E','#E17055','#74B9FF','#A29BFE','#55EFC4','#FD79A8']
 
 function Section({ id, title, description, children }) {
@@ -165,7 +166,7 @@ export default function SettingsPage({ user, developer = false, focus = null, em
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
       <div className="space-y-5 min-w-0">
       {/* Profile */}
-      <Section title="Profile" description="Your public name and avatar shown throughout Aistrix.">
+      <Section title="Profile" description={`Your public name and avatar shown throughout ${BRAND}.`}>
         <div className="flex items-center gap-5 mb-5">
           <div className="w-14 h-14 rounded-2xl flex items-center justify-center text-white text-2xl font-bold shrink-0"
             style={{ background: avatarColor }}>{initial}</div>
@@ -195,7 +196,7 @@ export default function SettingsPage({ user, developer = false, focus = null, em
       </Section>
 
       {/* Appearance */}
-      <Section title="Appearance" description="Customize how Aistrix looks.">
+      <Section title="Appearance" description={`Customize how ${BRAND} looks.`}>
         <div className="flex items-center justify-between">
           <div>
             <p className="text-sm text-white">Color theme</p>

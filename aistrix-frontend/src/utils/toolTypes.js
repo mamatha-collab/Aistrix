@@ -1,3 +1,4 @@
+import { BRAND } from '../lib/brand'
 // Agent tool types offered in the Tools editor and used by Build with AI.
 // defaultSchema is the parameter schema the model sees for each tool.
 export const TOOL_TYPES = [
@@ -56,8 +57,8 @@ export const TOOL_TYPES = [
   {
     id: 'app',
     icon: '🧩',
-    label: 'Call Aistrix App',
-    desc: 'Chain to another Aistrix app. The AI can invoke it mid-conversation.',
+    label: `Call ${BRAND} App`,
+    desc: `Chain to another ${BRAND} app. The AI can invoke it mid-conversation.`,
     configFields: [
       { key: 'app_id', label: 'Target App ID', placeholder: 'UUID of the app to call' },
     ],

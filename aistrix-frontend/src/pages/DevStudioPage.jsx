@@ -18,6 +18,7 @@ import { ArrowLeft, ChartNoAxesColumn, ChevronDown, CircleHelp, CirclePlay, Clip
 import { applyTheme } from '../utils/theme'
 import { AppEmojiWithType, AppNavigator, DEV_PHASES, EMPTY_BP, HelpPanel, MoveBackModal, WelcomeScreen, calcReadiness, getDevPhase, migrateBlueprint, normalizeDevPhase } from './devstudio/shared'
 
+import { BRAND } from '../lib/brand'
 // Each step loads when it is opened (keeps the first Dev Studio load small).
 const TAB_LOADING = <div className="py-16 text-center text-slate-500 text-sm">Loading…</div>
 const DeployTab = lazy(() => import('./devstudio/DeployTab').then(m => ({ default: m.DeployTab })))
@@ -403,7 +404,7 @@ export default function DevStudioPage({
     <div className="developer-content flex-1 min-w-0 flex flex-col overflow-hidden">
       {moveBack && <MoveBackModal app={moveBack.app} phase={moveBack.phase} initialNote={moveBack.initialNote} onCancel={() => setMoveBack(null)} onConfirm={confirmMoveBack} />}
       {confirmSignOut && (
-        <ConfirmDialog title="Sign out of Aistrix?" subtitle={user?.email}
+        <ConfirmDialog title={`Sign out of ${BRAND}?`} subtitle={user?.email}
           confirmLabel="Sign out" busyLabel="Signing out…" danger
           onCancel={() => setConfirmSignOut(false)} onConfirm={signOut}>
           Any unsaved changes in open editors (Design, Prompt Studio, tests) will be lost. Runs and saved work are kept.

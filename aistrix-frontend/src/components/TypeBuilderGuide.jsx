@@ -1,16 +1,17 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '../supabase'
 
+import { BRAND } from '../lib/brand'
 const TYPE_GUIDES = {
   ai_builder: {
     icon: '✦',
     label: 'Build with AI',
     color: '#E84393',
-    tagline: 'Describe the app. Aistrix drafts the build.',
-    what: 'Use the guided AI builder when you know the business outcome but do not want to choose every app setting manually. Aistrix asks clarifying questions, proposes the app structure, and creates the first version for you.',
+    tagline: `Describe the app. ${BRAND} drafts the build.`,
+    what: `Use the guided AI builder when you know the business outcome but do not want to choose every app setting manually. ${BRAND} asks clarifying questions, proposes the app structure, and creates the first version for you.`,
     steps: [
       'Describe the problem, audience, and output you want',
-      'Answer the builder questions so Aistrix can shape the app',
+      `Answer the builder questions so ${BRAND} can shape the app`,
       'Review the generated prompt, inputs, and app details',
       'Create the app, then test and refine it in Developer Studio',
     ],
@@ -22,10 +23,10 @@ const TYPE_GUIDES = {
     label: 'From Website',
     color: '#00B894',
     tagline: 'Turn a website into an AI app.',
-    what: 'Start from a company page, product site, documentation page, or service landing page. Aistrix reads the URL and drafts an app using the site content as source context.',
+    what: `Start from a company page, product site, documentation page, or service landing page. ${BRAND} reads the URL and drafts an app using the site content as source context.`,
     steps: [
       'Paste the public website URL',
-      'Let Aistrix analyse the page and generate app details',
+      `Let ${BRAND} analyse the page and generate app details`,
       'Review the name, description, prompt, and source knowledge',
       'Create the app and test it against realistic customer questions',
     ],
@@ -67,7 +68,7 @@ const TYPE_GUIDES = {
     label: 'API App',
     color: '#0984E3',
     tagline: 'AI as a REST endpoint.',
-    what: 'Define parameters and an output schema. Aistrix exposes a REST endpoint developers can call from any codebase, webhook, or automation.',
+    what: `Define parameters and an output schema. ${BRAND} exposes a REST endpoint developers can call from any codebase, webhook, or automation.`,
     steps: [
       'Define the input parameters (name, type, required)',
       'Write the system prompt that processes those params',

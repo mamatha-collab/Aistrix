@@ -14,7 +14,8 @@ import { TypeGuideSteps } from './TypeBuilderGuide'
 import { DEFAULT_PROVIDERS, PROVIDER_STYLE, defaultAppProvider, loadProviders } from '../lib/providers'
 import OutputRenderer from './OutputRenderer'
 
-const QUESTIONS_SYSTEM_PROMPT = `You are an expert AI app architect on a platform called Aistrix.
+import { BRAND } from '../lib/brand'
+const QUESTIONS_SYSTEM_PROMPT = `You are an expert AI app architect on a platform called ${BRAND}.
 When a developer describes an app idea, generate exactly 6-8 precise clarifying questions.
 
 Return ONLY valid JSON — no markdown, no explanation, just the JSON object:
@@ -28,11 +29,11 @@ Return ONLY valid JSON — no markdown, no explanation, just the JSON object:
 }
 
 Always include questions about: who uses it, how they provide input (typed text, a form with fields, pasted data or a document, or a back-and-forth chat), the output format (written answer, table, structured data fields), and the tone.
-Do not ask about deployment, hosting, authentication, pricing or APIs — Aistrix handles those.
+Do not ask about deployment, hosting, authentication, pricing or APIs — ${BRAND} handles those.
 Keep questions short. Keep options to 2-4 choices. Tailor questions to the specific app idea.`
 
-const GENERATE_SYSTEM_PROMPT = `You are an expert AI app architect for Aistrix — a no-code AI app platform.
-Given a developer's app idea and their requirement answers, generate a complete Aistrix app configuration.
+const GENERATE_SYSTEM_PROMPT = `You are an expert AI app architect for ${BRAND} — a no-code AI app platform.
+Given a developer's app idea and their requirement answers, generate a complete ${BRAND} app configuration.
 
 Return ONLY valid JSON — no markdown, no explanation:
 {
@@ -307,7 +308,7 @@ function AppPreview({ config, onSaveDraft, onPublish, onBack, saving }) {
         <div className="flex items-start justify-between gap-3">
           <div>
             <p className="text-xs font-bold text-emerald-300 uppercase tracking-wider">AI generation review</p>
-            <p className="text-[11px] text-slate-400 mt-1">Aistrix generated the first blueprint. Review these items, then save into Design and run tests before Deploy.</p>
+            <p className="text-[11px] text-slate-400 mt-1">${BRAND} generated the first blueprint. Review these items, then save into Design and run tests before Deploy.</p>
           </div>
           <span className="text-[10px] font-bold px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
             Draft confidence
@@ -329,7 +330,7 @@ function AppPreview({ config, onSaveDraft, onPublish, onBack, saving }) {
             ))}
           </div>
           <div className="bg-[#0F1225] border border-white/5 rounded-xl p-3">
-            <p className="text-[10px] text-slate-500 uppercase font-semibold mb-1.5">Tests Aistrix will create</p>
+            <p className="text-[10px] text-slate-500 uppercase font-semibold mb-1.5">Tests ${BRAND} will create</p>
             {['Normal use', 'Incomplete input', 'Prompt/key leakage', 'Speed and cost', config.output_type === 'json' ? 'JSON contract' : 'Output quality'].map(item => (
               <p key={item} className="text-[11px] text-slate-400 leading-relaxed">✓ {item}</p>
             ))}

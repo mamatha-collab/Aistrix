@@ -90,3 +90,14 @@ and invoices all need to be designed first.
 - **Payouts stuck "being sent":** a claim older than `PAYOUT_CLAIM_STALE_SECONDS` (15 min) is taken over by the next "Send owed payouts"; a transfer Stripe already made is recorded, never repeated.
 - **Emails not arriving:** without `RESEND_API_KEY` they're only logged (`EMAIL (no key)`); auth emails depend on Supabase SMTP.
 - **Restarting/scaling:** safe at any time; in-flight runs' outcomes are kept in the `/data` outbox and delivered after restart.
+
+## Renaming the product
+
+The name and domain are settings, so a rename (e.g. if "Aistrix" can't be
+trademarked) needs no code changes:
+
+- Frontend build: `VITE_BRAND_NAME`, `VITE_BRAND_DOMAIN` (screens, page title, support address, docs).
+- Backend: `BRAND_NAME`, `BRAND_DOMAIN` (emails and sender address, messages, API title).
+- Defaults live in `aistrix-frontend/src/lib/brand.js` and at the top of `aistrix-backend/main.py`.
+- Stay fixed on purpose (developers' code relies on them): the `X-Aistrix-Signature` webhook header, the Python SDK package and class names, and internal storage keys.
+- Outside the code: DNS, email sender records, Supabase Auth email templates, OAuth app names (GitHub, Stripe), and the logo.

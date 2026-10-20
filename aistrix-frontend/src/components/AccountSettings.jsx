@@ -6,6 +6,7 @@ import { downloadManageFile, manageRequest } from '../lib/manageApi'
 import { useToast } from '../hooks/useToast'
 import ConfirmDialog from './ConfirmDialog'
 
+import { BRAND } from '../lib/brand'
 const button = 'bg-[#1F2444] hover:bg-[#272C52] border border-white/10 text-slate-300 text-sm px-4 py-2 rounded-xl transition-colors disabled:opacity-40'
 // [limit key, label, usage key (null: no usage count)]
 const LIMIT_ROWS = [
@@ -39,7 +40,7 @@ export function DeveloperPlan() {
     </div> : <p className="text-sm text-slate-400">No limits on apps or test runs.</p>}
     <p className="text-xs text-slate-500 leading-relaxed">
       AI usage runs on your own keys (API Keys).
-      {plan.tier === 'staff' ? ' Your apps go live without review.' : " An app's first release is reviewed by the Aistrix team; later releases go live straight away."}
+      {plan.tier === 'staff' ? ' Your apps go live without review.' : ` An app's first release is reviewed by the ${BRAND} team; later releases go live straight away.`}
       {plan.tier === 'free' && verified ? ` Verified developers get ${verified.draft_apps} drafts, ${verified.published_apps} published apps, ${verified.tests_per_day} test runs a day and Standard analytics.` : ''}
     </p>
   </div>

@@ -8,6 +8,7 @@ import { builderProvider, loadProviders } from './providers'
 import { RunError, errorFromResponse } from './runErrors'
 import { parseSSELine } from './sse'
 
+import { BRAND } from './brand'
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 export { RunError, errorFromResponse }
@@ -33,7 +34,7 @@ export async function streamRun(body, { signal, onToken, onEvent } = {}) {
     })
   } catch (e) {
     if (e?.name === 'AbortError') throw e
-    throw new RunError('Could not reach the Aistrix server. Check your connection and try again.', { kind: 'network' })
+    throw new RunError(`Could not reach the ${BRAND} server. Check your connection and try again.`, { kind: 'network' })
   }
   if (!res.ok) throw await errorFromResponse(res, 'Run failed')
 
@@ -104,7 +105,7 @@ export async function readUrl(url, { maxChars = 8000, appId } = {}) {
       body: JSON.stringify({ url, max_chars: maxChars, ...(appId ? { app_id: appId } : {}) }),
     })
   } catch {
-    throw new RunError('Could not reach the Aistrix server. Check your connection and try again.', { kind: 'network' })
+    throw new RunError(`Could not reach the ${BRAND} server. Check your connection and try again.`, { kind: 'network' })
   }
   if (!res.ok) throw await errorFromResponse(res, 'Could not read that URL')
   return res.json()   // { text, url, kind, truncated, chars }

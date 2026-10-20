@@ -5,6 +5,7 @@ import { useState, useEffect, lazy, Suspense } from 'react'
 import { supabase } from '../supabase'
 import { track, EVENTS } from '../lib/analytics'
 
+import { BRAND } from '../lib/brand'
 // Lazy-loaded — AppRunner is also dynamically imported from DetailPanel.jsx;
 // importing it statically here pins it to this page's chunk and makes that
 // dynamic import ineffective (Vite has to pull in this whole page's chunk
@@ -87,7 +88,7 @@ export default function AppPage() {
           onClick={() => navigate('/')}
           className="w-full bg-[#6C5CE7] hover:bg-[#7D6FF0] text-white text-sm py-2.5 rounded-xl font-medium transition-colors"
         >
-          Sign in to Aistrix
+          Sign in to {BRAND}
         </button>
       </div>
     </div>

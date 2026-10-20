@@ -4,6 +4,7 @@ import { useParams, useNavigate, Link } from 'react-router-dom'
 import { supabase } from '../supabase'
 import { track, EVENTS } from '../lib/analytics'
 
+import { BRAND } from '../lib/brand'
 const CATEGORY_ICONS = {
   'Productivity':        '⚡',
   'Writing & Content':   '✍️',
@@ -73,7 +74,7 @@ export function MarketplacePage() {
         {/* Hero */}
         <div className="text-center space-y-2 py-4">
           <h2 className="text-3xl font-bold text-white">AI Apps for every workflow</h2>
-          <p className="text-slate-400 text-sm">Discover and launch AI apps built on Aistrix</p>
+          <p className="text-slate-400 text-sm">Discover and launch AI apps built on {BRAND}</p>
         </div>
 
         {/* Category filter */}

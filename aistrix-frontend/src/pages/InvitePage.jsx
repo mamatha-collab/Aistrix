@@ -3,6 +3,7 @@ import { useParams } from 'react-router-dom'
 import { supabase } from '../supabase'
 import { setActiveWorkspaceId } from '../lib/workspace'
 
+import { BRAND } from '../lib/brand'
 // /invite/:token — accepts a workspace invite for the signed-in user, makes
 // that workspace active and opens the app. (Signed-out visitors see the
 // login screen first; App.jsx brings them back here afterwards.)
@@ -38,7 +39,7 @@ export default function InvitePage({ user }) {
             {/different email/i.test(state.message) && (
               <p className="text-slate-500 text-xs">You're signed in as {user.email}. Sign in with the invited address, or ask for a new invite.</p>
             )}
-            <a href="/" className="inline-block mt-2 text-sm text-[#A29BFE] hover:underline">Go to Aistrix</a>
+            <a href="/" className="inline-block mt-2 text-sm text-[#A29BFE] hover:underline">Go to {BRAND}</a>
           </>
         )}
       </div>

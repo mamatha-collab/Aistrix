@@ -10,6 +10,7 @@ import { API_URL, APP_DEFAULT_FIELDS } from './flowConstants'
 import { shortModelName, mergeMemory, streamRun, sendToIntegration, extractFacts } from './flowUtils'
 import { scopeToWorkspace } from '../lib/workspace'
 
+import { BRAND } from '../lib/brand'
 function NativeStepForm({ schema, values, onChange }) {
   const cls = 'w-full bg-[#09101F] border border-white/18 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-400 focus:outline-none focus:border-[#6C5CE7] transition-colors'
   return (
@@ -532,7 +533,7 @@ export default function FlowRunner({ flow, user, onClose, onShowHistory, onRunCo
               {tokenSource === 'user'
                 ? <span className="text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full">🔑 Your API key</span>
                 : tokenSource === 'platform'
-                  ? <span className="text-[#A29BFE] bg-[#6C5CE7]/10 px-2 py-0.5 rounded-full">⚡ Aistrix credits</span>
+                  ? <span className="text-[#A29BFE] bg-[#6C5CE7]/10 px-2 py-0.5 rounded-full">⚡ {BRAND} credits</span>
                   : null
               }
             </div>
@@ -800,7 +801,7 @@ export default function FlowRunner({ flow, user, onClose, onShowHistory, onRunCo
         {credits && !credits.unlimited && (
           <div className="px-6 py-2 border-b border-white/18 bg-[#09101F]/40">
             <div className="flex items-center justify-between mb-1">
-              <span className="text-[10px] text-slate-400">⚡ Aistrix credits today</span>
+              <span className="text-[10px] text-slate-400">⚡ {BRAND} credits today</span>
               <span className="text-[10px] text-slate-400">{credits.daily_remaining} / {credits.daily_limit} remaining</span>
             </div>
             <div className="h-1 bg-white/5 rounded-full overflow-hidden">

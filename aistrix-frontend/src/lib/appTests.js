@@ -3,6 +3,7 @@
 import { supabase } from '../supabase'
 import { errorFromResponse } from './runStream'
 
+import { BRAND } from './brand'
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 const TEST_TIMEOUT_MS = 45000
 
@@ -40,8 +41,8 @@ export async function runAppTest(appId, testCase, { signal } = {}) {
   const body = await res.json()
   if (body.storage_error) {
     const msg = body.storage_error === 'missing_app_test_runs'
-      ? 'Test ran, but Aistrix could not save the result because app_test_runs is missing. Run the staging migrations and reload the schema cache.'
-      : 'Test ran, but Aistrix could not save the result. Check the staging app_test_runs schema/migration.'
+      ? `Test ran, but ${BRAND} could not save the result because app_test_runs is missing. Run the staging migrations and reload the schema cache.`
+      : `Test ran, but ${BRAND} could not save the result. Check the staging app_test_runs schema/migration.`
     throw new Error(msg)
   }
   return body

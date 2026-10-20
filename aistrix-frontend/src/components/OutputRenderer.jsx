@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { emailResult } from '../utils/appActions'
 
+import { BRAND } from '../lib/brand'
 // ─── Thinking indicator ───────────────────────────────────────────────────────
 export function ThinkingIndicator({ label = 'Thinking...' }) {
   return (
@@ -132,7 +133,7 @@ function downloadResult(result, title, ext) {
   }
 }
 
-export function ExportActions({ result, title = 'Aistrix Result', buttonClassName, buttonLabel = '⬇ Export', align = 'right' }) {
+export function ExportActions({ result, title = `${BRAND} Result`, buttonClassName, buttonLabel = '⬇ Export', align = 'right' }) {
   const [open, setOpen] = useState(false)
   if (!result) return null
   return (
@@ -499,7 +500,7 @@ const VIEW_LABELS = {
 }
 
 // ─── Main OutputRenderer ──────────────────────────────────────────────────────
-export default function OutputRenderer({ result, outputType = 'markdown', loading = false, title = 'Aistrix Result' }) {
+export default function OutputRenderer({ result, outputType = 'markdown', loading = false, title = `${BRAND} Result` }) {
   const [activeView, setActiveView] = useState(outputType)
 
   const parsed = useMemo(() => {

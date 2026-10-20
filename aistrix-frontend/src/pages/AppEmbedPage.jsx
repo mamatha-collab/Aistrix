@@ -4,6 +4,7 @@ import { useParams, useSearchParams } from 'react-router-dom'
 import { supabase } from '../supabase'
 import { applyTheme } from '../utils/theme'
 
+import { BRAND, BRAND_DOMAIN } from '../lib/brand'
 // Lazy-loaded — see AppPage.jsx for why: AppRunner is also dynamically
 // imported from DetailPanel.jsx, so a static import here would make that
 // dynamic import ineffective.
@@ -97,7 +98,7 @@ export default function AppEmbedPage() {
     <div style={css.loader}>
       <div style={{ textAlign: 'center' }}>
         <p style={css.loaderText}>{blockedHost ? 'This widget is not enabled for this website' : 'App not found'}</p>
-        <a href="https://aistrix.ai" style={{ ...css.brand, opacity: 1, fontSize: 12, marginLeft: 0 }}>← Aistrix</a>
+        <a href={`https://${BRAND_DOMAIN}`} style={{ ...css.brand, opacity: 1, fontSize: 12, marginLeft: 0 }}>← {BRAND}</a>
       </div>
     </div>
   )
@@ -113,7 +114,7 @@ export default function AppEmbedPage() {
           </div>
           {!hideBrand && (
             <a href={`${window.location.origin}/app/${id}`} target="_blank" rel="noopener noreferrer" style={css.brand}>
-              Powered by Aistrix ↗
+              Powered by {BRAND} ↗
             </a>
           )}
         </div>
@@ -137,7 +138,7 @@ export default function AppEmbedPage() {
           <div style={css.gate}>
             <p style={css.gateText}>Sign in to use this app</p>
             <a href={`${window.location.origin}?redirect=/embed/${id}`} target="_top" style={css.gateBtn}>
-              Sign in to Aistrix →
+              Sign in to {BRAND} →
             </a>
           </div>
         ) : (

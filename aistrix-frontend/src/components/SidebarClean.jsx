@@ -28,6 +28,7 @@ import {
 import { supabase } from '../supabase'
 import { applyTheme } from '../utils/theme'
 
+import { BRAND } from '../lib/brand'
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 const DEVELOPER_NAV = []
@@ -287,7 +288,7 @@ export default function SidebarClean({ user, userRole, onClose, onShowProfile, a
         ) : null}
       </div>
       {confirmSignOut && (
-        <ConfirmDialog title="Sign out of Aistrix?" subtitle={user?.email}
+        <ConfirmDialog title={`Sign out of ${BRAND}?`} subtitle={user?.email}
           confirmLabel="Sign out" busyLabel="Signing out…" danger
           onCancel={() => setConfirmSignOut(false)} onConfirm={signOut}>
           Any unsaved changes in open editors (Design, Prompt Studio, tests) will be lost. Runs and saved work are kept.

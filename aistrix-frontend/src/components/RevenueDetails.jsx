@@ -3,6 +3,7 @@ import { useManageRecord } from '../hooks/useManageRecord'
 import { downloadManageFile, manageRequest } from '../lib/manageApi'
 import { useToast } from '../hooks/useToast'
 
+import { BRAND } from '../lib/brand'
 const card = 'rounded-2xl border border-white/8 bg-[#171B33] p-4'
 const button = 'min-h-11 rounded-xl border border-white/10 px-3 py-2 text-sm font-medium text-slate-200 hover:bg-white/5 disabled:opacity-40'
 const money = value => value == null || !Number.isFinite(Number(value)) ? '—' : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Number(value))
@@ -74,7 +75,7 @@ export default function RevenueDetails({ apps, user }) {
         {data.by_app?.length ? data.by_app.map(row => <div key={row.app_id} className={`${card} space-y-2`}><p className="text-white font-semibold text-sm break-words">{appName(row.app_id)}</p><div className="flex justify-between gap-3 text-sm"><span className="text-slate-400">{row.sale_count} recorded purchase(s)</span><span className="text-emerald-300">{money(row.total_dev_share)}</span></div><p className="text-xs text-slate-400">Sales {money(row.total_gross)}{row.refunded > 0 ? ` · refunded ${money(row.refunded)}` : ''} · earnings shown after platform fees</p></div>) : <p className="text-sm text-slate-400">No recorded purchases {days ? 'in this period' : 'yet'}.</p>}
       </section>
       {!!data.recent?.length && <details className={card}><summary className="cursor-pointer text-sm text-white font-semibold min-h-7">Recent purchases</summary><div className="mt-3 divide-y divide-white/8">{data.recent.map((row, index) => <div key={`${row.app_id}:${row.created_at}:${index}`} className="py-3 space-y-1 text-sm"><p className="text-white break-words">{appName(row.app_id)}</p><p className="text-slate-300">Your share {money(row.dev_share)}{row.refunded_amount > 0 ? ` · ${money(row.refunded_amount)} refunded` : ''}</p><p className="text-xs text-slate-400">{new Date(row.created_at).toLocaleDateString()} · {row.plan === 'subscription' ? 'Subscription' : row.plan === 'pay_per_run' ? 'One run' : row.plan || 'Purchase'} · {PAYOUT_STATUS[row.payout_status] || row.payout_status || 'Status not available'}{row.disputed ? ' · chargeback opened' : ''}</p></div>)}</div></details>}
-      <p className="text-xs text-slate-500 leading-relaxed">Pending amounts are recorded in Aistrix; they do not confirm a bank deposit or a payout date.</p>
+      <p className="text-xs text-slate-500 leading-relaxed">Pending amounts are recorded in {BRAND}; they do not confirm a bank deposit or a payout date.</p>
     </>}
   </section>
 }

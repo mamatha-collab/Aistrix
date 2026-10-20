@@ -16,6 +16,7 @@ import ApiKeysManager from '../../components/ApiKeysManager'
 import { AppEmojiWithType, EMPTY_BP, PUBLIC_API_URL, getAppTypeLabel, migrateBlueprint } from './shared'
 
 
+import { BRAND } from '../../lib/brand'
 // ─── Promote Modal ───────────────────────────────────────────────────────────
 
 // ~120 characters of `value` starting just before where it differs from
@@ -395,7 +396,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
   const provider = providerById(providers, app.ai_provider || 'claude')
   const providerName = PROVIDER_STYLE[provider?.id]?.name || provider?.label || 'AI'
   const keyWarning = providersLoaded && (app.billing_mode || 'free') === 'free' && !app.custom_model_url && !provider?.connected
-    ? { id: 'key', warn: true, label: `No ${providerName} key: users will run it on their own key or the Aistrix free allowance`, fix: 'Add your key' }
+    ? { id: 'key', warn: true, label: `No ${providerName} key: users will run it on their own key or the ${BRAND} free allowance`, fix: 'Add your key' }
     : null
   const blockers = checklist.filter(c => !c.ok)
 
@@ -625,8 +626,8 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
           : { label: `Fix ${fixCount} item${fixCount === 1 ? '' : 's'} to promote`, onClick: () => publishRef.current?.scrollIntoView({ behavior: 'smooth' }), soft: true }
   const headline = !release
     ? (releaseError ? null : 'Checking this draft…')
-    : inReview ? "Waiting for review by the Aistrix team. It goes live as soon as it's approved."
-    : changesRequested && !fixCount ? "The Aistrix team asked for changes. Publish again once they're made."
+    : inReview ? `Waiting for review by the ${BRAND} team. It goes live as soon as it's approved.`
+    : changesRequested && !fixCount ? `The ${BRAND} team asked for changes. Publish again once they're made.`
     : fixCount ? `${live ? "Can't promote" : "Can't publish"} yet — ${fixCount} thing${fixCount === 1 ? '' : 's'} to fix`
       : !live ? (wasLive ? 'Ready to go back online' : 'Ready to publish')
         : hasChanges ? 'Your changes are ready to go live' : 'Live and up to date'
@@ -641,7 +642,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
       : `Your API key — ${app.free_runs_per_user_day ?? 20} runs per user per day, then their own key` },
     { label: 'Website visitors', value: app.embed_public && !app.is_paid
       ? `Can use it without an account on ${(app.embed_allowed_domains || []).join(', ') || 'any site'}`
-      : 'Must sign in to Aistrix' },
+      : `Must sign in to ${BRAND}` },
   ]
 
   async function downloadPdf() {
@@ -868,7 +869,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
             <input type="checkbox" className="mt-0.5" disabled={app.is_paid}
               checked={visitorAccess && !app.is_paid} onChange={e => setVisitorAccess(e.target.checked)} />
             <span className="text-xs text-slate-400">
-              Let website visitors use it without an Aistrix account
+              Let website visitors use it without an {BRAND} account
               <span className="block text-[10px] text-slate-600 mt-0.5">
                 {app.is_paid
                   ? 'Not available for paid apps.'
@@ -920,7 +921,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
       </>)}</DeployCard>
 
       {/* Webhook */}
-      <DeployCard icon="🔔" title="Webhook" subtitle="Aistrix POSTs the result to your URL after every successful run. Useful for Zapier, Make, or your own backend.">{() => (<>
+      <DeployCard icon="🔔" title="Webhook" subtitle={`${BRAND} POSTs the result to your URL after every successful run. Useful for Zapier, Make, or your own backend.`}>{() => (<>
         <div className="flex gap-2">
           <input
             value={webhookUrl}
@@ -953,7 +954,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
 }`}</pre>
             <p className="text-[9px] text-slate-500 uppercase font-semibold mt-3 mb-1">Signature</p>
             <p className="text-[10px] text-slate-400 leading-relaxed">
-              Each request has an <code className="text-slate-300">X-Aistrix-Signature: t=…,v1=…</code> header. To check it came from Aistrix,
+              Each request has an <code className="text-slate-300">X-{BRAND}-Signature: t=…,v1=…</code> header. To check it came from {BRAND},
               compute HMAC-SHA256 of <code className="text-slate-300">{'"<t>.<raw body>"'}</code> with your signing secret and compare it to <code className="text-slate-300">v1</code>.
               A test send has <code className="text-slate-300">"event": "test"</code>.
             </p>
@@ -1001,7 +1002,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
         <div className="space-y-2 pt-2 border-t border-white/5">
           <p className="text-[10px] text-slate-400 uppercase font-semibold tracking-wide">Required context (user profiles)</p>
           <p className="text-[11px] text-slate-400 leading-relaxed">
-            Aistrix asks the user to fill in their profile before running the app, and adds it to the AI context.
+            {BRAND} asks the user to fill in their profile before running the app, and adds it to the AI context.
           </p>
           {CONTEXT_OPTS.map(opt => {
             const active = (app.required_context || []).includes(opt.id)
@@ -1181,7 +1182,7 @@ function ApiKeySection({ user }) {
         <div className="flex items-start gap-2 bg-[#0E1424] border border-white/8 rounded-lg px-3 py-2.5">
           <span className="text-slate-400 shrink-0 mt-0.5">🔒</span>
           <p className="text-[11px] text-slate-300 leading-relaxed">
-            Keys are generated by the Aistrix backend and stored only as a hash — the full key is shown once.
+            Keys are generated by the {BRAND} backend and stored only as a hash — the full key is shown once.
             Restrict a key to specific apps to limit the damage if it leaks.
           </p>
         </div>

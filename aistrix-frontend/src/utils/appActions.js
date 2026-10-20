@@ -1,6 +1,7 @@
 import { supabase } from '../supabase'
 import { APP_PUBLIC_SELECT } from '../lib/appColumns'
 
+import { BRAND } from '../lib/brand'
 // Clones an app's core configuration into a new app owned by the current
 // user — the "Save as reusable template" next-best-action shown after a run.
 // The user can then rename it and tweak it freely without touching the
@@ -55,7 +56,7 @@ export function friendlyErrorMessage(err) {
 // result is truncated rather than silently failing to open.
 export function emailResult(title, result) {
   const MAX_BODY = 1800
-  const body = result.length > MAX_BODY ? result.slice(0, MAX_BODY) + '\n\n[Result truncated — copy the full text from Aistrix]' : result
+  const body = result.length > MAX_BODY ? result.slice(0, MAX_BODY) + `\n\n[Result truncated — copy the full text from ${BRAND}]` : result
   const subject = encodeURIComponent(title)
   window.location.href = `mailto:?subject=${subject}&body=${encodeURIComponent(body)}`
 }

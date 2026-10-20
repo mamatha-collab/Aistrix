@@ -2,6 +2,7 @@ import { Component } from 'react'
 import * as Sentry from '@sentry/react'
 import { isChunkLoadError, reloadOnceForNewVersion } from '../utils/chunkReload'
 
+import { BRAND } from '../lib/brand'
 // Catches a crash in its children so only that part of the page shows an
 // error. Sizes:
 //   (default)  full page — last resort around the whole site
@@ -37,7 +38,7 @@ export default class ErrorBoundary extends Component {
     const { error } = this.state
     if (!error) return this.props.children
     const message = isChunkLoadError(error)
-      ? 'Aistrix was updated. Reload the page to get the latest version.'
+      ? `${BRAND} was updated. Reload the page to get the latest version.`
       : (error?.message || 'Unknown error')
     const variant = this.props.variant || (this.props.card ? 'card' : this.props.compact ? 'compact' : 'page')
     const retry = () => this.setState({ error: null })
@@ -69,7 +70,7 @@ export default class ErrorBoundary extends Component {
             <div className="flex-1 min-w-0">
               <h2 className="text-white text-sm font-semibold">{this.props.title || 'This section could not load'}</h2>
               <p className="text-slate-400 text-xs mt-1 leading-relaxed">
-                The rest of Aistrix is still available. Try again, or refresh after saving your work.
+                The rest of {BRAND} is still available. Try again, or refresh after saving your work.
               </p>
               <p className="text-red-300/80 text-[11px] font-mono mt-3 break-all">{message}</p>
               <div className="flex gap-2 mt-4">

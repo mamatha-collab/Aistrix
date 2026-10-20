@@ -1,5 +1,6 @@
 import { useState } from 'react'
 
+import { BRAND } from '../lib/brand'
 const WORK_APPS = [
   { id: 'resume',   emoji: '📄', name: 'Resume Builder',            desc: 'Create polished resumes tailored to any job posting.' },
   { id: 'email',    emoji: '✉️',  name: 'Email Writer',              desc: 'Draft professional emails in seconds with the right tone.' },
@@ -66,10 +67,10 @@ export default function OnboardingModal({ onComplete, onClose }) {
         {step === 1 && (
           <div className="px-8 py-6">
             <div className="text-5xl mb-4 text-center">✦</div>
-            <h1 className="text-white font-bold text-2xl text-center mb-2">Welcome to Aistrix</h1>
+            <h1 className="text-white font-bold text-2xl text-center mb-2">Welcome to {BRAND}</h1>
             <p className="text-slate-400 text-sm text-center mb-8">Your personal AI app builder. Let's get you set up in 60 seconds.</p>
 
-            <p className="text-slate-300 text-sm font-medium mb-3">What will you mainly use Aistrix for?</p>
+            <p className="text-slate-300 text-sm font-medium mb-3">What will you mainly use {BRAND} for?</p>
             <div className="grid grid-cols-2 gap-3 mb-8">
               {[
                 { id: 'work',     emoji: '🏢', label: 'Work & Business' },
@@ -150,7 +151,7 @@ export default function OnboardingModal({ onComplete, onClose }) {
             <button onClick={handleComplete}
               className="w-full py-3 rounded-xl font-semibold text-sm text-white transition-all"
               style={{ background: 'linear-gradient(135deg, #6C5CE7, #E84393)' }}>
-              Open Aistrix ✦
+              Open {BRAND} ✦
             </button>
           </div>
         )}

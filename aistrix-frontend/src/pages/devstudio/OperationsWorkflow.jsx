@@ -5,6 +5,7 @@ import { FEEDBACK_STATUSES, getAppFeedback, statusLabel, updateFeedback } from '
 import QualityPanel from './QualityPanel'
 import ConfirmDialog from '../../components/ConfirmDialog'
 
+import { BRAND } from '../../lib/brand'
 const button = 'min-h-10 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-white hover:bg-white/10 disabled:opacity-40'
 const field = 'w-full min-w-0 rounded-xl border border-white/10 bg-[#0E1424] px-3 py-2 text-sm text-white'
 const card = 'rounded-2xl border border-white/8 bg-[#171B33] p-4 sm:p-5'
@@ -155,7 +156,7 @@ function FeedbackDetail({ item, app, user, improve, patchLocal, onNavigate, onFi
       {!improve && <label className="text-xs text-slate-400">Status<select aria-label="Feedback status" disabled={busy} className={`${field} block mt-1`} value={item.status} onChange={e => changeStatus(e.target.value)}>{FEEDBACK_STATUSES.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</select></label>}
     </div>
     {verify && <ConfirmDialog title="Verify this feedback?" confirmLabel="Confirm verification" onCancel={() => setVerify(false)} onConfirm={async () => { await update({ status: 'verified', note: note.trim() }); if (active.current) setVerify(false) }}>
-      Confirm that you checked the linked regression test and the live {app.live_version ? `v${app.live_version}` : 'release'}, and that they resolve this report. This records your review; Aistrix has not automatically verified the fix.
+      Confirm that you checked the linked regression test and the live {app.live_version ? `v${app.live_version}` : 'release'}, and that they resolve this report. This records your review; {BRAND} has not automatically verified the fix.
     </ConfirmDialog>}
     {!improve && <>
       {shared ? <div className="grid sm:grid-cols-2 gap-3">{[['Customer question', item.shared_input], ['Answer they got', item.shared_output]].map(([name, value]) => <details key={name} className="min-w-0 rounded-xl bg-[#0E1424] p-3 text-xs text-slate-300"><summary className="cursor-pointer min-h-6 font-semibold">{name}</summary><pre className="mt-2 whitespace-pre-wrap break-words max-h-56 overflow-auto font-sans">{value == null ? 'Not shared' : value === '' ? 'Shared, but empty' : value}</pre></details>)}</div> : <p className="text-xs text-slate-400">The customer didn't share their question or the answer. Write a test input that reproduces the problem.</p>}

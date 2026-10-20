@@ -18,6 +18,7 @@ import OutputSchemaEditor from './OutputSchemaEditor'
 import { formSchemaToInputFields, getOutputSchemaFields, outputFieldsErrors } from '../utils/schemaContracts'
 import { saveStarterBlueprint } from '../utils/appContracts'
 
+import { BRAND } from '../lib/brand'
 const TYPE_DEFAULTS = {
   native: { emoji: '⊞', placeholder: 'Fill out the form fields and submit...' },
   data: { emoji: '▦', output_type: 'table', placeholder: 'Upload or paste data to analyze...' },
@@ -1026,7 +1027,7 @@ Return ONLY valid JSON with these fields:
                     Output fields {isApi && <span className="text-slate-600">(optional — makes responses validated JSON)</span>}
                   </label>
                   <p className="text-[10px] text-slate-500 mb-2 leading-relaxed">
-                    Every response is checked against these fields. If the model gets it wrong, Aistrix asks it to fix the
+                    Every response is checked against these fields. If the model gets it wrong, {BRAND} asks it to fix the
                     response once; if it still fails, the caller gets a clear contract error instead of bad data.
                   </p>
                   <OutputSchemaEditor fields={outputFields} onChange={setOutputFields} accent={typeColor} />
@@ -1102,7 +1103,7 @@ Return ONLY valid JSON with these fields:
                   value={form.webhook_url || ''}
                   onChange={e => set('webhook_url', e.target.value)} />
                 {form.webhook_url && (
-                  <p className="text-[10px] text-slate-500 mt-1">Aistrix will POST the result to this URL after every run. Payload includes: input, result, provider, timestamp.</p>
+                  <p className="text-[10px] text-slate-500 mt-1">{BRAND} will POST the result to this URL after every run. Payload includes: input, result, provider, timestamp.</p>
                 )}
               </div>
 

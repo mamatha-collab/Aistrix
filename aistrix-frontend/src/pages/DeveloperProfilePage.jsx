@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { supabase } from '../supabase'
 
+import { BRAND } from '../lib/brand'
 const CATEGORY_ICONS = {
   'Productivity':        '⚡',
   'Writing & Content':   '✍️',
@@ -310,7 +311,7 @@ function SetupCard({ onRetry, label }) {
       <div>
         <p className="text-white font-semibold text-sm">Profile setup managed automatically</p>
         <p className="text-slate-400 text-sm mt-1">
-          {label ? `${label} is` : 'This feature is'} handled by Aistrix during deployment.<br />
+          {label ? `${label} is` : 'This feature is'} handled by {BRAND} during deployment.<br />
           No manual setup required.
         </p>
       </div>

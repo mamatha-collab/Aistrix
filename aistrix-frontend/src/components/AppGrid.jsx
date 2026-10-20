@@ -6,6 +6,7 @@ import AppCard, { AppTab } from './AppCard'
 import { useToast } from '../hooks/useToast'
 import { scopeToWorkspace } from '../lib/workspace'
 
+import { BRAND, BRAND_DOMAIN } from '../lib/brand'
 // Lazy-loaded — both are modals only rendered behind a toggle, and AppGrid is
 // statically imported from App.jsx, so anything imported statically here
 // otherwise ends up in the main bundle even though it's never needed on
@@ -33,7 +34,7 @@ function AistrixAppSuggestions({ goal, suggestedApps, onUseRecommendation, onBui
     <div className="mb-5 rounded-xl border border-[#6C5CE7]/25 bg-[#6C5CE7]/10 p-4">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
-          <p className="text-white text-sm font-semibold">Aistrix suggests: start with the {goal.pack} pack</p>
+          <p className="text-white text-sm font-semibold">{BRAND} suggests: start with the {goal.pack} pack</p>
           <p className="text-slate-400 text-xs mt-1">{goal.outcome}</p>
           {suggestedApps.length > 0 && (
             <p className="text-[11px] text-slate-500 mt-2">
@@ -675,7 +676,7 @@ export default function AppGrid({ onSelectApp, selectedApp, user, search, runCou
           <div className="flex flex-col sm:flex-row items-center justify-between gap-3 text-[11px] text-slate-500">
             <div className="flex items-center gap-2">
               <div className="w-5 h-5 rounded bg-[#6C5CE7] flex items-center justify-center text-white font-bold text-[9px]">A</div>
-              <span>© {new Date().getFullYear()} Aistrix. All rights reserved.</span>
+              <span>© {new Date().getFullYear()} {BRAND}. All rights reserved.</span>
             </div>
             <div className="flex items-center gap-3">
               {['App Gallery', 'Privacy Policy', 'Terms of Service', 'Support'].map((link, i) => (
@@ -683,7 +684,7 @@ export default function AppGrid({ onSelectApp, selectedApp, user, search, runCou
                   {i > 0 && <span>·</span>}
                   <a href={
                       link === 'App Gallery' ? '/gallery'
-                      : link === 'Support' ? 'mailto:support@aistrix.ai'
+                      : link === 'Support' ? `mailto:support@${BRAND_DOMAIN}`
                       : link === 'Privacy Policy' ? '/privacy'
                       : '/terms'
                     }

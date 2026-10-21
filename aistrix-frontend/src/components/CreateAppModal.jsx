@@ -38,6 +38,16 @@ const TYPE_DEFAULTS = {
     tags: 'chatbot, support, assistant',
   },
   prompt: { emoji: '✦', placeholder: 'Describe what you need...' },
+  vision: {
+    emoji: '👁',
+    placeholder: 'e.g. Read the totals on this receipt',
+    system_prompt: 'You analyse the images the user provides. Describe only what is visible, extract the details they ask for, and say clearly when something is unreadable or missing. Do not guess.',
+  },
+  voice: {
+    emoji: '🎙',
+    placeholder: 'Upload a recording to transcribe and summarise',
+    system_prompt: 'You receive the transcript of a recording. Summarise it clearly, list decisions and action items with owners when mentioned, and note anything unclear in the transcript. Do not invent details.',
+  },
 }
 
 function defaultForType(type, key, fallback = '') {
@@ -726,7 +736,7 @@ Return ONLY valid JSON with these fields:
   const promptStep = isWebsite ? 3 : 2
 
   const inputCls = 'w-full bg-[#1F2444] border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-[#6C5CE7] transition-colors'
-  const typeLabel = isNative ? 'Form App' : isApi ? 'API App' : isData ? 'Data App' : isWebsite ? 'From Website' : isStructured ? 'Structured Output App' : isChatbot ? 'Chatbot App' : appType === 'batch' ? 'Batch Processor' : appType === 'agent' ? 'Agent' : appType === 'iframe' ? 'Iframe App' : 'Prompt App'
+  const typeLabel = isNative ? 'Form App' : isApi ? 'API App' : isData ? 'Data App' : appType === 'vision' ? 'Vision App' : appType === 'voice' ? 'Voice App' : isWebsite ? 'From Website' : isStructured ? 'Structured Output App' : isChatbot ? 'Chatbot App' : appType === 'batch' ? 'Batch Processor' : appType === 'agent' ? 'Agent' : appType === 'iframe' ? 'Iframe App' : 'Prompt App'
   const typeColor = isNative ? '#00B894' : isApi || isStructured ? '#0984E3' : isData ? '#E17055' : isWebsite ? '#00B894' : isChatbot ? '#E84393' : appType === 'batch' ? '#6C5CE7' : appType === 'agent' ? '#FDCB6E' : appType === 'iframe' ? '#E84393' : '#6C5CE7'
 
   const stepLabels = isWebsite

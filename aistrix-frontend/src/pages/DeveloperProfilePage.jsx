@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { supabase } from '../supabase'
 
@@ -22,38 +22,29 @@ export default function DeveloperProfilePage() {
   const navigate   = useNavigate()
   const [profile, setProfile]   = useState(null)       // null = loading
   const [listings, setListings] = useState([])
-  const [apps, setApps]         = useState([])
+  const [loadError, setLoadError] = useState('')
+  const requestSequence = useRef(0)
   const [notFound, setNotFound] = useState(false)
 
-  useEffect(() => { load() }, [userId])   // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); return () => { requestSequence.current += 1 } }, [userId])   // eslint-disable-line react-hooks/exhaustive-deps
 
   async function load() {
-    const [{ data: prof }, { data: listData }, { data: appData }] = await Promise.all([
-      supabase.from('developer_profiles').select('*').eq('user_id', userId).maybeSingle(),
-      supabase
-        .from('marketplace_listings')
-        .select('*, apps(name, emoji, description, total_runs, is_paid, price_per_run)')
-        .eq('user_id', userId)
-        .eq('status', 'live')
-        .order('updated_at', { ascending: false }),
-      supabase
-        .from('apps')
-        .select('id, name, emoji, description, total_runs, is_published')
-        .eq('created_by', userId)
-        .eq('is_published', true)
-        .order('total_runs', { ascending: false })
-        .limit(12),
-    ])
-
-    if (!prof && (!listData?.length) && (!appData?.length)) {
-      setNotFound(true)
-      return
-    }
-
-    setProfile(prof ?? { user_id: userId })
-    setListings(listData || [])
-    setApps(appData || [])
+    const sequence = ++requestSequence.current
+    setLoadError(''); setProfile(null); setNotFound(false); setListings([])
+    try {
+      const [profileResult, listingResult] = await Promise.all([
+        supabase.from('developer_profiles').select('user_id, display_name, bio, website, github, twitter, avatar_url').eq('user_id', userId).maybeSingle(),
+        supabase.from('marketplace_listings').select('*, apps!inner(name, emoji, description, total_runs, is_paid, price_per_run, is_published)')
+          .eq('user_id', userId).eq('status', 'live').eq('apps.is_published', true).order('updated_at', { ascending: false }),
+      ])
+      if (profileResult.error || listingResult.error) throw new Error((profileResult.error || listingResult.error).message)
+      if (sequence !== requestSequence.current) return
+      if (!profileResult.data && !listingResult.data?.length) { setNotFound(true); return }
+      setProfile(profileResult.data ?? { user_id: userId }); setListings(listingResult.data || [])
+    } catch (error) { if (sequence === requestSequence.current) setLoadError(error.message || 'Developer profile could not be loaded.') }
   }
+
+  if (loadError) return <div role="alert" className="p-8 text-sm text-red-400">{loadError} <button onClick={load} className="underline">Retry profile</button></div>
 
   if (notFound) return (
     <div className="min-h-screen bg-[#09101F] flex flex-col items-center justify-center gap-4 text-center px-6">
@@ -112,7 +103,7 @@ export default function DeveloperProfilePage() {
             </div>
           </div>
           <div className="text-right shrink-0">
-            <p className="text-2xl font-bold text-white">{listings.length + apps.length}</p>
+            <p className="text-2xl font-bold text-white">{listings.length}</p>
             <p className="text-[10px] text-slate-500 uppercase font-semibold tracking-wide">apps</p>
           </div>
         </div>
@@ -151,30 +142,8 @@ export default function DeveloperProfilePage() {
           </section>
         )}
 
-        {/* Published apps (not on marketplace) */}
-        {apps.length > 0 && (
-          <section className="space-y-3">
-            <h2 className="text-sm font-bold text-white uppercase tracking-wide">Published Apps</h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {apps
-                .filter(a => !listings.some(l => l.app_id === a.id))
-                .map(a => (
-                  <Link key={a.id} to={`/app/${a.id}`}
-                    className="bg-[#0E1424] border border-white/5 hover:border-white/15 rounded-xl p-4 flex items-start gap-3 transition-all group">
-                    <span className="text-xl shrink-0">{a.emoji}</span>
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold text-white group-hover:text-[#A29BFE] transition-colors truncate">{a.name}</p>
-                      {a.description && <p className="text-xs text-slate-500 line-clamp-2 mt-0.5">{a.description}</p>}
-                      {a.total_runs > 0 && <p className="text-[10px] text-slate-600 mt-1">{a.total_runs.toLocaleString()} runs</p>}
-                    </div>
-                  </Link>
-                ))}
-            </div>
-          </section>
-        )}
-
-        {listings.length === 0 && apps.length === 0 && (
-          <p className="text-slate-500 text-sm text-center py-10">No published apps yet.</p>
+        {listings.length === 0 && (
+          <p className="text-slate-500 text-sm text-center py-10">No Marketplace listings yet.</p>
         )}
       </div>
     </div>

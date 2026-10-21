@@ -1908,7 +1908,7 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
             </div>
           )}
         </div>
-        <BillingModeHint mode={app.billing_mode || 'free'} provider={providerById(providers, app.ai_provider || 'claude')} freeRuns={freeRunsDraft} />
+        <SafeCard name="AI billing" quiet><BillingModeHint mode={app.billing_mode || 'free'} provider={providerById(providers, app.ai_provider || 'claude')} freeRuns={freeRunsDraft} /></SafeCard>
         {(() => {
           const MODEL_COSTS = {
             'gpt-4o': { input: 2.50, output: 10.00 }, 'gpt-4o-mini': { input: 0.15, output: 0.60 },
@@ -2001,7 +2001,7 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
       <SafeCard name="Tools">{() => (
       <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5 space-y-3">
         <p className="text-xs font-bold text-white uppercase tracking-wider">Tools & Capabilities</p>
-        <ToolsEditor appId={app.id} />
+        <SafeCard name="Tools"><ToolsEditor appId={app.id} /></SafeCard>
       </div>
       )}</SafeCard>
 

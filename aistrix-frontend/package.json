@@ -4,8 +4,9 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "vite --mode staging",
     "dev:staging": "vite --mode staging",
+    "dev:production": "vite",
     "build": "vite build",
     "build:staging": "vite build --mode staging",
     "lint": "oxlint",

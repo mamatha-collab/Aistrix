@@ -142,6 +142,13 @@ ok("release: just promoted → no draft changes, ready", rel["has_live_version"]
 APP["system_prompt"] = "DRAFT PROMPT v2"
 rel = c.get("/v1/apps/app-1/release", headers=owner).json()
 ok("release: editing the draft shows unpromoted changes", rel["has_changes"] and rel["draft_hash"] != rel["live_hash"])
+async def secrets_down(app_id): raise RuntimeError("secrets storage unavailable")
+real_secret_checks = main._missing_secret_checks
+main._missing_secret_checks = secrets_down
+r = c.get("/v1/apps/app-1/release", headers=owner)
+ok("a check that can't run is shown as a problem (still blocking publish), not a broken Deploy view",
+   r.status_code == 200 and "Secrets couldn't be checked right now. Try again in a moment." in r.json()["checks"] and not r.json()["ready"])
+main._missing_secret_checks = real_secret_checks
 
 # ── published versions: v1, v2…, history and rollback ──────────────────────
 TABLES = {"app_versions": [], "apps": [], "app_blueprints": []}

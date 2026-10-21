@@ -17,6 +17,7 @@ import { AppEmojiWithType, EMPTY_BP, PUBLIC_API_URL, getAppTypeLabel, migrateBlu
 
 
 import { BRAND } from '../../lib/brand'
+import { isFileApp } from '../../lib/fileApps'
 // ─── Promote Modal ───────────────────────────────────────────────────────────
 
 // ~120 characters of `value` starting just before where it differs from
@@ -261,8 +262,8 @@ function LivePreviewCard({ appId, hasChanges, liveUrl, isPublished, liveVersion,
               ))}
               {fields.length > 5 && <p className="text-[10px] text-slate-600">+ {fields.length - 5} more field{fields.length - 5 === 1 ? '' : 's'}</p>}
             </div>
-          ) : view.app_type === 'data' ? (
-            <div className={`${box} border-dashed text-center py-4`}>📄 Upload a file (CSV, Excel, PDF…)</div>
+          ) : isFileApp(view) ? (
+            <div className={`${box} border-dashed text-center py-4`}>{view.app_type === 'vision' ? '🖼 Add images' : view.app_type === 'voice' ? '🎙 Upload a recording' : '📄 Upload a file (CSV, Excel, PDF…)'}</div>
           ) : (
             <div className={`${box} h-14`}>{view.input_placeholder || 'Describe what you need…'}</div>
           )}
@@ -1159,7 +1160,7 @@ export function DeployTab({ apps, user, onAppUpdated, onFixInDesign, selectedApp
 
       {selectedApp && (selectedApp.is_published || selectedApp.live_version) && (
         <SafeCard name="Published versions" resetKey={selectedApp.id}>
-          <PublishedVersions key={`versions-${selectedApp.id}-${selectedApp.live_version ?? ''}`} app={selectedApp} onAppUpdated={onAppUpdated} />
+          <SafeCard name="Published versions"><PublishedVersions key={`versions-${selectedApp.id}-${selectedApp.live_version ?? ''}`} app={selectedApp} onAppUpdated={onAppUpdated} /></SafeCard>
         </SafeCard>
       )}
 
@@ -1186,7 +1187,7 @@ function ApiKeySection({ user }) {
             Restrict a key to specific apps to limit the damage if it leaks.
           </p>
         </div>
-        <ApiKeysManager user={user} />
+        <SafeCard name="API keys"><ApiKeysManager user={user} /></SafeCard>
       </div>
     </div>
   )

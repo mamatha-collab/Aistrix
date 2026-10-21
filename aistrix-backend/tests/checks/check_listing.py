@@ -36,7 +36,15 @@ main.resolve_api_caller = caller
 main.require_verified_user = lambda request: caller(request)
 main.load_app_row = load
 main.workspace_role = none; main.app_member_role = none; main.personal_workspace_id = none
-main._service_client = lambda: NS(table=Q)
+def rpc(name, args):
+    class Result:
+        def execute(self):
+            if name != 'set_market_listing_status': raise AssertionError(name)
+            if args['p_expected_updated_at'] != LISTINGS[0].get('updated_at'): raise RuntimeError('Listing changed')
+            LISTINGS[0]['status'] = 'live' if args['p_live'] else 'draft'
+            return NS(data=dict(LISTINGS[0]))
+    return Result()
+main._service_client = lambda: NS(table=Q, rpc=rpc)
 c = TestClient(main.app)
 dev = {"Authorization": "Bearer dev"}
 go = lambda who=dev: c.post("/v1/apps/app-1/listing/go-live", headers=who)
@@ -60,4 +68,11 @@ APPS["app-1"]["price_per_run"] = 2
 r = go()
 ok("a published app with a complete listing goes live", r.status_code == 200 and r.json()["listing"]["status"] == "live" and LISTINGS[0]["status"] == "live")
 ok("the older endpoint applies the same checks", c.post("/apps/app-1/publish", headers=dev).status_code == 200)
+r = c.post('/v1/apps/app-1/listing/unlist', headers=dev)
+ok('unlisting hides discovery without unpublishing the app', r.status_code == 200 and LISTINGS[0]['status'] == 'draft' and APPS['app-1']['is_published'])
+ok('non-editors cannot unlist', c.post('/v1/apps/app-1/listing/unlist', headers={'Authorization':'Bearer other'}).status_code == 404)
+r = c.post('/v1/apps/app-1/listing/go-live', headers=dev, json={'expected_updated_at':'2000-01-01T00:00:00Z'})
+ok('stale editor cannot publish a newer listing',r.status_code==409 and LISTINGS[0]['status']=='draft')
+r = c.post('/v1/apps/app-1/listing/go-live', headers=dev, json={'expected_updated_at':'bad timestamp'})
+ok('malformed listing revision is rejected',r.status_code==422)
 finish()

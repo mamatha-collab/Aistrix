@@ -4,6 +4,7 @@ import NotificationsPanel from './NotificationsPanel'
 import WorkspaceSwitcher from './WorkspaceSwitcher'
 
 import { BRAND } from '../lib/brand'
+import SafeCard from './SafeCard'
 const VIEW_META = {
   apps:        { title: 'AI Apps',        subtitle: 'Build and run AI-powered apps', icon: LayoutGrid, label: 'AI APPS', buildView: true },
   flows:       { title: 'AI Workflows',   subtitle: 'Ready-to-run workflows - install and run in seconds', icon: Workflow, label: 'AI WORKFLOWS', buildView: true },
@@ -83,9 +84,9 @@ export default function TopBarClean({ onShowHistory, onShowSettings, noKeys = fa
           )}
         </div>
 
-        <WorkspaceSwitcher workspaces={workspaces} active={activeWorkspace}
-          onSwitch={onSwitchWorkspace} onCreate={onCreateWorkspace} onManage={onManageWorkspace} />
-        {user && <NotificationsPanel user={user} onNavChange={onNavChange} />}
+        <SafeCard name="Workspace switcher" quiet><WorkspaceSwitcher workspaces={workspaces} active={activeWorkspace}
+          onSwitch={onSwitchWorkspace} onCreate={onCreateWorkspace} onManage={onManageWorkspace} /></SafeCard>
+        {user && <SafeCard name="Notifications" quiet><NotificationsPanel user={user} onNavChange={onNavChange} /></SafeCard>}
         <button
           onClick={onShowHistory}
           aria-label="Run history"

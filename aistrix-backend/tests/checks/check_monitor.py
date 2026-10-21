@@ -124,4 +124,15 @@ ok("repeat reads within the cache window are served from cache", c.get("/v1/apps
 main._monitor_cache.clear()
 ok("…and refresh once it expires", c.get("/v1/apps/mine/monitor?days=7", headers=owner).json()["totals"]["runs"] == first + 1)
 main.MONITOR_CACHE_SECONDS = 0
+# One app's feedback count failing doesn't fail the overview.
+class FeedbackDown(Q):
+    def execute(self):
+        if self.t == "app_feedback": raise RuntimeError("feedback table unavailable")
+        return super().execute()
+main._service_client = lambda: NS(table=FeedbackDown)
+ROWS["app_runs"] = [{**run(1), "app_id": "mine"}]
+r = c.get("/v1/monitor?app_ids=mine&days=7", headers=owner)
+ok("an unreadable feedback count doesn't break the Monitor overview", r.status_code == 200
+   and r.json()["apps"][0]["open_feedback"] is None and r.json()["apps"][0]["totals"]["runs"] == 1)
+main._service_client = lambda: NS(table=Q)
 finish()

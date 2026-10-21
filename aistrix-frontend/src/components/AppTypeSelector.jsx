@@ -53,9 +53,9 @@ const TYPES = [
     id: 'data',
     icon: '▦',
     label: 'Data App',
-    desc: 'Paste CSV, upload a file, or provide a URL. AI analyzes and transforms it.',
+    desc: 'Upload a PDF, Word or Excel file, paste CSV, or give a URL. AI reads, analyses and extracts from it.',
     color: '#E17055',
-    bestFor: 'CSV analysis, document extraction, report summarization.',
+    bestFor: 'PDF and contract extraction, CSV analysis, report and document summaries.',
     status: 'ready',
   },
   {
@@ -83,7 +83,7 @@ const TYPES = [
     desc: 'Upload images and let AI analyse, describe, extract data, or flag issues.',
     color: '#00CEC9',
     bestFor: 'Invoice OCR, product quality checks, diagram analysis, accessibility audits.',
-    status: 'soon',
+    status: 'ready',
   },
   {
     id: 'structured',
@@ -93,15 +93,6 @@ const TYPES = [
     color: '#0984E3',
     bestFor: 'Data extraction, entity recognition, classification, form parsing.',
     status: 'ready',
-  },
-  {
-    id: 'document',
-    icon: '📄',
-    label: 'Document / PDF',
-    desc: 'Upload PDFs or Word docs. Ask questions, extract tables, or summarise sections.',
-    color: '#E17055',
-    bestFor: 'Contract Q&A, research summaries, policy lookup, report extraction.',
-    status: 'soon',
   },
   {
     id: 'batch',
@@ -116,10 +107,10 @@ const TYPES = [
     id: 'voice',
     icon: '🎙',
     label: 'Voice / Audio',
-    desc: 'Upload audio files. Transcribe with Whisper, then summarise or extract insights.',
+    desc: "Upload a recording. It's transcribed (with an OpenAI key), then summarised or analysed.",
     color: '#A29BFE',
     bestFor: 'Meeting notes, call summaries, podcast transcripts, lecture highlights.',
-    status: 'soon',
+    status: 'ready',
   },
   {
     id: 'translation',
@@ -161,8 +152,8 @@ const TYPE_GROUPS = [
     id: 'no_code',
     short: 'No-Code',
     label: 'No-Code AI Apps',
-    desc: 'Build useful AI apps without code: prompts, forms, website-powered assistants, structured outputs, and data tools.',
-    typeIds: ['ai_builder', 'prompt', 'native', 'structured', 'data', 'website', 'chatbot'],
+    desc: 'Build useful AI apps without code: prompts, forms, website-powered assistants and structured outputs.',
+    typeIds: ['ai_builder', 'prompt', 'native', 'structured', 'website', 'chatbot'],
   },
   {
     id: 'automation',
@@ -182,8 +173,8 @@ const TYPE_GROUPS = [
     id: 'media_file',
     short: 'Media & File',
     label: 'Media & File Apps',
-    desc: 'Work with documents, images, voice, translation, and other file-heavy AI use cases.',
-    typeIds: ['document', 'vision', 'voice', 'translation'],
+    desc: 'Work with documents (Data App reads PDFs, Word and Excel), images, voice and translation.',
+    typeIds: ['data', 'vision', 'voice', 'translation'],
   },
 ]
 
@@ -201,7 +192,7 @@ const EXAMPLES = [
   { label: 'Build an app from my website', type: 'website' },
   { label: 'Analyse a CSV spreadsheet', type: 'batch' },
   { label: 'Create a lead capture form', type: 'native' },
-  { label: 'Extract data from a PDF contract', type: 'document' },
+  { label: 'Extract data from a PDF contract', type: 'data' },
   { label: 'Transcribe and summarise meetings', type: 'voice' },
   { label: 'Review and explain code', type: 'code' },
   { label: 'Analyse a product image', type: 'vision' },
@@ -210,8 +201,9 @@ const EXAMPLES = [
 ]
 
 const INTENT_RULES = [
+  // Documents first: Data App reads PDFs (scanned ones too), so "OCR my scanned PDFs" isn't sent to Vision.
+  { words: ['pdf', 'document', 'word', 'docx', 'contract', 'upload doc', 'policy', 'manual', 'file q&a', 'rag'], type: 'data' },
   { words: ['image', 'photo', 'picture', 'vision', 'visual', 'scan', 'ocr', 'screenshot', 'camera', 'detect', 'inspect'], type: 'vision' },
-  { words: ['pdf', 'document', 'word', 'docx', 'contract', 'upload doc', 'policy', 'manual', 'file q&a', 'rag'], type: 'document' },
   { words: ['batch', 'bulk', 'mass', 'rows', 'many inputs', 'process multiple', 'hundred', 'thousands'], type: 'batch' },
   { words: ['audio', 'voice', 'transcribe', 'recording', 'meeting', 'call', 'podcast', 'whisper', 'speech'], type: 'voice' },
   { words: ['translat', 'language', 'localiz', 'localis', 'multilingual', 'chinese', 'spanish', 'french', 'german'], type: 'translation' },
@@ -316,12 +308,24 @@ export default function AppTypeSelector({ onSelect, onClose, hidden = false, pre
       <div className="type-picker-families flex flex-wrap gap-1" aria-label="App families">
         {TYPE_GROUPS.map(group => <button key={group.id} onClick={() => setActiveGroup(group.id)} aria-pressed={group.id === selectedGroup.id} className={`px-4 py-2 text-xs rounded-lg font-medium ${group.id === selectedGroup.id ? 'bg-[#6C5CE7]/10 text-[#A29BFE]' : 'text-slate-400'}`}>{group.short}</button>)}
       </div>
-      <p className="text-xs text-slate-400 leading-relaxed">{selectedGroup.desc}</p>
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
-        {selectedTypes.map(t => <button key={t.id} disabled={t.status === 'soon'} onClick={() => onSelect(t.id)} title={`Best for: ${t.bestFor}`} className="type-picker-card text-left disabled:opacity-60 disabled:cursor-not-allowed">
-          <div className="flex items-center gap-3"><span className="type-picker-icon" style={{ color: t.color }} aria-hidden="true">{t.icon}</span><span className="flex-1 text-sm font-semibold text-white">{t.label}</span>{t.status !== 'ready' && <span className="text-[10px] text-slate-500">{STATUS_META[t.status || 'preview'].label}</span>}<span className="text-slate-500" aria-hidden="true">↗</span></div>
-          <p className="text-xs text-slate-400 leading-relaxed mt-3">{t.desc}</p>
-        </button>)}
+      {/* Every family is laid out in the same cell and only the chosen one is
+          shown, so the area keeps the height of the tallest family and the
+          page doesn't jump when switching tabs. Hidden families can't be
+          focused or read (visibility: hidden). */}
+      <div className="grid">
+        {TYPE_GROUPS.map(group => {
+          const shown = group.id === selectedGroup.id
+          const types = group.typeIds.map(typeId => TYPES.find(type => type.id === typeId)).filter(Boolean)
+          return <div key={group.id} className="[grid-area:1/1] space-y-4" style={shown ? undefined : { visibility: 'hidden' }} aria-hidden={!shown}>
+            <p className="text-xs text-slate-400 leading-relaxed">{group.desc}</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3 content-start">
+              {types.map(t => <button key={t.id} disabled={t.status === 'soon'} onClick={() => onSelect(t.id)} title={`Best for: ${t.bestFor}`} tabIndex={shown ? undefined : -1} className="type-picker-card text-left disabled:opacity-60 disabled:cursor-not-allowed">
+                <div className="flex items-center gap-3"><span className="type-picker-icon" style={{ color: t.color }} aria-hidden="true">{t.icon}</span><span className="flex-1 text-sm font-semibold text-white">{t.label}</span>{t.status !== 'ready' && <span className="text-[10px] text-slate-500">{STATUS_META[t.status || 'preview'].label}</span>}<span className="text-slate-500" aria-hidden="true">↗</span></div>
+                <p className="text-xs text-slate-400 leading-relaxed mt-3">{t.desc}</p>
+              </button>)}
+            </div>
+          </div>
+        })}
       </div>
     </div>
   </section>

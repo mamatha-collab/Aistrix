@@ -3,6 +3,7 @@ import { getAppMonitor, pct } from '../../lib/monitor'
 import { manageRequest } from '../../lib/manageApi'
 import { StatTile } from './shared'
 import TelemetryHealth from './TelemetryHealth'
+import SafeCard from '../../components/SafeCard'
 
 // Summary only: test execution and editing stay in Build → Test.
 export default function QualityPanel({ app, onNavigate, refreshKey }) {
@@ -25,7 +26,7 @@ export default function QualityPanel({ app, onNavigate, refreshKey }) {
   const requirements = tests?.requirements || []
   const valid = tests && !tests.setup_required
   return <section aria-label="Quality" className="space-y-3">
-    <TelemetryHealth health={monitor?.telemetry_health} />
+    <SafeCard name="Run tracking status" quiet><TelemetryHealth health={monitor?.telemetry_health} /></SafeCard>
     {errors.length > 0 && <div role="alert" className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-200">Some quality data couldn't load ({errors.join('; ')}). <button className="underline min-h-10" onClick={() => setRetry(n => n + 1)}>Retry quality summary</button></div>}
     <div className="grid grid-cols-2 lg:grid-cols-3 gap-3">
       <StatTile label="Useful answers" value={t?.rated ? pct(t.satisfaction) : '—'} sub={loading ? 'Loading…' : t ? `${t.rated} customer ratings · last 30 days` : 'Ratings unavailable'} />

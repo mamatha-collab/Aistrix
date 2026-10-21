@@ -183,6 +183,12 @@ EMBED_ORIGIN = main.ALLOWED_ORIGINS[0]
 ok("embed visitors: only through the Aistrix embed page (other origin → 403)",
    run({"app_id": "widget", "input": "hi"}, origin="https://evil.example")[0] == 403
    and run({"app_id": "widget", "input": "hi"})[0] == 403)
+visitor_count = 0
+async def fake_shared_limit(scope, ip, limit):
+    global visitor_count
+    visitor_count += 1
+    return visitor_count <= limit
+main.consume_visitor_limit = fake_shared_limit
 codes = [run({"app_id": "widget", "input": "hi"}, origin=EMBED_ORIGIN)[0] for _ in range(3)]
 ok("embed visitors: per-app limit, owner's key", codes == [200, 200, 429] and keys_used[:1] == ["owner"])
 finish()

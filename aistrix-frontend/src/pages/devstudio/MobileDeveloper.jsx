@@ -147,7 +147,7 @@ export default function MobileDeveloper({ user, apps, phaseByAppId, loading, err
             {health(selected.id).totals.errors > 0 && <span className="text-amber-300">{pct(health(selected.id).totals.error_rate)} failed</span>}
           </div>}
           {(health(selected.id)?.alerts || []).filter(al => al.level !== 'info').map(al => <p key={al.kind} className={`text-sm ${al.level === 'critical' ? 'text-red-200' : 'text-amber-200'}`}>{al.message}</p>)}
-          <button className={`${action} w-full text-left border border-white/8`} onClick={() => { setFilter(selected.id); navigate('feedback') }}>Feedback to review · {health(selected.id) ? health(selected.id).open_feedback : '—'} →</button>
+          <button className={`${action} w-full text-left border border-white/8`} onClick={() => { setFilter(selected.id); navigate('feedback') }}>Feedback to review · {health(selected.id)?.open_feedback ?? '—'} →</button>
           {(selected.is_published || selected.live_version) && <section className="space-y-3 [&_button]:min-h-11"><button className={`${action} w-full text-left border border-white/8`} aria-expanded={showVersions} onClick={() => setShowVersions(v => !v)}>{showVersions ? 'Hide release history' : 'Release history'}</button>
             {showVersions && <ErrorBoundary compact title="Release history could not load"><Suspense fallback={<p className="text-sm text-slate-400">Loading releases…</p>}><PublishedVersions app={selected} onAppUpdated={onAppUpdated} /></Suspense></ErrorBoundary>}
           </section>}

@@ -134,6 +134,18 @@ try:
 except HTTPException as e:
     outage = e.status_code
 ok("an Auth outage is reported as unavailable (503), not as signed out", outage == 503)
+# A token from another Supabase project (e.g. production on a staging server)
+# is named as such, without asking Auth.
+import base64, json as _json
+def token(iss): return "x." + base64.urlsafe_b64encode(_json.dumps({"iss": iss}).encode()).decode().rstrip("=") + ".y"
+asked = []
+main.get_anon_client = lambda: NS(auth=NS(get_user=lambda t: asked.append(t)))
+try:
+    asyncio.run(main.verify_user_jwt(token("https://production-project.supabase.co/auth/v1"))); refused = None
+except HTTPException as e:
+    refused = e
+ok("a sign-in from another environment says so (not 'expired')", refused is not None and refused.status_code == 401
+   and "different environment" in refused.detail and not asked)
 main.get_anon_client = anon
 
 ok("earnings require sign-in", c.get("/stripe/earnings").status_code == 401)

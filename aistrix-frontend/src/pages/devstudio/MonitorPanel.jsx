@@ -3,6 +3,7 @@ import { ERROR_LABELS, MONITOR_PERIODS, SOURCE_LABELS, duration, pct, sortAlerts
 import { StatTile } from './shared'
 import { useMonitor } from '../../hooks/useMonitor'
 import TelemetryHealth from './TelemetryHealth'
+import SafeCard from '../../components/SafeCard'
 
 const card = 'bg-[#171B33] border border-white/5 rounded-2xl p-5'
 const label = 'text-xs text-slate-400 font-semibold uppercase tracking-wide'
@@ -57,7 +58,7 @@ export default function MonitorPanel({ apps, selectedAppId, onSelectApp, onNavig
       {error} {data && <p className="text-xs mt-2">Showing the last successful update; these figures may be out of date.</p>}<button onClick={refresh} className="underline ml-1">Try again</button>
     </div>}
     {!error && loading && !data && <p role="status" className="text-sm text-slate-400 py-8 text-center">Loading monitoring data…</p>}
-    {data && <TelemetryHealth health={data.telemetry_health} />}
+    {data && <SafeCard name="Run tracking status" quiet><TelemetryHealth health={data.telemetry_health} /></SafeCard>}
     {data && (scope === 'all'
       ? <Overview data={data} nameOf={nameOf} onOpen={choose} onNavigate={onNavigate} days={days} />
       : <AppHealth data={data} days={days} onNavigate={onNavigate} appId={scope} />)}

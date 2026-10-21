@@ -49,6 +49,15 @@ async def verified(req):
 OWNER_KEYS = []
 async def owner_key(uid, provider): OWNER_KEYS.append(uid); return "sk-owner"
 
+VISITOR_BUCKETS = {}
+async def fake_consume(scope, ip, limit):
+    key = (scope, ip)
+    count = VISITOR_BUCKETS.get(key, 0)
+    if count >= limit: return False
+    VISITOR_BUCKETS[key] = count + 1
+    return True
+main.consume_visitor_limit = fake_consume
+
 main.load_app_row = load_app_row; main.require_verified_user = verified
 main.app_member_role = none; main.workspace_role = none; main.personal_workspace_id = none
 main.fetch_app_knowledge = empty; main.fetch_app_tools = emptyl; main.fetch_app_blueprint = emptyd
@@ -126,7 +135,7 @@ ok("visitor of an embedded Data app can read a URL", r.status_code == 200 and r.
 ok("…not when visitor access is off (401)", c.post("/scrape", json={"url": "https://acme.test/x", "app_id": "data-private"}).status_code == 401)
 
 # ── per-visitor, per-app limit covers file and URL reads ────────────────────
-main._anon_hits.clear()
+VISITOR_BUCKETS.clear()
 main.EMBED_VISITOR_HOURLY_LIMIT = 2
 codes = [extract("data-embed").status_code, c.post("/scrape", json={"url": "https://acme.test/d.csv", "app_id": "data-embed"}).status_code,
          extract("data-embed").status_code]

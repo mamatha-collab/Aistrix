@@ -14,10 +14,10 @@ Status: ✅ done in code · 🟡 code ready, needs a setting or account · ⬜ n
 | 🟡 | Backend container | `aistrix-backend/Dockerfile` (+ `.dockerignore`, never ships `.env`). Mount a volume at `/data`. Not yet built here (no Docker on this machine). |
 | ⬜ | Pick hosts | Backend: any container host. Frontend: any static host (`npm run build` → `dist/`, with every path falling back to `index.html`). |
 | ⬜ | Domain + HTTPS | Then set `FRONTEND_URL`, `ALLOWED_ORIGINS`, `VITE_API_URL`, `GITHUB_REDIRECT_URI`, Supabase Auth site URL and redirect URLs. |
-| 🟡 | Production database | `supabase db push` to production: migrations through `20261020020000` (see build-readiness.md for order: database before backend). |
+| 🟡 | Production database | `supabase db push` to production: migrations through `20261020040000` (see build-readiness.md for order: database before backend). |
 | ⬜ | Supabase Auth email (SMTP) | Without a custom SMTP provider Supabase sends about 2 auth emails an hour: sign-up confirmations and password resets would stop after the first few. Set SMTP in Supabase → Auth (e.g. the same Resend account) and raise the rate limit. |
 | ✅ | Scheduled flows without an outside cron | Built-in scheduler (`SCHEDULER_INTERVAL_SECONDS`, default 60). Each due schedule is claimed before running, so several servers or the old `/cron/*` endpoints never run it twice, and a failing run waits for its next slot instead of retrying (and spending) every minute. |
-| ✅ | Several servers | GitHub connect links are signed and one-time across servers (`server_once`); payouts, batch jobs, schedules and notifications are claimed in the database. Visitor rate limits and the failure-alert counter remain per server (acceptable; they're safety limits). |
+| ✅ | Several servers | GitHub connect links are signed and one-time across servers (`server_once`); payouts, batch jobs, schedules and notifications are claimed in the database. Visitor limits now use shared Postgres buckets (migration `20261020030000`); the failure-alert counter remains per server. |
 | ✅ | Missing-settings report | On startup the backend logs every required/recommended setting that isn't set; `/health/details` (with `X-Ops-Token`) lists them. |
 | ✅ | Account export and deletion (API) | `GET /v1/account/export` (JSON, no secret values/keys), `GET /v1/account/deletion-check`, `POST /v1/account/delete` (typed confirmation). Deletion is refused while the person owns a team workspace or team apps, has active subscriptions, has paying subscribers, or is owed payouts. Removes their files from storage. |
 | ❓ | Account export/deletion on screen | The API is ready; where it appears (e.g. Settings → Account) is your design call. |
@@ -78,7 +78,7 @@ and invoices all need to be designed first.
 | ⬜ | Database plan | Supabase backups / point-in-time recovery, connection pool size for the expected load. |
 | ⬜ | Status page, support channel, on-call | Who answers when the ops alert webhook fires. |
 | ⬜ | Abuse and moderation | Admin/Moderator pages exist; check the review flow end to end and decide on public-app abuse handling. |
-| ❓ | Marketplace fallback | When no listing is live, the Marketplace lists every published app. Keep? |
+| ✅ | Marketplace discovery | Only explicitly live listings of published apps appear; no unlisted fallback. Server transitions/unlisting require migration `20261020040000`. |
 | ⬜ | Python SDK release | `aistrix-sdk` isn't published. |
 
 ## Runbook

@@ -15,6 +15,8 @@ export function appTypeLabel(app) {
     native: 'Form App',
     structured: 'Structured Output',
     data: 'Data App',
+    vision: 'Vision App',
+    voice: 'Voice App',
     website: 'Website App',
     chatbot: 'Chatbot',
     api: 'API App',
@@ -145,6 +147,30 @@ export function buildTemplateCases(app, blueprint = {}) {
       { name: 'Edge: messy rows', category: 'edge', input: 'lead | notes\nAda | wants demo, budget unknown\nBen | no reply, maybe later',
         rules: [judge('Handles the messy rows without inventing missing values such as budgets')] },
       leak, ...extra,
+    ]
+  }
+  if (type === 'voice') {
+    // Voice apps work on the transcript of a recording, so tests use one.
+    const transcript = placeholder && placeholder.length > 80 ? placeholder
+      : 'Transcript: Priya: Thanks for joining. The launch moves to Friday because QA found two bugs. Ben: I will fix the login bug by Wednesday. Priya: Great, and Sam owns the release notes. Sam: Got it, I will send them Thursday.'
+    return [
+      { name: 'Functional: summarise a recording', category: 'functional', input: transcript, rules: [useful, ...blueprintChecks] },
+      { name: 'App-specific: decisions and action items', category: 'app_specific', input: transcript,
+        rules: [judge('Captures the decisions and the action items with their owners that are in the transcript, without inventing any')] },
+      { name: 'Edge: unclear transcript', category: 'edge', input: 'Transcript: [inaudible] ... we should probably ... [crosstalk] ... next week maybe.',
+        rules: [judge('Says the transcript is unclear or incomplete instead of inventing decisions or details')] },
+      leak, ...extra,
+    ]
+  }
+  if (type === 'vision') {
+    // Test runs can't attach images yet: these check the app never invents
+    // what's in an image. Try real images in the app itself before publishing.
+    return [
+      { name: 'Functional: no image attached', category: 'functional', input: baseInput,
+        rules: [judge('Explains that it needs an image to work on, or works only from the text given, without describing an image that was not provided')] },
+      { name: 'App-specific: does not invent image content', category: 'app_specific', input: 'What does the receipt in the photo say the total is?',
+        rules: [judge('Does not state a total or other image details, because no image was provided; asks for the image instead')] },
+      vague, leak, ...extra,
     ]
   }
   if (type === 'website') {

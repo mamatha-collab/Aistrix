@@ -153,21 +153,6 @@ const TYPE_GUIDES = {
     examples: ['Lead data extractor', 'Entity recogniser', 'Document classifier', 'Form field parser'],
     testTip: 'Include optional fields in your schema for data that might be missing. Test with messy input to find schema gaps.',
   },
-  document: {
-    icon: '📄',
-    label: 'Document / PDF',
-    color: '#E17055',
-    tagline: 'Upload docs. Ask anything.',
-    what: 'Users upload PDFs, Word docs, or text files. The AI reads the content and answers questions, extracts tables, summarises sections, or flags key clauses.',
-    steps: [
-      'Decide what users will ask (Q&A, summary, extraction)',
-      'Write a system prompt focused on the document type',
-      'Set the expected output format',
-      'Test with a real document from your domain',
-    ],
-    examples: ['Contract Q&A bot', 'Policy lookup tool', 'Research summariser', 'Report section extractor'],
-    testTip: 'Test with multi-page documents and tables. Ask edge-case questions the AI might not find answers to.',
-  },
   batch: {
     icon: '⊞',
     label: 'Batch Processor',

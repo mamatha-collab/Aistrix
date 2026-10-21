@@ -1,12 +1,21 @@
 import ErrorBoundary from './ErrorBoundary'
 
-function Render({ fn, name }) {
-  // Development only (removed from production builds): set localStorage
-  // 'aistrix_crash_card' to a card's name to check it fails on its own.
+// Development only (removed from production builds): set localStorage
+// 'aistrix_crash_card' to a card's name to check it fails on its own.
+function crashForTest(name) {
   if (import.meta.env.DEV && name && (() => { try { return localStorage.getItem('aistrix_crash_card') === name } catch { return false } })()) {
     throw new Error(`Test crash in "${name}"`)
   }
+}
+
+function Render({ fn, name }) {
+  crashForTest(name)
   return fn()
+}
+
+function Probe({ name, children }) {
+  crashForTest(name)
+  return children
 }
 
 // One card that can fail on its own: if it crashes, it shows a small error
@@ -15,10 +24,11 @@ function Render({ fn, name }) {
 // Pass a function as the child for JSX written inline in a bigger component:
 // it then renders inside the boundary, so its errors are caught too.
 //   <SafeCard name="Output contract">{() => (<div>…</div>)}</SafeCard>
-export default function SafeCard({ name, resetKey, children }) {
+// quiet: a small optional widget that simply disappears if it breaks.
+export default function SafeCard({ name, resetKey, quiet = false, children }) {
   return (
-    <ErrorBoundary variant="card" title={name ? `${name} couldn't load` : undefined} resetKey={resetKey}>
-      {typeof children === 'function' ? <Render fn={children} name={name} /> : children}
+    <ErrorBoundary variant={quiet ? 'quiet' : 'card'} title={name ? `${name} couldn't load` : undefined} resetKey={resetKey}>
+      {typeof children === 'function' ? <Render fn={children} name={name} /> : <Probe name={name}>{children}</Probe>}
     </ErrorBoundary>
   )
 }

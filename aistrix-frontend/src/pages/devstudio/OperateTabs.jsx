@@ -20,6 +20,7 @@ import { DeveloperProfileEditor, DiffEditor, StatTile, modelCost } from './share
 
 
 import { BRAND } from '../../lib/brand'
+import SafeCard from '../../components/SafeCard'
 // ─── Marketplace listing helpers ─────────────────────────────────────────────
 
 const LISTING_CATEGORIES = [
@@ -43,8 +44,7 @@ function ListingSetupCard({ onRetry }) {
       <div>
         <p className="text-white font-semibold text-sm">Marketplace setup in progress</p>
         <p className="text-slate-400 text-sm mt-1">
-          Marketplace listings are managed automatically by {BRAND}.<br />
-          This feature will be available shortly — no action needed on your end.
+          Marketplace storage is unavailable. The server needs the required database migrations before listings can be managed.
         </p>
       </div>
       <button onClick={onRetry} className="text-xs font-semibold px-4 py-2 rounded-lg bg-[#6C5CE7]/15 hover:bg-[#6C5CE7]/25 text-[#A29BFE] border border-[#6C5CE7]/25 transition-colors">
@@ -57,6 +57,10 @@ function ListingSetupCard({ onRetry }) {
 function MarketplaceListings({ apps, user }) {
   const [listings, setListings]   = useState(null)   // null = not loaded yet
   const [needsSetup, setNeedsSetup] = useState(false)
+  const [loadError, setLoadError] = useState('')
+  const [changingStatus, setChangingStatus] = useState(null)
+  const [confirmUnlist, setConfirmUnlist] = useState(null)
+  const loadSequence = useRef(0)
   const [editId, setEditId]       = useState(null)   // app.id being edited
   const [form, setForm]           = useState({})
   const [saving, setSaving]       = useState(false)
@@ -66,6 +70,8 @@ function MarketplaceListings({ apps, user }) {
   useEffect(() => { load() }, [appKey])   // eslint-disable-line react-hooks/exhaustive-deps
 
   async function load() {
+    const sequence = ++loadSequence.current
+    setLoadError('')
     // By app, not by who created the listing: every editor of the app sees
     // and maintains the same listing.
     const appIds = apps.map(a => a.id)
@@ -74,9 +80,10 @@ function MarketplaceListings({ apps, user }) {
       .from('marketplace_listings')
       .select('*')
       .in('app_id', appIds)
+    if (sequence !== loadSequence.current) return
     if (error) {
       if (error.code === '42P01' || error.message?.includes('does not exist')) { setNeedsSetup(true); return }
-      toast(error.message, 'error'); return
+      setLoadError(error.message || 'Listings could not be loaded.'); return
     }
     setNeedsSetup(false)
     setListings(data || [])
@@ -163,13 +170,27 @@ function MarketplaceListings({ apps, user }) {
     // The server re-checks the same gates (published app, complete listing)
     // and approves it automatically; browsers can't set a listing live.
     let data
-    try { data = (await manageRequest(`/v1/apps/${encodeURIComponent(appId)}/listing/go-live`, { method: 'POST' })).listing }
+    setChangingStatus(appId)
+    try { data = (await manageRequest(`/v1/apps/${encodeURIComponent(appId)}/listing/go-live`, { method: 'POST', body: JSON.stringify({ expected_updated_at: l.updated_at || null }) })).listing }
     catch (e) { toast(e.message, 'error', 5000); return }
+    finally { setChangingStatus(null) }
     setListings(prev => prev.map(x => x.id === data.id ? data : x))
     toast('🎉 Your app is live on the Marketplace!', 'success', 4000)
     track(EVENTS.LISTING_SUBMITTED, { app_id: appId })
   }
 
+  async function unlist(appId) {
+    setChangingStatus(appId)
+    try {
+      const { listing } = await manageRequest(`/v1/apps/${encodeURIComponent(appId)}/listing/unlist`, { method: 'POST', body: JSON.stringify({ expected_updated_at: listingFor(appId)?.updated_at || null }) })
+      setListings(previous => previous.map(item => item.id === listing.id ? listing : item))
+      setConfirmUnlist(null)
+      toast('Listing removed from discovery. The deployed app and existing access remain unchanged.', 'success', 5000)
+    } catch (error) { toast(error.message, 'error') }
+    finally { setChangingStatus(null) }
+  }
+
+  if (loadError) return <div role="alert" className="rounded-xl border border-red-400/20 p-4 text-sm text-red-300">{loadError} <button onClick={load} className="underline">Retry listings</button></div>
   if (needsSetup) return <ListingSetupCard onRetry={load} />
   if (listings === null) return <p className="text-slate-500 text-sm py-4 text-center">Loading…</p>
 
@@ -179,6 +200,7 @@ function MarketplaceListings({ apps, user }) {
         <p className="text-[10px] text-slate-400 uppercase font-semibold tracking-wide">Marketplace listings</p>
       </div>
 
+      <p className="text-xs text-slate-400">Deploy makes your app available. Listing makes it discoverable here. Unlisting stops discovery without deleting the app or revoking purchased access.</p>
       {apps.map(app => {
         const l         = listingFor(app.id)
         const isEditing = editId === app.id
@@ -201,10 +223,10 @@ function MarketplaceListings({ apps, user }) {
                 className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 transition-colors">
                 {isEditing ? 'Cancel' : l ? 'Edit' : '+ Create'}
               </button>
-              {l && l.status === 'draft' && !isEditing && (() => {
+              {l && l.status !== 'live' && !isEditing && (() => {
                 const errs = publishGateErrors(app)
                 return errs.length === 0 ? (
-                  <button onClick={() => submitListing(app.id)}
+                  <button onClick={() => submitListing(app.id)} disabled={changingStatus === app.id}
                     className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white transition-colors">
                     Go live →
                   </button>
@@ -228,7 +250,7 @@ function MarketplaceListings({ apps, user }) {
                   </div>
                 )
               })()}
-              {l && (l.status === 'live' || l.status === 'approved') && (
+              {l && l.status === 'live' && (
                 <a href={`/marketplace/${app.id}`} target="_blank" rel="noreferrer"
                   className="text-[11px] font-semibold px-3 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-400 border border-emerald-500/20 transition-colors">
                   View ↗
@@ -236,6 +258,23 @@ function MarketplaceListings({ apps, user }) {
               )}
             </div>
 
+            {l?.status === 'live' && <div className="px-4 pb-3">
+              {confirmUnlist === app.id ? <div className="space-y-2 rounded-xl border border-amber-400/20 p-3">
+                <p className="text-xs text-slate-300">Remove this listing from the Marketplace? Existing customers retain access to the deployed app.</p>
+                <button disabled={changingStatus === app.id} onClick={() => unlist(app.id)} className="text-xs px-3 py-2 rounded-lg bg-[#6C5CE7] text-white">{changingStatus === app.id ? 'Removing…' : 'Confirm unlist'}</button>
+                <button disabled={changingStatus === app.id} onClick={() => setConfirmUnlist(null)} className="ml-3 text-xs text-slate-300">Keep listed</button>
+              </div> : <button onClick={() => setConfirmUnlist(app.id)} className="text-xs text-slate-400 underline">Unlist from Marketplace</button>}
+            </div>}
+            {!isEditing && l?.status !== 'live' && publishGateErrors(app).length > 0 && <ul className="px-4 pb-3 space-y-1 text-xs text-slate-400" aria-label={`Listing requirements for ${app.name}`}>{publishGateErrors(app).map(issue => <li key={issue.key}>{issue.label}</li>)}</ul>}
+            {l && !isEditing && <details className="px-4 pb-3 text-xs text-slate-400">
+              <summary className="cursor-pointer">Preview saved listing</summary>
+              <div className="mt-2 rounded-xl border border-white/10 bg-[#0E1424] p-4 space-y-2">
+                <p className="text-sm font-semibold text-white">{l.title}</p>
+                <p>{l.tagline}</p><p className="whitespace-pre-wrap">{l.description}</p>
+                <p>{l.category || 'Choose a category'} · {app.is_paid ? `$${app.price_per_run || '—'} per run` : 'Free'}</p>
+                <p>{(l.tags || []).join(' · ')}</p>
+              </div>
+            </details>}
             {/* Inline form */}
             {isEditing && (
               <div className="border-t border-white/5 px-4 py-4 space-y-3">
@@ -398,11 +437,11 @@ export function SellTab({ apps, user, onAppUpdated }) {
 
       {/* Developer profile */}
       <Suspense fallback={null}>
-        <DeveloperProfileEditor user={user} />
+        <SafeCard name="Developer profile"><DeveloperProfileEditor user={user} /></SafeCard>
       </Suspense>
 
       {/* Marketplace listing editor */}
-      <MarketplaceListings apps={apps} user={user} />
+      <SafeCard name="Marketplace listings"><MarketplaceListings apps={apps} user={user} /></SafeCard>
 
     </div>
   )
@@ -965,7 +1004,7 @@ export function VersionTab({ apps, onAppUpdated, selectedAppId }) {
         <div key={a.kind} role="alert" className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">{a.message}</div>
       ))}
       {usage.error && <p className="text-xs text-amber-300">Usage per version isn't available right now ({usage.error}). Versions and roll back still work.</p>}
-      {appObj && <PublishedVersions key={appObj.id} app={appObj} onAppUpdated={onAppUpdated} usage={usage.data?.analytics === 'basic' ? null : usage.data?.by_version || null} />}
+      {appObj && <SafeCard name="Published versions"><PublishedVersions key={appObj.id} app={appObj} onAppUpdated={onAppUpdated} usage={usage.data?.analytics === 'basic' ? null : usage.data?.by_version || null} /></SafeCard>}
     </div>
   )
 }
@@ -1123,11 +1162,11 @@ function ConnectPayoutPanel({ user }) {
 
 export function MonetizeTab({ apps, runs, loading, user }) {
   return <div className="space-y-5">
-    <RevenueDetails apps={apps} user={user} />
-    <ConnectPayoutPanel user={user} />
+    <SafeCard name="Revenue"><RevenueDetails apps={apps} user={user} /></SafeCard>
+    <SafeCard name="Payout account"><ConnectPayoutPanel user={user} /></SafeCard>
     {!!apps.length && <>
-      <details className="rounded-2xl border border-white/8 bg-[#171B33] p-4"><summary className="cursor-pointer text-sm font-semibold text-white">Pricing and usage estimates (not earnings)</summary><div className="mt-4"><RunCostEstimates apps={apps} runs={runs} loading={loading} /></div></details>
-      <details className="rounded-2xl border border-white/8 bg-[#171B33] p-4"><summary className="cursor-pointer text-sm font-semibold text-white">Customer access</summary><div className="mt-4"><EntitlementsSection apps={apps} user={user} /></div></details>
+      <details className="rounded-2xl border border-white/8 bg-[#171B33] p-4"><summary className="cursor-pointer text-sm font-semibold text-white">Pricing and usage estimates (not earnings)</summary><div className="mt-4"><SafeCard name="Pricing and usage estimates"><RunCostEstimates apps={apps} runs={runs} loading={loading} /></SafeCard></div></details>
+      <details className="rounded-2xl border border-white/8 bg-[#171B33] p-4"><summary className="cursor-pointer text-sm font-semibold text-white">Customer access</summary><div className="mt-4"><SafeCard name="Customer access"><EntitlementsSection apps={apps} user={user} /></SafeCard></div></details>
     </>}
   </div>
 }
@@ -1273,5 +1312,5 @@ function RunCostEstimates({ apps, runs, loading }) {
 
 export function SecretsTab({ apps, user, selectedAppId }) {
   const selected = apps.find(app => app.id === selectedAppId) || apps[0]
-  return <AppSecretsPanel key={selected?.id || 'none'} appId={selected?.id} user={user} />
+  return <SafeCard name="App secrets"><AppSecretsPanel key={selected?.id || 'none'} appId={selected?.id} user={user} /></SafeCard>
 }

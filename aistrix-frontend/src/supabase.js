@@ -13,3 +13,9 @@ const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   global: { fetch: supabaseWorkspaceFetch },
 })
+
+// Local development: say which project this is (and the backend logs its own),
+// so a production/staging mix-up is visible at once.
+if (import.meta.env.DEV) {
+  console.info(`[dev] Supabase project ${new URL(SUPABASE_URL).hostname.split('.')[0]} (mode ${import.meta.env.MODE})`)
+}

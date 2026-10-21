@@ -604,13 +604,13 @@ export default function App() {
 
           {activeView !== 'developer' && creationFlow}
           {workspaceRecoApp && (
-            <Suspense fallback={null}>
+            <ErrorBoundary variant="quiet" title="WorkspaceRecommendations"><Suspense fallback={null}>
               <WorkspaceRecommendations
                 app={workspaceRecoApp}
                 onDismiss={() => setWorkspaceRecoApp(null)}
                 onViewWorkspaces={() => { setWorkspaceRecoApp(null); navigateToView('flows') }}
               />
-            </Suspense>
+            </Suspense></ErrorBoundary>
           )}
           {/* ── Mobile bottom nav ── */}
           {activeView !== 'developer' && <nav className="app-topbar fixed bottom-0 left-0 right-0 bg-[#121829] border-t border-white/8 flex md:hidden z-40">
@@ -653,21 +653,21 @@ export default function App() {
           )}
           {showProfile    && <ErrorBoundary variant="overlay" title="Your profile couldn't load" onClose={() => setShowProfile(false)}><Suspense fallback={null}><UserProfile     user={session.user} onClose={() => setShowProfile(false)} /></Suspense></ErrorBoundary>}
           {showOnboarding && (
-            <Suspense fallback={null}>
+            <ErrorBoundary variant="quiet" title="OnboardingWizard"><Suspense fallback={null}>
               <OnboardingWizard
                 user={session.user}
                 onDismiss={dismissWelcomeOnboarding}
                 onNavChange={changeView}
               />
-            </Suspense>
+            </Suspense></ErrorBoundary>
           )}
           {showAppOnboarding && (
-            <Suspense fallback={null}>
+            <ErrorBoundary variant="quiet" title="OnboardingModal"><Suspense fallback={null}>
               <OnboardingModal
                 onClose={dismissAppOnboarding}
                 onComplete={dismissAppOnboarding}
               />
-            </Suspense>
+            </Suspense></ErrorBoundary>
           )}
         </DeveloperShell>
       } />

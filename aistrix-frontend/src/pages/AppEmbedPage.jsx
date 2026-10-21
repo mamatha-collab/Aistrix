@@ -5,6 +5,7 @@ import { supabase } from '../supabase'
 import { applyTheme } from '../utils/theme'
 
 import { BRAND, BRAND_DOMAIN } from '../lib/brand'
+import { isFileApp } from '../lib/fileApps'
 // Lazy-loaded — see AppPage.jsx for why: AppRunner is also dynamically
 // imported from DetailPanel.jsx, so a static import here would make that
 // dynamic import ineffective.
@@ -130,7 +131,7 @@ export default function AppEmbedPage() {
             {/* Chat apps keep the conversation (in this tab) so follow-ups work */}
             {(app.has_memory || app.app_type === 'chatbot')
               ? <ConversationThread app={app} user={null} inline />
-              : app.app_type === 'data'
+              : isFileApp(app)
               ? <DataAppRunner app={app} user={null} inline />
               : <EmbedVisitorRunner app={app} />}
           </Suspense>
@@ -143,7 +144,7 @@ export default function AppEmbedPage() {
           </div>
         ) : (
           <Suspense fallback={null}>
-            {app.app_type === 'data'
+            {isFileApp(app)
               ? <DataAppRunner app={app} user={user} inline />
               : app.app_type === 'api'
               ? <ApiAppRunner app={app} user={user} inline />

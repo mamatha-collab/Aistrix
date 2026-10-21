@@ -56,6 +56,14 @@ function fileToBase64(file) {
   })
 }
 
+// Vision apps: images go to the model with the question (not stored).
+const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
+const MAX_IMAGES = 4
+const MAX_IMAGE_MB = 5
+// Voice apps: the recording is transcribed (OpenAI), then the app's prompt runs on the text.
+const AUDIO_ACCEPT = '.mp3,.mp4,.mpeg,.mpga,.m4a,.wav,.webm,.ogg,.flac'
+const MAX_AUDIO_MB = 25
+
 const DATA_TYPES = [
   { id: 'csv',  icon: '📊', label: 'CSV / Table',  placeholder: 'Paste CSV data here:\nName,Email,Amount\nJohn,john@co.com,$500\nJane,jane@co.com,$750' },
   { id: 'text', icon: '📝', label: 'Document',      placeholder: 'Paste any text, document, report, or article here...' },
@@ -79,6 +87,10 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
   const rafRef = useRef(null)
   const fileInputRef = useRef(null)
   const toast = useToast()
+  // Data, Vision and Voice apps share this runner.
+  const mode = app.app_type === 'vision' ? 'vision' : app.app_type === 'voice' ? 'voice' : 'data'
+  const [images, setImages] = useState([])            // [{ name, media_type, data, preview }]
+  const [instruction, setInstruction] = useState('')
 
   const currentType = DATA_TYPES.find(t => t.id === dataType)
   // Signed-out website visitor of an embedded app with visitor access.
@@ -104,7 +116,7 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
         mime_type: file.type || 'text/plain',
         size_bytes: file.size,
         retention_days: 30,
-        metadata: { app_type: 'data', data_type: dataType },
+        metadata: { app_type: app.app_type || 'data', data_type: dataType },
       }),
     })
     if (!res.ok) {
@@ -112,6 +124,53 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
       throw new Error(body.detail || 'File uploaded, but could not be registered')
     }
     return res.json()
+  }
+
+  async function addImages(e) {
+    const files = [...(e.target.files || [])]
+    e.target.value = ''
+    setError('')
+    const room = MAX_IMAGES - images.length
+    if (files.length > room) setError(`Up to ${MAX_IMAGES} images per run.`)
+    const added = []
+    for (const file of files.slice(0, Math.max(0, room))) {
+      if (!IMAGE_TYPES.includes(file.type)) { setError('Images must be PNG, JPEG, WebP or GIF.'); continue }
+      if (file.size > MAX_IMAGE_MB * 1024 * 1024) { setError(`Each image must be under ${MAX_IMAGE_MB} MB.`); continue }
+      added.push({ name: file.name, media_type: file.type, data: await fileToBase64(file), preview: URL.createObjectURL(file) })
+    }
+    setImages(prev => [...prev, ...added])
+  }
+
+  function removeImage(index) {
+    setImages(prev => {
+      URL.revokeObjectURL(prev[index]?.preview)
+      return prev.filter((_, i) => i !== index)
+    })
+  }
+
+  async function transcribe(e) {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    if (file.size > MAX_AUDIO_MB * 1024 * 1024) { setError(`Recordings must be under ${MAX_AUDIO_MB} MB. Split longer ones.`); return }
+    setUploadingFile(true); setError(''); setFileName(file.name)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const res = await fetch(`${API_URL}/v1/files/transcribe`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(session ? { Authorization: `Bearer ${session.access_token}` } : {}) },
+        body: JSON.stringify({ file_name: file.name, content_b64: await fileToBase64(file), app_id: app.id }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body.error || (typeof body.detail === 'string' ? body.detail : '') || `Could not transcribe ${file.name}`)
+      setRawData(body.text || '')
+      setDataType('text')
+      if (body.truncated) toast(`Only the first ${body.text.length.toLocaleString()} characters of the transcript were kept.`, 'info', 7000)
+    } catch (err) {
+      setError(friendlyErrorMessage(err))
+    } finally {
+      setUploadingFile(false)
+    }
   }
 
   async function handleFile(e) {
@@ -168,7 +227,7 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
     }
   }
 
-  async function streamRun(inputText, outputType, onToken) {
+  async function streamRun(inputText, outputType, onToken, withImages = null) {
     const { data: { session } } = await supabase.auth.getSession()
     const res = await fetch(`${API_URL}/run`, {
       method: 'POST',
@@ -179,6 +238,7 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
         ai_provider: app.ai_provider || 'claude',
         ai_model: app.ai_model || null,
         output_type: outputType,
+        ...(withImages?.length ? { images: withImages.map(({ media_type, data }) => ({ media_type, data })) } : {}),
       }),
     })
     if (!res.ok) {
@@ -206,7 +266,37 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
     return { text, usage }
   }
 
+  async function processImages() {
+    if (!images.length) return
+    setLoading(true); setResult(''); setError(''); setUsage(null); setLastRunId(null); setProgressLabel('')
+    resultRef.current = ''
+    const question = instruction.trim() || `Analyse the attached image${images.length === 1 ? '' : 's'}.`
+    try {
+      const final = await streamRun(question, app.output_type || 'markdown', text => { resultRef.current = text; scheduleFlush() }, images)
+      if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
+      resultRef.current = final.text
+      setResult(final.text)
+      setUsage(final.usage)
+      if (visitor) return
+      const { data: row, error } = await supabase.from('run_history').insert({
+        user_id: user.id, app_id: app.id, app_name: app.name,
+        input: `[${images.length} image${images.length === 1 ? '' : 's'}: ${images.map(i => i.name).join(', ')}] ${question}`.slice(0, 500),
+        output: final.text,
+        input_tokens: final.usage?.input_tokens ?? null, output_tokens: final.usage?.output_tokens ?? null,
+      }).select('id').single()
+      if (row) setLastRunId(row.id)
+      else if (error) toast(`Images analysed, but the run wasn't saved to history: ${error.message}`, 'error', 8000)
+      await supabase.rpc('increment_app_runs', { p_app_id: app.id })
+      onRun?.()
+    } catch (e) {
+      setError(friendlyErrorMessage(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
   async function processData() {
+    if (mode === 'vision') return processImages()
     if (!rawData.trim()) return
     setLoading(true); setResult(''); setError(''); setUsage(null); setLastRunId(null); setProgressLabel('')
     resultRef.current = ''
@@ -288,10 +378,48 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
     }
   }
 
+  const visionInput = (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <label className="text-xs text-slate-400">Images ({images.length}/{MAX_IMAGES})</label>
+        <button onClick={() => fileInputRef.current?.click()} disabled={images.length >= MAX_IMAGES || loading}
+          className="text-[10px] text-slate-400 hover:text-white bg-[#1F2444] px-2.5 py-1 rounded-lg transition-colors disabled:opacity-40">
+          🖼 Add images
+        </button>
+        <input ref={fileInputRef} type="file" multiple className="hidden" accept={IMAGE_TYPES.join(',')} onChange={addImages}
+          aria-label="Add images" />
+      </div>
+      {images.length ? (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          {images.map((img, i) => (
+            <div key={img.preview} className="relative rounded-xl overflow-hidden border border-white/10 bg-[#1F2444]">
+              <img src={img.preview} alt={img.name} className="w-full h-24 object-cover" />
+              <button onClick={() => removeImage(i)} aria-label={`Remove ${img.name}`}
+                className="absolute top-1 right-1 w-6 h-6 rounded-full bg-black/60 text-white text-xs hover:bg-black/80">✕</button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <button onClick={() => fileInputRef.current?.click()}
+          className="w-full border border-dashed border-white/15 rounded-xl py-8 text-sm text-slate-400 hover:text-white hover:border-white/30 transition-colors">
+          🖼 Add up to {MAX_IMAGES} images (PNG, JPEG, WebP or GIF, under {MAX_IMAGE_MB} MB each)
+        </button>
+      )}
+      <div>
+        <label htmlFor="vision-instruction" className="text-xs text-slate-400 block mb-1.5">What should the app do with them? (optional)</label>
+        <textarea id="vision-instruction" rows={3} value={instruction} onChange={e => setInstruction(e.target.value)}
+          placeholder={app.input_placeholder || 'e.g. Read the receipt totals, or check the photo for damage'}
+          className="w-full bg-[#1F2444] border border-white/10 rounded-xl p-3 text-sm text-white placeholder-slate-500 resize-none focus:outline-none focus:border-[#E17055] transition-colors" />
+      </div>
+      <p className="text-[10px] text-slate-600 leading-relaxed">Images are sent to the AI with this run only; they aren&apos;t stored.</p>
+    </div>
+  )
+
   const body = (
     <div className="space-y-4">
-      {/* Data type selector */}
-      <div>
+      {mode === 'vision' ? visionInput : <>
+      {/* Data type selector (Voice apps work on a transcript) */}
+      {mode === 'data' && <div>
         <label className="text-xs text-slate-400 block mb-2">Data type</label>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           {DATA_TYPES.map(t => (
@@ -302,15 +430,24 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
             </button>
           ))}
         </div>
-      </div>
+      </div>}
 
       {/* Data input */}
       <div>
         <div className="flex items-center justify-between mb-1.5">
           <label className="text-xs text-slate-400">
-            {dataType === 'url' ? 'Enter URL' : `Paste ${currentType.label}`}
+            {mode === 'voice' ? 'Transcript (check or edit it before processing)' : dataType === 'url' ? 'Enter URL' : `Paste ${currentType.label}`}
           </label>
-          {dataType !== 'url' && (
+          {mode === 'voice' ? (
+            <>
+              <button onClick={() => fileInputRef.current?.click()} disabled={uploadingFile}
+                className="text-[10px] text-slate-400 hover:text-white bg-[#1F2444] px-2.5 py-1 rounded-lg transition-colors flex items-center gap-1">
+                {uploadingFile ? '⟳ Transcribing…' : '🎙 Upload recording'}
+              </button>
+              <input ref={fileInputRef} type="file" className="hidden" accept={AUDIO_ACCEPT} onChange={transcribe}
+                aria-label="Upload recording" />
+            </>
+          ) : dataType !== 'url' && (
             <>
               <button onClick={() => fileInputRef.current?.click()} disabled={uploadingFile}
                 className="text-[10px] text-slate-400 hover:text-white bg-[#1F2444] px-2.5 py-1 rounded-lg transition-colors flex items-center gap-1">
@@ -342,16 +479,22 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
             {rawData.length > CHUNK_CHARS && ` · large input: processed in ${chunkText(rawData, dataType === 'csv').length} parts`}
           </p>
         )}
-        {dataType !== 'url' && (
+        {mode === 'voice' ? (
+          <p className="text-[10px] text-slate-600 mt-1 leading-relaxed">
+            Recordings up to {MAX_AUDIO_MB} MB (MP3, M4A, WAV, WebM, OGG…) are transcribed with OpenAI, then the app works on the transcript. The recording isn&apos;t stored. You can also paste a transcript.
+          </p>
+        ) : dataType !== 'url' && (
           <p className="text-[10px] text-slate-600 mt-1 leading-relaxed">
             PDF, Word and Excel files are extracted server-side{visitor ? ' (not stored)' : ' and stored for 30 days'}. Scanned PDF pages are read with OCR. Extraction loads up to {MAX_EXTRACT_CHARS.toLocaleString()} characters; interactive analysis handles about {maxAnalysisChars.toLocaleString()} characters per run.
           </p>
         )}
       </div>
+      </>}
 
-      <button onClick={processData} disabled={loading || !rawData.trim()}
+      <button onClick={processData} disabled={loading || uploadingFile || (mode === 'vision' ? !images.length : !rawData.trim())}
         className="w-full bg-[#E17055] hover:bg-[#d4614a] disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm py-2.5 rounded-xl font-medium transition-colors flex items-center justify-center gap-2">
-        {loading ? <><span className="animate-spin">⟳</span> Processing data...</> : `▦ Process ${currentType.label}`}
+        {loading ? <><span className="animate-spin">⟳</span> {mode === 'vision' ? 'Analysing images…' : 'Processing…'}</>
+          : mode === 'vision' ? '👁 Analyse images' : mode === 'voice' ? '🎙 Process recording' : `▦ Process ${currentType.label}`}
       </button>
 
       {error && <div className="bg-red-500/10 border border-red-500/20 rounded-xl p-3 text-red-400 text-sm">{error}</div>}
@@ -391,7 +534,7 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
             <div className="w-9 h-9 rounded-xl bg-[#E17055]/20 flex items-center justify-center text-xl">▦</div>
             <div>
               <p className="text-white font-medium text-sm">{app.name}</p>
-              <p className="text-xs text-slate-400">Data App · Upload or paste your data</p>
+              <p className="text-xs text-slate-400">{mode === 'vision' ? 'Vision App · Add images' : mode === 'voice' ? 'Voice App · Upload a recording' : 'Data App · Upload or paste your data'}</p>
             </div>
           </div>
           <button aria-label="Close" onClick={onClose} className="text-slate-500 hover:text-white text-lg">✕</button>

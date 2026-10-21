@@ -9,6 +9,8 @@ import { BRAND } from '../lib/brand'
 //   compact    a section or page inside the layout; navigation keeps working
 //   card       one card; the rest of the step keeps working
 //   overlay    a modal/window; shows a small error window with Close (onClose)
+//   quiet      a small optional widget (a header button, a notice): it disappears
+//              instead of breaking the bar it sits in (the error is still reported)
 // resetKey: changing it (another app, another tab) clears the error.
 export default class ErrorBoundary extends Component {
   constructor(props) {
@@ -42,6 +44,7 @@ export default class ErrorBoundary extends Component {
       : (error?.message || 'Unknown error')
     const variant = this.props.variant || (this.props.card ? 'card' : this.props.compact ? 'compact' : 'page')
     const retry = () => this.setState({ error: null })
+    if (variant === 'quiet') return null
 
     if (variant === 'card') {
       return (

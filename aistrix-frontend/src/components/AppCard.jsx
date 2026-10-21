@@ -131,6 +131,8 @@ export default function AppCard({ app, selected, starred, isOwn, sharedRole, onC
     app.app_type === 'api' && { label: 'API-ready', color: '#FDCB6E' },
     app.app_type === 'native' && { label: 'Guided form', color: '#6C5CE7' },
     app.app_type === 'data' && { label: 'Data input', color: '#E17055' },
+    app.app_type === 'vision' && { label: 'Image input', color: '#E17055' },
+    app.app_type === 'voice' && { label: 'Audio input', color: '#E17055' },
     app.app_type === 'structured' && { label: 'Schema-checked', color: '#0984E3' },
     app.app_type === 'chatbot' && { label: 'Chatbot', color: '#E84393' },
   ].filter(Boolean)

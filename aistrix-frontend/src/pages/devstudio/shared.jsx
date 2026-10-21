@@ -2,6 +2,7 @@ import { useState, lazy } from 'react'
 import { inferPromptOutputFormat } from '../../utils/starterBlueprint'
 
 import { BRAND } from '../../lib/brand'
+import { isFileApp } from '../../lib/fileApps'
 export const PUBLIC_API_URL = (import.meta.env.VITE_PUBLIC_API_URL || import.meta.env.VITE_API_URL || 'http://localhost:8000').replace(/\/$/, '')
 
 export const PromptStudio = lazy(() => import('../../components/PromptStudio'))
@@ -12,15 +13,14 @@ export const DeveloperProfileEditor = lazy(() => import('../DeveloperProfilePage
 
 const APP_TYPES = [
   { icon: '📝', label: 'Text apps',          desc: 'Summarise, rewrite, translate, classify — any text-in / text-out task.' },
-  { icon: '📊', label: 'Data apps',          desc: 'Drop in a CSV or Google Sheet and let the AI analyse, clean, or chart it.' },
+  { icon: '📊', label: 'Data apps',          desc: 'Drop in a PDF, Word or Excel file, a CSV or a link: the AI reads, analyses and extracts from it.' },
   { icon: '💬', label: 'Chat / Persona',     desc: 'Conversational assistants with persistent memory and a custom personality.' },
   { icon: '🤖', label: 'Agent apps',         desc: 'Apps that call tools, search the web, run code, or read files autonomously.' },
-  { icon: '📄', label: 'Document / PDF',     desc: 'Upload PDFs, ask questions, extract tables, or summarise long reports.' },
   { icon: '🔌', label: 'API / Webhook',      desc: 'Headless apps triggered by external services — Zapier, Slack, your own code.' },
-  { icon: '👁', label: 'Vision / Image',     desc: 'Send images in — AI describes, OCRs, inspects quality, or reads receipts.' },
+  { icon: '👁', label: 'Vision / Image',     desc: 'Send images in — AI describes, inspects quality, or reads receipts.' },
   { icon: '{ }', label: 'Structured Output', desc: 'Always returns valid JSON matching a schema — zero parsing errors.' },
   { icon: '⊞', label: 'Batch Processor',    desc: 'Run any prompt over hundreds of CSV rows in parallel — get results back.' },
-  { icon: '🎙', label: 'Voice / Audio',      desc: 'Transcribe audio with Whisper, then summarise or extract action items.' },
+  { icon: '🎙', label: 'Voice / Audio',      desc: 'Upload a recording: it\'s transcribed (OpenAI), then summarised or turned into action items.' },
   { icon: '</>', label: 'Code Gen / Review', desc: 'Generate functions, review PRs, explain code, or auto-write tests.' },
   { icon: '🌍', label: 'Translation',        desc: 'Translate text or docs across 100+ languages with glossary control.' },
 ]
@@ -753,7 +753,7 @@ export function moduleIds(raw = []) {
 
 function defaultDeployment(app = {}) {
   return {
-    runtime_type: app.app_type === 'api' ? 'api' : app.app_type === 'agent' ? 'agent' : app.app_type === 'data' ? 'file' : 'prompt',
+    runtime_type: app.app_type === 'api' ? 'api' : app.app_type === 'agent' ? 'agent' : isFileApp(app) ? 'file' : 'prompt',
     entrypoint: '',
     port: '',
     command: '',

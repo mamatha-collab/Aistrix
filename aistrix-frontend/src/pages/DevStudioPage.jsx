@@ -19,6 +19,7 @@ import { applyTheme } from '../utils/theme'
 import { AppEmojiWithType, AppNavigator, DEV_PHASES, EMPTY_BP, HelpPanel, MoveBackModal, WelcomeScreen, calcReadiness, getDevPhase, migrateBlueprint, normalizeDevPhase } from './devstudio/shared'
 
 import { BRAND } from '../lib/brand'
+import SafeCard from '../components/SafeCard'
 // Each step loads when it is opened (keeps the first Dev Studio load small).
 const TAB_LOADING = <div className="py-16 text-center text-slate-500 text-sm">Loading…</div>
 const DeployTab = lazy(() => import('./devstudio/DeployTab').then(m => ({ default: m.DeployTab })))
@@ -467,7 +468,7 @@ export default function DevStudioPage({
                 )}
                 </div>
                 <div className="flex items-center gap-1">
-                  <NotificationsPanel user={user} onNavChange={onNavChange} />
+                  <SafeCard name="Notifications" quiet><NotificationsPanel user={user} onNavChange={onNavChange} /></SafeCard>
                   <button
                     onClick={() => openSettings('keys')}
                     aria-label={noKeys ? 'Keys — no AI key added yet' : undefined}

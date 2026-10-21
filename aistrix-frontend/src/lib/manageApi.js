@@ -12,7 +12,7 @@ export async function manageRequest(path, options = {}) {
   let data = {}
   try { data = text ? JSON.parse(text) : {} }
   catch { throw new Error('The server returned an invalid response. Please retry.') }
-  if (response.status === 401) throw new Error(SIGNED_OUT)
+  if (response.status === 401) throw new Error(/different environment/.test(data.detail || '') ? data.detail : SIGNED_OUT)
   if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : data.error || 'This information could not be loaded.')
   if (!options.method || options.method === 'GET') {
     if (path.endsWith('/secrets') && !Array.isArray(data.secrets)) throw new Error('Secret metadata could not be verified. Please retry before making changes.')

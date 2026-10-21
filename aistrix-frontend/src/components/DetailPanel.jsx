@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { timeAgo } from '../utils'
+import { isFileApp } from '../lib/fileApps'
 
 // Lazy-loaded — all of these are gated behind a toggle/modal/portal and are
 // never needed for the panel's initial render, so there's no reason for them
@@ -232,7 +233,7 @@ export default function DetailPanel({ app, user, onClose, onRun, onDeleted }) {
         ? <AgentRunner    app={currentApp} user={user} onClose={handleRunnerClose} onRun={() => { fetchStats(); setLocalTotalRuns(p => (p ?? currentApp.total_runs ?? 0) + 1); onRun?.(currentApp.id) }} />
         : currentApp.app_type === 'api'
         ? <ApiAppRunner   app={currentApp} user={user} onClose={handleRunnerClose} onRun={() => { fetchStats(); setLocalTotalRuns(p => (p ?? currentApp.total_runs ?? 0) + 1); onRun?.(currentApp.id) }} />
-        : currentApp.app_type === 'data'
+        : isFileApp(currentApp)
         ? <DataAppRunner  app={currentApp} user={user} onClose={handleRunnerClose} onRun={() => { fetchStats(); setLocalTotalRuns(p => (p ?? currentApp.total_runs ?? 0) + 1); onRun?.(currentApp.id) }} />
         : (currentApp.has_memory || currentApp.app_type === 'chatbot')
         ? <ConversationThread app={currentApp} user={user} onClose={handleRunnerClose} onRun={() => { fetchStats(); setLocalTotalRuns(p => (p ?? currentApp.total_runs ?? 0) + 1); onRun?.(currentApp.id) }} />

@@ -49,10 +49,22 @@ if (new URLSearchParams(location.search).get('scenario') === 'live-preview-failu
   state.failures['/v1/apps/app-1/live-preview'] = 'Temporary preview failure'
 }
 
+if (new URLSearchParams(location.search).get('scenario')?.startsWith('market-customer')) {
+  Object.assign(app, { is_published: true, live_version: 1, visibility: 'public' })
+  state.tables.marketplace_listings = Array.from({ length: 26 }, (_, index) => ({
+    id: `market-${index}`, app_id: index === 0 ? 'app-1' : `customer-app-${index}`, user_id: 'fixture-user', title: `Listed app ${index + 1}`,
+    tagline: 'Clear business answers', category: index === 25 ? 'Engineering' : 'Productivity', status: 'live',
+  }))
+  state.tables.apps.push(...Array.from({ length: 25 }, (_, index) => ({ ...app, id: `customer-app-${index + 1}` })))
+  state.tables.marketplace_listings.push({ id: 'hidden', app_id: 'app-2', user_id: 'fixture-user', title: 'Unpublished app', status: 'live' })
+  state.tables.developer_profiles = [{ user_id: 'fixture-user', display_name: 'Fixture Developer' }]
+  state.tables.app_reviews = []; state.tables.app_entitlements = []
+}
+
 class Query {
   constructor(table) { this.table = table; this.filters = []; this.op = 'select'; this.wantSingle = false }
-  select() { return this }
-  eq(key, value) { this.filters.push(row => row[key] === value); return this }
+  select(selection) { this.selection = selection; return this }
+  eq(key, value) { this.filters.push(row => key.split('.').reduce((item, part) => item?.[part], row) === value); return this }
   in(key, values) { this.filters.push(row => values.includes(row[key])); return this }
   is(key, value) { this.filters.push(row => (row[key] ?? null) === value); return this }
   not(key, operator, value) {
@@ -60,6 +72,11 @@ class Query {
     this.filters.push(row => value === null ? row[key] != null : row[key] !== value)
     return this
   }
+  ilike(key, pattern) {
+    const needle = pattern.slice(1, -1).replace(/\\([%_\\])/g, '$1').toLowerCase()
+    this.filters.push(row => String(row[key] || '').toLowerCase().includes(needle)); return this
+  }
+  range(start, end) { this.bounds = [start, end]; return this }
   order() { return this }
   limit() { return this }
   insert(value) { this.op = 'insert'; this.value = value; return this }
@@ -78,7 +95,8 @@ class Query {
     const failureKey = `${this.table}:${this.op}`
     if (state.failures[failureKey]) return { data: null, error: { message: state.failures[failureKey], code: 'FIXTURE_ERROR' } }
     const rows = state.tables[this.table] ||= []
-    let data = rows.filter(row => this.filters.every(filter => filter(row)))
+    const selectedRows = this.selection?.includes('apps!inner') ? rows.map(row => ({ ...row, apps: state.tables.apps.find(app => app.id === row.app_id) })).filter(row => row.apps) : rows
+    let data = selectedRows.filter(row => this.filters.every(filter => filter(row)))
     if (this.op === 'insert' || this.op === 'upsert') {
       const incoming = (Array.isArray(this.value) ? this.value : [this.value]).map(copy)
       for (const row of incoming) {
@@ -91,7 +109,9 @@ class Query {
       data = incoming
     } else if (this.op === 'update') data.forEach(row => Object.assign(row, copy(this.value)))
     else if (this.op === 'delete') state.tables[this.table] = rows.filter(row => !data.includes(row))
-    return { data: copy(this.wantSingle ? data[0] || null : data), error: null, count: data.length }
+    const count = data.length
+    if (this.bounds) data = data.slice(this.bounds[0], this.bounds[1] + 1)
+    return { data: copy(this.wantSingle ? data[0] || null : data), error: null, count }
   }
 }
 
@@ -264,10 +284,10 @@ window.fetch = async (input, init = {}) => {
       headers: { 'Content-Type': 'application/json', 'Content-Disposition': 'attachment; filename="aistrix-account-2026-10-20.json"' } })
   }
   // Marketplace: the server puts a listing live (the browser can't).
-  if (/^\/v1\/apps\/[^/]+\/listing\/go-live$/.test(path)) {
+  if (/^\/v1\/apps\/[^/]+\/listing\/(go-live|unlist)$/.test(path)) {
     const listing = (state.tables.marketplace_listings || []).find(l => l.app_id === path.split('/')[3])
     if (!listing) return response({ error: 'Save a listing first', detail: 'Save a listing first' }, 409)
-    listing.status = 'live'
+    listing.status = path.endsWith('/unlist') ? 'draft' : 'live'
     return response({ ok: true, listing })
   }
   // Customer feedback inbox and ratings (server side).

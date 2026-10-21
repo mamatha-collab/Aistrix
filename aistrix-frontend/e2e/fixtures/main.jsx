@@ -1,4 +1,7 @@
 import './supabase'
+import { MemoryRouter, Routes, Route } from 'react-router-dom'
+import { MarketplacePage, MarketplaceAppPage } from '../../src/pages/MarketplacePage'
+import DeveloperProfilePage from '../../src/pages/DeveloperProfilePage'
 import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import DevStudioPage from '../../src/pages/DevStudioPage'
@@ -38,6 +41,12 @@ function Fixture() {
       ? <AIAppBuilder presentation="inline" navigationGuardRef={navigationGuardRef} onLeave={closeInline} user={user} onClose={() => setInlineType(null)} onBack={() => setInlineType(null)} onCreated={createdInline} />
       : <CreateAppModal presentation="inline" navigationGuardRef={navigationGuardRef} onLeave={closeInline} user={user} initialType={inlineType} onClose={() => setInlineType(null)} onBack={() => setInlineType(null)} onCreated={createdInline} />)}
   </> : null
+  if (new URLSearchParams(location.search).get('scenario')?.startsWith('market-customer')) return <MemoryRouter initialEntries={['/marketplace']}><Routes>
+    <Route path="/marketplace" element={<MarketplacePage />} />
+    <Route path="/marketplace/:id" element={<MarketplaceAppPage />} />
+    <Route path="/dev/:userId" element={<DeveloperProfilePage />} />
+    <Route path="/app/:id" element={<p>Shared app runner destination</p>} />
+  </Routes></MemoryRouter>
   if (chromeLoading) return <DeveloperLoading />
   if (new URLSearchParams(location.search).get('scenario') === 'signed-out') return <Auth developer />
   return <ToastProvider>

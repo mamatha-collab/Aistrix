@@ -6,6 +6,7 @@ import { supabase } from '../supabase'
 import { track, EVENTS } from '../lib/analytics'
 
 import { BRAND } from '../lib/brand'
+import { isFileApp } from '../lib/fileApps'
 // Lazy-loaded — AppRunner is also dynamically imported from DetailPanel.jsx;
 // importing it statically here pins it to this page's chunk and makes that
 // dynamic import ineffective (Vite has to pull in this whole page's chunk
@@ -137,7 +138,7 @@ export default function AppPage() {
 
           <div className="bg-[#171B33] border border-white/10 rounded-2xl p-6">
             <Suspense fallback={null}>
-              {app.app_type === 'data'
+              {isFileApp(app)
                 ? <DataAppRunner app={app} user={user} inline onRun={() => setApp(prev => ({ ...prev, total_runs: (prev.total_runs || 0) + 1 }))} />
                 : app.app_type === 'api'
                 ? <ApiAppRunner app={app} user={user} inline onRun={() => setApp(prev => ({ ...prev, total_runs: (prev.total_runs || 0) + 1 }))} />

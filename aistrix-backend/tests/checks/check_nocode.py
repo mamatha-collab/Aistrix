@@ -15,6 +15,10 @@ c = TestClient(main.app)
 
 async def user(req): return "u1"
 main.require_verified_user = user
+async def allow_limits(*a, **k): return True, ""
+main.check_rate_limit = allow_limits
+async def no_key(*a, **k): return None
+main.fetch_user_api_key_by_id = no_key
 
 class Resp:
     def __init__(s, body, ctype, url="https://acme.test/page"):

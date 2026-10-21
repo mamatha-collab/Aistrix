@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
+import SafeCard from '../components/SafeCard'
 import { applyTheme } from '../utils/theme'
 import { PROVIDER_STYLE, removeProviderKey, saveProviderKey, useProviders } from '../lib/providers'
 import { AccountData, DeveloperEmailAlerts, DeveloperPlan } from '../components/AccountSettings'
@@ -15,7 +16,8 @@ function Section({ id, title, description, children }) {
         <p className="text-white font-medium">{title}</p>
         {description && <p className="text-xs text-slate-400 mt-0.5">{description}</p>}
       </div>
-      <div className="p-6">{children}</div>
+      {/* Each section fails on its own: the others keep working. */}
+      <div className="p-6"><SafeCard name={title}>{children}</SafeCard></div>
     </div>
   )
 }

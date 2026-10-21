@@ -100,7 +100,10 @@ async def lifespan(_app):
     supervisor = asyncio.create_task(_batch_supervisor())
     telemetry_worker = asyncio.create_task(_telemetry_supervisor())
     scheduler = asyncio.create_task(_scheduler_loop())
-    report_production_config()
+    try:
+        report_production_config()
+    except Exception as e:                  # a report, never a reason not to start
+        print(f"startup config report failed: {type(e).__name__}")
     try:
         yield
     finally:
@@ -318,6 +321,22 @@ def extract_user_id(user_jwt: str) -> Optional[str]:
         return None
 
 
+WRONG_ENVIRONMENT = ("This sign-in is for a different environment than this server (for example production "
+                     "instead of staging). Sign out and sign in again here; if it keeps happening, the app and the "
+                     "server are set up for different projects.")
+
+
+def _token_issuer(user_jwt: str) -> Optional[str]:
+    """The token's issuer, read without verifying. Used only to explain a
+    refusal (a token from another Supabase project), never to accept one."""
+    try:
+        import base64
+        payload = user_jwt.split(".")[1]
+        return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))).get("iss")
+    except Exception:
+        return None
+
+
 async def verify_user_jwt(user_jwt: Optional[str]) -> Optional[str]:
     """Verify a Supabase JWT is genuinely valid (signature + expiry) by
     checking it against Supabase Auth, and return the verified user_id.
@@ -328,6 +347,12 @@ async def verify_user_jwt(user_jwt: Optional[str]) -> Optional[str]:
     """
     if not user_jwt:
         return None
+    issuer = _token_issuer(user_jwt)
+    expected = f"{(SUPABASE_URL or '').rstrip('/')}/auth/v1"
+    if issuer and SUPABASE_URL and issuer.rstrip("/") != expected:
+        # e.g. the frontend runs against production while this server uses staging.
+        print(f"sign-in from another project refused: token issuer {issuer}, this server {expected}")
+        raise HTTPException(status_code=401, detail=WRONG_ENVIRONMENT)
     try:
         resp = await asyncio.to_thread(get_anon_client().auth.get_user, user_jwt)
         return resp.user.id if resp and resp.user else None
@@ -417,14 +442,9 @@ async def fetch_safely(method: str, url: str, *, timeout: float = 15, max_redire
 
 
 # ─── Anonymous (unauthenticated) rate limiting ────────────────────────────────
-# /run previously skipped rate limiting entirely whenever no Authorization
-# header was present, meaning anyone could call it with no auth and no limit,
-# burning the server's own Anthropic/OpenAI API key. This adds a per-IP
-# sliding-window limit for that case. Note: this is in-memory and per-process
-# — for a multi-worker/multi-instance deployment, back this with Redis or the
-# same Supabase-backed approach used for authenticated users instead.
+# Atomic, sliding-hour visitor limits shared by every API process/replica.
+# Buckets contain a keyed hash of scope/IP; the database stores no raw IP.
 ANON_HOURLY_LIMIT = int(os.getenv("ANON_RATE_LIMIT_PER_HOUR", "10"))
-_anon_hits: dict[str, deque] = defaultdict(deque)
 
 
 TRUST_PROXY_HEADERS = os.getenv("TRUST_PROXY_HEADERS", "").lower() in ("1", "true", "yes")
@@ -444,26 +464,48 @@ def client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
-def check_embed_visitor_rate_limit(ip: str, app_id: str) -> tuple[bool, str]:
-    now = time.monotonic()
-    hits = _anon_hits[f"embed:{app_id}:{ip}"]
-    while hits and now - hits[0] > 3600:
-        hits.popleft()
-    if len(hits) >= EMBED_VISITOR_HOURLY_LIMIT:
-        return False, "You've reached the hourly limit for this assistant. Please try again later."
-    hits.append(now)
-    return True, ""
+_sb_visitor_limits = None
 
 
-def check_anon_rate_limit(ip: str) -> tuple[bool, str]:
-    now = time.monotonic()
-    hits = _anon_hits[ip]
-    while hits and now - hits[0] > 3600:
-        hits.popleft()
-    if len(hits) >= ANON_HOURLY_LIMIT:
-        return False, f"Rate limit: {ANON_HOURLY_LIMIT} free runs/hour for anonymous use. Sign in or add your own API key for higher limits."
-    hits.append(now)
-    return True, ""
+def _visitor_limit_client():
+    global _sb_visitor_limits
+    if not SUPABASE_SERVICE_ROLE_KEY:
+        return None
+    if _sb_visitor_limits is None:
+        _sb_visitor_limits = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, options=SyncClientOptions(
+            httpx_client=httpx.Client(http2=False, timeout=3,
+                                      limits=httpx.Limits(max_connections=20, max_keepalive_connections=10))))
+    return _sb_visitor_limits
+
+
+async def consume_visitor_limit(scope: str, ip: str, limit: int) -> bool:
+    if limit <= 0:
+        return False
+    key = os.getenv("RATE_LIMIT_HASH_KEY") or SUPABASE_SERVICE_ROLE_KEY
+    if not key:
+        raise HTTPException(status_code=503, detail="Visitor access is temporarily unavailable. Please try again later.")
+    bucket = hmac.new(key.encode(), f"{scope}:{ip}".encode(), hashlib.sha256).hexdigest()
+    try:
+        sb = _visitor_limit_client()
+        if not sb:
+            raise ValueError("Visitor limit storage is unavailable")
+        result = await asyncio.wait_for(db(sb.rpc("consume_visitor_limit", {"p_bucket": bucket, "p_limit": limit})), timeout=4)
+        if not isinstance(result.data, bool):
+            raise ValueError("Invalid visitor limit response")
+        return result.data
+    except Exception:
+        # Never fall back to a fresh per-process bucket on an outage/restart.
+        raise HTTPException(status_code=503, detail="Visitor access is temporarily unavailable. Please try again later.") from None
+
+
+async def check_embed_visitor_rate_limit(ip: str, app_id: str) -> tuple[bool, str]:
+    allowed = await consume_visitor_limit(f"embed:{app_id}", ip, EMBED_VISITOR_HOURLY_LIMIT)
+    return allowed, "" if allowed else "You've reached the hourly limit for this assistant. Please try again later."
+
+
+async def check_anon_rate_limit(ip: str) -> tuple[bool, str]:
+    allowed = await consume_visitor_limit("anonymous", ip, ANON_HOURLY_LIMIT)
+    return allowed, "" if allowed else f"Rate limit: {ANON_HOURLY_LIMIT} free runs/hour for anonymous use. Sign in or add your own API key for higher limits."
 
 
 async def fetch_user_api_key(user_jwt: str, provider: str, sb: Optional[Client] = None) -> Optional[str]:
@@ -994,7 +1036,7 @@ async def check_rate_limit(request: Request, user_jwt: Optional[str], user_id: O
         except Exception:
             pass  # DB error on a verified user — fall through to the conservative IP limit below
 
-    return check_anon_rate_limit(client_ip(request))
+    return await check_anon_rate_limit(client_ip(request))
 
 
 # ─── Output format instructions ───────────────────────────────────────────────
@@ -1510,10 +1552,24 @@ def claude_sampling(model: str, temperature: Optional[float]) -> dict:
     return {"temperature": temperature} if temperature is not None and _CLAUDE_TAKES_TEMPERATURE.match(model or "") else {}
 
 
-async def stream_claude(system: str, user_input: str, model: str, api_key: str = None, max_tokens: int = 4096, temperature: float = 1.0, usage_holder: dict = None):
+def _claude_content(user_input: str, images: Optional[list] = None):
+    if not images:
+        return user_input
+    return [*({"type": "image", "source": {"type": "base64", "media_type": i.media_type, "data": i.data}} for i in images),
+            {"type": "text", "text": user_input}]
+
+
+def _openai_content(user_input: str, images: Optional[list] = None):
+    if not images:
+        return user_input
+    return [*({"type": "image_url", "image_url": {"url": f"data:{i.media_type};base64,{i.data}"}} for i in images),
+            {"type": "text", "text": user_input}]
+
+
+async def stream_claude(system: str, user_input: str, model: str, api_key: str = None, max_tokens: int = 4096, temperature: float = 1.0, usage_holder: dict = None, images: Optional[list] = None):
     client = anthropic.AsyncAnthropic(api_key=api_key or os.getenv("ANTHROPIC_API_KEY"))
     async with client.messages.stream(model=model, max_tokens=max_tokens, system=system,
-                                      messages=[{"role": "user", "content": user_input}],
+                                      messages=[{"role": "user", "content": _claude_content(user_input, images)}],
                                       **claude_sampling(model, temperature)) as stream:
         async for text in stream.text_stream:
             yield text
@@ -1524,10 +1580,10 @@ async def stream_claude(system: str, user_input: str, model: str, api_key: str =
             usage_holder["_stop"] = final.stop_reason   # popped by execute_run
 
 
-async def stream_openai(system: str, user_input: str, model: str, api_key: str = None, max_tokens: int = 4096, temperature: float = 1.0, usage_holder: dict = None, provider: str = "openai"):
+async def stream_openai(system: str, user_input: str, model: str, api_key: str = None, max_tokens: int = 4096, temperature: float = 1.0, usage_holder: dict = None, provider: str = "openai", images: Optional[list] = None):
     client = _openai_client(provider, api_key)
     stream = await client.chat.completions.create(
-        model=model, messages=[{"role": "system", "content": system}, {"role": "user", "content": user_input}],
+        model=model, messages=[{"role": "system", "content": system}, {"role": "user", "content": _openai_content(user_input, images)}],
         max_tokens=max_tokens, stream=True, temperature=temperature,
         # Only ask the provider for a trailing usage-only chunk when a caller
         # actually wants it — some OpenAI-compatible endpoints choke on
@@ -1630,6 +1686,31 @@ async def run_openai_with_tools(system, user_input, model, tools, api_key=None, 
 
 
 # ─── Request model with validation ────────────────────────────────────────────
+IMAGE_TYPES = ("image/png", "image/jpeg", "image/webp", "image/gif")
+MAX_RUN_IMAGES = int(os.getenv("MAX_RUN_IMAGES", "4"))
+MAX_IMAGE_BYTES = int(os.getenv("MAX_IMAGE_BYTES", str(5 * 1024 * 1024)))
+
+
+class RunImage(BaseModel):
+    """One image sent with a run (Vision apps): base64 data, no data: prefix."""
+    media_type: str
+    data: str
+
+    @field_validator("media_type")
+    @classmethod
+    def _type(cls, v: str) -> str:
+        if v not in IMAGE_TYPES:
+            raise ValueError("Images must be PNG, JPEG, WebP or GIF")
+        return v
+
+    @field_validator("data")
+    @classmethod
+    def _size(cls, v: str) -> str:
+        if len(v) * 3 // 4 > MAX_IMAGE_BYTES:
+            raise ValueError(f"Each image must be under {MAX_IMAGE_BYTES // (1024 * 1024)} MB")
+        return v
+
+
 class RunRequest(BaseModel):
     app_id: Optional[str] = None
     input: str
@@ -1652,6 +1733,8 @@ class RunRequest(BaseModel):
     page_index: Optional[int] = Field(default=None, ge=0, le=50)   # multi-page apps
     # Form apps: field values for {{Field Name}} placeholders in the prompt.
     field_values: Optional[dict[str, Any]] = None
+    # Vision apps: images the model looks at with the input.
+    images: Optional[list[RunImage]] = Field(default=None, max_length=MAX_RUN_IMAGES)
 
     @field_validator("input")
     @classmethod
@@ -2065,7 +2148,7 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
         if (request.headers.get("origin") or "").rstrip("/") not in [o.rstrip("/") for o in ALLOWED_ORIGINS]:
             return JSONResponse(status_code=403, content={
                 "error": f"Website visitors can use this app only through its {BRAND_NAME} embed. Sign in to run it here."})
-        allowed, rate_msg = check_embed_visitor_rate_limit(client_ip(request), app_row["id"])
+        allowed, rate_msg = await check_embed_visitor_rate_limit(client_ip(request), app_row["id"])
         if not allowed:
             return JSONResponse(status_code=429, content={"error": rate_msg})
     elif key_source == "developer":
@@ -2125,6 +2208,11 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
         _default(prod.get("blueprint") or {}) if prod else fetch_app_blueprint(req.app_id) if req.app_id else _default({}),
     )
     webhook_url = app_row.get("webhook_url") if app_row else None
+
+    if req.images and (tools or custom):
+        return JSONResponse(status_code=400, content={"code": "images_not_supported", "error": (
+            "Images can't be sent to apps that use tools or a custom model yet. Remove the images, "
+            "or use an app without tools." if tools else "Images can't be sent to a custom model yet.")})
 
     if knowledge:
         system = f"<knowledge_base>\n{knowledge}\n</knowledge_base>\n\n{system}"
@@ -2244,7 +2332,8 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
                 for attempt in range(2):
                     attempt_usage: dict = {}
                     parts = [t async for t in stream_fn(system, attempt_input, model, user_api_key,
-                                                        temperature=min(temp, 0.3), usage_holder=attempt_usage)]
+                                                        temperature=min(temp, 0.3), usage_holder=attempt_usage,
+                                                        **({"images": req.images} if req.images else {}))]
                     if attempt_usage.pop("_stop", None) == "refusal":
                         await outcome(False, "refusal")
                         yield _sse({"error": REFUSAL_MESSAGE})
@@ -2271,7 +2360,8 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
 
             # ── Standard streaming ──
             else:
-                async for token in stream_fn(system, req.input, model, user_api_key, temperature=temp, usage_holder=usage):
+                async for token in stream_fn(system, req.input, model, user_api_key, temperature=temp, usage_holder=usage,
+                                             **({"images": req.images} if req.images else {})):
                     collected.append(token)
                     yield _sse({"token": token})
                 stop = usage.pop("_stop", None)
@@ -3347,7 +3437,7 @@ async def file_caller(request: Request, app_id: Optional[str]) -> tuple[Optional
     if not (app_row and app_row.get("is_published") and app_row.get("embed_public")
             and not app_row.get("is_paid") and app_row.get("visibility") != "private"):
         raise HTTPException(status_code=401, detail="Sign in to use this app")
-    allowed, msg = check_embed_visitor_rate_limit(client_ip(request), app_row["id"])
+    allowed, msg = await check_embed_visitor_rate_limit(client_ip(request), app_row["id"])
     if not allowed:
         raise HTTPException(status_code=429, detail=msg)
     return None, None, app_row
@@ -3435,6 +3525,86 @@ def _extract_docx(data: bytes) -> str:
         if text.strip():
             paras.append(text)
     return "\n".join(paras)
+
+
+AUDIO_EXTS = ("mp3", "mp4", "mpeg", "mpga", "m4a", "wav", "webm", "ogg", "flac")
+MAX_AUDIO_BYTES = int(os.getenv("MAX_AUDIO_BYTES", str(25 * 1024 * 1024)))     # OpenAI's limit per file
+TRANSCRIBE_MODEL = os.getenv("TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe")
+
+
+class TranscribeRequest(BaseModel):
+    file_name: str = Field(..., max_length=255)
+    content_b64: str
+    app_id: str
+
+
+async def transcribe_key_for(user_id: Optional[str], user_jwt: Optional[str], app_row: dict) -> Optional[str]:
+    """OpenAI key for transcription: the person's own, else the app developer's.
+    Aistrix's key only for Aistrix's own apps (and the older test suites)."""
+    own = (await fetch_user_api_key(user_jwt, "openai") if user_jwt
+           else await fetch_user_api_key_by_id(user_id, "openai") if user_id else None)
+    key = own or await fetch_user_api_key_by_id(app_row.get("created_by"), "openai")
+    if key:
+        return key
+    if PLATFORM_KEYS_FOR_DEVELOPER_APPS or await developer_tier(app_row.get("created_by")) == "staff":
+        return platform_key("openai")
+    return None
+
+
+@app.post("/v1/files/transcribe")
+async def transcribe_audio(req: TranscribeRequest, request: Request):
+    """Turn an audio file into text for a Voice app (then the app's prompt
+    runs on the transcript). Uses an OpenAI key: the person's own, else the
+    app developer's."""
+    import base64
+    user_id, user_jwt, visitor_app = await file_caller(request, req.app_id)
+    app_row = visitor_app or await load_app_row(req.app_id)
+    if not app_row:
+        raise HTTPException(status_code=404, detail="App not found")
+    # Transcription spends the developer's (or the person's) OpenAI credit:
+    # only for people who can use this Voice app, within their run limits.
+    if not visitor_app:
+        caller = ApiCaller(user_id=user_id, user_jwt=user_jwt)
+        editor = await can_edit_app(app_row, caller)
+        if not editor:
+            if not (app_row.get("is_published") or await can_view_app(app_row, caller)):
+                raise HTTPException(status_code=404, detail="App not found")
+            if app_row.get("app_type") != "voice":
+                raise HTTPException(status_code=400, detail="Audio is transcribed for Voice apps only")
+            if app_row.get("is_paid") and not await find_active_entitlement(app_row["id"], caller):
+                raise HTTPException(status_code=402, detail="Purchase access to use this app")
+            allowed, msg = await check_rate_limit(request, user_jwt, user_id)
+            if not allowed:
+                raise HTTPException(status_code=429, detail=msg)
+    elif app_row.get("app_type") != "voice":
+        raise HTTPException(status_code=400, detail="Audio is transcribed for Voice apps only")
+    ext = req.file_name.lower().rsplit(".", 1)[-1] if "." in req.file_name else ""
+    if ext not in AUDIO_EXTS:
+        raise HTTPException(status_code=415, detail="Supported audio: " + ", ".join(f".{e}" for e in AUDIO_EXTS))
+    try:
+        data = base64.b64decode(req.content_b64, validate=True)
+    except Exception:
+        raise HTTPException(status_code=400, detail="content_b64 is not valid base64")
+    if len(data) > MAX_AUDIO_BYTES:
+        raise HTTPException(status_code=413, detail=f"Audio too large (max {MAX_AUDIO_BYTES // (1024 * 1024)} MB). Split longer recordings.")
+    key = await transcribe_key_for(user_id, user_jwt, app_row)
+    if not key:
+        raise HTTPException(status_code=409, detail=(
+            "Transcribing audio needs an OpenAI key. Add yours in Settings → Keys, or ask the app's developer to add one."))
+    try:
+        client = _openai_client("openai", key)
+        result = await client.audio.transcriptions.create(model=TRANSCRIBE_MODEL, file=(req.file_name, data))
+    except openai.AuthenticationError:
+        raise HTTPException(status_code=502, detail="The OpenAI key was rejected while transcribing. Check it in Settings → Keys.")
+    except openai.RateLimitError:
+        raise HTTPException(status_code=429, detail="OpenAI turned the transcription away (rate limit or no credit). Try again later.")
+    except openai.APIError as e:
+        print(f"transcription failed: {type(e).__name__}: {str(e)[:200]}")
+        raise HTTPException(status_code=502, detail="The audio couldn't be transcribed. Check the file and try again.")
+    text = (getattr(result, "text", None) or "").strip()
+    if not text:
+        raise HTTPException(status_code=422, detail="No speech was found in this recording.")
+    return {"text": text[:MAX_EXTRACT_CHARS], "truncated": len(text) > MAX_EXTRACT_CHARS, "model": TRANSCRIBE_MODEL}
 
 
 @app.post("/v1/files/extract")
@@ -5645,9 +5815,49 @@ async def listing_go_live(app_id: str, request: Request):
     problems = listing_problems(app_row, listing)
     if problems:
         return JSONResponse(status_code=409, content={"error": problems[0], "problems": problems})
-    updated = await db(sb.table("marketplace_listings").update({"status": "live", "updated_at": datetime.now(timezone.utc).isoformat()})
-                       .eq("id", listing["id"]))
-    return {"ok": True, "listing": (updated.data or [None])[0] or {**listing, "status": "live"}}
+    return await _transition_market_listing(sb, app_id, listing, True, await _market_revision(request, listing))
+
+
+async def _market_revision(request, listing):
+    if not await request.body():
+        return listing.get("updated_at")  # Compatibility with the older publish endpoint.
+    try:
+        body = await request.json()
+        revision = body["expected_updated_at"]
+        if revision is not None:
+            datetime.fromisoformat(revision.replace("Z", "+00:00"))
+        return revision
+    except (ValueError, TypeError, KeyError, AttributeError):
+        raise HTTPException(status_code=422, detail="Refresh Market before changing the listing status.") from None
+
+
+async def _transition_market_listing(sb, app_id, listing, live, revision):
+    try:
+        updated = await db(sb.rpc("set_market_listing_status", {
+            "p_app_id": app_id, "p_live": live, "p_expected_updated_at": revision}))
+    except Exception as error:
+        # Only known conflict/validation messages are suitable for the editor.
+        message = str(error)
+        known = ("Listing changed", "Publish the app", "Complete the listing", "Paid apps require", "Run the app", "Save a listing", "App no longer exists")
+        if any(text in message for text in known):
+            raise HTTPException(status_code=409, detail=next(text for text in known if text in message) + ". Refresh Market and review the listing.") from None
+        raise HTTPException(status_code=503, detail="Marketplace could not save the listing status. Please try again.") from None
+    if not isinstance(updated.data, dict) or not updated.data.get("id"):
+        raise HTTPException(status_code=503, detail="Marketplace did not confirm the listing change. Refresh and try again.")
+    return {"ok": True, "listing": updated.data}
+
+
+@app.post("/v1/apps/{app_id}/listing/unlist")
+async def listing_unlist(app_id: str, request: Request):
+    await _editable_app(app_id, request)
+    sb = _service_client()
+    if not sb:
+        raise HTTPException(status_code=503, detail="Marketplace isn't available on this server")
+    result = await db(sb.table("marketplace_listings").select("*").eq("app_id", app_id).limit(1))
+    listing = (result.data or [None])[0]
+    if not listing:
+        raise HTTPException(status_code=404, detail="Listing not found")
+    return await _transition_market_listing(sb, app_id, listing, False, await _market_revision(request, listing))
 
 
 @app.post("/apps/{app_id}/publish")
@@ -6542,6 +6752,18 @@ async def app_monitor(app_id: str, request: Request, days: int = 30):
             "telemetry_health": await _telemetry_health([app_id]), **summary}
 
 
+async def _open_feedback_count(app_id: str) -> Optional[int]:
+    """Open feedback for the Monitor overview; None (shown as unknown) if it
+    can't be read, so the rest of the overview still loads."""
+    try:
+        res = await db(_service_client().table("app_feedback").select("id", count="exact", head=True)
+                       .eq("app_id", app_id).in_("status", ["new", "investigating"]))
+        return res.count or 0
+    except Exception as e:
+        print(f"open feedback count unavailable for {app_id}: {type(e).__name__}")
+        return None
+
+
 @app.get("/v1/monitor")
 async def monitor_overview(request: Request, app_ids: str = "", days: int = 7):
     """Health of several apps at once (the ones the caller can edit; others
@@ -6557,9 +6779,7 @@ async def monitor_overview(request: Request, app_ids: str = "", days: int = 7):
         if not (row and await can_edit_app(row, caller)):
             return None
         (runs, ratings, truncated), open_res = await asyncio.gather(
-            _monitor_rows(app_id, days, row.get("created_by")),
-            db(_service_client().table("app_feedback").select("id", count="exact", head=True)
-               .eq("app_id", app_id).in_("status", ["new", "investigating"])))
+            _monitor_rows(app_id, days, row.get("created_by")), _open_feedback_count(app_id))
         all_runs.extend(runs)
         all_ratings.extend(ratings)
         summary = monitor_summary(runs, ratings, days, published=bool(row.get("is_published")), truncated=truncated, live_version=row.get("live_version"))
@@ -6567,7 +6787,7 @@ async def monitor_overview(request: Request, app_ids: str = "", days: int = 7):
         if level == "basic":
             summary = basic_analytics(summary)
         return {"app_id": app_id, "live_version": row.get("live_version"), "published": bool(row.get("is_published")), "totals": summary["totals"], "alerts": summary["alerts"], "truncated": truncated,
-                "open_feedback": open_res.count or 0, "analytics": level}
+                "open_feedback": open_res, "analytics": level}
 
     semaphore = asyncio.Semaphore(4)
     async def bounded(app_id):
@@ -6781,6 +7001,22 @@ async def rollback_version(app_id: str, version_num: int, request: Request, expe
             "has_draft_changes": not same_as_live(snapshot, state)}
 
 
+async def _isolated_checks(app_id: str, user_jwt: Optional[str]) -> list[str]:
+    """Publish checks for the release view. Each check runs on its own: one
+    that can't run becomes a visible problem (so publishing stays blocked)
+    and the others still report."""
+    out: list[str] = []
+    for label, check in (("Publish checks", lambda: _publish_checks(app_id, user_jwt)),
+                         ("Secrets", lambda: _missing_secret_checks(app_id))):
+        try:
+            out += await check()
+        except Exception as e:
+            print(f"release check '{label}' failed for {app_id}: {type(e).__name__}: {str(e)[:200]}")
+            sentry_sdk.capture_exception(e)
+            out.append(f"{label} couldn't be checked right now. Try again in a moment.")
+    return out
+
+
 @app.get("/v1/apps/{app_id}/release")
 async def get_release(app_id: str, request: Request):
     """Draft vs live: what end users run, whether the draft differs, and
@@ -6790,7 +7026,7 @@ async def get_release(app_id: str, request: Request):
     draft = state_hash(state)
     prod = app_row.get("prod_snapshot") if isinstance(app_row.get("prod_snapshot"), dict) else None
     tests = await app_test_status(app_row, caller.user_id)
-    checks = await _publish_checks(app_id, caller.user_jwt) + await _missing_secret_checks(app_id)
+    checks = await _isolated_checks(app_id, caller.user_jwt)
     return {
         "is_published": bool(app_row.get("is_published")), "promoted_at": app_row.get("promoted_at"),
         "live_version": app_row.get("live_version"), "has_live_version": bool(prod), "draft_hash": draft, "live_hash": state_hash(prod) if prod else None,
@@ -7297,6 +7533,10 @@ def production_config_gaps() -> dict:
 def report_production_config() -> None:
     """Printed at startup so a deployment with a missing setting is obvious
     in the host's logs (and in /health/details)."""
+    # Which project this server uses (the frontend logs its own in development),
+    # so a staging/production mix-up is visible at a glance.
+    print(f"Supabase project: {urlsplit(SUPABASE_URL or '').hostname or 'not set'} "
+          f"(ENVIRONMENT={os.getenv('ENVIRONMENT', 'production')})")
     gaps = production_config_gaps()
     if gaps["environment"].lower() in ("development", "dev", "local", "test"):
         return

@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
+import { withPrivateFields } from '../lib/appColumns'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
+import { manageRequest } from '../lib/manageApi'
 import { timeAgo } from '../utils'
 
 const BADGE_KEYS = [
@@ -20,14 +22,25 @@ function ReviewQueue({ toast }) {
 
   useEffect(() => {
     supabase.from('apps')
-      .select('id, name, emoji, color, description, system_prompt, app_type, status, review_notes, created_at, total_runs')
+      .select('id, name, emoji, color, description, app_type, status, created_at, total_runs')
       .in('status', ['pending', 'flagged'])
       .order('created_at', { ascending: false })
-      .then(({ data }) => { setApps(data || []); setLoading(false) })
+      // Prompt and review notes are private columns: staff read them separately.
+      .then(async ({ data }) => { setApps(await withPrivateFields(supabase, data || [])); setLoading(false) })
   }, [])
 
   async function setStatus(id, status) {
     const note = notes[id] || ''
+    if (status === 'approved' || status === 'rejected') {
+      // Through the server: it records the decision and emails the developer.
+      try {
+        await manageRequest(`/v1/admin/apps/${encodeURIComponent(id)}/review`, { method: 'POST',
+          body: JSON.stringify({ decision: status === 'approved' ? 'approve' : 'reject', note }) })
+      } catch (e) { toast(e.message, 'error', 6000); return }
+      setApps(prev => prev.filter(a => a.id !== id))
+      toast(`App ${status}`, status === 'approved' ? 'success' : 'info')
+      return
+    }
     const { error } = await supabase.from('apps').update({ status, review_notes: note, is_published: status === 'approved' }).eq('id', id)
     if (error) { toast(error.message, 'error'); return }
     setApps(prev => prev.filter(a => a.id !== id))

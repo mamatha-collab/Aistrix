@@ -22,7 +22,7 @@ export default function WorkspaceRecommendations({ app, onDismiss, onViewWorkspa
       <div className="px-4 pt-4 pb-3 border-b border-white/5">
         <div className="flex items-center justify-between mb-0.5">
           <p className="text-white font-semibold text-sm">⚡ Add to a Workflow?</p>
-          <button onClick={dismiss} className="text-slate-500 hover:text-white text-xs transition-colors">✕</button>
+          <button aria-label="Close" onClick={dismiss} className="text-slate-500 hover:text-white text-xs transition-colors">✕</button>
         </div>
         <p className="text-xs text-slate-400">Your new app fits into these workflow templates:</p>
       </div>

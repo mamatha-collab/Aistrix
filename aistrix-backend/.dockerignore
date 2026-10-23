@@ -1,0 +1,11 @@
+# Never ship local settings or keys in the image; the host provides them.
+.env
+.env.*
+!.env.example
+venv/
+__pycache__/
+*.pyc
+tests/
+scripts/
+*.sqlite3
+*.log

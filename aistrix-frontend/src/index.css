@@ -77,6 +77,12 @@ body {
   box-shadow: 14px 0 34px var(--t-shadow);
 }
 
+/* Let the workspace backdrop continue through the left pane below the rows. */
+.app-sidebar.app-sidebar-developer {
+  background: transparent;
+  box-shadow: none;
+}
+
 .app-field,
 .app-chrome-button,
 .app-build-menu {
@@ -364,6 +370,7 @@ body {
   top: 50%;
   transform: translateY(-50%);
   animation: flow-dot 2.4s ease-in-out infinite;
+  animation-delay: var(--flow-delay, 0s);
 }
 @keyframes flow-dot {
   0%   { left: 0;                opacity: 0; }
@@ -383,6 +390,47 @@ body {
   to   { opacity: 1; transform: translateX(0); }
 }
 .animate-slide-in { animation: slide-in 0.18s ease-out; }
+
+@keyframes aistrix-ribbon-breathe {
+  0%, 100% { box-shadow: inset 0 0 0 rgba(108, 92, 231, 0); }
+  50%      { box-shadow: inset 0 0 18px rgba(108, 92, 231, 0.12); }
+}
+
+@keyframes aistrix-guide-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(162, 155, 254, 0.18), 0 0 18px rgba(108, 92, 231, 0.18); }
+  50%      { box-shadow: 0 0 0 7px rgba(162, 155, 254, 0), 0 0 26px rgba(108, 92, 231, 0.32); }
+}
+
+@keyframes aistrix-popover-in {
+  from { opacity: 0; transform: translateY(-6px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.aistrix-ribbon-tab {
+  animation: aistrix-ribbon-breathe 3.8s ease-in-out infinite;
+}
+
+.aistrix-ribbon-tab-active {
+  animation: aistrix-ribbon-breathe 2.8s ease-in-out infinite;
+}
+
+.aistrix-guide-bulb {
+  animation: aistrix-guide-pulse 2.6s ease-in-out infinite;
+}
+
+.aistrix-popover-in {
+  transform-origin: top right;
+  animation: aistrix-popover-in 160ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aistrix-ribbon-tab,
+  .aistrix-ribbon-tab-active,
+  .aistrix-guide-bulb,
+  .aistrix-popover-in {
+    animation: none;
+  }
+}
 
 /* View transitions — cross-fade between nav tabs */
 ::view-transition-old(root) {

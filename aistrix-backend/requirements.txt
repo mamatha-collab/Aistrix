@@ -56,8 +56,11 @@ uvicorn==0.49.0
 websockets==15.0.1
 yarl==1.24.2
 
-# Only needed if you actually use the "pdf"/"ocr" tool types (execute_tool in
-# main.py already handles their absence gracefully via ImportError):
-# pypdf
+# File extraction for Data apps (/v1/files/extract) and the agent "pdf" tool.
+pypdf==6.19.0
+openpyxl==3.1.5
+et_xmlfile==2.0.0
+
+# Only needed if you use the agent "ocr" tool type (handled via ImportError):
 # pytesseract
 # Pillow

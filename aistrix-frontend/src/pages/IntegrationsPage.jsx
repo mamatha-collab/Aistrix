@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useToast } from '../hooks/useToast'
 
+import { BRAND } from '../lib/brand'
 const INTEGRATIONS = [
   {
     category: 'Communication',
@@ -22,8 +23,8 @@ const INTEGRATIONS = [
     category: 'Automation',
     items: [
       { id: 'zapier', name: 'Zapier', icon: '⚡', desc: 'Trigger Zaps when an app run completes', status: 'soon', color: '#FF4A00' },
-      { id: 'make', name: 'Make (Integromat)', icon: '🔄', desc: 'Connect Aistrix to 1,000+ apps via Make scenarios', status: 'soon', color: '#6D00CC' },
-      { id: 'n8n', name: 'n8n', icon: '🔗', desc: 'Self-hosted workflow automation with Aistrix nodes', status: 'soon', color: '#EA4B71' },
+      { id: 'make', name: 'Make (Integromat)', icon: '🔄', desc: `Connect ${BRAND} to 1,000+ apps via Make scenarios`, status: 'soon', color: '#6D00CC' },
+      { id: 'n8n', name: 'n8n', icon: '🔗', desc: `Self-hosted workflow automation with ${BRAND} nodes`, status: 'soon', color: '#EA4B71' },
     ],
   },
   {
@@ -38,8 +39,8 @@ const INTEGRATIONS = [
     category: 'Developer',
     items: [
       { id: 'webhook', name: 'Webhooks', icon: '🔗', desc: 'POST run results to any URL — already available per app', status: 'live', color: '#6C5CE7' },
-      { id: 'api', name: 'REST API', icon: '{ }', desc: 'Call any Aistrix app programmatically with your API key', status: 'live', color: '#6C5CE7' },
-      { id: 'github', name: 'GitHub Actions', icon: '🐙', desc: 'Run Aistrix apps as part of your CI/CD pipeline', status: 'soon', color: '#24292E' },
+      { id: 'api', name: 'REST API', icon: '{ }', desc: `Call any ${BRAND} app programmatically with your API key`, status: 'live', color: '#6C5CE7' },
+      { id: 'github', name: 'GitHub Actions', icon: '🐙', desc: `Run ${BRAND} apps as part of your CI/CD pipeline`, status: 'soon', color: '#24292E' },
     ],
   },
 ]
@@ -67,7 +68,7 @@ export default function IntegrationsPage() {
     <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
       <div>
         <h1 className="text-white text-xl font-semibold">Integrations</h1>
-        <p className="text-slate-400 text-sm mt-0.5">Connect Aistrix to the tools you already use.</p>
+        <p className="text-slate-400 text-sm mt-0.5">Connect {BRAND} to the tools you already use.</p>
       </div>
 
       <div className="flex items-center gap-2 bg-[#171B33] border border-white/10 rounded-xl px-4 py-2.5 max-w-sm">
@@ -114,7 +115,7 @@ export default function IntegrationsPage() {
 
       <div className="bg-[#171B33] border border-white/5 rounded-2xl p-6 text-center">
         <p className="text-white font-medium mb-1">Don't see what you need?</p>
-        <p className="text-slate-400 text-sm mb-4">Use our webhook system to connect Aistrix to any service.</p>
+        <p className="text-slate-400 text-sm mb-4">Use our webhook system to connect {BRAND} to any service.</p>
         <p className="text-[11px] text-slate-500">
           Every app can POST results to a webhook URL — works with Zapier, n8n, Make, and any custom endpoint.
           Set it in <strong className="text-slate-400">Create App → Step 2 → Webhook URL</strong>.

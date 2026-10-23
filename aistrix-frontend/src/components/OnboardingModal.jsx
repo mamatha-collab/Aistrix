@@ -1,5 +1,6 @@
 import { useState } from 'react'
 
+import { BRAND } from '../lib/brand'
 const WORK_APPS = [
   { id: 'resume',   emoji: '📄', name: 'Resume Builder',            desc: 'Create polished resumes tailored to any job posting.' },
   { id: 'email',    emoji: '✉️',  name: 'Email Writer',              desc: 'Draft professional emails in seconds with the right tone.' },
@@ -18,7 +19,7 @@ const PERSONAL_APPS = [
   { id: 'journal',  emoji: '✍️',  name: 'Daily Journal',             desc: 'Guided prompts and reflections for a meaningful journaling habit.' },
 ]
 
-export default function OnboardingModal({ onComplete }) {
+export default function OnboardingModal({ onComplete, onClose }) {
   const [step, setStep] = useState(1)
   const [useCase, setUseCase] = useState(null)      // 'work' | 'personal'
   const [selected, setSelected] = useState(new Set())
@@ -38,9 +39,22 @@ export default function OnboardingModal({ onComplete }) {
     onComplete?.(picks)
   }
 
+  function handleClose() {
+    if (onClose) onClose()
+    else onComplete?.([])
+  }
+
   return (
     <div className="fixed inset-0 bg-black/70 backdrop-blur-sm z-50 flex items-center justify-center p-4">
-      <div className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden">
+      <div className="relative bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-lg shadow-2xl overflow-hidden">
+        <button
+          type="button"
+          onClick={handleClose}
+          aria-label="Close onboarding"
+          className="absolute top-4 right-4 z-10 text-slate-500 hover:text-white transition-colors"
+        >
+          ✕
+        </button>
 
         {/* Progress dots */}
         <div className="flex items-center gap-2 px-8 pt-6">
@@ -53,10 +67,10 @@ export default function OnboardingModal({ onComplete }) {
         {step === 1 && (
           <div className="px-8 py-6">
             <div className="text-5xl mb-4 text-center">✦</div>
-            <h1 className="text-white font-bold text-2xl text-center mb-2">Welcome to Aistrix</h1>
+            <h1 className="text-white font-bold text-2xl text-center mb-2">Welcome to {BRAND}</h1>
             <p className="text-slate-400 text-sm text-center mb-8">Your personal AI app builder. Let's get you set up in 60 seconds.</p>
 
-            <p className="text-slate-300 text-sm font-medium mb-3">What will you mainly use Aistrix for?</p>
+            <p className="text-slate-300 text-sm font-medium mb-3">What will you mainly use {BRAND} for?</p>
             <div className="grid grid-cols-2 gap-3 mb-8">
               {[
                 { id: 'work',     emoji: '🏢', label: 'Work & Business' },
@@ -137,7 +151,7 @@ export default function OnboardingModal({ onComplete }) {
             <button onClick={handleComplete}
               className="w-full py-3 rounded-xl font-semibold text-sm text-white transition-all"
               style={{ background: 'linear-gradient(135deg, #6C5CE7, #E84393)' }}>
-              Open Aistrix ✦
+              Open {BRAND} ✦
             </button>
           </div>
         )}

@@ -1,8 +1,11 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { clearLocalDraft, readLocalDraft, saveLocalDraft } from '../lib/localDraft'
 import { createPortal } from 'react-dom'
-import Editor, { loader } from '@monaco-editor/react'
+import Editor from '@monaco-editor/react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
+import { saveAppFields } from '../lib/appFields'
+import ConfirmDialog from './ConfirmDialog'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -98,7 +101,7 @@ function registerAistrixLang(monaco) {
       root: [
         [/\{\{[^}]+\}\}/, 'aistrix-variable'],
         [/#.*$/, 'comment'],
-        [/[^\{#]+/, 'text'],
+        [/[^{#]+/, 'text'],
         [/\{/, 'text'],
       ],
     },
@@ -168,10 +171,26 @@ function parseSSELine(line) {
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
-export default function PromptStudio({ app: initialApp, user, onClose, onSaved }) {
+export default function PromptStudio({ app: initialApp, onClose, onSaved, mode = 'modal', navigationGuardRef, onGoToTest, keyboardShortcuts = true }) {
   const [prompt, setPrompt]       = useState(initialApp.system_prompt || '')
   const [saving, setSaving]       = useState(false)
   const [dirty, setDirty]         = useState(false)
+  // The prompt as last loaded or saved here: saving checks nobody changed it since.
+  const savedPromptRef = useRef(initialApp.system_prompt ?? null)
+  const [conflict, setConflict]   = useState(null)    // { theirs } — a teammate saved first
+  const [confirmClose, setConfirmClose] = useState(false)
+  const [leaveAction, setLeaveAction] = useState(null)
+  // Unsaved prompt edits left in this browser (reload, crash, expired session).
+  const [restoreOffer, setRestoreOffer] = useState(() => {
+    const local = readLocalDraft('prompt', initialApp.id)
+    return local && local.value !== (initialApp.system_prompt || '') ? local : null
+  })
+  useEffect(() => {
+    if (restoreOffer) return undefined
+    if (!dirty) { clearLocalDraft('prompt', initialApp.id); return undefined }
+    const t = setTimeout(() => saveLocalDraft('prompt', initialApp.id, prompt, savedPromptRef.current), 400)
+    return () => clearTimeout(t)
+  }, [prompt, dirty, restoreOffer, initialApp.id])
 
   // Live preview
   const [sampleInput, setSampleInput] = useState('')
@@ -185,6 +204,30 @@ export default function PromptStudio({ app: initialApp, user, onClose, onSaved }
 
   const toast = useToast()
   const editorRef = useRef(null)
+  useEffect(() => () => abortRef.current?.abort(), [])
+  useEffect(() => {
+    if (!navigationGuardRef) return undefined
+    const guard = proceed => {
+      if (!dirty) return true
+      setLeaveAction(() => proceed)
+      return false
+    }
+    navigationGuardRef.current = guard
+    const unload = event => { if (dirty) { event.preventDefault(); event.returnValue = '' } }
+    window.addEventListener('beforeunload', unload)
+    return () => {
+      if (navigationGuardRef.current === guard) navigationGuardRef.current = null
+      window.removeEventListener('beforeunload', unload)
+    }
+  }, [dirty, navigationGuardRef])
+
+  useEffect(() => {
+    if (!dirty && (initialApp.system_prompt ?? null) !== savedPromptRef.current) {
+      savedPromptRef.current = initialApp.system_prompt ?? null
+      setPrompt(initialApp.system_prompt || '')
+      setPreviewOutput('')
+    }
+  }, [initialApp.system_prompt, dirty])
 
   // Token + cost estimates
   const promptTokens = estimateTokens(prompt)
@@ -203,6 +246,7 @@ export default function PromptStudio({ app: initialApp, user, onClose, onSaved }
   }
 
   function insertVariable(varName) {
+    setDirty(true)
     const editor = editorRef.current
     if (!editor) {
       setPrompt(p => p + varName)
@@ -237,6 +281,7 @@ export default function PromptStudio({ app: initialApp, user, onClose, onSaved }
           'Authorization': `Bearer ${session?.access_token}`,
         },
         body: JSON.stringify({
+          purpose: 'build',
           input: sampleInput || '(no input)',
           system_prompt: prompt,
           ai_provider: initialApp.ai_provider || 'claude',
@@ -246,7 +291,7 @@ export default function PromptStudio({ app: initialApp, user, onClose, onSaved }
 
       if (!res.ok) {
         const err = await res.json().catch(() => ({ detail: 'Backend error' }))
-        throw new Error(err.detail || err.error || 'Backend error')
+        throw new Error(err.error || (typeof err.detail === 'string' ? err.detail : err.detail?.message) || 'Backend error')
       }
 
       const reader = res.body.getReader()
@@ -271,29 +316,48 @@ export default function PromptStudio({ app: initialApp, user, onClose, onSaved }
     }
   }
 
-  async function save() {
+  // overwrite: save even though a teammate changed the prompt (their version is `expected`).
+  async function save({ overwrite } = {}) {
     setSaving(true)
-    const { error } = await supabase.from('apps')
-      .update({ system_prompt: prompt })
-      .eq('id', initialApp.id)
+    const expected = { system_prompt: overwrite ?? savedPromptRef.current }
+    const { error } = await saveAppFields(supabase, initialApp, { system_prompt: prompt }, { expected })
     setSaving(false)
-    if (error) { toast(error.message, 'error'); return }
+    if (error?.current) { setConflict({ theirs: error.current.system_prompt ?? '' }); return false }
+    if (error) { toast(error.message, 'error'); return false }
+    savedPromptRef.current = prompt
     setDirty(false)
+    setConflict(null)
     toast('Prompt saved', 'success', 2000)
     onSaved?.({ ...initialApp, system_prompt: prompt })
+    return true
+  }
+
+  function loadTheirs() {
+    clearLocalDraft('prompt', initialApp.id)
+    const theirs = conflict.theirs
+    savedPromptRef.current = theirs
+    setPrompt(theirs)
+    editorRef.current?.setValue?.(theirs)
+    setDirty(false)
+    setConflict(null)
+    onSaved?.({ ...initialApp, system_prompt: theirs })
   }
 
   // Warn on close if unsaved
-  function handleClose() {
-    if (dirty && !window.confirm('You have unsaved changes. Close anyway?')) return
+  function closeNow() {
     abortRef.current?.abort()
     onClose()
+  }
+  function handleClose() {
+    if (dirty) { setConfirmClose(true); return }
+    closeNow()
   }
 
   useEffect(() => {
     function onKey(e) {
+      if (!keyboardShortcuts) return
       if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); save() }
-      if (e.key === 'Escape') handleClose()
+      if (e.key === 'Escape' && mode !== 'workspace') handleClose()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
@@ -304,8 +368,46 @@ export default function PromptStudio({ app: initialApp, user, onClose, onSaved }
     : '🟣 ' + initialApp.ai_model
     : '🟣 default model'
 
-  return createPortal(
-    <div className="fixed inset-0 z-50 flex flex-col bg-[#09101F]">
+  const studio = (
+    <div className={`${mode === 'inline'
+      ? 'h-[72vh] min-h-[560px] flex flex-col bg-[#09101F] border border-[#6C5CE7]/20 rounded-2xl overflow-hidden'
+      : 'fixed inset-0 z-50 flex flex-col bg-[#09101F]'}`}>
+      {leaveAction && <ConfirmDialog title="Leave without saving the prompt?" confirmLabel="Discard changes" danger
+        onCancel={() => setLeaveAction(null)} onConfirm={() => { const proceed = leaveAction; setLeaveAction(null); clearLocalDraft('prompt', initialApp.id); proceed() }}>
+        Your prompt edits have not been saved.
+        <button className="block mt-3 text-sm text-[#A29BFE]" disabled={saving} onClick={async () => { if (await save()) { const proceed = leaveAction; setLeaveAction(null); proceed() } }}>Save prompt, then continue →</button>
+      </ConfirmDialog>}
+      {restoreOffer && (
+        <div role="status" className="shrink-0 bg-amber-500/10 border-b border-amber-500/25 px-4 py-2.5 flex flex-col sm:flex-row sm:items-center gap-2">
+          <p className="flex-1 text-xs text-amber-200">
+            Restore your unsaved prompt from {new Date(restoreOffer.savedAt).toLocaleString()}? It was left on this browser.
+          </p>
+          <div className="flex gap-2 shrink-0">
+            <button onClick={() => { clearLocalDraft('prompt', initialApp.id); setRestoreOffer(null) }}
+              className="text-xs font-semibold px-3 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 border border-white/10">Discard</button>
+            <button onClick={() => { setPrompt(restoreOffer.value); editorRef.current?.setValue?.(restoreOffer.value); setDirty(true); setRestoreOffer(null) }}
+              className="text-xs font-semibold px-3 py-1 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white">Restore</button>
+          </div>
+        </div>
+      )}
+      {conflict && (
+        <ConfirmDialog title="The prompt changed since you opened it" subtitle={`${initialApp.emoji || ''} ${initialApp.name}`.trim()}
+          confirmLabel="Save mine anyway" busyLabel="Saving…" danger
+          onCancel={() => setConflict(null)} onConfirm={() => save({ overwrite: conflict.theirs })}>
+          A teammate (or you, in another tab) saved a different prompt. Saving yours replaces it.
+          <button type="button" onClick={loadTheirs}
+            className="block mt-2 text-[11px] font-semibold text-[#A29BFE] hover:text-white">
+            Load their prompt instead (your edits here are discarded) →
+          </button>
+        </ConfirmDialog>
+      )}
+      {confirmClose && (
+        <ConfirmDialog title="Close without saving?" subtitle={`${initialApp.emoji || ''} ${initialApp.name}`.trim()}
+          confirmLabel="Discard changes" danger
+          onCancel={() => setConfirmClose(false)} onConfirm={() => { setConfirmClose(false); clearLocalDraft('prompt', initialApp.id); closeNow() }}>
+          Your prompt changes haven't been saved. Closing now discards them.
+        </ConfirmDialog>
+      )}
 
       {/* Header */}
       <div className="flex items-center gap-3 px-5 py-3 border-b border-white/8 bg-[#0E1424] shrink-0">
@@ -323,7 +425,7 @@ export default function PromptStudio({ app: initialApp, user, onClose, onSaved }
             className="text-xs font-semibold px-4 py-1.5 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] disabled:opacity-40 text-white transition-colors">
             {saving ? 'Saving…' : 'Save  ⌘S'}
           </button>
-          <button onClick={handleClose}
+          <button aria-label="Close" onClick={handleClose}
             className="text-slate-400 hover:text-white transition-colors text-lg leading-none px-1">×</button>
         </div>
       </div>
@@ -482,7 +584,63 @@ export default function PromptStudio({ app: initialApp, user, onClose, onSaved }
           )}
         </span>
       </div>
-    </div>,
-    document.body
+    </div>
   )
+
+  if (mode === 'workspace') return <>
+    {leaveAction && <ConfirmDialog title="Leave without saving the prompt?" subtitle={initialApp.name} confirmLabel="Discard changes" danger
+      onCancel={() => setLeaveAction(null)} onConfirm={() => { const proceed = leaveAction; setLeaveAction(null); clearLocalDraft('prompt', initialApp.id); proceed() }}>
+      Your prompt edits have not been saved.
+      <button className="block mt-3 text-sm text-[#A29BFE]" disabled={saving} onClick={async () => { if (await save()) { const proceed = leaveAction; setLeaveAction(null); proceed() } }}>Save prompt, then continue →</button>
+    </ConfirmDialog>}
+    {conflict && <ConfirmDialog title="The prompt changed since you opened it" confirmLabel="Save mine anyway" danger onCancel={() => setConflict(null)} onConfirm={() => save({ overwrite: conflict.theirs })}>
+      Saving yours replaces the newer prompt.
+      <button onClick={loadTheirs} className="block mt-3 text-[#A29BFE]">Load their prompt instead →</button>
+    </ConfirmDialog>}
+    {restoreOffer && <div role="status" className="rounded-xl border border-amber-500/20 p-3 text-sm text-amber-300 flex gap-3 items-center">
+      <span className="flex-1">An unsaved prompt is available on this browser.</span>
+      <button onClick={() => { clearLocalDraft('prompt', initialApp.id); setRestoreOffer(null) }}>Discard</button>
+      <button onClick={() => { setPrompt(restoreOffer.value); setDirty(true); setRestoreOffer(null) }}>Restore</button>
+    </div>}
+    <div className="developer-design-grid grid grid-cols-1 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)] gap-4 items-start" data-testid="design-workspace">
+      <section aria-label="Prompt configuration" className="min-w-0 rounded-xl border border-white/8 bg-[#171B33] p-5 space-y-5">
+        <div className="grid grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)] gap-4">
+          <div><p className="text-xs font-semibold text-slate-300 mb-2">App name</p><p className="border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white truncate">{initialApp.name}</p></div>
+          <div><p className="text-xs font-semibold text-slate-300 mb-2">Model</p><p className="border border-white/10 rounded-lg px-3 py-2.5 text-sm text-white truncate" title={initialApp.ai_model || 'Default model'}>{initialApp.ai_model || 'Default model'}</p><a href="#design-advanced" className="text-[11px] text-[#A29BFE]">Model & app settings ↓</a></div>
+        </div>
+        <div>
+          <label htmlFor={`prompt-${initialApp.id}`} className="block text-sm text-white font-semibold">System prompt</label>
+          <p className="text-xs text-slate-400 mt-1 mb-3">Define how your assistant behaves. Use {'{{variables}}'} for dynamic context.</p>
+          <textarea id={`prompt-${initialApp.id}`} aria-label="System prompt" value={prompt} disabled={previewing} onChange={event => { setPrompt(event.target.value); setDirty(true); setPreviewOutput('') }} spellCheck={false}
+            className="developer-prompt-input w-full min-h-[280px] resize-y rounded-lg border border-white/10 bg-[#0E1424] px-4 py-3 text-sm leading-6 text-white font-mono focus:outline-none" />
+        </div>
+        <details className="border-t border-white/8 pt-3"><summary className="cursor-pointer text-xs text-slate-400">Context variables</summary>
+          <div className="mt-3 space-y-3">{CONTEXT_GROUPS.map(group => <div key={group.id}><p className="text-xs text-slate-300 mb-2">{group.label}</p><div className="flex flex-wrap gap-2">{group.vars.map(v => <button key={v.name} title={v.desc} onClick={() => insertVariable(v.name)} className="border border-white/10 rounded-md px-2 py-1 text-[11px] text-[#A29BFE] font-mono">{v.name}</button>)}</div></div>)}</div>
+        </details>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-t border-white/8 pt-4">
+          <span className="text-xs text-slate-500">{dirty ? 'Unsaved prompt changes' : 'Prompt saved'} · ~{promptTokens} tokens{costPerRun != null ? ` · est. ${formatCost(costPerRun)} per run` : ''}</span>
+          <div className="flex gap-2"><button disabled={!dirty || saving} onClick={() => { setPrompt(savedPromptRef.current || ''); setDirty(false); clearLocalDraft('prompt', initialApp.id); setPreviewOutput('') }} className="border border-white/10 rounded-lg px-3 py-2 text-xs text-slate-300 disabled:opacity-40">Discard changes</button>
+          <button disabled={!dirty || saving} onClick={() => save()} className="bg-[#6C5CE7] text-white rounded-lg px-4 py-2 text-xs font-semibold disabled:opacity-40">{saving ? 'Saving…' : 'Save draft'}</button></div>
+        </div>
+      </section>
+      <section aria-label="Prompt preview" className="min-w-0 rounded-xl border border-white/8 bg-[#171B33] p-5 space-y-4 lg:sticky lg:top-0">
+        <div><h2 className="text-lg font-semibold text-white">Preview</h2><p className="text-xs text-slate-400 mt-1">Test your prompt with a sample input. Uses your AI provider.</p></div>
+        <label className="block text-xs font-semibold text-slate-300">User input (for testing)
+          <textarea value={sampleInput} disabled={previewing} onChange={e => { setSampleInput(e.target.value); setPreviewOutput('') }} placeholder="Enter a sample user input…" rows={3} className="mt-2 w-full resize-y rounded-lg border border-white/10 bg-[#0E1424] p-3 text-sm text-white font-normal" />
+        </label>
+        <div className="flex justify-end"><button onClick={previewing ? () => abortRef.current?.abort() : runPreview} disabled={!prompt.trim()} className="border border-[#6C5CE7]/30 text-[#A29BFE] rounded-lg px-4 py-2 text-xs font-semibold disabled:opacity-40">{previewing ? '■ Stop' : '▷ Run preview'}</button></div>
+        {previewError && <div role="alert" className="text-red-400 text-sm border border-red-500/20 rounded-lg p-3">{previewError}</div>}
+        <div className="rounded-lg bg-[#6C5CE7]/5 border border-[#6C5CE7]/10 p-4 min-h-64">
+          <p className="text-xs text-slate-400 mb-3">Assistant response</p>
+          {previewOutput || previewing ? <div className="flex items-start gap-3"><img src="/aistrix-logo.svg" alt="" className="w-5 h-5 shrink-0" /><p className="text-sm text-slate-200 whitespace-pre-wrap break-words leading-relaxed">{previewOutput}{previewing && <span role="status"> · Generating…</span>}</p></div> : <p className="text-sm text-slate-500">Your response appears here after running the preview.</p>}
+        </div>
+        <div className="border-t border-white/8 pt-4 space-y-3"><h3 className="text-xs font-semibold text-slate-300">Next steps</h3>
+          <p className="text-xs text-slate-400">{prompt.trim() ? '✓ Prompt configured' : '○ Add a system prompt'}{dirty ? ' · save your changes' : ''}</p>
+          <p className="text-xs text-slate-400">Preview checks the prompt. Run the Test suite to validate the app before publishing.</p>
+          <button onClick={onGoToTest} className="text-xs font-semibold text-[#A29BFE]">Continue to Test →</button>
+        </div>
+      </section>
+    </div>
+  </>
+  return mode === 'inline' ? studio : createPortal(studio, document.body)
 }

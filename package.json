@@ -1,0 +1,15 @@
+{
+  "name": "aistrix",
+  "private": true,
+  "description": "Repo-level tooling. The apps live in aistrix-frontend/, aistrix-backend/ and aistrix-sdk/.",
+  "scripts": {
+    "db:new": "supabase migration new",
+    "db:list": "supabase migration list",
+    "db:push": "supabase db push",
+    "db:push:dry": "supabase db push --dry-run",
+    "db:link": "supabase link"
+  },
+  "devDependencies": {
+    "supabase": "2.117.0"
+  }
+}

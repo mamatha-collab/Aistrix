@@ -76,8 +76,8 @@ function buildReportData(runs, period) {
     // Hour counts
     hourMap[new Date(r.created_at).getHours()]++
     // Ratings
-    if (r.rating === 1) { thumbsUp++; rated++ }
-    if (r.rating === -1) { thumbsDown++; rated++ }
+    if (r.rating_value === 1) { thumbsUp++; rated++ }
+    if (r.rating_value === -1) { thumbsDown++; rated++ }
   })
 
   const topApps = Object.entries(appCounts).sort(([,a],[,b]) => b - a).slice(0, 5)
@@ -126,7 +126,7 @@ export default function ReportsPage({ user }) {
     try {
       const start = new Date(); start.setDate(start.getDate() - days)
       const { data: runs } = await supabase.from('run_history')
-        .select('app_id, app_name, created_at, rating')
+        .select('app_id, app_name, created_at, rating_value')
         .eq('user_id', user.id)
         .gte('created_at', start.toISOString())
         .order('created_at')
@@ -148,7 +148,7 @@ export default function ReportsPage({ user }) {
           input,
           system_prompt: selectedType.prompt,
           ai_provider: 'claude',
-          ai_model: 'claude-sonnet-4-6',
+          ai_model: 'claude-sonnet-5-5',
         }),
       })
 

@@ -13,11 +13,33 @@
 const KEY  = import.meta.env.VITE_POSTHOG_KEY
 const HOST = import.meta.env.VITE_POSTHOG_HOST || 'https://app.posthog.com'
 
+// Analytics cookies need the visitor's consent first (CookieConsent): nothing
+// is loaded or sent until they accept, and declining (or withdrawing) stops it.
+const CONSENT_KEY = 'aistrix_cookie_consent'          // 'accepted' | 'declined'
+export const analyticsConfigured = !!KEY
+
+export function consentChoice() {
+  try { return localStorage.getItem(CONSENT_KEY) } catch { return null }
+}
+
+export function setConsent(choice) {
+  try { localStorage.setItem(CONSENT_KEY, choice) } catch { /* private mode: ask again next time */ }
+  if (choice === 'accepted') getPostHog()
+  else if (ph) { ph.opt_out_capturing(); ph.reset() }
+  window.dispatchEvent(new Event('aistrix:consent'))
+}
+
+// Lets the Privacy Policy reopen the choice.
+export function reopenConsent() {
+  try { localStorage.removeItem(CONSENT_KEY) } catch { /* ignore */ }
+  window.dispatchEvent(new Event('aistrix:consent'))
+}
+
 let ph = null
 
 function getPostHog() {
   if (ph) return ph
-  if (!KEY) return null
+  if (!KEY || consentChoice() !== 'accepted') return null
   // Dynamic import keeps posthog-js out of the critical path when unconfigured
   import('posthog-js').then(({ default: posthog }) => {
     posthog.init(KEY, {
@@ -27,12 +49,13 @@ function getPostHog() {
       persistence: 'localStorage+cookie',
       loaded: p => { ph = p },
     })
+    posthog.opt_in_capturing()
     ph = posthog
   }).catch(() => {})
   return null
 }
 
-// Eagerly start init if key is present
+// Start right away only if the visitor already accepted.
 getPostHog()
 
 /**
@@ -90,4 +113,15 @@ export const EVENTS = {
   // Dev Studio
   VERSION_SAVED:          'version_saved',
   TEST_SUITE_RUN:         'test_suite_run',
+
+  // Build flow (Design → Test → Deploy): where developers get stuck.
+  // Properties are ids, counts and versions only — never prompts or inputs.
+  BUILD_APP_CREATED:      'build_app_created',
+  BUILD_DESIGN_SAVED:     'build_design_saved',
+  BUILD_PHASE_MOVED:      'build_phase_moved',
+  BUILD_TESTS_RUN:        'build_tests_run',
+  BUILD_PUBLISH_BLOCKED:  'build_publish_blocked',
+  BUILD_PUBLISHED:        'build_published',
+  BUILD_PROMOTED:         'build_promoted',
+  BUILD_ROLLED_BACK:      'build_rolled_back',
 }

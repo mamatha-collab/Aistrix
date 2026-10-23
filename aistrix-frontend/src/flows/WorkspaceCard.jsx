@@ -28,7 +28,7 @@ export function WorkflowTab({ flow, onRun, onEdit, onDelete, schedule, userId, r
     return (
       <div className="group relative bg-[#121829] border border-amber-400/30 rounded-xl p-3 flex flex-col gap-2 min-h-[100px]">
         {isOwner && (
-          <button onClick={e => { e.stopPropagation(); onDelete() }}
+          <button aria-label="Delete" onClick={e => { e.stopPropagation(); onDelete() }}
             className="absolute top-1.5 right-1.5 text-[9px] text-slate-500 hover:text-red-400 transition-colors p-0.5">🗑</button>
         )}
         <div className="flex items-center gap-2">
@@ -50,9 +50,9 @@ export function WorkflowTab({ flow, onRun, onEdit, onDelete, schedule, userId, r
     >
       {isOwner && (
         <div className="absolute top-1.5 right-1.5 hidden group-hover:flex items-center z-10">
-          <button onClick={e => { e.stopPropagation(); onEdit() }}
+          <button aria-label="Edit" onClick={e => { e.stopPropagation(); onEdit() }}
             className="p-0.5 text-[9px] text-slate-400 hover:text-white transition-colors">✏️</button>
-          <button onClick={e => { e.stopPropagation(); onDelete() }}
+          <button aria-label="Delete" onClick={e => { e.stopPropagation(); onDelete() }}
             className="p-0.5 text-[9px] text-slate-400 hover:text-red-400 transition-colors">🗑</button>
         </div>
       )}
@@ -91,7 +91,7 @@ export function WorkflowTab({ flow, onRun, onEdit, onDelete, schedule, userId, r
           {flow.is_published && <span className="text-green-400 ml-1">●</span>}
         </span>
         <div className="flex items-center gap-1 flex-1 justify-center">
-          <button onClick={e => { e.stopPropagation(); setStartIdx(i => Math.max(0, i - TAB_VISIBLE)) }}
+          <button aria-label="Previous" onClick={e => { e.stopPropagation(); setStartIdx(i => Math.max(0, i - TAB_VISIBLE)) }}
             disabled={!canPrev}
             className={`w-5 h-5 rounded flex items-center justify-center text-[10px] text-slate-400 hover:text-white hover:bg-white/8 transition-all ${!canPrev ? 'opacity-25 cursor-default' : ''}`}>‹</button>
           <button onClick={e => { e.stopPropagation(); onRun() }}
@@ -100,7 +100,7 @@ export function WorkflowTab({ flow, onRun, onEdit, onDelete, schedule, userId, r
             <span className="relative z-10">▶ Run</span>
             <span className="absolute inset-0 rounded-md" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.15) 0%, rgba(255,255,255,0) 60%)', pointerEvents: 'none' }} />
           </button>
-          <button onClick={e => { e.stopPropagation(); setStartIdx(i => Math.min(steps.length - TAB_VISIBLE, i + TAB_VISIBLE)) }}
+          <button aria-label="Next" onClick={e => { e.stopPropagation(); setStartIdx(i => Math.min(steps.length - TAB_VISIBLE, i + TAB_VISIBLE)) }}
             disabled={!canNext}
             className={`w-5 h-5 rounded flex items-center justify-center text-[10px] text-slate-400 hover:text-white hover:bg-white/8 transition-all ${!canNext ? 'opacity-25 cursor-default' : ''}`}>›</button>
         </div>
@@ -217,10 +217,10 @@ export default function WorkspaceCard({ flow, onRun, onEdit, onDelete, onPublish
                   </>
                 )}
                 {(isOwner || role === 'editor') && (
-                  <button onClick={onEdit} className="p-1 rounded-md text-xs text-slate-400 hover:text-white hover:bg-white/8 transition-colors">✏️</button>
+                  <button aria-label="Edit" onClick={onEdit} className="p-1 rounded-md text-xs text-slate-400 hover:text-white hover:bg-white/8 transition-colors">✏️</button>
                 )}
                 {isOwner && (
-                  <button onClick={onDelete} className="p-1 rounded-md text-xs text-slate-400 hover:text-red-400 hover:bg-red-400/5 transition-colors">🗑</button>
+                  <button aria-label="Delete" onClick={onDelete} className="p-1 rounded-md text-xs text-slate-400 hover:text-red-400 hover:bg-red-400/5 transition-colors">🗑</button>
                 )}
               </div>
             </div>
@@ -282,7 +282,7 @@ export default function WorkspaceCard({ flow, onRun, onEdit, onDelete, onPublish
 
             <div className="flex items-center gap-2 shrink-0">
               <div className="flex items-center gap-1.5 flex-1 justify-center">
-                <button onClick={e => { e.stopPropagation(); setStartIdx(i => Math.max(0, i - STEP_ADVANCE)) }}
+                <button aria-label="Previous" onClick={e => { e.stopPropagation(); setStartIdx(i => Math.max(0, i - STEP_ADVANCE)) }}
                   disabled={!canPrev}
                   className="w-6 h-6 rounded-md flex items-center justify-center text-sm text-slate-400 hover:text-white bg-[#1A2038] hover:bg-white/10 border border-white/18 disabled:opacity-25 disabled:cursor-default transition-all shrink-0">
                   ‹
@@ -293,7 +293,7 @@ export default function WorkspaceCard({ flow, onRun, onEdit, onDelete, onPublish
                   <span className="relative z-10">▶ Run workflow</span>
                   <span className="absolute inset-0 rounded-lg" style={{ background: 'linear-gradient(180deg, rgba(255,255,255,0.18) 0%, rgba(255,255,255,0) 60%)', pointerEvents: 'none' }} />
                 </button>
-                <button onClick={e => { e.stopPropagation(); setStartIdx(i => Math.min(steps.length - STEP_VISIBLE, i + STEP_ADVANCE)) }}
+                <button aria-label="Next" onClick={e => { e.stopPropagation(); setStartIdx(i => Math.min(steps.length - STEP_VISIBLE, i + STEP_ADVANCE)) }}
                   disabled={!canNext}
                   className="w-6 h-6 rounded-md flex items-center justify-center text-sm text-slate-400 hover:text-white bg-[#1A2038] hover:bg-white/10 border border-white/18 disabled:opacity-25 disabled:cursor-default transition-all shrink-0">
                   ›

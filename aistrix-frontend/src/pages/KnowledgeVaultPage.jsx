@@ -2,9 +2,8 @@ import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { timeAgo } from '../utils'
-import { parseSSELine } from '../lib/sse'
-
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+import { normaliseUrl, readUrl } from '../lib/runStream'
+import { scopeToWorkspace } from '../lib/workspace'
 
 const TYPES = [
   { id: 'doc',     icon: '📄', label: 'Document',    color: '#6C5CE7', desc: 'Manuals, guides, internal docs' },
@@ -34,51 +33,34 @@ export default function KnowledgeVaultPage({ user }) {
   const fileRef = useRef(null)
   const toast = useToast()
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when user.id changes
   useEffect(() => { load() }, [user.id])
 
   async function load() {
     setLoading(true)
-    const { data } = await supabase
+    const { data } = await scopeToWorkspace(supabase
       .from('knowledge_vault')
-      .select('*')
-      .eq('user_id', user.id)
+      .select('*'), user)
       .order('created_at', { ascending: false })
     setItems(data || [])
     setLoading(false)
   }
 
+  // Read the page server-side (/scrape). The model has no web access, so
+  // asking it to "fetch" a URL made it invent the content.
   async function fetchFromUrl() {
-    if (!url.trim()) return
+    const target = normaliseUrl(url)
+    if (!target) return
     setFetching(true)
     try {
-      const { data: { session } } = await supabase.auth.getSession()
-      const res = await fetch(`${API_URL}/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
-        body: JSON.stringify({
-          input: url,
-          system_prompt: 'Fetch and return the main text content of this URL. Return only the clean text content, no HTML, no navigation menus, no ads, no footers. Preserve meaningful structure with line breaks.',
-          ai_provider: 'claude',
-          ai_model: 'claude-haiku-4-5-20251001',
-        }),
-      })
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let buf = '', full = ''
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buf += decoder.decode(value, { stream: true })
-        const lines = buf.split('\n'); buf = lines.pop()
-        for (const line of lines) {
-          const d = parseSSELine(line)
-          if (d?.token) full += d.token
-        }
-      }
-      setContent(full.slice(0, CHAR_LIMIT))
-      if (!title) setTitle(url.replace(/^https?:\/\//, '').split('/')[0])
-    } catch {
-      toast('Could not fetch URL content', 'error')
+      const page = await readUrl(target, { maxChars: CHAR_LIMIT })
+      if (!page.text.trim()) throw new Error('That page has no readable text. Paste the content manually instead.')
+      setContent(page.text)
+      setUrl(page.url || target)
+      if (!title) setTitle((page.url || target).replace(/^https?:\/\//, '').split('/')[0])
+      if (page.truncated) toast(`Page is long — kept the first ${page.text.length.toLocaleString()} of ${page.chars.toLocaleString()} characters`, 'info')
+    } catch (e) {
+      toast(e.message || 'Could not fetch URL content', 'error', 6000)
     } finally {
       setFetching(false)
     }
@@ -324,7 +306,7 @@ export default function KnowledgeVaultPage({ user }) {
                         className={`text-[10px] px-2 py-0.5 rounded-md border font-medium transition-colors ${item.is_active ? 'text-green-400 bg-green-400/10 border-green-400/25 hover:bg-green-400/20' : 'text-slate-500 bg-white/5 border-white/10 hover:text-white'}`}>
                         {item.is_active ? '● Active' : '○ Off'}
                       </button>
-                      <button onClick={e => { e.stopPropagation(); deleteItem(item.id) }}
+                      <button aria-label="Delete" onClick={e => { e.stopPropagation(); deleteItem(item.id) }}
                         className="text-slate-600 hover:text-red-400 text-xs transition-colors p-1">🗑</button>
                       <span className="text-slate-600 text-[10px]">{isExpanded ? '▲' : '▼'}</span>
                     </div>

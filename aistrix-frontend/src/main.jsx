@@ -14,12 +14,22 @@ if (import.meta.env.VITE_SENTRY_DSN) {
 }
 import { initTheme } from './utils/theme.js'
 initTheme()
+import { installApiWorkspaceHeader } from './lib/workspace.js'
+installApiWorkspaceHeader()
+import { reloadOnceForNewVersion } from './utils/chunkReload.js'
+// Vite fires this when a lazily-loaded file is gone after a deploy: reload
+// once to get the new build instead of failing.
+window.addEventListener('vite:preloadError', event => {
+  if (reloadOnceForNewVersion()) event.preventDefault()
+})
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import './index.css'
 import App from './App.jsx'
 import { ToastProvider } from './components/Toast.jsx'
 import ErrorBoundary from './components/ErrorBoundary.jsx'
+import CookieConsent from './components/CookieConsent.jsx'
+import SafeCard from './components/SafeCard.jsx'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
@@ -27,6 +37,7 @@ createRoot(document.getElementById('root')).render(
       <BrowserRouter>
         <ToastProvider>
           <App />
+          <SafeCard name="Cookie notice" quiet><CookieConsent /></SafeCard>
         </ToastProvider>
       </BrowserRouter>
     </ErrorBoundary>

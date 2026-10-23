@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../supabase'
-import { useToast } from '../hooks/useToast'
 import { streamRun } from './flowUtils'
 import { APP_DEFAULT_FIELDS, EMOJIS, GPT_PROVIDERS } from './flowConstants'
 
@@ -143,9 +142,9 @@ Only include apps from the available list. Choose 2-5 steps. Match app names exa
       const { data: { session } } = await supabase.auth.getSession()
       const firstStep = suggestion.steps[0]
       if (!firstStep?.app_id) { setRunOutput('No runnable step found.'); setRunning(false); return }
-      const { data: appData } = await supabase.from('apps').select('*').eq('id', firstStep.app_id).single()
+      const { data: appData } = await supabase.from('apps').select('ai_provider, ai_model').eq('id', firstStep.app_id).single()
       await streamRun({
-        system_prompt: appData?.system_prompt || '',
+        app_id: firstStep.app_id,   // the server runs the app's own (private) prompt
         input: suggestion.sampleInput || goal,
         provider: appData?.ai_provider || 'claude',
         model: appData?.ai_model || null,
@@ -341,7 +340,7 @@ function ApiStepModal({ onSave, onCancel }) {
       <div className="bg-[#121829] border border-white/18 rounded-2xl w-full max-w-lg flex flex-col gap-4 p-6">
         <div className="flex items-center justify-between">
           <p className="text-white font-semibold">🔗 Add API Call Step</p>
-          <button onClick={onCancel} className="text-slate-400 hover:text-white">✕</button>
+          <button aria-label="Close" onClick={onCancel} className="text-slate-400 hover:text-white">✕</button>
         </div>
 
         <div className="space-y-3">
@@ -726,8 +725,8 @@ export default function FlowBuilderModal({ apps, domains, existingFlow, initialS
                         )}
                       </div>
                       <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button onClick={() => moveStep(i, -1)} disabled={i === 0} className="text-slate-400 hover:text-white disabled:opacity-20 text-xs px-1.5 py-1 rounded transition-colors">↑</button>
-                        <button onClick={() => moveStep(i, 1)} disabled={i === steps.length - 1} className="text-slate-400 hover:text-white disabled:opacity-20 text-xs px-1.5 py-1 rounded transition-colors">↓</button>
+                        <button aria-label="Move up" onClick={() => moveStep(i, -1)} disabled={i === 0} className="text-slate-400 hover:text-white disabled:opacity-20 text-xs px-1.5 py-1 rounded transition-colors">↑</button>
+                        <button aria-label="Move down" onClick={() => moveStep(i, 1)} disabled={i === steps.length - 1} className="text-slate-400 hover:text-white disabled:opacity-20 text-xs px-1.5 py-1 rounded transition-colors">↓</button>
                         <button aria-label={`Remove step ${s.app_name}`} onClick={() => removeStep(i)} className="text-slate-400 hover:text-red-400 text-xs px-1.5 py-1 rounded transition-colors">✕</button>
                       </div>
                     </div>
@@ -755,7 +754,7 @@ export default function FlowBuilderModal({ apps, domains, existingFlow, initialS
                               className={`text-[10px] px-2 py-1.5 rounded-lg border transition-all shrink-0 ${f.required ? 'bg-[#6C5CE7]/20 border-[#6C5CE7]/40 text-[#A29BFE]' : 'bg-transparent border-white/18 text-slate-500 hover:text-white'}`}>
                               req
                             </button>
-                            <button onClick={() => removeDraftField(f.id)} className="text-slate-500 hover:text-red-400 text-xs px-1 transition-colors shrink-0">✕</button>
+                            <button aria-label="Remove" onClick={() => removeDraftField(f.id)} className="text-slate-500 hover:text-red-400 text-xs px-1 transition-colors shrink-0">✕</button>
                           </div>
                         ))}
                         {fieldsDraft.length < 6 && (

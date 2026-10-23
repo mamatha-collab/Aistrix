@@ -1,10 +1,12 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useRef } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { timeAgo } from '../utils'
-import { runPrompt, evaluateCase } from './TestSuite'
+import { runAppTest, rulesToChecks } from '../lib/appTests'
+import { useVersions } from '../hooks/useVersions'
 import { track, EVENTS } from '../lib/analytics'
 
+import { BRAND } from '../lib/brand'
 export const VERSION_SETUP_SQL = `create table app_versions (
   id            uuid primary key default gen_random_uuid(),
   app_id        uuid references apps(id) on delete cascade,
@@ -47,55 +49,6 @@ function nextSemver(versions, type) {
   return bumpSemver(latest, type)
 }
 
-// ─── Hook ─────────────────────────────────────────────────────────────────────
-
-export function useVersions(appId, userId) {
-  const [versions, setVersions]     = useState([])
-  const [loading, setLoading]       = useState(false)
-  const [needsSetup, setNeedsSetup] = useState(false)
-
-  const load = useCallback(async () => {
-    if (!appId) return
-    setLoading(true)
-    const { data, error } = await supabase
-      .from('app_versions')
-      .select('*')
-      .eq('app_id', appId)
-      .eq('user_id', userId)
-      .order('version_num', { ascending: false })
-    setLoading(false)
-    if (error) {
-      if (error.code === '42P01' || error.message?.includes('does not exist')) setNeedsSetup(true)
-      return
-    }
-    setNeedsSetup(false)
-    setVersions(data || [])
-  }, [appId, userId])
-
-  useEffect(() => { load() }, [load])
-
-  return { versions, loading, needsSetup, reload: load, setVersions }
-}
-
-// Called by PromptStudio on save (silent — no semver/changelog here)
-export async function saveVersionSnapshot(app, userId, prompt) {
-  try {
-    const { count } = await supabase
-      .from('app_versions')
-      .select('id', { count: 'exact', head: true })
-      .eq('app_id', app.id)
-      .eq('user_id', userId)
-    await supabase.from('app_versions').insert({
-      app_id: app.id,
-      user_id: userId,
-      version_num: (count ?? 0) + 1,
-      system_prompt: prompt,
-      ai_model: app.ai_model,
-      ai_provider: app.ai_provider,
-    })
-  } catch { /* silently fail if table doesn't exist yet */ }
-}
-
 // ─── Setup card ───────────────────────────────────────────────────────────────
 
 export function VersionSetupCard({ onRetry }) {
@@ -105,7 +58,7 @@ export function VersionSetupCard({ onRetry }) {
       <div>
         <p className="text-white font-semibold text-sm">Versioning managed automatically</p>
         <p className="text-slate-400 text-sm mt-1">
-          Version history is handled by Aistrix during deployment.<br />
+          Version history is handled by {BRAND} during deployment.<br />
           No manual setup required.
         </p>
       </div>
@@ -120,7 +73,7 @@ export function VersionSetupCard({ onRetry }) {
 // ─── Version list ─────────────────────────────────────────────────────────────
 
 export default function VersionManager({ app, user, onRollback, selectedId, onSelect }) {
-  const { versions, loading, needsSetup, reload, setVersions } = useVersions(app.id, user.id)
+  const { versions, loading, needsSetup, reload, setVersions } = useVersions(app.id)
   const [saving, setSaving]           = useState(false)
   const [bumpType, setBumpType]       = useState('patch')   // patch | minor | major
   const [changelog, setChangelog]     = useState('')
@@ -134,7 +87,6 @@ export default function VersionManager({ app, user, onRollback, selectedId, onSe
   const toast = useToast()
 
   const nextVer = nextSemver(versions, bumpType)
-  const hasSemverCol = versions.length === 0 || versions[0]?.semver !== undefined
 
   async function doSave() {
     setSaving(true)
@@ -191,9 +143,9 @@ export default function VersionManager({ app, user, onRollback, selectedId, onSe
     for (const tc of testCases) {
       if (ctrl.signal.aborted) break
       try {
-        const output = await runPrompt(app, tc.input, ctrl.signal)
-        const { passed, results: ruleResults } = evaluateCase(output, tc.rules)
-        results.push({ id: tc.id, name: tc.name, passed, output, ruleResults })
+        // Server-side: the real app path, rules graded there.
+        const run = await runAppTest(app.id, { source: 'suite', case_ref: tc.id, label: tc.name, input: tc.input || '(no input)', checks: rulesToChecks(tc.rules) }, { signal: ctrl.signal })
+        results.push({ id: tc.id, name: tc.name, passed: run.passed, output: run.output, errors: run.errors || [] })
       } catch (e) {
         if (e.name === 'AbortError') break
         results.push({ id: tc.id, name: tc.name, passed: false, error: e.message })
@@ -391,7 +343,7 @@ export default function VersionManager({ app, user, onRollback, selectedId, onSe
                 ) : (
                   <p className="text-white text-xs font-medium truncate">
                     {v.label || vLabel}
-                    <button
+                    <button aria-label="Edit"
                       onClick={e => { e.stopPropagation(); setLabelDraft(v.label || ''); setEditLabelId(v.id) }}
                       className="ml-1.5 text-slate-600 hover:text-slate-400 text-[9px]">✎</button>
                   </p>
@@ -415,7 +367,7 @@ export default function VersionManager({ app, user, onRollback, selectedId, onSe
                   className="text-[10px] text-[#A29BFE] hover:text-white bg-[#6C5CE7]/10 hover:bg-[#6C5CE7]/20 px-2 py-1 rounded-md transition-colors border border-[#6C5CE7]/20">
                   ↺ Restore
                 </button>
-                <button onClick={() => deleteVersion(v.id)}
+                <button aria-label="Remove" onClick={() => deleteVersion(v.id)}
                   className="text-[10px] text-slate-600 hover:text-red-400 transition-colors px-1">×</button>
               </div>
             </div>

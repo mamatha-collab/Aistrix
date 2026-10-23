@@ -1,14 +1,21 @@
+import AistrixWordmark from '../components/AistrixWordmark'
+import { APP_PUBLIC_SELECT, withPrivateField } from '../lib/appColumns'
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom'
 import { useState, useEffect, lazy, Suspense } from 'react'
 import { supabase } from '../supabase'
 import { track, EVENTS } from '../lib/analytics'
 
+import { BRAND } from '../lib/brand'
+import { isFileApp } from '../lib/fileApps'
 // Lazy-loaded — AppRunner is also dynamically imported from DetailPanel.jsx;
 // importing it statically here pins it to this page's chunk and makes that
 // dynamic import ineffective (Vite has to pull in this whole page's chunk
 // just to run an app from the dashboard). Lazy here too so it splits into
 // its own shared chunk both places can fetch on demand.
 const AppRunner = lazy(() => import('../components/AppRunner'))
+const DataAppRunner = lazy(() => import('../components/DataAppRunner'))
+const ApiAppRunner = lazy(() => import('../components/ApiAppRunner'))
+const ConversationThread = lazy(() => import('../components/ConversationThread'))
 
 export default function AppPage() {
   const { id } = useParams()
@@ -40,11 +47,11 @@ export default function AppPage() {
   async function fetchApp() {
     const { data } = await supabase
       .from('apps')
-      .select('*, domains(name, emoji, color)')
+      .select(`${APP_PUBLIC_SELECT}, domains(name, emoji, color)`)
       .eq('id', id)
       .eq('is_published', true)
       .single()
-    setApp(data)
+    setApp(data ? await withPrivateField(supabase, data) : data)
     setLoading(false)
   }
 
@@ -82,7 +89,7 @@ export default function AppPage() {
           onClick={() => navigate('/')}
           className="w-full bg-[#6C5CE7] hover:bg-[#7D6FF0] text-white text-sm py-2.5 rounded-xl font-medium transition-colors"
         >
-          Sign in to Aistrix
+          Sign in to {BRAND}
         </button>
       </div>
     </div>
@@ -96,7 +103,7 @@ export default function AppPage() {
         </button>
         <div className="flex items-center gap-2 ml-4">
           <div className="w-7 h-7 rounded-lg bg-[#6C5CE7] flex items-center justify-center text-white font-bold text-sm">A</div>
-          <span className="text-white font-semibold">Aistrix</span>
+          <span className="text-white font-semibold"><AistrixWordmark /></span>
         </div>
       </header>
 
@@ -105,13 +112,13 @@ export default function AppPage() {
           {checkoutBanner === 'success' && (
             <div className="mb-4 bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-4 py-3 flex items-center justify-between">
               <p className="text-emerald-400 text-sm font-semibold">✓ Payment successful — your access is now active</p>
-              <button onClick={() => setCheckoutBanner(null)} className="text-slate-500 hover:text-white text-sm">✕</button>
+              <button aria-label="Close" onClick={() => setCheckoutBanner(null)} className="text-slate-500 hover:text-white text-sm">✕</button>
             </div>
           )}
           {checkoutBanner === 'cancelled' && (
             <div className="mb-4 bg-slate-500/10 border border-white/10 rounded-xl px-4 py-3 flex items-center justify-between">
               <p className="text-slate-400 text-sm">Payment cancelled — you can try again when ready.</p>
-              <button onClick={() => setCheckoutBanner(null)} className="text-slate-500 hover:text-white text-sm">✕</button>
+              <button aria-label="Close" onClick={() => setCheckoutBanner(null)} className="text-slate-500 hover:text-white text-sm">✕</button>
             </div>
           )}
           <div className="flex items-center gap-4 mb-8">
@@ -131,7 +138,13 @@ export default function AppPage() {
 
           <div className="bg-[#171B33] border border-white/10 rounded-2xl p-6">
             <Suspense fallback={null}>
-              <AppRunner app={app} user={user} inline onRun={() => setApp(prev => ({ ...prev, total_runs: (prev.total_runs || 0) + 1 }))} />
+              {isFileApp(app)
+                ? <DataAppRunner app={app} user={user} inline onRun={() => setApp(prev => ({ ...prev, total_runs: (prev.total_runs || 0) + 1 }))} />
+                : app.app_type === 'api'
+                ? <ApiAppRunner app={app} user={user} inline onRun={() => setApp(prev => ({ ...prev, total_runs: (prev.total_runs || 0) + 1 }))} />
+                : (app.has_memory || app.app_type === 'chatbot')
+                ? <ConversationThread app={app} user={user} inline onRun={() => setApp(prev => ({ ...prev, total_runs: (prev.total_runs || 0) + 1 }))} />
+                : <AppRunner app={app} user={user} inline onRun={() => setApp(prev => ({ ...prev, total_runs: (prev.total_runs || 0) + 1 }))} />}
             </Suspense>
           </div>
 

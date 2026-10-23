@@ -40,12 +40,12 @@ export default function CompareModal({ runs, onClose }) {
                 <div className="flex items-center justify-between mb-2">
                   <p className="text-[10px] text-slate-500 uppercase">Result</p>
                   <button
-                    onClick={() => navigator.clipboard.writeText(run.result)}
+                    onClick={() => navigator.clipboard.writeText(run.output || '')}
                     className="text-[10px] text-slate-500 hover:text-slate-300"
                   >📋 Copy</button>
                 </div>
                 <div className="text-xs text-slate-200 leading-relaxed prose-result">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{run.result}</ReactMarkdown>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{run.output || ''}</ReactMarkdown>
                 </div>
               </div>
             ))}

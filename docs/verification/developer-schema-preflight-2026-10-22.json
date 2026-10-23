@@ -1,0 +1,46 @@
+{
+  "checked_at": "2026-10-23T03:13:42.752818+00:00",
+  "database_host": "qhfxnpsvdolaftaljvdp.supabase.co",
+  "database_configured": true,
+  "schema": {
+    "rls_enabled": true,
+    "server_only": true,
+    "test_trigger": true,
+    "delivery_unique": true,
+    "feedback_columns": true,
+    "feedback_trigger": true,
+    "telemetry_columns": true,
+    "counts_server_only": true,
+    "test_access_policy": true
+  },
+  "recovery_path_configured_in_selected_env": true,
+  "persistent_volume_verified": false,
+  "hosted_customer_editor_journey_verified": false,
+  "column_checks": {
+    "run_telemetry": true,
+    "feedback": true,
+    "test_case_freshness": true,
+    "workflow_definition": true,
+    "workflow_recovery": false,
+    "notification_delivery": false
+  },
+  "column_http_status": {
+    "run_telemetry": 200,
+    "feedback": 200,
+    "test_case_freshness": 200,
+    "workflow_definition": 200,
+    "workflow_recovery": 400,
+    "notification_delivery": 400
+  },
+  "developer_jobs_schema": null,
+  "developer_jobs_ready": false,
+  "database_status": "checks failed",
+  "production_acceptance": {
+    "approved": false,
+    "stripe_provider_lifecycle_verified": false,
+    "backup_restore_verified": false,
+    "encryption_key_recovery_verified": false,
+    "hosted_load_restart_verified": false,
+    "auth_and_alert_email_delivery_verified": false
+  }
+}

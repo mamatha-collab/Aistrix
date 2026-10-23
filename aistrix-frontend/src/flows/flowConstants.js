@@ -1,3 +1,4 @@
+import { BRAND, BRAND_DOMAIN } from '../lib/brand'
 export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 export const EMOJIS = ['⚡','🔗','🔄','📋','🧩','🚀','💡','🎯','📈','🛠️','💼','🎓','🔬','✍️','📊']
 
@@ -238,7 +239,7 @@ export const APP_DEFAULT_FIELDS = {
     { id: 'topic',     label: 'Topic or Content',  placeholder: 'e.g. Our new AI feature launch',            required: true  },
     { id: 'platform',  label: 'Platform',          placeholder: 'LinkedIn / Twitter / Instagram / Facebook', required: true  },
     { id: 'tone',      label: 'Tone',              placeholder: 'e.g. Enthusiastic, professional, witty',    required: false },
-    { id: 'cta',       label: 'Key Message / CTA', placeholder: 'e.g. Drive signups to aistrix.app',         required: false },
+    { id: 'cta',       label: 'Key Message / CTA', placeholder: `e.g. Drive signups to ${BRAND_DOMAIN}`,         required: false },
   ],
   'market research assistant': [
     { id: 'industry',  label: 'Industry / Market',       placeholder: 'e.g. EdTech SaaS',                   required: true  },
@@ -248,7 +249,7 @@ export const APP_DEFAULT_FIELDS = {
   ],
   'competitor analysis': [
     { id: 'competitor',  label: 'Competitor Name',    placeholder: 'e.g. Notion AI',                         required: true  },
-    { id: 'your_co',     label: 'Your Company/Product', placeholder: 'e.g. Aistrix',                         required: true  },
+    { id: 'your_co',     label: 'Your Company/Product', placeholder: `e.g. ${BRAND}`,                         required: true  },
     { id: 'industry',    label: 'Industry',            placeholder: 'e.g. AI productivity tools',            required: false },
     { id: 'focus',       label: 'Analysis Focus',      placeholder: 'e.g. Pricing, features, positioning',   required: false },
   ],
@@ -302,7 +303,7 @@ export const APP_DEFAULT_FIELDS = {
   ],
   'sales objection analyzer': [
     { id: 'objection', label: 'The Objection Raised', placeholder: 'e.g. "We already use HubSpot for this"', required: true },
-    { id: 'product',   label: 'Your Product / Service', placeholder: 'e.g. Aistrix AI Workflows',           required: true  },
+    { id: 'product',   label: 'Your Product / Service', placeholder: `e.g. ${BRAND} AI Workflows`,           required: true  },
     { id: 'context',   label: 'Customer Context',     placeholder: 'e.g. Mid-size SaaS, 50 person sales team', required: false },
   ],
   'rebuttal writer': [
@@ -319,7 +320,7 @@ export const APP_DEFAULT_FIELDS = {
   'call transcript analyzer': [
     { id: 'transcript', label: 'Call Transcript',    placeholder: 'Paste the call transcript here',          required: true  },
     { id: 'customer',   label: 'Customer Name',      placeholder: 'e.g. Sarah @ Bloom Retail',               required: false },
-    { id: 'product',    label: 'Product Discussed',  placeholder: 'e.g. Aistrix Pro Plan',                   required: false },
+    { id: 'product',    label: 'Product Discussed',  placeholder: `e.g. ${BRAND} Pro Plan`,                   required: false },
   ],
   'deal signal extractor': [
     { id: 'content',   label: 'Call / Email Transcript', placeholder: 'Paste conversation content here',     required: true  },
@@ -409,12 +410,12 @@ export const APP_DEFAULT_FIELDS = {
   'support response writer': [
     { id: 'customer',  label: 'Customer Name',       placeholder: 'e.g. Mike',                               required: false },
     { id: 'issue',     label: 'Issue Described',     placeholder: 'e.g. Dashboard not loading after last update', required: true },
-    { id: 'product',   label: 'Product / Version',  placeholder: 'e.g. Aistrix Web v2.1',                   required: false },
+    { id: 'product',   label: 'Product / Version',  placeholder: `e.g. ${BRAND} Web v2.1`,                   required: false },
     { id: 'outcome',   label: 'Desired Outcome',    placeholder: 'e.g. Resolve issue or offer workaround',  required: false },
   ],
   'customer message analyzer': [
     { id: 'message',   label: 'Customer Message / Email', placeholder: 'Paste the full customer message here', required: true },
-    { id: 'product',   label: 'Product Context',    placeholder: 'e.g. Aistrix Workflow Builder',            required: false },
+    { id: 'product',   label: 'Product Context',    placeholder: `e.g. ${BRAND} Workflow Builder`,            required: false },
     { id: 'account',   label: 'Customer Account Type', placeholder: 'e.g. Pro plan, 6 months old',           required: false },
   ],
   'escalation risk analyzer': [
@@ -438,7 +439,7 @@ export const APP_DEFAULT_FIELDS = {
     { id: 'context',   label: 'Customer Context',    placeholder: 'e.g. Angry long-term customer / New user confused', required: false },
   ],
   'faq generator': [
-    { id: 'topic',     label: 'Topic / Product',     placeholder: 'e.g. Aistrix billing and subscriptions',  required: true  },
+    { id: 'topic',     label: 'Topic / Product',     placeholder: `e.g. ${BRAND} billing and subscriptions`,  required: true  },
     { id: 'theme',     label: 'Common Question Theme', placeholder: 'e.g. Upgrade process, refund policy',   required: true  },
     { id: 'audience',  label: 'Target Audience',     placeholder: 'e.g. Non-technical small business owners', required: false },
   ],
@@ -516,20 +517,20 @@ export const APP_DEFAULT_FIELDS = {
   ],
   // ── Marketing ─────────────────────────────────────────────────────────────────
   'audience researcher': [
-    { id: 'product',   label: 'Product / Service',   placeholder: 'e.g. Aistrix AI Workflow Platform',        required: true  },
+    { id: 'product',   label: 'Product / Service',   placeholder: `e.g. ${BRAND} AI Workflow Platform`,        required: true  },
     { id: 'market',    label: 'Target Market',       placeholder: 'e.g. UK SMB operations teams',             required: true  },
     { id: 'geography', label: 'Geography',           placeholder: 'e.g. UK & Ireland',                        required: false },
     { id: 'goal',      label: 'Campaign Goal',       placeholder: 'e.g. Drive trial signups',                 required: false },
   ],
   'campaign brief writer': [
-    { id: 'product',   label: 'Product / Service',   placeholder: 'e.g. Aistrix Pro Plan launch',             required: true  },
+    { id: 'product',   label: 'Product / Service',   placeholder: `e.g. ${BRAND} Pro Plan launch`,             required: true  },
     { id: 'audience',  label: 'Target Audience',     placeholder: 'e.g. Operations managers at 20–200 person companies', required: true },
     { id: 'goal',      label: 'Campaign Goal',       placeholder: 'e.g. 500 free trial signups in 30 days',  required: true  },
     { id: 'budget',    label: 'Budget',             placeholder: 'e.g. £5,000 total across LinkedIn + Google', required: false },
     { id: 'timeline',  label: 'Timeline',           placeholder: 'e.g. March 1–31, 2025',                    required: false },
   ],
   'ad copy generator': [
-    { id: 'product',   label: 'Product / Service',   placeholder: 'e.g. Aistrix AI Workflows',                required: true  },
+    { id: 'product',   label: 'Product / Service',   placeholder: `e.g. ${BRAND} AI Workflows`,                required: true  },
     { id: 'audience',  label: 'Target Audience',     placeholder: 'e.g. Busy operations managers',            required: true  },
     { id: 'platform',  label: 'Ad Platform',         placeholder: 'LinkedIn / Google / Facebook / Instagram', required: true  },
     { id: 'benefit',   label: 'Key Benefit',         placeholder: 'e.g. Save 10 hours a week on repetitive tasks', required: true },
@@ -565,7 +566,7 @@ export const APP_DEFAULT_FIELDS = {
     { id: 'cta',       label: 'Call to Action',      placeholder: 'e.g. Upgrade to Pro / Try the new feature', required: false },
   ],
   'brand voice analyzer': [
-    { id: 'brand',     label: 'Brand Name',          placeholder: 'e.g. Aistrix',                             required: true  },
+    { id: 'brand',     label: 'Brand Name',          placeholder: `e.g. ${BRAND}`,                             required: true  },
     { id: 'industry',  label: 'Industry',            placeholder: 'e.g. B2B SaaS / Professional services',    required: false },
     { id: 'values',    label: 'Brand Values',        placeholder: 'e.g. Empowering, simple, honest, smart',   required: true  },
     { id: 'sample',    label: 'Sample Existing Content', placeholder: 'Paste 2–3 paragraphs of your best existing copy', required: false },
@@ -577,7 +578,7 @@ export const APP_DEFAULT_FIELDS = {
     { id: 'audience',  label: 'Audience',            placeholder: 'e.g. Senior finance leaders',              required: false },
   ],
   'style guide generator': [
-    { id: 'brand',     label: 'Brand Name',          placeholder: 'e.g. Aistrix',                             required: true  },
+    { id: 'brand',     label: 'Brand Name',          placeholder: `e.g. ${BRAND}`,                             required: true  },
     { id: 'tone',      label: 'Tone Pillars',        placeholder: 'e.g. Clear, empowering, conversational, credible', required: true },
     { id: 'dos',       label: 'Do\'s (with examples)', placeholder: 'e.g. Use short sentences. Say "you" not "the user"', required: false },
     { id: 'donts',     label: 'Don\'ts (with examples)', placeholder: 'e.g. Avoid jargon. Don\'t use passive voice', required: false },
@@ -596,7 +597,7 @@ export const APP_DEFAULT_FIELDS = {
     { id: 'competition', label: 'Competition',       placeholder: 'e.g. Zapier (complex), Make (technical), ChatGPT (generic)', required: false },
   ],
   'pitch deck writer': [
-    { id: 'company',   label: 'Company Name',        placeholder: 'e.g. Aistrix',                             required: true  },
+    { id: 'company',   label: 'Company Name',        placeholder: `e.g. ${BRAND}`,                             required: true  },
     { id: 'problem',   label: 'Problem',             placeholder: 'e.g. SMBs waste 10+ hours/week on repetitive tasks that AI could automate', required: true },
     { id: 'solution',  label: 'Solution',            placeholder: 'e.g. No-code AI workflow builder that chains AI apps into automated pipelines', required: true },
     { id: 'market',    label: 'Market Size',         placeholder: 'e.g. £2.4B SMB automation market, growing 25% YoY', required: false },
@@ -604,20 +605,20 @@ export const APP_DEFAULT_FIELDS = {
     { id: 'traction',  label: 'Traction',           placeholder: 'e.g. 200 users, £8k MRR, 40% MoM growth', required: false },
   ],
   'value proposition writer': [
-    { id: 'product',   label: 'Product / Service',   placeholder: 'e.g. Aistrix AI Workflows',                required: true  },
+    { id: 'product',   label: 'Product / Service',   placeholder: `e.g. ${BRAND} AI Workflows`,                required: true  },
     { id: 'customer',  label: 'Target Customer',     placeholder: 'e.g. Non-technical operations managers',   required: true  },
     { id: 'pain',      label: 'Main Pain Point',     placeholder: 'e.g. Hours wasted on repetitive document tasks', required: true },
     { id: 'differentiators', label: 'Key Differentiators', placeholder: 'e.g. No-code, context-aware AI, 5-minute setup', required: true },
   ],
   'investor faq builder': [
-    { id: 'company',   label: 'Company Name',        placeholder: 'e.g. Aistrix',                             required: true  },
+    { id: 'company',   label: 'Company Name',        placeholder: `e.g. ${BRAND}`,                             required: true  },
     { id: 'stage',     label: 'Stage',               placeholder: 'e.g. Pre-seed / Seed / Series A',          required: true  },
     { id: 'model',     label: 'Revenue Model',       placeholder: 'e.g. Monthly SaaS, £49/seat',              required: true  },
     { id: 'market',    label: 'Market Size',         placeholder: 'e.g. £2.4B TAM, £480M SAM',               required: false },
     { id: 'team',      label: 'Team Background',     placeholder: 'e.g. 2 founders, ex-Google PM + 10yr SaaS engineer', required: false },
   ],
   'gtm strategy builder': [
-    { id: 'product',   label: 'Product / Service',   placeholder: 'e.g. Aistrix AI Workflows',                required: true  },
+    { id: 'product',   label: 'Product / Service',   placeholder: `e.g. ${BRAND} AI Workflows`,                required: true  },
     { id: 'customer',  label: 'Target Customer',     placeholder: 'e.g. UK SMB operations managers',          required: true  },
     { id: 'geography', label: 'Geography',           placeholder: 'e.g. UK initially, then EU',               required: false },
     { id: 'timeline',  label: 'Launch Timeline',     placeholder: 'e.g. 90 days to first 100 customers',      required: false },
@@ -629,7 +630,7 @@ export const APP_DEFAULT_FIELDS = {
     { id: 'current',   label: 'Current Channels',    placeholder: 'e.g. LinkedIn organic, Google Ads',        required: false },
   ],
   'launch announcement writer': [
-    { id: 'product',   label: 'Product / Feature Name', placeholder: 'e.g. Aistrix Webhook Triggers',         required: true  },
+    { id: 'product',   label: 'Product / Feature Name', placeholder: `e.g. ${BRAND} Webhook Triggers`,         required: true  },
     { id: 'benefits',  label: 'Key Benefits',           placeholder: 'e.g. Trigger workflows from any external tool automatically', required: true },
     { id: 'audience',  label: 'Target Audience',        placeholder: 'e.g. Existing Pro users + developer community', required: true },
     { id: 'date',      label: 'Launch Date',            placeholder: 'e.g. March 1st, 2025',                  required: false },

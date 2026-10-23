@@ -4,16 +4,65 @@
     {
       "name": "Aistrix Frontend (Vite)",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
       "cwd": "aistrix-frontend",
       "port": 5173
     },
     {
       "name": "Aistrix Backend (FastAPI / uvicorn)",
-      "runtimeExecutable": "uvicorn",
-      "runtimeArgs": ["main:app", "--reload", "--port", "8000"],
+      "runtimeExecutable": "venv/Scripts/uvicorn.exe",
+      "runtimeArgs": [
+        "main:app",
+        "--reload",
+        "--port",
+        "8000"
+      ],
       "cwd": "aistrix-backend",
       "port": 8000
+    },
+    {
+      "name": "Aistrix Frontend (Vite, staging)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev:staging"
+      ],
+      "cwd": "aistrix-frontend",
+      "port": 5173
+    },
+    {
+      "name": "Aistrix Backend (uvicorn, staging)",
+      "runtimeExecutable": "venv/Scripts/uvicorn.exe",
+      "runtimeArgs": [
+        "main:app",
+        "--reload",
+        "--port",
+        "8000",
+        "--env-file",
+        ".env.staging"
+      ],
+      "cwd": "aistrix-backend",
+      "port": 8000
+    },
+    {
+      "name": "Aistrix fixture (no account)",
+      "runtimeExecutable": "node",
+      "runtimeArgs": [
+        "node_modules/vite/bin/vite.js",
+        "--config",
+        "e2e/fixtures/vite.config.js",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "4174",
+        "--strictPort"
+      ],
+      "cwd": "aistrix-frontend",
+      "port": 4174,
+      "url": "http://127.0.0.1:4174"
     }
   ]
 }

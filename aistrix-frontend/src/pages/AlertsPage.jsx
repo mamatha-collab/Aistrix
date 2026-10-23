@@ -115,7 +115,7 @@ function AlertCard({ alert, onToggle, onDelete }) {
           className={`relative w-9 h-5 rounded-full transition-colors ${alert.is_active ? 'bg-[#6C5CE7]' : 'bg-[#1F2444]'}`}>
           <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${alert.is_active ? 'translate-x-4' : 'translate-x-0.5'}`} />
         </button>
-        <button onClick={() => onDelete(alert.id)} className="text-slate-600 hover:text-red-400 text-sm transition-colors">🗑</button>
+        <button aria-label="Delete" onClick={() => onDelete(alert.id)} className="text-slate-600 hover:text-red-400 text-sm transition-colors">🗑</button>
       </div>
     </div>
   )

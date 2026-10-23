@@ -185,7 +185,7 @@ function MarketplaceListings({ apps, user }) {
       const { listing } = await manageRequest(`/v1/apps/${encodeURIComponent(appId)}/listing/unlist`, { method: 'POST', body: JSON.stringify({ expected_updated_at: listingFor(appId)?.updated_at || null }) })
       setListings(previous => previous.map(item => item.id === listing.id ? listing : item))
       setConfirmUnlist(null)
-      toast('Listing removed from discovery. The deployed app and existing access remain unchanged.', 'success', 5000)
+      toast('Custom listing removed. Published public apps remain available in Market.', 'success', 5000)
     } catch (error) { toast(error.message, 'error') }
     finally { setChangingStatus(null) }
   }
@@ -200,7 +200,7 @@ function MarketplaceListings({ apps, user }) {
         <p className="text-[10px] text-slate-400 uppercase font-semibold tracking-wide">Marketplace listings</p>
       </div>
 
-      <p className="text-xs text-slate-400">Deploy makes your app available. Listing makes it discoverable here. Unlisting stops discovery without deleting the app or revoking purchased access.</p>
+      <p className="text-xs text-slate-400">Published public apps appear in Market automatically. Add a listing to customize your app’s title, description and category.</p>
       {apps.map(app => {
         const l         = listingFor(app.id)
         const isEditing = editId === app.id
@@ -260,7 +260,7 @@ function MarketplaceListings({ apps, user }) {
 
             {l?.status === 'live' && <div className="px-4 pb-3">
               {confirmUnlist === app.id ? <div className="space-y-2 rounded-xl border border-amber-400/20 p-3">
-                <p className="text-xs text-slate-300">Remove this listing from the Marketplace? Existing customers retain access to the deployed app.</p>
+                <p className="text-xs text-slate-300">Remove the custom listing? Published public apps will still appear in Market using their app details. Existing customers retain access.</p>
                 <button disabled={changingStatus === app.id} onClick={() => unlist(app.id)} className="text-xs px-3 py-2 rounded-lg bg-[#6C5CE7] text-white">{changingStatus === app.id ? 'Removing…' : 'Confirm unlist'}</button>
                 <button disabled={changingStatus === app.id} onClick={() => setConfirmUnlist(null)} className="ml-3 text-xs text-slate-300">Keep listed</button>
               </div> : <button onClick={() => setConfirmUnlist(app.id)} className="text-xs text-slate-400 underline">Unlist from Marketplace</button>}

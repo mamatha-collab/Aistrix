@@ -10,11 +10,13 @@ import { GoalLauncher, WorkflowSuggestionsPanel } from '../flows/GoalLauncher'
 import { TEMPLATE_PACKS } from '../flows/flowConstants'
 import { scopeToWorkspace } from '../lib/workspace'
 
-export default function FlowsPage({ user, onShowHistory }) {
+export default function FlowsPage({ user, onShowHistory, search = '', openFlowId = null, onOpenedFlow }) {
   const [flows, setFlows] = useState([])
   const [apps, setApps] = useState([])
   const [domains, setDomains] = useState([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+  const [reloadKey, setReloadKey] = useState(0)
   const [mode, setMode] = useState(null)
   const [editingFlow, setEditingFlow] = useState(null)
   const [runningFlow, setRunningFlow] = useState(null)
@@ -22,6 +24,14 @@ export default function FlowsPage({ user, onShowHistory }) {
   const [deletedFlowId, setDeletedFlowId] = useState(null)
   const [tab, setTab] = useState('mine')
   const [flowSearch, setFlowSearch] = useState('')
+  useEffect(() => { setFlowSearch(search) }, [search])
+  // A workflow picked in the left pane opens ready to run.
+  useEffect(() => {
+    if (!openFlowId || loading) return
+    const flow = flows.find(f => f.id === openFlowId)
+    if (flow) setRunningFlow(flow)
+    onOpenedFlow?.()
+  }, [openFlowId, loading, flows])   // eslint-disable-line react-hooks/exhaustive-deps
   const [flowViewMode, setFlowViewMode] = useState(() => localStorage.getItem('aistrix:flowViewMode') || 'cards')
   const [activePack, setActivePack] = useState('General')
   const [publicFlows, setPublicFlows] = useState([])
@@ -60,12 +70,17 @@ export default function FlowsPage({ user, onShowHistory }) {
   const [flowLastRuns, setFlowLastRuns] = useState({})
 
   useEffect(() => {
+    setLoading(true); setLoadError('')
     Promise.all([
       scopeToWorkspace(supabase.from('flows').select('*'), user).order('created_at', { ascending: false }),
-      supabase.from('apps').select('id, name, emoji, color, domain_id, domains(id, name, emoji)').order('name'),
+      supabase.from('apps').select('id, name, emoji, color, domain_id, domains(id, name, emoji)').eq('is_published', true).order('name'),
       supabase.from('domains').select('id, name, emoji, color').order('name'),
-    ]).then(async ([{ data: f }, { data: a }, { data: d }]) => {
-      setFlows(f ?? []); setApps(a ?? []); setDomains(d ?? []); setLoading(false)
+    ]).then(async ([{ data: allFlows, error: flowError }, { data: a, error: appError }, { data: d, error: domainError }]) => {
+      const error = flowError || appError || domainError
+      if (error) { setLoadError(error.message); setLoading(false); return }
+      // Workflows built in Dev Studio (kind 'developer') aren't edited here.
+      const f = (allFlows ?? []).filter(fl => fl.kind !== 'developer')
+      setFlows(f); setApps(a ?? []); setDomains(d ?? []); setLoading(false)
       if (f?.length) {
         const flowIds = f.map(fl => fl.id)
         const { data: runs } = await supabase.from('run_history')
@@ -83,7 +98,7 @@ export default function FlowsPage({ user, onShowHistory }) {
       }
     })
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when user.id changes
-  }, [user.id])
+  }, [user.id, reloadKey])
 
   async function loadShared() {
     setLoadingShared(true)
@@ -138,7 +153,7 @@ export default function FlowsPage({ user, onShowHistory }) {
     await supabase.from('flows').update({ install_count: (flow.install_count || 0) + 1 }).eq('id', flow.id)
     toast(`"${flow.name}" installed`, 'success')
     const { data } = await scopeToWorkspace(supabase.from('flows').select('*'), user).order('created_at', { ascending: false })
-    if (data) setFlows(data)
+    if (data) setFlows(data.filter(fl => fl.kind !== 'developer'))
     setTab('mine')
   }
 
@@ -195,8 +210,10 @@ export default function FlowsPage({ user, onShowHistory }) {
         />
       )}
 
+      {loadError && <div role="alert" className="m-4 rounded-xl border border-red-400/20 p-4 text-sm text-red-300">{loadError} <button className="underline" onClick={() => setReloadKey(value => value + 1)}>Retry workflows</button></div>}
       {/* Fixed top area */}
-      <div className="shrink-0 px-6 pt-6 relative z-10 bg-[var(--app-bg)]">
+      <div className="shrink-0 px-4 sm:px-6 pt-5 relative z-10 bg-[var(--app-bg)]">
+        <div className="business-page-heading"><div><p className="business-eyebrow">WORKFLOWS</p><h1>Keep your work moving</h1><p>Run a complete process, follow its progress, and review results.</p></div><button className="business-primary" onClick={() => { setMode('create'); setEditingFlow(null) }}>+ New workflow</button></div>
         <div className="section-tab-row flex items-center justify-between">
           <div className="section-tabs">
             <button onClick={() => setTab('mine')}
@@ -219,6 +236,7 @@ export default function FlowsPage({ user, onShowHistory }) {
           </div>
         </div>
 
+        <details className="business-discovery-tools"><summary>Browse workflow ideas and templates</summary>
         {tab === 'mine' && (
           <GoalLauncher
             apps={apps}
@@ -250,6 +268,7 @@ export default function FlowsPage({ user, onShowHistory }) {
           />
         )}
 
+        </details>
         {tab === 'mine' && !loading && flows.length > 0 && (
           <div className="flex items-center gap-2 mb-4 flex-wrap">
             <h2 className="text-white font-semibold text-base shrink-0">My Workflows</h2>
@@ -305,10 +324,10 @@ export default function FlowsPage({ user, onShowHistory }) {
               <div className="absolute inset-0 bg-gradient-to-br from-[#6C5CE7]/5 via-transparent to-[#E84393]/5 pointer-events-none" />
               <div className="relative">
                 <p className="text-white font-semibold mb-1">No workflows yet</p>
-                <p className="text-slate-400 text-sm mb-4">Install a template to get started in seconds.</p>
+                <p className="text-slate-400 text-sm mb-4">Create a workflow, or explore the templates above to find a starting point.</p>
                 <button onClick={() => { setMode('create'); setEditingFlow(null) }}
                   className="text-xs text-slate-400 hover:text-slate-300 transition-colors underline underline-offset-2">
-                  or build one from scratch
+                  Create your first workflow
                 </button>
               </div>
             </div>

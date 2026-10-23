@@ -119,13 +119,36 @@ test('customers can search all pages, filter and open the shared app runtime', a
 test('customer read outages show an error and recover without pretending the catalog is empty', async ({ page }) => {
   await page.goto('/e2e/fixtures/?scenario=market-customer')
   await expect(page.getByRole('button', { name:'Listed app 1', exact:true })).toBeVisible()
-  await page.evaluate(() => { window.buildFixture.failures['marketplace_listings:select']='Catalog temporarily offline' })
-  await page.getByLabel('Search apps by title').fill('Listed')
+  await page.evaluate(() => { window.buildFixture.failures['apps:select']='Catalog temporarily offline' })
+  await page.getByRole('button', { name:'Refresh apps', exact:true }).click()
   await expect(page.getByRole('alert')).toContainText('Catalog temporarily offline')
-  await page.evaluate(() => { delete window.buildFixture.failures['marketplace_listings:select'] })
+  await page.evaluate(() => { delete window.buildFixture.failures['apps:select'] })
   await page.getByRole('button', { name:'Retry Marketplace' }).click()
   await page.getByRole('button', { name:'Listed app 1', exact:true }).click()
   await expect(page.getByRole('link', { name:'Open app →' })).toBeVisible()
+})
+
+test('customers see public apps without listings and can open them; private apps and drafts stay hidden', async ({ page }) => {
+  await page.goto('/e2e/fixtures/?scenario=market-customer')
+  await expect(page.getByRole('button', { name:'Listed app 1', exact:true })).toBeVisible()
+  await page.evaluate(() => {
+    const state = window.buildFixture
+    state.tables.marketplace_listings = []
+    state.tables.apps = [
+      { ...state.tables.apps[0], id:'available-app', name:'Available without listing', description:'Public app ready to use' },
+      { ...state.tables.apps[0], id:'private-app', name:'Private published app', visibility:'private' },
+      { ...state.tables.apps[0], id:'draft-app', name:'Public draft app', is_published:false },
+    ]
+  })
+  await page.getByRole('button', { name:'Refresh apps', exact:true }).click()
+  await expect(page.getByRole('button', { name:'Available without listing', exact:true })).toBeVisible()
+  await expect(page.getByText('1 app available', { exact:true })).toBeVisible()
+  await expect(page.getByRole('button', { name:'Private published app', exact:true })).toHaveCount(0)
+  await expect(page.getByRole('button', { name:'Public draft app', exact:true })).toHaveCount(0)
+  await page.getByRole('button', { name:'Available without listing', exact:true }).click()
+  await expect(page.getByRole('heading', { name:'Available without listing', exact:true })).toBeVisible()
+  await page.getByRole('link', { name:'Open app →' }).click()
+  await expect(page.getByText('Shared app runner destination')).toBeVisible()
 })
 
 test('paid customer access reflects unused quota and can be refreshed', async ({ page }) => {

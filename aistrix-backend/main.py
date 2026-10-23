@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import ast
 import csv
 import html as html_lib
@@ -100,6 +101,7 @@ async def lifespan(_app):
     supervisor = asyncio.create_task(_batch_supervisor())
     telemetry_worker = asyncio.create_task(_telemetry_supervisor())
     scheduler = asyncio.create_task(_scheduler_loop())
+    developer_jobs = asyncio.create_task(_developer_jobs_supervisor())
     try:
         report_production_config()
     except Exception as e:                  # a report, never a reason not to start
@@ -107,9 +109,9 @@ async def lifespan(_app):
     try:
         yield
     finally:
-        for task in (supervisor, telemetry_worker, scheduler):
+        for task in (supervisor, telemetry_worker, scheduler, developer_jobs, *_FLOW_TASKS):
             task.cancel()
-        await asyncio.gather(supervisor, telemetry_worker, scheduler, return_exceptions=True)
+        await asyncio.gather(supervisor, telemetry_worker, scheduler, developer_jobs, *_FLOW_TASKS, return_exceptions=True)
 
 
 app = FastAPI(title=f"{BRAND_NAME} API", version="1.0.0", lifespan=lifespan)
@@ -178,7 +180,7 @@ class OnlyAllowedClients:
     def __init__(self, app_): self.app = app_
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] != "http" or not ALLOWED_CLIENT_IPS or scope.get("path") == "/health":
+        if scope["type"] != "http" or not ALLOWED_CLIENT_IPS or scope.get("path") in ("/health", "/health/ready"):
             return await self.app(scope, receive, send)
         ip = (scope.get("client") or ("", 0))[0]
         if os.getenv("TRUST_PROXY_HEADERS", "").lower() in ("1", "true", "yes"):
@@ -1169,6 +1171,18 @@ def redact_secrets(text: str, secrets_map: dict[str, str]) -> str:
     return text
 
 
+MAX_APP_CALL_DEPTH = 3
+_APP_CALL_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar("app_call_depth", default=0)
+
+
+def _internal_request() -> Request:
+    """A stand-in request for runs the server starts itself (schedules,
+    webhooks, workflow steps, apps called by agents): no Origin header, so
+    nothing can pass as a website visitor."""
+    return Request({"type": "http", "method": "POST", "path": "/internal", "headers": [],
+                    "query_string": b"", "client": ("127.0.0.1", 0)})
+
+
 async def execute_tool(tool: dict, tool_input: dict, ctx: Optional[dict] = None) -> str:
     """ctx carries run-scoped server data: {"secrets", "caller_id", "api_key", "provider"}.
     A tool whose secret is missing fails clearly instead of calling out with
@@ -1252,14 +1266,21 @@ async def _execute_tool(tool: dict, tool_input: dict, ctx: dict) -> str:
                 if other.get("is_paid"):
                     if not (await find_active_entitlement(other_id, caller)):
                         return "Referenced app requires a purchase the caller does not have"
-            other_provider = other.get("ai_provider") or "claude"
-            other_model = validate_model(other_provider, other.get("ai_model") or get_default_model(other_provider))
-            key = ctx.get("api_key") if ctx.get("provider") == other_provider else None
-            collected = []
-            fn = stream_fn_for(other_provider)
-            async for token in fn(other.get("system_prompt") or "You are helpful.", app_input, other_model, key):
-                collected.append(token)
-            return "".join(collected)
+            # The same run pipeline as opening the app: its live release (the
+            # draft for its editors), output contract, tools and key rules.
+            # It used to run the draft prompt directly, on the calling app's
+            # key or, across providers, on no key at all.
+            depth = _APP_CALL_DEPTH.get()
+            if depth >= MAX_APP_CALL_DEPTH:
+                return f"Apps can call other apps at most {MAX_APP_CALL_DEPTH} levels deep"
+            token = _APP_CALL_DEPTH.set(depth + 1)
+            try:
+                result = await _drain_run(await execute_run(
+                    _api_run_request(other_id, other, str(app_input)[:MAX_INPUT_LENGTH]),
+                    _internal_request(), caller=caller or ApiCaller()))
+            finally:
+                _APP_CALL_DEPTH.reset(token)
+            return result.get("output") or "" if result.get("ok") else f"The app couldn't run: {result.get('error')}"
 
         elif tool_type == "pdf":
             url = tool_input.get("url", "") or config.get("url", "")
@@ -1981,13 +2002,16 @@ async def run_app(req: RunRequest, request: Request):
     return await execute_run(req, request, caller=caller)
 
 
-async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller", on_complete=None, track: bool = True):
+async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller", on_complete=None, track: bool = True,
+                      release: Optional[tuple[int, dict]] = None):
     """Shared run pipeline for /run (browser) and /v1/apps/{id}/run (API).
 
     `caller` is already authenticated and carries the active workspace. For
     any app the caller can't edit, the prompt, model and provider come from
     the database — never from the request — so paid/private prompts can't be
-    swapped or bypassed.
+    swapped or bypassed. `release` = (version number, snapshot) runs that
+    fixed release for everyone, editors included (workflow steps pinned to
+    "Published · vN").
     """
     user_jwt, caller_id = caller.user_jwt, caller.user_id
     # ── App resolution + access ──────────────────────────────────────────────
@@ -1998,6 +2022,8 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
     # End users run the app's production version (set by promoting); editors
     # run the draft. Apps never promoted run as they are.
     prod = app_row.get("prod_snapshot") if (app_row and (not is_editor or caller.live) and isinstance(app_row.get("prod_snapshot"), dict)) else None
+    if app_row and release:
+        prod = release[1]
     if prod:
         app_row = {**app_row, **{k: prod[k] for k in DRAFT_FIELDS if k in prod}}
 
@@ -2241,7 +2267,7 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
                       else "api" if (caller.via_key or not user_jwt) else "app")
 
     started = time.monotonic()
-    run_version = app_row.get("live_version") if (app_row and prod) else None   # None: the draft answered
+    run_version = (release[0] if release else app_row.get("live_version")) if (app_row and prod) else None   # None: the draft answered
     telemetry_id = str(uuid.uuid4())
     telemetry_created = datetime.now(timezone.utc).isoformat()
 
@@ -3874,9 +3900,13 @@ async def scheduled_step_key(app_row: dict, runner_id: Optional[str], provider: 
     return None, f"needs a {label} API key: add yours in Settings → Keys"
 
 
-async def extract_facts_headless(text: str) -> dict:
+async def extract_facts_headless(text: str, api_key: Optional[str]) -> dict:
+    """Facts for a workflow's memory, on the runner's own Claude key (none:
+    the workflow just doesn't learn from this run)."""
+    if not api_key:
+        return {}
     try:
-        full = await run_text(FACT_EXTRACT_PROMPT, text[:8000], "claude", get_default_model("claude"))
+        full = await run_text(FACT_EXTRACT_PROMPT, text[:8000], "claude", get_default_model("claude"), api_key)
         match = re.search(r"\{[\s\S]*\}", full)
         return json.loads(match.group(0)) if match else {}
     except Exception:
@@ -3898,89 +3928,532 @@ def compute_next_run_at(now: datetime, frequency: str, hour_utc: int, day_of_wee
     return candidate
 
 
-async def run_scheduled_workspace(sb_service: Client, schedule: dict):
-    flow_id = schedule["flow_id"]
-    flow_res = await db(sb_service.table("flows").select("*").eq("id", flow_id).single())
-    flow = flow_res.data
-    if not flow:
-        return
+# ─── Workflow engine ─────────────────────────────────────────────────────────
+# One engine for every way a workflow runs: on a schedule, from its webhook,
+# and interactively (POST /v1/flows/{id}/runs). App steps go through
+# execute_run, so a step runs exactly as the app does when opened: its
+# release, tools, knowledge, output contract and key rules. Each run is kept
+# in flow_runs; a run stops at an approval step and continues on resume.
+FLOW_TRIGGERS = ("interactive", "schedule", "webhook")
+FLOW_OUTPUT_LIMIT = 50000
+FLOW_API_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD")
 
+
+def _step_number(flow: dict, idx: int) -> int:
+    """How the builder numbers a step: Dev Studio shows the trigger as step 1."""
+    return idx + 2 if flow.get("kind") == "developer" else idx + 1
+
+
+def _step_name(steps: list, idx: int) -> str:
+    return (steps[idx] or {}).get("app_name") or f"Step {idx + 1}"
+
+
+def _flow_context(flow: dict, memory: dict, steps: list, results: list) -> str:
+    """What every app step sees besides its input: the workflow's standing
+    instructions, what it has learned, and the earlier steps' outputs."""
+    blocks = []
+    if flow.get("gpt_instructions"):
+        gpt_name = flow.get("gpt_name") or "this workflow's dedicated assistant"
+        blocks.append(
+            f'You are acting as part of "{gpt_name}" — '
+            f"a standing intelligence that governs every app in this workflow. Follow these standing instructions "
+            f"for every response, in addition to your normal role:\n{flow['gpt_instructions']}"
+        )
+    if memory:
+        mem_lines = "\n".join(f"- {k}: {', '.join(v) if isinstance(v, list) else v}" for k, v in memory.items())
+        blocks.append(
+            "Known facts about the user/subject, learned across this workflow over time — keep these "
+            f"actively in mind even if not repeated in the current input:\n{mem_lines}"
+        )
+    if results:
+        hist = "\n\n".join(f"### Step {i+1} — {_step_name(steps, i)} output:\n{r}" for i, r in enumerate(results))
+        blocks.append(
+            "This app is one step in a multi-app workflow. Here is everything produced by earlier steps, in "
+            f"order — use it as context, and if your role is to compare/score/decide between them, do so "
+            f"explicitly:\n\n{hist}"
+        )
+    return "\n\n".join(blocks)
+
+
+async def _step_release(app_row: dict, step: dict, caller: "ApiCaller", trigger: str) -> tuple[Optional[tuple], Optional[str]]:
+    """The app version a workflow step runs: (release, problem). release is
+    (version number, snapshot), or None for the app's draft.
+
+    "Published · vN" runs that fixed release. "Draft" runs the editable
+    configuration, for authorized testing only: someone who can edit the
+    app, running the workflow themselves — never on a schedule or webhook."""
+    if step.get("version") == "draft":
+        if trigger != "interactive":
+            return None, ("uses the app's draft. Drafts only run when someone who can edit the app tests "
+                          "the workflow; switch the step to a published release.")
+        if not await can_edit_app(app_row, caller):
+            return None, "uses a draft of an app you can't edit. Switch the step to a published release."
+        return None, None
+    live_num = app_row.get("live_version")
+    prod = app_row.get("prod_snapshot") if isinstance(app_row.get("prod_snapshot"), dict) else None
+    pinned = step.get("pinned_version")
+    if pinned and pinned != live_num:
+        sb = _service_client()
+        res = await db(sb.table("app_versions").select("version_data")
+                       .eq("app_id", app_row["id"]).eq("version_num", pinned).limit(1))
+        data = (res.data or [{}])[0].get("version_data") if res else None
+        if not isinstance(data, dict):
+            return None, f"uses release v{pinned}, which no longer exists. Pick another release."
+        return (int(pinned), data), None
+    if prod:
+        return (live_num, prod), None
+    # Workflows saved before steps had a version ran the draft for its editors.
+    if trigger == "interactive" and not step.get("version") and await can_edit_app(app_row, caller):
+        return None, None
+    return None, "uses an app that isn't published yet"
+
+
+async def _run_api_step(step: dict, previous: str) -> dict:
+    """An API Call step, server side (same checks as /proxy)."""
+    def fill(t):
+        return re.sub(r"\{\{previous_output\}\}", lambda _m: previous, t or "", flags=re.IGNORECASE)
+    method = (step.get("api_method") or "GET").upper()
+    url = fill(step.get("api_url")).strip()
+    if method not in FLOW_API_METHODS:
+        return {"status": "failed", "error": f"uses an unsupported method: {method}"}
+    if not url.startswith(("http://", "https://")):
+        return {"status": "failed", "error": "needs a URL starting with http:// or https://"}
+    headers = {"User-Agent": f"{BRAND_NAME}-Workflow/1.0", "Accept": "application/json, text/plain, */*"}
+    raw = step.get("api_headers")
+    if raw:
+        try:
+            extra = json.loads(raw) if isinstance(raw, str) else raw
+            headers.update({str(k): str(v) for k, v in (extra or {}).items()})
+        except (ValueError, AttributeError):
+            return {"status": "failed", "error": "has headers that aren't valid JSON"}
+    body = fill(step.get("api_body")) or None
+    if body and "Content-Type" not in headers:
+        headers["Content-Type"] = "application/json"
+    try:
+        resp = await fetch_safely(method, url, timeout=20, content=body.encode() if body else None, headers=headers)
+    except ValueError as e:
+        return {"status": "failed", "error": f"URL rejected: {e}"}
+    except Exception as e:
+        return {"status": "failed", "error": f"request failed ({type(e).__name__})"}
+    try:
+        out = json.dumps(resp.json(), ensure_ascii=False, indent=2)
+    except Exception:
+        out = resp.text
+    if resp.status_code >= 400:
+        return {"status": "failed", "error": f"got HTTP {resp.status_code} from {httpx.URL(url).host}"}
+    return {"status": "ok", "output": out, "version": None}
+
+
+def _flow_history_recorder(caller: "ApiCaller", flow: dict, app_id: str, app_name: str, input_text: str):
+    async def record(output: str, usage: dict, provider: str, model: str):
+        if not caller.user_id:
+            return
+        try:
+            await db(_service_client().table("run_history").insert({
+                "user_id": caller.user_id, "app_id": app_id, "app_name": app_name,
+                "workspace_id": caller.workspace_id, "flow_id": flow.get("id"), "flow_name": flow.get("name"),
+                "input": input_text[:20000], "output": output[:FLOW_OUTPUT_LIMIT],
+                "input_tokens": (usage or {}).get("input_tokens"), "output_tokens": (usage or {}).get("output_tokens"),
+            }))
+        except Exception as e:
+            print(f"workflow run history not saved: {type(e).__name__}: {str(e)[:200]}")
+    return record
+
+
+FLOW_TRANSFORMS = ("to_text", "to_number", "to_boolean", "json")
+
+
+def _flow_data(text: str) -> dict:
+    """A step's output (or the trigger's input) as fields other steps can
+    wire from: a JSON object's own fields, plus "text" (the whole output)."""
+    parsed, errs = _parse_json_output(_strip_json_fences(text or ""))
+    data = dict(parsed) if not errs and isinstance(parsed, dict) else {}
+    data.setdefault("text", text or "")
+    return data
+
+
+def _flow_path(value: Any, path: list[str]) -> Any:
+    for part in path:
+        if isinstance(value, dict) and part in value:
+            value = value[part]
+        elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
+            value = value[int(part)]
+        else:
+            return None
+    return value
+
+
+def _flow_transform(value: Any, name: Optional[str]) -> Any:
+    """The fixed list of conversions a wire can apply (no code)."""
+    if value is None or not name:
+        return value
+    if name == "to_text":
+        return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    if name == "to_number" and not isinstance(value, bool):
+        try:
+            num = float(str(value).replace(",", "").strip())
+            return int(num) if num.is_integer() else num
+        except ValueError:
+            return value          # the input check reports it
+    if name == "to_boolean" and isinstance(value, str):
+        low = value.strip().lower()
+        return True if low in ("true", "yes", "1") else False if low in ("false", "no", "0") else value
+    if name == "json" and isinstance(value, str):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return value
+    return value
+
+
+def resolve_input_map(input_map: dict, sources: dict) -> dict:
+    """A step's input fields from its wiring. Each target field takes
+    {"from": "trigger.email" | "<step id>.<path>", "transform"?} or {"value": ...}."""
+    fields: dict[str, Any] = {}
+    for target, spec in (input_map or {}).items():
+        if not isinstance(spec, dict):
+            continue
+        if "value" in spec:
+            value = spec["value"]
+        else:
+            head, _, rest = str(spec.get("from") or "").partition(".")
+            value = _flow_path(sources[head], [p for p in rest.split(".") if p]) if head in sources else None
+        value = _flow_transform(value, spec.get("transform"))
+        if value is not None and value != "":
+            fields[target] = value
+    return fields
+
+
+FLOW_CONDITION_OPS = ("equals", "not_equals", "contains", "gt", "gte", "lt", "lte", "empty", "not_empty")
+
+
+def flow_condition_met(cond: Optional[dict], sources: dict) -> bool:
+    """A step's "run only if" check: {"from": "s1.score", "op": "gte", "value": "7"}.
+    Steps whose check fails are skipped; that is how a workflow branches."""
+    if not isinstance(cond, dict) or not cond.get("from"):
+        return True
+    head, _, rest = str(cond["from"]).partition(".")
+    value = _flow_path(sources[head], [p for p in rest.split(".") if p]) if head in sources else None
+    op, target = cond.get("op") or "equals", cond.get("value")
+    if op == "empty":
+        return value in (None, "", [], {})
+    if op == "not_empty":
+        return value not in (None, "", [], {})
+    if op in ("gt", "gte", "lt", "lte"):
+        try:
+            a, b = float(str(value).replace(",", "").strip()), float(str(target).replace(",", "").strip())
+        except (TypeError, ValueError):
+            return False
+        return {"gt": a > b, "gte": a >= b, "lt": a < b, "lte": a <= b}[op]
+    text = value if isinstance(value, str) else ("" if value is None else json.dumps(value, ensure_ascii=False))
+    want = str("" if target is None else target).strip().lower()
+    if op == "contains":
+        return want in text.lower()
+    same = text.strip().lower() == want
+    return not same if op == "not_equals" else same
+
+
+async def _ai_fill_fields(input_fields: list, wired: dict, sources: dict, caller: "ApiCaller", app_view: dict) -> tuple[dict, Optional[str]]:
+    """Fill a step's unconnected input fields from everything the run has so
+    far, with a small call on the runner's own key. Returns (fields, problem)."""
+    provider = app_view.get("ai_provider") or "claude"
+    if provider not in PROVIDERS:
+        provider = "claude"
+    label = PROVIDERS.get(provider, {}).get("label", "AI")
+    key = await fetch_user_api_key_by_id(caller.user_id, provider) if caller.user_id else None
+    if not key and caller.user_jwt:
+        key = await fetch_user_api_key(caller.user_jwt, provider)
+    if not key:
+        return {}, f"needs your {label} API key to fill its inputs with AI. Add it in Settings → Keys."
+    names = [f.get("field") or f.get("name") for f in input_fields if f.get("field") or f.get("name")]
+    system = (
+        "You move data between apps in a workflow. From the data below, return ONLY a JSON object (no prose, "
+        "no markdown) with these fields:\n" + _describe_fields(input_fields) + "\n"
+        "Use only facts present in the data. Use null for anything the data doesn't contain. Never invent values."
+    )
+    data = json.dumps({"already_connected": wired, "available": sources}, ensure_ascii=False, default=str)[:12000]
+    attempt_input = data
+    for _ in range(2):
+        try:
+            raw = await run_text(system, attempt_input, provider, get_default_model(provider), key)
+        except Exception as e:
+            return {}, f"couldn't fill its inputs with AI ({type(e).__name__})"
+        parsed, errs = _parse_json_output(_strip_json_fences(raw))
+        if not errs and isinstance(parsed, dict):
+            return {k: v for k, v in parsed.items() if k in names and v not in (None, "")}, None
+        attempt_input = f"{data}\n\nYour previous answer wasn't a JSON object ({'; '.join(errs[:3])}). Return only the JSON object."
+    return {}, "couldn't fill its inputs with AI (the answer wasn't valid JSON)"
+
+
+async def run_flow_step(flow: dict, idx: int, *, caller: "ApiCaller", trigger: str, step_input: str,
+                        results: list, memory: dict, sources: Optional[dict] = None) -> dict:
+    """One step: {"status": ok | failed | waiting_approval, "output", "version", "error"}.
+
+    A step with an input_map gets exactly its wired fields, checked against
+    the input schema of the version it runs; other steps get the previous
+    output as text (Business flows, older workflows)."""
     steps = flow.get("steps") or []
-    if not steps:
+    step = steps[idx] or {}
+    kind = step.get("step_type")
+    if kind == "human_approval":
+        return {"status": "waiting_approval"}
+    if kind == "api_call":
+        return await _run_api_step(step, step_input)
+    app_row = await load_app_row(step.get("app_id")) if step.get("app_id") else None
+    if not app_row:
+        return {"status": "failed", "error": "uses an app that no longer exists"}
+    release, problem = await _step_release(app_row, step, caller, trigger)
+    if problem:
+        return {"status": "failed", "error": problem}
+    version = "draft" if not release else (f"v{release[0]}" if release[0] else "live")
+    view = {**app_row, **{k: release[1][k] for k in DRAFT_FIELDS if k in release[1]}} if release else app_row
+    ai_filled: list = []
+    if step.get("input_map") or step.get("ai_fill"):
+        fields = resolve_input_map(step.get("input_map") or {}, sources or {})
+        blueprint = (release[1].get("blueprint") or {}) if release else await fetch_app_blueprint(app_row["id"])
+        input_fields = _schema_fields(blueprint, "input_schema")
+        errors = _validate_schema_value(fields, input_fields) if input_fields else []
+        if errors and step.get("ai_fill") and input_fields:
+            filled, problem = await _ai_fill_fields(input_fields, fields, sources or {}, caller, view)
+            if problem:
+                return {"status": "failed", "version": version, "error": problem}
+            ai_filled = [k for k in filled if k not in fields]
+            merged = {**filled, **fields}          # what's wired wins over what AI suggests
+            order = [f.get("field") or f.get("name") for f in input_fields]
+            fields = {**{k: merged[k] for k in order if k in merged}, **{k: v for k, v in merged.items() if k not in order}}
+            errors = _validate_schema_value(fields, input_fields)
+        if errors:
+            return {"status": "failed", "version": version,
+                    "error": f"got input that doesn't fit the app: {'; '.join(errors[:5])}. Check the step's input mapping."}
+        if fields or not step_input:
+            step_input = _fields_to_input(fields)
+    text = ((step_input or "").strip() or "(no input)")[:MAX_INPUT_LENGTH]
+    # Developer workflows pass data only through their wiring; Business
+    # flows also show every step the earlier outputs and learned facts.
+    context = None if flow.get("kind") == "developer" else (_flow_context(flow, memory, steps, results) or None)
+    req = _api_run_request(app_row["id"], view, text, user_context=context)
+    result = await _drain_run(await execute_run(
+        req, _internal_request(), caller=caller, release=release,
+        on_complete=_flow_history_recorder(caller, flow, app_row["id"], _step_name(steps, idx), text)))
+    if not result.get("ok"):
+        return {"status": "failed", "error": f"failed: {result.get('error') or 'run failed'}", "version": version}
+    return {"status": "ok", "output": result.get("output") or "", "version": version, "ai_filled": ai_filled}
+
+
+async def _save_flow_run(run: dict, *, new: bool = False) -> None:
+    """Durable checkpoint and ownership fence before another step may run."""
+    try:
+        sb = _service_client()
+        row = {k: run.get(k) for k in ("id", "flow_id", "user_id", "trigger", "status", "seed_input",
+                                       "current_step", "steps", "error", "finished_at")}
+        if new:
+            run["lease_token"] = str(uuid.uuid4())
+            row.update(lease_token=run["lease_token"],
+                       lease_expires_at=(datetime.now(timezone.utc) + timedelta(seconds=120)).isoformat(),
+                       definition=run.get("definition"))
+            result = await db(sb.table("flow_runs").insert(row))
+        else:
+            result = await db(sb.table("flow_runs").update(row).eq("id", run["id"])
+                              .eq("lease_token", run.get("lease_token"))
+                              .gte("lease_expires_at", datetime.now(timezone.utc).isoformat())
+                              .eq("status", "running"))
+        if not result.data:
+            raise HTTPException(status_code=409, detail="Workflow ownership changed or the run was stopped. Reload its history.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail="Workflow progress could not be saved. Execution stopped; check run history before retrying.") from e
+
+
+async def _flow_run_cancelled(run_id: str) -> bool:
+    try:
+        res = await db(_service_client().table("flow_runs").select("status").eq("id", run_id).maybe_single())
+        return bool(res and res.data and res.data.get("status") == "cancelled")
+    except Exception as e:
+        raise HTTPException(status_code=503, detail="Workflow status is unavailable. Execution stopped.") from e
+
+
+async def _notify_flow_waiting(flow: dict, run: dict, step_name: str) -> None:
+    """A webhook or scheduled run is waiting at an approval step: tell the
+    workflow's owner in the app and by email (once per run). Never raises."""
+    owner = flow.get("user_id")
+    if not owner:
         return
-
-    memory = flow.get("memory") or {}
-    provenance = flow.get("memory_provenance") or {}
-    results = []
-    current_input = schedule.get("seed_input") or ""
-
-    for idx, step in enumerate(steps):
-        app_res = await db(sb_service.table("apps").select("system_prompt, ai_provider, ai_model, created_by").eq("id", step["app_id"]).single())
-        app_data = app_res.data or {}
-        provider = app_data.get("ai_provider") or "claude"
-        model = validate_model(provider, app_data.get("ai_model") or get_default_model(provider))
-        step_key, key_problem = await scheduled_step_key(app_data, schedule.get("user_id"), provider)
-        if key_problem:
-            raise RuntimeError(f"Step {idx + 1} ({step.get('app_name') or 'app'}) {key_problem}")
-
-        blocks = []
-        if flow.get("gpt_instructions"):
-            gpt_name = flow.get("gpt_name") or "this workflow's dedicated assistant"
-            blocks.append(
-                f'You are acting as part of "{gpt_name}" — '
-                f"a standing intelligence that governs every app in this workflow. Follow these standing instructions "
-                f"for every response, in addition to your normal role:\n{flow['gpt_instructions']}"
-            )
-        if memory:
-            mem_lines = "\n".join(f"- {k}: {', '.join(v) if isinstance(v, list) else v}" for k, v in memory.items())
-            blocks.append(
-                "Known facts about the user/subject, learned across this workflow over time — keep these "
-                f"actively in mind even if not repeated in the current input:\n{mem_lines}"
-            )
-        if results:
-            hist = "\n\n".join(f"### Step {i+1} — {steps[i]['app_name']} output:\n{r}" for i, r in enumerate(results))
-            blocks.append(
-                "This app is one step in a multi-app workflow. Here is everything produced by earlier steps, in "
-                f"order — use it as context, and if your role is to compare/score/decide between them, do so "
-                f"explicitly:\n\n{hist}"
-            )
-
-        system = app_data.get("system_prompt") or "You are a helpful AI assistant."
-        if blocks:
-            system = f"<user_context>\n{chr(10).join(blocks)}\n</user_context>\n\n{system}"
-
-        full = await run_text(system, current_input, provider, model, step_key)
-        results.append(full)
-
-        await db(sb_service.table("run_history").insert({
-            "user_id": schedule["user_id"], "app_id": step["app_id"], "app_name": step["app_name"],
-            "input": current_input, "output": full,
+    name = html_lib.escape(flow.get("name") or "A workflow")
+    try:
+        await db(_service_client().table("notifications").insert({
+            "user_id": owner, "type": "workflow_approval", "title": f"{flow.get('name') or 'A workflow'} needs your approval",
+            "message": f"A run is waiting at “{step_name}”. Open Dev Studio → Workflows → Runs to approve or reject it.",
+            "link_view": "developer",
         }))
+    except Exception as e:
+        print(f"workflow approval notice not saved: {type(e).__name__}: {str(e)[:200]}")
+    await notify_developer(owner, "flow_approval", run["id"], subject=f"{flow.get('name') or 'A workflow'} needs your approval",
+                           title=f"{name} is waiting for approval",
+                           body=f"A run reached the step “{html_lib.escape(step_name)}” and is waiting for you. "
+                                "Open Dev Studio → Workflows → Runs to approve or reject it.")
 
-        facts = await extract_facts_headless(full)
+
+async def _save_flow_memory(flow: dict, memory: dict, provenance: dict) -> None:
+    try:
+        await db(_service_client().table("flows").update({"memory": memory, "memory_provenance": provenance}).eq("id", flow["id"]))
+    except Exception as e:
+        print(f"workflow memory not saved: {type(e).__name__}: {str(e)[:200]}")
+
+
+async def _post_flow_integration(flow: dict, steps: list, results: list) -> None:
+    webhook_url = flow.get("integration_webhook_url")
+    if not webhook_url:
+        return
+    text = f"*{flow.get('emoji','')} {flow['name']}* — run complete\n\n" + "\n\n".join(
+        f"*{i+1}. {_step_name(steps, i)}*\n{(r or '')[:1500]}" for i, r in enumerate(results))
+    try:
+        # Same outbound checks as API Call steps: a workflow's integration
+        # URL can't point the server at internal addresses.
+        await fetch_safely("POST", webhook_url, timeout=10, headers={"Content-Type": "text/plain"}, content=json.dumps({
+            "text": text, "workspace": flow["name"],
+            "steps": [{"app_name": _step_name(steps, i), "result": results[i]} for i in range(len(results))],
+        }).encode())
+    except Exception as e:
+        print(f"Workflow integration webhook failed: {type(e).__name__}: {str(e)[:200]}")
+
+
+def _public_flow_run(run: dict) -> dict:
+    return {k: v for k, v in run.items() if k not in ("lease_token", "lease_expires_at", "definition")}
+
+
+async def _heartbeat_flow_run(run: dict) -> None:
+    while True:
+        await asyncio.sleep(20)
+        result = await db(_service_client().rpc("heartbeat_flow_run", {"p_id": run["id"], "p_token": run["lease_token"]}))
+        if result.data is not True:
+            raise RuntimeError("Workflow lease lost")
+
+
+async def run_flow(flow: dict, *, caller: "ApiCaller", trigger: str, seed_input: str = "", run: Optional[dict] = None) -> dict:
+    if run is None:
+        run = {"id": str(uuid.uuid4()), "flow_id": flow["id"], "user_id": caller.user_id, "trigger": trigger,
+               "status": "running", "seed_input": (seed_input or "")[:FLOW_OUTPUT_LIMIT],
+               "current_step": 0, "steps": [], "error": None, "finished_at": None, "definition": flow}
+        await _save_flow_run(run, new=True)
+    # Approvals continue the definition that started the run, even if edited.
+    flow = run.get("definition") or flow
+    execution = asyncio.create_task(_execute_flow(flow, caller=caller, trigger=trigger, run=run))
+    heartbeat = asyncio.create_task(_heartbeat_flow_run(run))
+    try:
+        done, _ = await asyncio.wait((execution, heartbeat), return_when=asyncio.FIRST_COMPLETED)
+        if execution in done:
+            return await execution
+        # No further step may execute after losing the database/lease.
+        await heartbeat
+        raise RuntimeError("Workflow heartbeat stopped")
+    except BaseException:
+        execution.cancel()
+        await asyncio.gather(execution, return_exceptions=True)
+        # Leave the last durable checkpoint for the recovery sweep. Never
+        # automatically replay a step whose external effect is uncertain.
+        raise
+    finally:
+        heartbeat.cancel()
+        await asyncio.gather(heartbeat, return_exceptions=True)
+
+
+async def _execute_flow(flow: dict, *, caller: "ApiCaller", trigger: str, run: dict) -> dict:
+    """Run a workflow from its first step, or continue `run` (paused at an
+    approval step) from its current_step. Returns the run record."""
+    steps = flow.get("steps") or []
+    memory = dict(flow.get("memory") or {})
+    provenance = dict(flow.get("memory_provenance") or {})
+    run["status"] = "running"
+    records = run["steps"]
+    results = [r.get("output") or "" for r in records]
+    # The text a step gets when it isn't wired: the last step that ran.
+    current_input = next((r.get("output") or "" for r in reversed(records) if r.get("status") != "skipped"),
+                         run.get("seed_input") or "")
+    # What wired steps can read: the trigger's input and each finished step.
+    sources = {"trigger": _flow_data(run.get("seed_input") or "")}
+    for r in records:
+        step_id = (steps[r["index"]] or {}).get("id") if r.get("index") is not None and r["index"] < len(steps) else None
+        if step_id and r.get("status") != "skipped":
+            sources[step_id] = _flow_data(r.get("output") or "")
+    # Learning facts for the workflow's memory (Business flows) runs on the
+    # runner's own key.
+    learns = flow.get("kind") != "developer"
+    fact_key = await fetch_user_api_key_by_id(caller.user_id, "claude") if (learns and caller.user_id) else None
+
+    for idx in range(run["current_step"], len(steps)):
+        name = _step_name(steps, idx)
+        if await _flow_run_cancelled(run["id"]):
+            run.update(status="cancelled")
+            return run
+        run["current_step"] = idx
+        # A missing checkpoint/expired owner stops before external work.
+        await _save_flow_run(run)
+        cond = (steps[idx] or {}).get("run_if")
+        if cond and not flow_condition_met(cond, sources):
+            records.append({"index": idx, "name": name, "status": "skipped",
+                            "error": None, "output": "", "reason": cond.get("label") or "Its condition wasn't met"})
+            results.append("")
+            await _save_flow_run(run)
+            continue
+        try:
+            out = await run_flow_step(flow, idx, caller=caller, trigger=trigger, step_input=current_input,
+                                      results=results, memory=memory, sources=sources)
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
+            out = {"status": "failed", "error": f"failed unexpectedly ({type(e).__name__})"}
+        if out["status"] == "waiting_approval":
+            records.append({"index": idx, "name": name, "status": "waiting_approval",
+                            "output": current_input[:FLOW_OUTPUT_LIMIT]})
+            run["status"] = "waiting_approval"
+            await _save_flow_run(run)
+            if trigger != "interactive":
+                await _notify_flow_waiting(flow, run, name)
+            return run
+        records.append({"index": idx, "name": name, "status": out["status"], "version": out.get("version"),
+                        "output": (out.get("output") or "")[:FLOW_OUTPUT_LIMIT], "error": out.get("error"),
+                        **({"ai_filled": out["ai_filled"]} if out.get("ai_filled") else {})})
+        if out["status"] != "ok":
+            run.update(status="failed", error=f"Step {_step_number(flow, idx)} ({name}) {out.get('error')}",
+                       finished_at=datetime.now(timezone.utc).isoformat())
+            await _save_flow_run(run)
+            return run
+        current_input = out.get("output") or ""
+        results.append(current_input)
+        if (steps[idx] or {}).get("id"):
+            sources[steps[idx]["id"]] = _flow_data(current_input)
+        facts = await extract_facts_headless(current_input, fact_key)
         if facts:
             memory = merge_memory(memory, facts)
             now_iso = datetime.now(timezone.utc).isoformat()
             for key in facts:
-                provenance[key] = {"step_name": step["app_name"], "step_index": idx, "updated_at": now_iso}
+                provenance[key] = {"step_name": name, "step_index": idx, "updated_at": now_iso}
+            await _save_flow_memory(flow, memory, provenance)
+        await _save_flow_run(run)
 
-        current_input = full
+    if await _flow_run_cancelled(run["id"]):
+        run.update(status="cancelled")
+        return run
+    run.update(status="done", current_step=len(steps), finished_at=datetime.now(timezone.utc).isoformat())
+    await _save_flow_run(run)
+    await _post_flow_integration(flow, steps, results)
+    return run
 
-    await db(sb_service.table("flows").update({"memory": memory, "memory_provenance": provenance}).eq("id", flow_id))
 
-    webhook_url = flow.get("integration_webhook_url")
-    if webhook_url:
-        text = f"*{flow.get('emoji','')} {flow['name']}* — scheduled run complete\n\n" + "\n\n".join(
-            f"*{i+1}. {steps[i]['app_name']}*\n{(r or '')[:1500]}" for i, r in enumerate(results)
-        )
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                await client.post(webhook_url, headers={"Content-Type": "text/plain"}, content=json.dumps({
-                    "text": text, "workspace": flow["name"],
-                    "steps": [{"app_name": steps[i]["app_name"], "result": results[i]} for i in range(len(steps))],
-                }))
-        except Exception as e:
-            print(f"Scheduled-run webhook failed: {e}")
+async def run_scheduled_workspace(sb_service: Client, schedule: dict):
+    """A schedule (or the workflow's webhook) runs the workflow as the person
+    who set it up. Raises when the run fails, so the scheduler counts it."""
+    flow_res = await db(sb_service.table("flows").select("*").eq("id", schedule["flow_id"]).single())
+    flow = flow_res.data
+    if not flow or not (flow.get("steps") or []):
+        return None
+    owner = schedule.get("user_id")
+    caller = ApiCaller(user_id=owner, workspace_id=flow.get("workspace_id") or await personal_workspace_id(owner), live=True)
+    run = await run_flow(flow, caller=caller, trigger=schedule.get("trigger") or "schedule",
+                         seed_input=schedule.get("seed_input") or "")
+    if run["status"] == "failed":
+        raise RuntimeError(run.get("error") or "Workflow run failed")
+    return run
 
 
 async def _claim_schedule(sb, schedule: dict, now: datetime) -> bool:
@@ -4231,24 +4704,31 @@ async def create_checkout_session(req: CheckoutSessionRequest, request: Request)
         raise HTTPException(status_code=400, detail=str(e.user_message))
 
 
+_EMAIL_IDEMPOTENCY_KEY = contextvars.ContextVar("email_idempotency_key", default=None)
+_EMAIL_FROM_OVERRIDE = contextvars.ContextVar("email_from_override", default=None)
+
+
 async def send_email(to: str, subject: str, html: str) -> bool:
     """Send a transactional email via Resend. Returns True on success."""
     if not RESEND_API_KEY:
         print(f"EMAIL (no key): to={to} subject={subject}")
         return False
     try:
+        headers = {"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"}
+        if _EMAIL_IDEMPOTENCY_KEY.get():
+            headers["Idempotency-Key"] = _EMAIL_IDEMPOTENCY_KEY.get()
         async with httpx.AsyncClient(timeout=10) as c:
             r = await c.post(
                 "https://api.resend.com/emails",
-                headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
-                json={"from": EMAIL_FROM, "to": [to], "subject": subject, "html": html},
+                headers=headers,
+                json={"from": _EMAIL_FROM_OVERRIDE.get() or EMAIL_FROM, "to": [to], "subject": subject, "html": html},
             )
             if r.status_code not in (200, 201):
-                print(f"Resend error {r.status_code}: {r.text}")
+                print(f"Resend delivery failed: HTTP {r.status_code}")
                 return False
         return True
     except Exception as e:
-        print(f"send_email exception: {e}")
+        print(f"send_email exception: {type(e).__name__}")
         return False
 
 
@@ -4286,9 +4766,7 @@ async def _lookup_email(user_id: str) -> Optional[str]:
 
 async def notify_developer(user_id: Optional[str], kind: str, ref: str, subject: str, title: str, body: str,
                            cta_path: str = "/developer", cta_label: str = "Open Dev Studio →") -> bool:
-    """Email a developer about their apps, at most once per (kind, ref).
-    Returns True when an email was sent. Never raises: a notification must
-    not break the payment, feedback or monitoring work that triggered it."""
+    """Persist an event once; failed delivery remains queued for retry."""
     sb = _service_client()
     if not (sb and user_id):
         return False
@@ -4297,19 +4775,120 @@ async def notify_developer(user_id: Optional[str], kind: str, ref: str, subject:
         if ((prof.data or [None])[0] or {}).get("email_alerts") is False:
             return False
         try:
-            await db(sb.table("developer_notifications").insert({"user_id": user_id, "kind": kind, "ref": ref[:200]}))
+            result = await db(sb.table("developer_notifications").insert({
+                "user_id": user_id, "kind": kind, "ref": ref[:200], "status": "pending",
+                "payload": {"subject": subject, "html": _email_base(title=title, body=body,
+                            cta_url=f"{FRONTEND_URL}{cta_path}", cta_label=cta_label), "from": EMAIL_FROM}}))
         except Exception as e:
             if "23505" in str(e) or "duplicate" in str(e).lower():
-                return False                                  # already sent
+                return False  # already queued or sent; the worker owns retries
             raise
-        email = await _lookup_email(user_id)
-        if not email:
-            return False
-        return await send_email(to=email, subject=subject,
-                                html=_email_base(title=title, body=body, cta_url=f"{FRONTEND_URL}{cta_path}", cta_label=cta_label))
+        rows = (await db(sb.rpc("claim_developer_notifications", {"p_id": result.data[0]["id"]}))).data or []
+        return await _deliver_developer_notification(rows[0]) if rows else False
     except Exception as e:
-        print(f"developer notification {kind} not sent: {type(e).__name__}: {str(e)[:200]}")
+        print(f"developer notification {kind} queued/delivery failed: {type(e).__name__}")
         return False
+
+
+async def _notification_checkpoint(row: dict, patch: dict) -> None:
+    result = await db(_service_client().table("developer_notifications").update(patch)
+                      .eq("id", row["id"]).eq("status", "sending").eq("lease_token", row["lease_token"])
+                      .gte("lease_expires_at", datetime.now(timezone.utc).isoformat()))
+    if not result.data:
+        raise RuntimeError("Notification ownership changed")
+
+
+async def _deliver_developer_notification(row: dict) -> bool:
+    try:
+        profile = await db(_service_client().table("developer_profiles").select("email_alerts")
+                           .eq("user_id", row["user_id"]).limit(1))
+        if ((profile.data or [{}])[0]).get("email_alerts") is False:
+            await _notification_checkpoint(row, {"status": "suppressed", "payload": None})
+            return False
+        # Resend retains idempotency keys for 24 hours. Stop before that
+        # window ends rather than risk duplicating an ambiguously sent email.
+        created = datetime.fromisoformat(row["created_at"].replace("Z", "+00:00"))
+        if datetime.now(timezone.utc) - created > timedelta(hours=20) or row["attempts"] > 12:
+            await _notification_checkpoint(row, {"status": "failed", "last_error": "Delivery window exhausted; review provider records."})
+            return False
+        payload = dict(row["payload"])
+        if not payload.get("to"):
+            email = await _lookup_email(row["user_id"])
+            if not email:
+                raise RuntimeError("Recipient unavailable")
+            payload["to"] = email
+            # Freeze recipient and content before sending, so retries use the
+            # same request with the same provider idempotency key.
+            await _notification_checkpoint(row, {"payload": payload})
+        project = hashlib.sha256(SUPABASE_URL.rstrip('/').encode()).hexdigest()[:16]
+        token = _EMAIL_IDEMPOTENCY_KEY.set(f"developer-notification/{project}/{row['id']}")
+        from_token = _EMAIL_FROM_OVERRIDE.set(payload.get("from"))
+        try:
+            await _notification_checkpoint(row, {"lease_expires_at": (datetime.now(timezone.utc) + timedelta(seconds=120)).isoformat()})
+            sent = await send_email(to=payload["to"], subject=payload["subject"], html=payload["html"])
+        finally:
+            _EMAIL_IDEMPOTENCY_KEY.reset(token)
+            _EMAIL_FROM_OVERRIDE.reset(from_token)
+        if not sent:
+            raise RuntimeError("Provider did not acknowledge delivery")
+        await _notification_checkpoint(row, {"status": "sent", "sent_at": datetime.now(timezone.utc).isoformat(), "payload": None,
+                                             "last_error": None})
+        return True
+    except Exception as e:
+        try:
+            await _notification_checkpoint(row, {"status": "pending", "last_error": type(e).__name__,
+                "next_attempt_at": (datetime.now(timezone.utc) + timedelta(seconds=min(3600, 30 * 2 ** min(row["attempts"], 7)))).isoformat()})
+        except Exception:
+            pass  # lease expiry makes an unacknowledged attempt claimable again
+        return False
+
+
+def _developer_job_error(error: Exception, operation: str) -> str:
+    # Do not print raw PostgREST errors: they can include request payloads.
+    code = str(getattr(error, "code", "") or "")
+    code = code if re.fullmatch(r"[A-Z0-9]{1,12}", code) else type(error).__name__
+    if code in ("PGRST202", "PGRST204", "42883", "42P01", "42703"):
+        action = ("Apply supabase/migrations/20261023020000_durable_developer_jobs.sql "
+                  "after its preceding migrations to this backend's Supabase project, "
+                  "then reload the PostgREST schema cache (NOTIFY pgrst, 'reload schema').")
+    elif code == "42501":
+        action = "Verify the backend service-role key and the recovery migration's service_role grants."
+    else:
+        action = "Run scripts/check_operations_readiness.py for the selected environment and inspect database logs."
+    return f"{operation} failed [{code}]: {action}"
+
+
+async def _developer_job_rpc(sb, name: str):
+    try:
+        return await db(sb.rpc(name, {}))
+    except Exception as e:
+        raise RuntimeError(_developer_job_error(e, name)) from e
+
+
+async def _developer_jobs_tick() -> None:
+    sb = _service_client()
+    if not sb:
+        return
+    await _developer_job_rpc(sb, "recover_interrupted_flow_runs")
+    rows = (await _developer_job_rpc(sb, "claim_developer_notifications")).data or []
+    # Claimed leases are short: send concurrently, not a long serial queue.
+    await asyncio.gather(*(_deliver_developer_notification(row) for row in rows))
+
+
+async def _developer_jobs_supervisor() -> None:
+    last_error = None
+    while True:
+        try:
+            await _developer_jobs_tick()
+            if last_error:
+                print("developer job recovery is healthy again")
+            last_error = None
+        except Exception as e:
+            message = str(e) if isinstance(e, RuntimeError) and e.__cause__ is not None else _developer_job_error(e, "developer job recovery")
+            if message != last_error:
+                print(f"developer job recovery unavailable: {message}")
+            last_error = message
+        await asyncio.sleep(15)
 
 
 async def _app_label(app_id: str) -> tuple[str, Optional[str]]:
@@ -5749,30 +6328,272 @@ async def trigger_via_webhook(token: str, request: Request):
     if not steps:
         raise HTTPException(status_code=422, detail="Workflow has no steps")
 
-    # Filter out human_approval steps for headless webhook runs
-    runnable_steps = [s for s in steps if s.get("step_type") != "human_approval"]
-    if not runnable_steps:
-        raise HTTPException(status_code=422, detail="Workflow has no runnable steps (only approval gates)")
-
-    # Run headless — reuse the same logic as scheduled runs
-    fake_schedule = {
-        "flow_id": flow["id"],
-        "user_id": flow["user_id"],
-        "seed_input": seed_input,
-    }
-
+    # Runs as the workflow's owner. An approval step pauses the run (it's
+    # resumed from the workflow), so approvals are never skipped.
+    fake_schedule = {"flow_id": flow["id"], "user_id": flow["user_id"], "seed_input": seed_input, "trigger": "webhook"}
     try:
-        await run_scheduled_workspace(sb_service, fake_schedule)
+        run = await run_scheduled_workspace(sb_service, fake_schedule)
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=f"Workflow run failed: {e}")
     except Exception as e:
         sentry_sdk.capture_exception(e)
-        raise HTTPException(status_code=500, detail=f"Workflow run failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Workflow run failed unexpectedly")
 
     return {
         "ok": True,
         "flow": flow["name"],
-        "steps_run": len(runnable_steps),
-        "message": "Workflow triggered successfully. Results saved to run history.",
+        "run_id": (run or {}).get("id"),
+        "status": (run or {}).get("status"),
+        "steps_run": sum(1 for r in (run or {}).get("steps", []) if r.get("status") == "ok"),
+        "message": "Workflow triggered. Results saved to run history.",
     }
+
+
+# ─── Workflow runs from Dev Studio (Workflows → Test) ────────────────────────
+class FlowRunStart(BaseModel):
+    input: str = Field(default="", max_length=MAX_INPUT_LENGTH)
+    wait: bool = False        # true: answer when the run stops; false: answer at once, poll GET …/runs/{id}
+
+
+class FlowRunResume(BaseModel):
+    approve: bool = True
+    output: Optional[str] = Field(default=None, max_length=FLOW_OUTPUT_LIMIT)   # edited content (edit steps)
+    reason: Optional[str] = Field(default=None, max_length=500)
+    wait: bool = False
+
+
+# Runs started from Dev Studio continue after the request answers, so the
+# screen can show each step as it finishes. Kept here so they aren't
+# garbage-collected mid-run.
+_FLOW_TASKS: set = set()
+
+
+async def _finish_flow_run(flow: dict, caller: "ApiCaller", trigger: str, run: dict) -> None:
+    try:
+        await run_flow(flow, caller=caller, trigger=trigger, run=run)
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+        run.update(status="failed", error=f"The run stopped unexpectedly ({type(e).__name__})",
+                   finished_at=datetime.now(timezone.utc).isoformat())
+        try:
+            await _save_flow_run(run)
+        except Exception:
+            # The recovery sweep records interruption after the lease expires.
+            pass
+
+
+async def _run_flow_now_or_later(flow: dict, caller: "ApiCaller", trigger: str, run: dict, wait: bool) -> dict:
+    if wait:
+        return _public_flow_run(await run_flow(flow, caller=caller, trigger=trigger, run=run))
+    run["status"] = "running"
+    await _save_flow_run(run)
+    task = asyncio.create_task(_finish_flow_run(flow, caller, trigger, run))
+    _FLOW_TASKS.add(task)
+    task.add_done_callback(_FLOW_TASKS.discard)
+    return _public_flow_run(dict(run, steps=list(run.get("steps") or [])))
+
+
+async def _flow_for_runner(flow_id: str, request: Request) -> tuple[dict, ApiCaller]:
+    """The workflow and the person testing it: its owner, or a builder in its
+    workspace, signed in. Everyone else runs workflows through their webhook."""
+    if not _UUID_RE.fullmatch(flow_id or ""):
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    caller = await resolve_api_caller(request, required=True)
+    if caller.via_key:
+        raise HTTPException(status_code=403, detail="Test workflows signed in to Dev Studio, or run them through their webhook link.")
+    sb = _service_client()
+    if not sb:
+        raise HTTPException(status_code=503, detail="Workflows aren't configured on this server")
+    res = await db(sb.table("flows").select("*").eq("id", flow_id).maybe_single())
+    flow = res.data if res else None
+    allowed = bool(flow) and (flow.get("user_id") == caller.user_id or (
+        bool(flow.get("workspace_id")) and (await workspace_role(flow["workspace_id"], caller.user_id)) in BUILD_ROLES))
+    if not allowed:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    return flow, caller
+
+
+async def _load_flow_run(flow_id: str, run_id: str) -> dict:
+    if not _UUID_RE.fullmatch(run_id or ""):
+        raise HTTPException(status_code=404, detail="Run not found")
+    try:
+        res = await db(_service_client().table("flow_runs").select("*").eq("id", run_id).eq("flow_id", flow_id).maybe_single())
+    except Exception as e:
+        if _missing_table(e):
+            raise HTTPException(status_code=503, detail="Workflow runs aren't set up on this server yet (database migration pending).")
+        raise
+    if not (res and res.data):
+        raise HTTPException(status_code=404, detail="Run not found")
+    return res.data
+
+
+@app.post("/v1/flows/{flow_id}/runs")
+async def start_flow_run(flow_id: str, body: FlowRunStart, request: Request):
+    """Test a workflow: runs every step now (drafts allowed for their
+    editors) and stops at an approval step until it's resumed."""
+    flow, caller = await _flow_for_runner(flow_id, request)
+    if not (flow.get("steps") or []):
+        raise HTTPException(status_code=422, detail="Add a step to the workflow first")
+    run = {"id": str(uuid.uuid4()), "flow_id": flow["id"], "user_id": caller.user_id, "trigger": "interactive",
+           "status": "running", "seed_input": (body.input or "")[:FLOW_OUTPUT_LIMIT],
+           "current_step": 0, "steps": [], "error": None, "finished_at": None, "definition": flow}
+    await _save_flow_run(run, new=True)
+    return await _run_flow_now_or_later(flow, caller, "interactive", run, body.wait)
+
+
+@app.get("/v1/flows/{flow_id}/runs")
+async def list_flow_runs(flow_id: str, request: Request, limit: int = 20):
+    """Recent runs, newest first: tests, webhook and scheduled runs (those
+    waiting at an approval step are decided from here)."""
+    await _flow_for_runner(flow_id, request)
+    try:
+        res = await db(_service_client().table("flow_runs")
+                       .select("id, trigger, status, current_step, error, started_at, finished_at, user_id")
+                       .eq("flow_id", flow_id).order("started_at", desc=True).limit(max(1, min(limit, 100))))
+    except Exception as e:
+        if _missing_table(e):
+            raise HTTPException(status_code=503, detail="Workflow runs aren't set up on this server yet (database migration pending).")
+        raise
+    return {"runs": res.data or []}
+
+
+@app.get("/v1/flows/{flow_id}/runs/{run_id}")
+async def get_flow_run(flow_id: str, run_id: str, request: Request):
+    await _flow_for_runner(flow_id, request)
+    return _public_flow_run(await _load_flow_run(flow_id, run_id))
+
+
+@app.post("/v1/flows/{flow_id}/runs/{run_id}/resume")
+async def resume_flow_run(flow_id: str, run_id: str, body: FlowRunResume, request: Request):
+    """Approve (optionally with edited content) or reject the approval step a
+    run is waiting at. Approving continues the run from the next step."""
+    flow, caller = await _flow_for_runner(flow_id, request)
+    run = await _load_flow_run(flow_id, run_id)
+    records = run.get("steps") or []
+    if run.get("status") != "waiting_approval" or not records or records[-1].get("status") != "waiting_approval":
+        raise HTTPException(status_code=409, detail="This run isn't waiting for approval")
+    # Only one person's decision counts: claim the paused run first.
+    lease_token = str(uuid.uuid4())
+    claimed = await db(_service_client().table("flow_runs").update({"status": "running", "lease_token": lease_token,
+                       "lease_expires_at": (datetime.now(timezone.utc) + timedelta(seconds=120)).isoformat()})
+                       .eq("id", run_id).eq("status", "waiting_approval"))
+    if not claimed.data:
+        raise HTTPException(status_code=409, detail="Someone else already decided this approval. Reload the run.")
+    run["lease_token"] = lease_token
+    run["status"] = "running"
+    idx = int(run.get("current_step") or 0)
+    record = records[-1]
+    if not body.approve:
+        reason = (body.reason or "").strip() or "Rejected at the approval step"
+        record.update(status="rejected", error=reason, decided_by=caller.user_id)
+        run.update(status="failed", error=f"Step {_step_number(flow, idx)} ({record.get('name')}) rejected: {reason}",
+                   finished_at=datetime.now(timezone.utc).isoformat())
+        await _save_flow_run(run)
+        return _public_flow_run(run)
+    record.update(status="ok", decided_by=caller.user_id,
+                  output=(body.output if body.output is not None else record.get("output") or "")[:FLOW_OUTPUT_LIMIT])
+    run["current_step"] = idx + 1
+    trigger = run.get("trigger") or "interactive"
+    runner = ApiCaller(user_id=caller.user_id, user_jwt=caller.user_jwt, workspace_id=caller.workspace_id,
+                       live=trigger != "interactive")
+    return await _run_flow_now_or_later(flow, runner, trigger, run, body.wait)
+
+
+@app.post("/v1/flows/{flow_id}/runs/{run_id}/cancel")
+async def cancel_flow_run(flow_id: str, run_id: str, request: Request):
+    """Stop a run that's working or waiting for approval. A step already
+    running finishes, but nothing after it runs."""
+    await _flow_for_runner(flow_id, request)
+    run = await _load_flow_run(flow_id, run_id)
+    if run.get("status") not in ("running", "waiting_approval"):
+        raise HTTPException(status_code=409, detail="This run has already finished")
+    now = datetime.now(timezone.utc).isoformat()
+    res = await db(_service_client().table("flow_runs").update({"status": "cancelled", "finished_at": now})
+                   .eq("id", run_id).in_("status", ["running", "waiting_approval"]))
+    if not res.data:
+        raise HTTPException(status_code=409, detail="This run has already finished")
+    return _public_flow_run({**run, "status": "cancelled", "finished_at": now})
+
+
+class FlowScheduleRequest(BaseModel):
+    enabled: bool = True
+    frequency: str = Field(default="daily", pattern="^(daily|weekly)$")
+    hour_utc: int = Field(default=9, ge=0, le=23)
+    day_of_week: Optional[int] = Field(default=None, ge=0, le=6)      # Sun=0 … Sat=6 (weekly)
+    seed_input: str = Field(default="", max_length=MAX_INPUT_LENGTH)
+
+
+async def _flow_schedule_row(flow_id: str) -> Optional[dict]:
+    res = await db(_service_client().table("flow_schedules").select("*").eq("flow_id", flow_id).limit(1))
+    return (res.data or [None])[0]
+
+
+@app.get("/v1/flows/{flow_id}/schedule")
+async def get_flow_schedule(flow_id: str, request: Request):
+    await _flow_for_runner(flow_id, request)
+    return {"schedule": await _flow_schedule_row(flow_id)}
+
+
+@app.put("/v1/flows/{flow_id}/schedule")
+async def put_flow_schedule(flow_id: str, body: FlowScheduleRequest, request: Request):
+    """Run the workflow daily or weekly, as the person who sets the schedule.
+    Scheduled runs use published releases only."""
+    flow, caller = await _flow_for_runner(flow_id, request)
+    if body.enabled:
+        drafts = [_step_number(flow, i) for i, st in enumerate(flow.get("steps") or []) if (st or {}).get("version") == "draft"]
+        if drafts:
+            raise HTTPException(status_code=409, detail=(
+                f"Step{'s' if len(drafts) > 1 else ''} {', '.join(map(str, drafts))} use{'' if len(drafts) > 1 else 's'} a draft. "
+                "Scheduled runs use published releases only: switch them to a published version and save."))
+        if not (flow.get("steps") or []):
+            raise HTTPException(status_code=422, detail="Add a step to the workflow first")
+    if body.frequency == "weekly" and body.day_of_week is None:
+        raise HTTPException(status_code=422, detail="Pick a day for a weekly schedule")
+    now = datetime.now(timezone.utc)
+    row = {"flow_id": flow_id, "user_id": caller.user_id, "frequency": body.frequency, "hour_utc": body.hour_utc,
+           "day_of_week": body.day_of_week if body.frequency == "weekly" else None, "seed_input": body.seed_input,
+           "enabled": body.enabled,
+           "next_run_at": compute_next_run_at(now, body.frequency, body.hour_utc, body.day_of_week).isoformat()}
+    sb = _service_client()
+    existing = await _flow_schedule_row(flow_id)
+    if existing:
+        res = await db(sb.table("flow_schedules").update(row).eq("id", existing["id"]))
+    else:
+        res = await db(sb.table("flow_schedules").insert(row))
+    return {"schedule": (res.data or [row])[0]}
+
+
+@app.delete("/v1/flows/{flow_id}/schedule")
+async def delete_flow_schedule(flow_id: str, request: Request):
+    await _flow_for_runner(flow_id, request)
+    await db(_service_client().table("flow_schedules").delete().eq("flow_id", flow_id))
+    return {"ok": True}
+
+
+@app.get("/v1/apps/{app_id}/schema")
+async def app_schema(app_id: str, request: Request, version: str = "live"):
+    """Input and output fields of one version of an app ("draft", "live" or
+    a release number), for wiring workflow steps."""
+    _, app_row = await _editable_app(app_id, request)
+    if version == "draft":
+        blueprint, output_type = await fetch_app_blueprint(app_id), app_row.get("output_type")
+    else:
+        if version != "live" and not version.isdigit():
+            raise HTTPException(status_code=400, detail='version must be "draft", "live" or a release number')
+        live_num = app_row.get("live_version")
+        snapshot = app_row.get("prod_snapshot") if isinstance(app_row.get("prod_snapshot"), dict) else None
+        if version != "live" and int(version) != live_num:
+            res = await db(_service_client().table("app_versions").select("version_data")
+                           .eq("app_id", app_id).eq("version_num", int(version)).limit(1))
+            snapshot = (res.data or [{}])[0].get("version_data") if res else None
+        if not isinstance(snapshot, dict):
+            raise HTTPException(status_code=404, detail="That version doesn't exist")
+        blueprint, output_type = snapshot.get("blueprint") or {}, snapshot.get("output_type")
+    output = _schema_fields(blueprint, "output_schema")
+    contract = blueprint.get("output_contract") or {}
+    structured = bool(output) and (output_type == "json" or (isinstance(contract, dict) and contract.get("format") == "json"))
+    return {"version": version, "input": _schema_fields(blueprint, "input_schema"),
+            "output": output if structured else [], "structured": structured}
 
 
 MIN_CARD_PRICE = 0.50          # Stripe's smallest USD card charge
@@ -7212,6 +8033,26 @@ def health():
     }
 
 
+@app.get("/health/ready")
+async def readiness():
+    """Deployment routing gate. Liveness alone must not admit an old schema."""
+    try:
+        gaps = production_config_gaps()
+        if gaps["missing_required"]:
+            return JSONResponse(status_code=503, content={"status": "not_ready"})
+        def check_outbox():
+            with _telemetry_outbox.connection():
+                pass
+        await asyncio.wait_for(asyncio.to_thread(check_outbox), timeout=3)
+        result = await asyncio.wait_for(db(_service_client().rpc("developer_jobs_schema_status", {})), timeout=5)
+        checks = ("workflow_lease", "workflow_snapshot", "notification_queue", "recovery_functions", "server_only")
+        if not isinstance(result.data, dict) or not all(result.data.get(k) is True for k in checks):
+            return JSONResponse(status_code=503, content={"status": "not_ready"})
+        return {"status": "ready"}
+    except Exception:
+        return JSONResponse(status_code=503, content={"status": "not_ready"})
+
+
 # ─── Your developer plan ─────────────────────────────────────────────────────
 @app.get("/v1/developer/plan")
 async def developer_plan(request: Request):
@@ -7516,6 +8357,9 @@ def production_config_gaps() -> dict:
     required = [k for k, ok in (
         ("SUPABASE_URL", bool(SUPABASE_URL)), ("SUPABASE_ANON_KEY", bool(SUPABASE_ANON_KEY)),
         ("SUPABASE_SERVICE_ROLE_KEY", bool(SUPABASE_SERVICE_ROLE_KEY)), ("SECRET_ENCRYPTION_KEY", bool(_fernet)),
+        ("TELEMETRY_OUTBOX_PATH", bool(env("TELEMETRY_OUTBOX_PATH"))),
+        ("RESEND_API_KEY", bool(env("RESEND_API_KEY"))), ("EMAIL_FROM", bool(env("EMAIL_FROM"))),
+        ("OPS_HEALTH_TOKEN", bool(env("OPS_HEALTH_TOKEN"))),
         ("ALLOWED_ORIGINS (the public site, not localhost)", not all(local(o) for o in ALLOWED_ORIGINS)),
         ("FRONTEND_URL (the public site, not localhost)", not local(FRONTEND_URL)),
         ("an AI provider key (ANTHROPIC_API_KEY, OPENAI_API_KEY or GEMINI_API_KEY)",
@@ -7523,8 +8367,7 @@ def production_config_gaps() -> dict:
         ("CRON_SECRET or SCHEDULE_SECRET, or the built-in scheduler (SCHEDULER_INTERVAL_SECONDS > 0)",
          SCHEDULER_INTERVAL_SECONDS > 0 or bool(env("CRON_SECRET") or env("SCHEDULE_SECRET"))),
     ) if not ok]
-    recommended = [k for k in ("RESEND_API_KEY", "EMAIL_FROM", "SENTRY_DSN", "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET",
-                               "TELEMETRY_OUTBOX_PATH", "OPS_HEALTH_TOKEN", "OPS_ALERT_WEBHOOK_URL") if not env(k)]
+    recommended = [k for k in ("SENTRY_DSN", "STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET", "OPS_ALERT_WEBHOOK_URL") if not env(k)]
     if not TRUST_PROXY_HEADERS:
         recommended.append("TRUST_PROXY_HEADERS (behind the host's proxy, so rate limits see real visitor addresses)")
     return {"environment": os.getenv("ENVIRONMENT", "production"), "missing_required": required, "missing_recommended": recommended}

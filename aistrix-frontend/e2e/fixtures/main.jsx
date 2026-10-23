@@ -1,3 +1,4 @@
+import BusinessFixture from './BusinessFixture'
 import './supabase'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { MarketplacePage, MarketplaceAppPage } from '../../src/pages/MarketplacePage'
@@ -47,6 +48,7 @@ function Fixture() {
     <Route path="/dev/:userId" element={<DeveloperProfilePage />} />
     <Route path="/app/:id" element={<p>Shared app runner destination</p>} />
   </Routes></MemoryRouter>
+  if (new URLSearchParams(location.search).get('scenario') === 'business') return <BusinessFixture />
   if (chromeLoading) return <DeveloperLoading />
   if (new URLSearchParams(location.search).get('scenario') === 'signed-out') return <Auth developer />
   return <ToastProvider>

@@ -5,7 +5,8 @@ import { saveAppFields } from '../lib/appFields'
 import MobileDeveloper from './devstudio/MobileDeveloper'
 import { useMediaQuery } from '../hooks/useMediaQuery'
 import OperationsWorkflow from './devstudio/OperationsWorkflow'
-import { DeveloperAppList, DeveloperRowSection } from '../components/DeveloperShell'
+import { DeveloperAppList, DeveloperRowSection, useDeveloperSidebar } from '../components/DeveloperShell'
+import { listWorkflows } from '../workflows/workflowApi'
 import { useState, useEffect, useRef, lazy, Suspense } from 'react'
 import { track, EVENTS } from '../lib/analytics'
 import { supabase } from '../supabase'
@@ -14,7 +15,7 @@ import ErrorBoundary from '../components/ErrorBoundary'
 import ConfirmDialog from '../components/ConfirmDialog'
 import { scopeToWorkspace } from '../lib/workspace'
 import NotificationsPanel from '../components/NotificationsPanel'
-import { ArrowLeft, ChartNoAxesColumn, ChevronDown, CircleHelp, CirclePlay, ClipboardCheck, Database, History, KeyRound, LockKeyhole, LogOut, Megaphone, Moon, PenLine, Plus, Search, Send, Settings, Sun, TrendingUp, X } from 'lucide-react'
+import { ArrowLeft, ChartNoAxesColumn, ChevronDown, CircleHelp, CirclePlay, ClipboardCheck, Database, History, KeyRound, LockKeyhole, LogOut, Megaphone, Moon, PenLine, Plus, Search, Send, Settings, Sun, TrendingUp, Workflow, X } from 'lucide-react'
 import { applyTheme } from '../utils/theme'
 import { AppEmojiWithType, AppNavigator, DEV_PHASES, EMPTY_BP, HelpPanel, MoveBackModal, WelcomeScreen, calcReadiness, getDevPhase, migrateBlueprint, normalizeDevPhase } from './devstudio/shared'
 
@@ -30,6 +31,7 @@ const MonetizeTab = lazy(() => import('./devstudio/OperateTabs').then(m => ({ de
 const MonitorPanel = lazy(() => import('./devstudio/MonitorPanel'))
 const SecretsTab = lazy(() => import('./devstudio/OperateTabs').then(m => ({ default: m.SecretsTab })))
 const SellTab = lazy(() => import('./devstudio/OperateTabs').then(m => ({ default: m.SellTab })))
+const WorkflowsTab = lazy(() => import('./devstudio/WorkflowsTab').then(m => ({ default: m.WorkflowsTab })))
 const VersionTab = lazy(() => import('./devstudio/OperateTabs').then(m => ({ default: m.VersionTab })))
 const TestTab = lazy(() => import('./devstudio/TestTab').then(m => ({ default: m.TestTab })))
 
@@ -40,6 +42,7 @@ const LIFECYCLE_TABS = [
   { id: 'design',   label: 'Design',      Icon: PenLine,           desc: 'Blueprint', group: 'build' },
   { id: 'test',     label: 'Test',        Icon: CirclePlay,        desc: 'Validate',  group: 'build' },
   { id: 'deploy',   label: 'Deploy',      Icon: Send,              desc: 'Publish',   group: 'build' },
+  { id: 'workflows', label: 'Workflows', Icon: Workflow, desc: 'Connect apps', group: 'build' },
   { id: 'monitor',  label: 'Monitor',     Icon: ChartNoAxesColumn, desc: 'Usage',     group: 'grow' },
   { id: 'evaluate', label: 'Evaluate',    short: 'Eval', Icon: ClipboardCheck, desc: 'Quality', group: 'grow' },
   { id: 'improve',  label: 'Improve',     Icon: TrendingUp,        desc: 'Iterate',   group: 'grow' },
@@ -180,6 +183,30 @@ export default function DevStudioPage({
     }
   }, [user.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Which apps are on the Marketplace (shown in the app list). Optional:
+  // if it can't load, the list just doesn't show the Marketplace mark.
+  const [listedIds, setListedIds] = useState(() => new Set())
+  // Developer workflows: listed in the left panel and edited in the
+  // Workflows tab. Optional: if they can't load, apps still work.
+  const [workflows, setWorkflows] = useState(null)
+  const [workflowsError, setWorkflowsError] = useState('')
+  const [activeWorkflowId, setActiveWorkflowId] = useState(null)
+  const [createWorkflowSignal, setCreateWorkflowSignal] = useState(0)
+  useEffect(() => {
+    let live = true
+    listWorkflows(user)
+      .then(rows => { if (live) setWorkflows(rows) })
+      .catch(e => { if (live) { setWorkflowsError(e.message); setWorkflows([]) } })
+    return () => { live = false }
+  }, [user?.id])
+  const { collapsed: sidebarCollapsed, setCollapsed: setSidebarCollapsed } = useDeveloperSidebar()
+  async function loadListed(ids) {
+    try {
+      const { data, error } = await supabase.from('marketplace_listings').select('app_id').eq('status', 'live').in('app_id', ids)
+      if (!error) setListedIds(new Set((data || []).map(r => r.app_id)))
+    } catch { /* keep the list without the mark */ }
+  }
+
   async function load() {
     setLoading(true)
     setLoadError('')
@@ -204,6 +231,7 @@ export default function DevStudioPage({
     setPhaseByAppId(prev => ({ ...prev, ...phases }))
     setApps(myApps)
     setActiveAppId(prev => myApps.some(a => a.id === prev) ? prev : null)
+    loadListed(myApps.map(a => a.id))
 
     const { data: runData, error: runError } = await supabase.from('run_history')
         .select('id, app_id, app_name, created_at, rating_value, user_id, input_tokens, output_tokens, input, output, feedback_text')
@@ -539,7 +567,7 @@ export default function DevStudioPage({
                 {/* Phones: one group fills the width and the next one peeks in;
                     swipe to the next group (snaps). md+: all three side by side. */}
                 <div ref={ribbonRef}
-                  className="w-full min-w-[760px] flex md:grid md:grid-cols-[3fr_4fr_3fr] gap-4 h-full overflow-x-auto md:overflow-visible snap-x snap-mandatory md:snap-none [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                  className="w-full min-w-[860px] flex md:grid md:grid-cols-[4fr_4fr_3fr] gap-4 h-full overflow-x-auto md:overflow-visible snap-x snap-mandatory md:snap-none [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                   {LIFECYCLE_GROUPS.map(group => (
                     <div key={group.id} data-group={group.id}
                       className={`developer-lifecycle-group ${LIFECYCLE_TABS.filter(t => t.group === group.id).length > 3 ? 'w-[94%]' : 'w-[85%]'} shrink-0 snap-start md:w-auto md:shrink min-w-0`}>
@@ -551,14 +579,14 @@ export default function DevStudioPage({
                             <button key={t.id} onClick={() => openTab(t.id)}
                               title={`${t.label}: ${t.desc}`}
                               aria-current={active ? 'step' : undefined}
-                              className={`flex-1 min-w-0 flex items-center gap-2.5 px-2 min-[1440px]:px-3 text-left transition-colors ${
+                              className={`flex-1 min-w-0 flex items-center gap-2.5 px-2 min-[1800px]:px-3 text-left transition-colors ${
                                 active
                                   ? 'bg-[#6C5CE7]/25 text-white'
                                   : 'text-slate-300 hover:text-white hover:bg-white/5'
                               }`}>
-                              {/* Icons only where there's room (1440px+), so labels are never cut off */}
+                              {/* Icons only where there's room (1800px+), so labels are never cut off */}
                               <t.Icon size={18} strokeWidth={1.75} aria-hidden="true"
-                                className={`hidden min-[1440px]:block shrink-0 ${active ? 'text-[#A29BFE]' : 'text-slate-400'}`} />
+                                className={`hidden min-[1800px]:block shrink-0 ${active ? 'text-[#A29BFE]' : 'text-slate-400'}`} />
                               <span className="min-w-0">
                                 <span data-tab-label className="block text-[11px] font-semibold leading-tight whitespace-nowrap truncate">{t.short || t.label}</span>
                                 <span className="block text-[10px] leading-tight mt-0.5 whitespace-nowrap truncate text-slate-500">{t.desc || ' '}</span>
@@ -730,6 +758,9 @@ export default function DevStudioPage({
             {!['design','test','deploy'].includes(tab) && (
             <ErrorBoundary compact title={`${LIFECYCLE_TABS.find(t => t.id === tab)?.label || "This"} section couldn't load`} resetKey={`${tab}:${activeAppId}`}>
             <Suspense fallback={TAB_LOADING}>
+            {tab === 'workflows' && <WorkflowsTab apps={apps} user={user} workflows={workflows} setWorkflows={setWorkflows}
+              loadError={workflowsError} activeId={activeWorkflowId} onActiveChange={setActiveWorkflowId} createSignal={createWorkflowSignal}
+              navigationGuardRef={navigationGuardRef} />}
             {tab === 'sell'     && <SellTab     apps={apps} user={user} onAppUpdated={updateAppInState} />}
             {tab === 'monitor'  && <MonitorPanel apps={apps} selectedAppId={monitorAppId} onSelectApp={id => { setActiveAppId(id); setMonitorAppId(id) }} onNavigate={navigateOperations} />}
             {tab === 'improve'  && <ImproveTab onSaveCandidate={saveImprovementCandidate} navigationGuardRef={navigationGuardRef} selectedRunId={selectedRunId} apps={apps} user={user} selectedAppId={activeAppId || apps[0]?.id} onSelectApp={setActiveAppId} />}
@@ -744,7 +775,7 @@ export default function DevStudioPage({
           }
           {/* ── Left: App navigator ── */}
           <DeveloperAppList>
-            <div className="developer-app-list hidden md:block shrink-0 overflow-y-auto w-56">
+            <div className="developer-app-list hidden md:block shrink-0 overflow-y-auto w-full">
               {searchNeedle && !visibleApps.length && (
                 <div role="status" className="mx-3 mt-3 rounded-lg border border-white/10 px-3 py-2 text-xs text-slate-400">
                   No apps match “{search.trim()}”. <button onClick={() => onSearch?.('')} className="text-[#A29BFE] hover:underline">Clear search</button>
@@ -754,6 +785,7 @@ export default function DevStudioPage({
               <AppNavigator
                 apps={visibleApps}
                 phaseByAppId={phaseByAppId}
+                listedIds={listedIds}
                 activeAppId={activeAppId}
                 activeTab={tab}
                 onSelectApp={id => setActiveAppId(id)}
@@ -761,6 +793,12 @@ export default function DevStudioPage({
                 onMovePhase={moveAppPhase}
                 onCreateApp={onOpenCreate}
                 compact
+                workflows={workflows}
+                activeWorkflowId={activeWorkflowId}
+                onOpenWorkflow={id => (tab === 'workflows' ? setActiveWorkflowId(id) : guarded(() => { setActiveWorkflowId(id); setTabState('workflows') }))}
+                onCreateWorkflow={() => (tab === 'workflows' ? setCreateWorkflowSignal(n => n + 1) : guarded(() => { setTabState('workflows'); setCreateWorkflowSignal(n => n + 1) }))}
+                collapsed={sidebarCollapsed}
+                onToggleCollapsed={() => setSidebarCollapsed(!sidebarCollapsed)}
                 onOpenApp={(id, phase) => guarded(() => { setActiveAppIdState(id); setTabState(phase) })}
               />
               </ErrorBoundary>

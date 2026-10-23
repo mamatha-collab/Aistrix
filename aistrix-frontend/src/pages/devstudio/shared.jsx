@@ -1,4 +1,6 @@
 import { useState, lazy } from 'react'
+import { SectionHeader, SlidingName, useSectionOpen } from '../../components/PaneParts'
+import { LayoutGrid, PanelLeftClose, PanelLeftOpen, Store, Workflow as WorkflowIcon } from 'lucide-react'
 import { inferPromptOutputFormat } from '../../utils/starterBlueprint'
 
 import { BRAND } from '../../lib/brand'
@@ -118,61 +120,133 @@ export function getDevPhase(app, phaseByAppId = {}) {
 
 // ─── Phase Rail ───────────────────────────────────────────────────────────────
 
-export function AppNavigator({ apps, phaseByAppId, activeAppId, activeTab, onSelectApp, onSwitchTab, onMovePhase, onCreateApp, onOpenApp, compact = false }) {
+// One status per app, the same words everywhere:
+//   In review · Live vN (+ dot: unreleased edits) · Offline · Not live
+// and a Marketplace mark when the app is listed.
+export function appStatus(app, listed = false) {
+  const v = app?.live_version ? ` v${app.live_version}` : ''
+  if (app?.is_published) {
+    const edits = !!app.has_draft_changes
+    return { key: 'live', label: `Live${v}`, word: 'Live', version: app.live_version ? `v${app.live_version}` : '', edits, listed,
+      title: `Live${v}: users run this release${edits ? ". You have edits that aren't released yet." : '.'}${listed ? ' Listed on the Marketplace.' : ''}` }
+  }
+  if (app?.status === 'pending') return { key: 'review', label: 'In review', title: 'Waiting for staff approval before it goes live.' }
+  if (app?.live_version) return { key: 'offline', label: 'Offline', title: `Unpublished: v${app.live_version} was live before, users can't run it now.` }
+  return { key: 'draft', label: 'Not live', title: 'Not published yet: only you can run it.' }
+}
+
+const STATUS_STYLE = {
+  live: 'bg-green-500/15 text-green-400 border-green-500/25',
+  review: 'bg-sky-500/15 text-sky-300 border-sky-500/25',
+  offline: 'bg-slate-500/15 text-slate-300 border-slate-500/25',
+  draft: 'bg-slate-500/10 text-slate-400 border-white/10',
+}
+
+const DOT_STYLE = {
+  live: 'bg-green-400',
+  review: 'bg-sky-400',
+  offline: 'border border-slate-400 bg-transparent',
+  draft: 'border border-slate-600 bg-transparent',
+}
+
+// The app list's compact form of the status: one dot (amber ring = live with
+// unreleased edits), the full wording on hover.
+export function AppStatusDot({ app, listed = false, showDraft = true, className = '' }) {
+  const s = appStatus(app, listed)
+  if (s.key === 'draft' && !showDraft) return null
+  return (
+    <span title={s.title} aria-label={s.title} role="img"
+      className={`shrink-0 inline-flex w-2 h-2 rounded-full ${DOT_STYLE[s.key]} ${s.edits ? 'ring-2 ring-amber-400/90' : ''} ${className}`} />
+  )
+}
+
+export function AppStatusBadge({ app, listed = false, showDraft = true }) {
+  const s = appStatus(app, listed)
+  if (s.key === 'draft' && !showDraft) return null
+  return (
+    <span title={s.title} aria-label={s.title} className="shrink-0 inline-flex items-center gap-1">
+      <span className={`inline-flex items-center gap-1 text-[9px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded-full border whitespace-nowrap ${STATUS_STYLE[s.key]}`}>
+        {s.word || s.label}
+        {s.version && <span className="normal-case font-semibold">{s.version}</span>}
+        {s.edits && <span className="w-1.5 h-1.5 rounded-full bg-amber-400" aria-hidden="true" />}
+      </span>
+      {s.listed && <Store size={12} strokeWidth={2} className="text-[#A29BFE]" aria-hidden="true" />}
+    </span>
+  )
+}
+
+const workflowStatus = f => (f.webhook_token
+  ? { live: true, title: 'Live: its webhook link is on.' }
+  : { live: false, title: 'Draft: not released yet.' })
+
+export function AppNavigator({ apps, phaseByAppId, listedIds, activeAppId, activeTab, onSelectApp, onSwitchTab, onMovePhase, onCreateApp, onOpenApp, compact = false, collapsed = false, onToggleCollapsed,
+  workflows = null, activeWorkflowId = null, onOpenWorkflow, onCreateWorkflow }) {
+  const [appsOpen, toggleApps] = useSectionOpen('aistrix_dev_apps_open')
+  const [flowsOpen, toggleFlows] = useSectionOpen('aistrix_dev_workflows_open')
+  const showFlows = Array.isArray(workflows)
   const grouped = { design: [], test: [], deploy: [] }
   for (const a of apps) grouped[getDevPhase(a, phaseByAppId)]?.push(a)
 
   const PREV = { test: 'design', deploy: 'test' }
   const NEXT = { design: 'test', test: 'deploy' }
-  const SECTION_LABEL = { design: 'Still Designing', test: 'Testing', deploy: 'Deployed' }
-  const activeApp = apps.find(a => a.id === activeAppId)
+  const SECTION_LABEL = { design: 'Still Designing', test: 'Testing', deploy: 'Publishing' }
+  const open = (a, phase) => { if (onOpenApp) onOpenApp(a.id, phase); else { onSelectApp(a.id); onSwitchTab(phase) } }
+  const toggle = onToggleCollapsed && (
+    <button onClick={onToggleCollapsed} aria-label={collapsed ? 'Expand the app list' : 'Collapse the app list'}
+      title={collapsed ? 'Expand the app list' : 'Collapse the app list'}
+      className="text-slate-400 hover:text-white p-1 rounded-md hover:bg-white/5">
+      {collapsed ? <PanelLeftOpen size={16} aria-hidden="true" /> : <PanelLeftClose size={16} aria-hidden="true" />}
+    </button>
+  )
 
-  return (
-    <div className={`${compact ? 'developer-app-navigator w-full px-0 py-2' : 'w-[340px] px-4 py-5'} max-w-full shrink-0 space-y-5`}>
-      {compact && <div className="flex items-center justify-between px-2"><h2 className="text-sm text-white font-semibold">Your apps</h2><button onClick={onCreateApp} aria-label="Create an app" className="text-slate-400 hover:text-white text-lg px-2">+</button></div>}
-      <details open={!compact || undefined} className="rounded-2xl border border-white/8 bg-[#111827] p-3 space-y-3">
-        <summary className="cursor-pointer text-xs font-semibold text-slate-400">App pipeline</summary>
-        <div className="space-y-4">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="text-white text-sm font-bold">App Pipeline</p>
-            <p className="text-slate-400 text-xs mt-1 leading-relaxed">Move apps through Design, Test, and Deploy without losing your current context.</p>
+  // Slim rail: stage icons, then each app's emoji with its status dot.
+  if (collapsed) return (
+    <div className="developer-app-navigator w-full py-2 flex flex-col items-center gap-3">
+      {toggle}
+      <button onClick={onCreateApp} aria-label="Create an app" title="Create an app" className="text-slate-400 hover:text-white text-lg leading-none">+</button>
+      {PHASE_ORDER.map(phase => {
+        const p = DEV_PHASES[phase]
+        const phaseApps = grouped[phase] || []
+        return (
+          <div key={phase} className="w-full flex flex-col items-center gap-1.5 pt-1 border-t border-white/5">
+            <span title={`${SECTION_LABEL[phase]}: ${phaseApps.length}`} aria-label={`${SECTION_LABEL[phase]}: ${phaseApps.length}`} className="text-xs leading-none">{p.icon}</span>
+            {phaseApps.map(a => {
+              const isActive = activeAppId === a.id
+              return (
+                <button key={a.id} onClick={() => open(a, phase)} title={`${a.name} — ${appStatus(a, !!listedIds?.has(a.id)).title}`} aria-label={a.name}
+                  aria-current={isActive ? 'true' : undefined}
+                  className={`relative w-10 h-9 flex items-center justify-center rounded-lg border transition-colors ${
+                    isActive ? `${p.bg} ${p.border}` : 'border-transparent hover:bg-[#151B33] hover:border-white/10'}`}>
+                  <AppEmojiWithType app={a} />
+                  <AppStatusDot app={a} listed={!!listedIds?.has(a.id)} showDraft={phase === 'deploy'} className="absolute top-1 right-1" />
+                </button>
+              )
+            })}
           </div>
-          <button onClick={onCreateApp}
-            className="shrink-0 bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white text-xs font-bold px-3 py-2 rounded-xl transition-colors">
-            New
-          </button>
-        </div>
-        <div className="grid grid-cols-3 gap-2">
-          {PHASE_ORDER.map(phase => {
-            const p = DEV_PHASES[phase]
+        )
+      })}
+      {showFlows && (
+        <div className="w-full flex flex-col items-center gap-1.5 pt-1 border-t border-white/5">
+          <span title={`Workflows: ${workflows.length}`} aria-label={`Workflows: ${workflows.length}`} className="text-slate-400"><WorkflowIcon size={13} /></span>
+          {workflows.map(f => {
+            const isActive = activeTab === 'workflows' && activeWorkflowId === f.id
+            const st = workflowStatus(f)
             return (
-              <button key={phase} onClick={() => onSwitchTab(phase)}
-                className={`rounded-xl border px-2 py-2 text-left transition-colors ${
-                  activeTab === phase ? `${p.bg} ${p.border}` : 'bg-[#0E1424] border-white/6 hover:border-white/15'
-                }`}>
-                <p className={`text-[10px] font-bold ${p.color}`}>{p.icon} {p.label}</p>
-                <p className="text-white text-lg font-bold leading-none mt-1">{grouped[phase]?.length || 0}</p>
+              <button key={f.id} onClick={() => onOpenWorkflow?.(f.id)} title={`${f.name} — ${st.title}`} aria-label={f.name}
+                aria-current={isActive ? 'true' : undefined}
+                className={`relative w-10 h-9 flex items-center justify-center rounded-lg border text-base transition-colors ${
+                  isActive ? 'bg-[#6C5CE7]/15 border-[#6C5CE7]/30' : 'border-transparent hover:bg-[#151B33] hover:border-white/10'}`}>
+                {f.emoji || '🔀'}
+                <span className={`absolute top-1 right-1 w-2 h-2 rounded-full ${st.live ? 'bg-green-400' : 'border border-slate-500'}`} aria-hidden="true" />
               </button>
             )
           })}
         </div>
-        {activeApp ? (
-          <div className="rounded-xl bg-[#0E1424] border border-white/6 px-3 py-2">
-            <p className="text-[10px] text-slate-500 uppercase font-bold tracking-wide">Selected app</p>
-            <div className="mt-1 flex items-center gap-2 min-w-0">
-              <AppEmojiWithType app={activeApp} />
-              <div className="min-w-0">
-                <p className="text-white text-xs font-semibold truncate">{activeApp.name}</p>
-                <p className="text-slate-500 text-[10px] truncate">{getAppTypeLabel(activeApp)}</p>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <p className="text-[11px] text-slate-500 leading-relaxed">Select an app below to edit, test, deploy, version, or manage secrets.</p>
-        )}
-        </div>
-      </details>
+      )}
+    </div>
+  )
+
+  const appsBody = (<>
 
       {PHASE_ORDER.map(phase => {
         const p = DEV_PHASES[phase]
@@ -198,20 +272,18 @@ export function AppNavigator({ apps, phaseByAppId, activeAppId, activeTab, onSel
                 return (
                   <div key={a.id} className="group/app relative">
                     <button
-                      onClick={() => { if (onOpenApp) onOpenApp(a.id, phase); else { onSelectApp(a.id); onSwitchTab(phase) } }}
-                      className={`w-full text-left flex items-center gap-2.5 px-3 py-2 rounded-xl border text-sm transition-colors ${
+                      onClick={() => open(a, phase)}
+                      title={`${a.name} · ${getAppTypeLabel(a)}`}
+                      className={`w-full text-left flex items-center gap-2 px-2.5 py-2 rounded-xl border text-sm transition-colors ${
                         isActive
                           ? `${p.bg} ${p.border} ${p.color} font-semibold`
                           : 'bg-[#0E1424] border-white/6 text-slate-200 hover:text-white hover:border-white/18 hover:bg-[#151B33]'
                       }`}
                     >
-                      <AppEmojiWithType app={a} />
-                      <span className="truncate text-sm leading-tight flex-1 pr-10">{a.name}</span>
-                      {a.is_published
-                        ? a.has_draft_changes
-                          ? <span className="shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/25">DRAFT</span>
-                          : <span className="shrink-0 text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-green-500/15 text-green-400 border border-green-500/25">LIVE</span>
-                        : null}
+                      {/* No icon here: the name gets the room. Hovering slides a long name to show its end. */}
+                      <SlidingName name={a.name} />
+                      {listedIds?.has(a.id) && <Store size={12} strokeWidth={2} className="shrink-0 text-[#A29BFE]" aria-hidden="true" />}
+                      <AppStatusDot app={a} listed={!!listedIds?.has(a.id)} showDraft={phase === 'deploy'} />
                     </button>
 
                     <div className="absolute right-1.5 top-1/2 -translate-y-1/2 hidden group-hover/app:flex items-center gap-0.5">
@@ -241,6 +313,52 @@ export function AppNavigator({ apps, phaseByAppId, activeAppId, activeTab, onSel
           </div>
         )
       })}
+  </>)
+
+  if (!compact) return (
+    <div className="w-[340px] px-4 py-5 max-w-full shrink-0 space-y-5">{appsBody}</div>
+  )
+
+  // Left panel: Apps and Workflows, each folds and scrolls on its own.
+  const both = appsOpen && showFlows && flowsOpen
+  return (
+    <div className="developer-app-navigator w-full max-w-full shrink-0 px-0 py-2 space-y-3">
+      <SectionHeader title="Your apps" icon={LayoutGrid} count={apps.length} open={appsOpen} onToggle={toggleApps}>
+        <button onClick={onCreateApp} aria-label="Create an app" title="Create an app" className="text-slate-400 hover:text-white text-lg px-1 leading-none">+</button>
+        {toggle}
+      </SectionHeader>
+      {appsOpen && (
+        <div className={`space-y-5 overflow-y-auto pr-1 [scrollbar-width:thin] ${both ? 'max-h-[calc(55vh-6rem)]' : 'max-h-[calc(100vh-17rem)]'}`}>{appsBody}</div>
+      )}
+
+      {showFlows && (<>
+        <div className="border-t border-white/5" />
+        <SectionHeader title="Workflows" icon={WorkflowIcon} count={workflows.length} open={flowsOpen} onToggle={toggleFlows}>
+          <button onClick={onCreateWorkflow} aria-label="Create a workflow" title="Create a workflow" className="text-slate-400 hover:text-white text-lg px-1 leading-none">+</button>
+        </SectionHeader>
+        {flowsOpen && (
+          <div className={`space-y-1.5 overflow-y-auto pr-1 [scrollbar-width:thin] ${appsOpen ? 'max-h-[calc(45vh-8rem)] min-h-[5rem]' : 'max-h-[calc(100vh-17rem)]'}`}>
+            {workflows.length === 0 ? (
+              <p className="text-[11px] text-slate-500 italic pl-2">No workflows yet</p>
+            ) : workflows.map(f => {
+              const isActive = activeTab === 'workflows' && activeWorkflowId === f.id
+              const st = workflowStatus(f)
+              return (
+                <div key={f.id} className="group/app relative">
+                  <button onClick={() => onOpenWorkflow?.(f.id)} title={f.name} aria-current={isActive ? 'true' : undefined}
+                    className={`w-full text-left flex items-center gap-2 px-2.5 py-2 rounded-xl border text-sm transition-colors ${
+                      isActive ? 'bg-[#6C5CE7]/15 border-[#6C5CE7]/30 text-[#C9C2FF] font-semibold'
+                        : 'bg-[#0E1424] border-white/6 text-slate-200 hover:text-white hover:border-white/18 hover:bg-[#151B33]'}`}>
+                    <SlidingName name={f.name} />
+                    <span title={st.title} aria-label={st.title} role="img"
+                      className={`shrink-0 inline-flex w-2 h-2 rounded-full ${st.live ? 'bg-green-400' : 'border border-slate-500'}`} />
+                  </button>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </>)}
     </div>
   )
 }

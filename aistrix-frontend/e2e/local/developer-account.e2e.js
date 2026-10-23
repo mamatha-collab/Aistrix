@@ -43,7 +43,7 @@ test('purple light mode keeps all grouped Developer steps available', async ({ p
   }
   const row = page.locator('[aria-label="Developer navigation"]')
   await expect(row.locator('[data-group]')).toHaveCount(3)
-  await expect(row.locator('[data-group] button')).toHaveCount(10)
+  await expect(row.locator('[data-group] button')).toHaveCount(11)   // Build: Design, Test, Deploy, Workflows
   const design = row.getByRole('button', { name: 'Design Blueprint' })
   await expect(design).toHaveAttribute('aria-current', 'step')
   await expect(design).toHaveCSS('background-color', 'rgb(238, 232, 248)')

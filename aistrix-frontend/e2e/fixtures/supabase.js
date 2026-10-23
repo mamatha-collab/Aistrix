@@ -65,6 +65,7 @@ class Query {
   constructor(table) { this.table = table; this.filters = []; this.op = 'select'; this.wantSingle = false }
   select(selection) { this.selection = selection; return this }
   eq(key, value) { this.filters.push(row => key.split('.').reduce((item, part) => item?.[part], row) === value); return this }
+  or(expression) { const alternatives = expression.split(',').map(part => part.split('.eq.')); this.filters.push(row => alternatives.some(([key,value]) => String(row[key]) === value)); return this }
   in(key, values) { this.filters.push(row => values.includes(row[key])); return this }
   is(key, value) { this.filters.push(row => (row[key] ?? null) === value); return this }
   not(key, operator, value) {
@@ -95,7 +96,10 @@ class Query {
     const failureKey = `${this.table}:${this.op}`
     if (state.failures[failureKey]) return { data: null, error: { message: state.failures[failureKey], code: 'FIXTURE_ERROR' } }
     const rows = state.tables[this.table] ||= []
-    const selectedRows = this.selection?.includes('apps!inner') ? rows.map(row => ({ ...row, apps: state.tables.apps.find(app => app.id === row.app_id) })).filter(row => row.apps) : rows
+    const selectedRows = this.selection?.includes('apps!inner') ? rows.map(row => ({ ...row, apps: state.tables.apps.find(app => app.id === row.app_id) })).filter(row => row.apps)
+      : this.table === 'apps' && this.selection?.includes('marketplace_listings(')
+        ? rows.map(row => ({ ...row, marketplace_listings: state.tables.marketplace_listings.filter(listing => listing.app_id === row.id),
+          domains: (state.tables.domains || []).find(domain => domain.id === row.domain_id) || null })) : rows
     let data = selectedRows.filter(row => this.filters.every(filter => filter(row)))
     if (this.op === 'insert' || this.op === 'upsert') {
       const incoming = (Array.isArray(this.value) ? this.value : [this.value]).map(copy)
@@ -183,6 +187,12 @@ if (scenario === 'operations') {
   // What the server shares with the developers (customers chose to include the run).
   state.feedback = state.tables.run_history.map((r, i) => ({ id: `fb-${i + 1}`, app_id: r.app_id, run_id: r.id, rating: r.rating_value,
     comment: r.feedback_text, shared_input: r.input, shared_output: r.output, status: 'new', note: null, test_case_id: null, created_at: reported, updated_at: reported }))
+}
+
+if (scenario === 'business') {
+  Object.assign(app, { is_published: true, live_version: 1, visibility: 'public', status: 'active', tags: ['support'] })
+  state.tables.flows = []; state.tables.flow_schedules=[]; state.tables.favorites=[]
+  state.tables.marketplace_listings=[{id:'business-listing',app_id:'app-1',user_id:'fixture-user',title:'Fixture Assistant',tagline:'Useful business answers',category:'Productivity',status:'live'}]
 }
 
 // Build with AI: the two model calls (follow-up questions, then the app

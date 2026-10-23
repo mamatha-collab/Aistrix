@@ -1,12 +1,13 @@
 import AistrixWordmark from './AistrixWordmark'
-import { DeveloperRowSection, DeveloperSidebarBrand, DeveloperSidebarSlot } from './DeveloperShell'
-import { signOutOnPurpose } from '../lib/session'
+import { DeveloperRowSection, DeveloperSidebarBrand, DeveloperSidebarSlot, useDeveloperSidebar, useShellFramed } from './DeveloperShell'
+import BusinessPane from './BusinessPane'
 import { useState, useEffect } from 'react'
-import ConfirmDialog from './ConfirmDialog'
 import {
   BarChart3,
   Bell,
   BookOpen,
+  Briefcase,
+  CodeXml,
   Box,
   ChartColumn,
   ChevronDown,
@@ -14,55 +15,48 @@ import {
   Database,
   History,
   Link,
-  LogOut,
-  Moon,
   Settings,
   Shield,
   ShoppingBag,
-  Sun,
   User,
   Workflow,
   X,
   Zap,
 } from 'lucide-react'
-import { supabase } from '../supabase'
-import { applyTheme } from '../utils/theme'
 
 import { BRAND } from '../lib/brand'
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
 const DEVELOPER_NAV = []
 
 const BUSINESS_NAV = [
-  { label: 'BUILD', alwaysOpen: true, items: [
-    { icon: Workflow,     label: 'AI Workflows',    view: 'flows' },
-    { icon: Box,          label: 'AI Apps',         view: 'apps' },
-    { icon: ShoppingBag,  label: 'Marketplace',     view: 'marketplace' },
-    { icon: BookOpen,     label: 'Knowledge Vault', view: 'knowledge_vault' },
+  { label: 'WORKSPACE', alwaysOpen: true, items: [
+    { icon: ShoppingBag, label: 'Marketplace', view: 'marketplace' },
+    { icon: Box,          label: 'My apps',         view: 'apps' },
+    { icon: Workflow,     label: 'Workflows',    view: 'flows' },
   ]},
-  { label: 'OPERATE', items: [
+  { label: 'SETTINGS & TOOLS', items: [
+    { icon: Settings, label: 'Account & workspace', view: 'settings' },
+    { icon: BookOpen, label: 'Knowledge Vault', view: 'knowledge_vault' },
     { icon: CircleDot, label: 'Overview',  view: 'overview' },
     { icon: History,   label: 'History',   view: 'history' },
     { icon: BarChart3, label: 'Analytics', view: 'analytics' },
     { icon: Bell,      label: 'Alerts',    view: 'alerts' },
-  ]},
-  { label: 'CONNECT', items: [
     { icon: Database, label: 'Data Sources', view: 'data_sources' },
     { icon: Link,     label: 'Integrations', view: 'integrations' },
-  ]},
-  { label: 'MANAGE', items: [
     { icon: User,        label: 'Profiles', view: 'profiles' },
-    { icon: Settings,    label: 'Settings', view: 'settings' },
     { icon: ChartColumn, label: 'Usage',    view: 'reports' },
   ]},
 ]
 
-export default function SidebarClean({ user, userRole, onClose, onShowProfile, activeView, onNavChange, mode, onModeChange }) {
-  const [usage, setUsage] = useState({ today: 0, limit: 50 })
-  const [theme, setTheme] = useState(() => localStorage.getItem('aistrix_theme') || 'dark')
+export default function SidebarClean({ user, userRole, onClose, activeView, onNavChange, mode, onModeChange, onSelectApp, onOpenFlow, paneRefreshKey }) {
 
   const navGroups = mode === 'developer' ? DEVELOPER_NAV : BUSINESS_NAV
   const isDeveloperMode = mode === 'developer'
+  const { collapsed: railCollapsed } = useDeveloperSidebar()
+  // Desktop: Developer and Business share one frame (top row, second row,
+  // left pane). Phones keep Business's own drawer with its section list.
+  const framed = useShellFramed()
+  const rail = framed && railCollapsed
 
   const [expanded, setExpanded] = useState(() => {
     const active = new Set()
@@ -89,34 +83,26 @@ export default function SidebarClean({ user, userRole, onClose, onShowProfile, a
     }
   }, [activeView, mode]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  function toggleTheme() {
-    const next = theme === 'dark' ? 'light' : 'dark'
-    document.documentElement.classList.add('theme-transitioning')
-    setTheme(next)
-    localStorage.setItem('aistrix_theme', next)
-    applyTheme(next)
-    setTimeout(() => document.documentElement.classList.remove('theme-transitioning'), 350)
-  }
-
-  // Today's runs against the free allowance, as the server counts them (runs
-  // on the user's own AI keys don't use it up).
-  useEffect(() => {
-    if (!user) return
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!session?.access_token) return
-      return fetch(`${API_URL}/v1/usage`, { headers: { Authorization: `Bearer ${session.access_token}` } })
-        .then(r => r.ok ? r.json() : null)
-        .then(u => { if (u?.daily) setUsage({ today: u.daily.used, limit: u.daily.limit }) })
-    }).catch(() => {})
-  }, [user])
-
-  // Signing out drops unsaved edits in any open editor: ask first.
-  const [confirmSignOut, setConfirmSignOut] = useState(false)
-  async function signOut() { await signOutOnPurpose(supabase) }
+  const roleNavigation = (userRole === 'admin' || userRole === 'moderator') && (
+        <div className={`${rail ? 'px-1.5' : 'px-3'} pb-2 space-y-0.5`}>
+          <div className="h-px bg-white/5 mx-2 mb-2" />
+          {userRole === 'admin' && (
+            <button onClick={() => onNavChange?.('admin')} title={rail ? 'Admin' : undefined} aria-label={rail ? 'Admin' : undefined}
+              className={`w-full flex items-center ${rail ? 'justify-center' : ''} gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${activeView === 'admin' ? 'bg-red-500/20 text-red-400' : 'text-slate-300 hover:bg-[#1A2038] hover:text-red-400'}`}>
+              <Zap size={16} className="shrink-0" />{!rail && <><span>Admin</span>
+              <span className="ml-auto text-[9px] bg-red-400/15 text-red-400 px-1.5 py-0.5 rounded-full font-bold">ADMIN</span></>}
+            </button>
+          )}
+          <button onClick={() => onNavChange?.('moderator')} title={rail ? 'Moderator' : undefined} aria-label={rail ? 'Moderator' : undefined}
+            className={`w-full flex items-center ${rail ? 'justify-center' : ''} gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${activeView === 'moderator' ? 'bg-blue-500/20 text-blue-400' : 'text-slate-300 hover:bg-[#1A2038] hover:text-blue-400'}`}>
+            <Shield size={16} className="shrink-0" />{!rail && <span>Moderator</span>}
+          </button>
+        </div>
+      )
 
   return (
-    <aside className={`app-sidebar ${isDeveloperMode ? 'app-sidebar-developer w-56' : 'w-52'} bg-[#0E1424] flex flex-col shrink-0 h-full relative`}>
-      {isDeveloperMode && <div aria-hidden="true" className="pointer-events-none absolute right-0 top-[72px] bottom-0 border-r border-white/5" />}
+    <aside className={`app-sidebar ${framed || isDeveloperMode ? `app-sidebar-developer ${rail ? 'w-14' : 'w-56'}` : 'app-sidebar-business w-56'} bg-[#0E1424] flex flex-col shrink-0 h-full relative`}>
+      {(framed || isDeveloperMode) && <div aria-hidden="true" className={`pointer-events-none absolute right-0 ${framed ? 'top-0' : 'top-[72px]'} bottom-0 border-r border-white/5`} />}
       {onClose && (
         <button aria-label="Close" onClick={onClose}
           className="md:hidden absolute top-4 right-4 text-slate-300 hover:text-white z-10">
@@ -124,50 +110,48 @@ export default function SidebarClean({ user, userRole, onClose, onShowProfile, a
         </button>
       )}
 
-      {!isDeveloperMode && (
+      {!isDeveloperMode && !framed && (
         <button
-          onClick={() => onNavChange?.('flows')}
-          className="px-5 pt-5 pb-3 flex flex-col gap-0.5 hover:opacity-80 transition-opacity w-full text-left"
+          onClick={() => onNavChange?.('marketplace')}
+          className="business-sidebar-brand flex items-center gap-1 hover:opacity-80 transition-opacity w-full text-left"
         >
           <div className="flex items-center gap-1">
             <img src="/aistrix-logo.svg" alt="" className="w-7 h-7 shrink-0" />
             <span className="font-semibold text-white text-base"><AistrixWordmark /></span>
           </div>
-          <p className="text-[10px] text-slate-500 pl-8 leading-tight">
-            AI workflows for your business
-          </p>
+          <span className="business-mode-badge">Business</span>
         </button>
       )}
 
       {/* Mode switcher */}
       <DeveloperSidebarBrand>
       <div className={isDeveloperMode
-        ? 'h-[72px] shrink-0 px-4 flex items-center border-b border-white/5 bg-[#111827]'
-        : 'px-3 pb-3'}>
+        ? `h-[72px] shrink-0 ${rail ? 'px-3.5' : 'px-4'} flex items-center border-b border-white/5 bg-[#111827]`
+        : 'business-mode-switch'}>
         {isDeveloperMode ? (
         <button
           onClick={() => onNavChange?.('developer')}
           className="flex items-center gap-1 min-w-0 w-full text-left hover:opacity-85 transition-opacity"
         >
-          <img src="/aistrix-logo.svg" alt="" className="w-7 h-7 shrink-0" />
-          <span className="min-w-0 flex-1">
+          <img src="/aistrix-logo.svg" alt={rail ? BRAND : ''} className="w-7 h-7 shrink-0" />
+          {!rail && <span className="min-w-0 flex-1">
             <span className="flex items-center gap-1.5 min-w-0 whitespace-nowrap">
               <span className="text-white font-bold text-lg leading-tight shrink-0"><AistrixWordmark /></span>
               <span className="px-1.5 py-0.5 rounded-full bg-[#00D4AA]/10 border border-[#00D4AA]/20 text-[#00D4AA] text-[8px] font-bold uppercase tracking-wide shrink-0">Developer</span>
             </span>
-          </span>
+          </span>}
         </button>
         ) : (
         <div className="flex bg-[#09101F] rounded-lg p-0.5 gap-0.5">
           <button
             onClick={() => onModeChange?.('business')}
-            className={`flex-1 text-[10px] font-semibold py-1.5 rounded-md transition-all ${mode === 'business' ? 'bg-[#1A2038] text-white shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
+            className={`flex-1 text-xs font-semibold py-2 rounded-md transition-all ${mode === 'business' ? 'bg-[#1A2038] text-white shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
           >
             Business
           </button>
           <button
             onClick={() => onModeChange?.('developer')}
-            className={`flex-1 text-[10px] font-semibold py-1.5 rounded-md transition-all ${mode === 'developer' ? 'bg-[#6C5CE7] text-white shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
+            className={`flex-1 text-xs font-semibold py-2 rounded-md transition-all ${mode === 'developer' ? 'bg-[#6C5CE7] text-white shadow-sm' : 'text-slate-500 hover:text-slate-300'}`}
           >
             Developer
           </button>
@@ -177,40 +161,33 @@ export default function SidebarClean({ user, userRole, onClose, onShowProfile, a
 
       </DeveloperSidebarBrand>
 
-      {(userRole === 'admin' || userRole === 'moderator') && (
-        <div className="px-3 pb-2 space-y-0.5">
-          <div className="h-px bg-white/5 mx-2 mb-2" />
-          {userRole === 'admin' && (
-            <button onClick={() => onNavChange?.('admin')}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${activeView === 'admin' ? 'bg-red-500/20 text-red-400' : 'text-slate-300 hover:bg-[#1A2038] hover:text-red-400'}`}>
-              <Zap size={16} /><span>Admin</span>
-              <span className="ml-auto text-[9px] bg-red-400/15 text-red-400 px-1.5 py-0.5 rounded-full font-bold">ADMIN</span>
-            </button>
-          )}
-          <button onClick={() => onNavChange?.('moderator')}
-            className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${activeView === 'moderator' ? 'bg-blue-500/20 text-blue-400' : 'text-slate-300 hover:bg-[#1A2038] hover:text-blue-400'}`}>
-            <Shield size={16} /><span>Moderator</span>
-          </button>
-        </div>
-      )}
+      {!isDeveloperMode && !framed && roleNavigation}
 
-      {isDeveloperMode && (
+      {(isDeveloperMode || framed) && (
         <DeveloperRowSection side="left">
         <div className="w-full py-3 flex items-center bg-[#1A2038]">
-          <div className="flex w-full bg-[#0E1424] border border-white/10 rounded-lg p-1 gap-1">
-            {['business', 'developer'].map(next => (
-              <button key={next} onClick={() => onModeChange?.(next)} aria-pressed={mode === next}
-                className={`flex-1 text-xs py-2 rounded-md transition-colors ${mode === next ? 'bg-[#6C5CE7]/25 text-white font-semibold' : 'text-slate-400 font-medium hover:text-white hover:bg-white/5'}`}>
-                {next === 'business' ? 'Business' : 'Developer'}
-              </button>
-            ))}
+          <div className={`flex ${rail ? 'flex-col' : ''} w-full bg-[#0E1424] border border-white/10 rounded-lg p-1 gap-1`}>
+            {['business', 'developer'].map(next => {
+              const name = next === 'business' ? 'Business' : 'Developer'
+              const Icon = next === 'business' ? Briefcase : CodeXml
+              return (
+                <button key={next} onClick={() => onModeChange?.(next)} aria-pressed={mode === next}
+                  title={rail ? name : undefined} aria-label={rail ? name : undefined}
+                  className={`flex-1 flex items-center justify-center text-xs py-2 rounded-md transition-colors ${mode === next ? 'bg-[#6C5CE7]/25 text-white font-semibold' : 'text-slate-400 font-medium hover:text-white hover:bg-white/5'}`}>
+                  {rail ? <Icon size={14} aria-hidden="true" /> : name}
+                </button>
+              )
+            })}
           </div>
         </div>
         </DeveloperRowSection>
       )}
-      <nav className={`flex-1 px-3 overflow-y-auto pb-2 ${isDeveloperMode ? 'pt-3' : 'pt-1'}`}>
+      <nav className={`flex-1 ${rail ? 'px-1.5' : 'px-3'} overflow-y-auto pb-2 ${isDeveloperMode ? 'pt-0' : 'pt-1'}`}>
         {isDeveloperMode && <DeveloperSidebarSlot />}
-        {navGroups.map(({ label, items, alwaysOpen }) => {
+        {framed && !isDeveloperMode && (
+          <BusinessPane activeView={activeView} onNavChange={onNavChange} />
+        )}
+        {!framed && navGroups.map(({ label, items, alwaysOpen }) => {
           const isOpen = alwaysOpen || expanded.has(label)
           const hasActive = items.some(item => item.view === activeView)
 
@@ -252,48 +229,7 @@ export default function SidebarClean({ user, userRole, onClose, onShowProfile, a
         })}
       </nav>
 
-      <div className="px-4 pb-4 border-t border-white/8 pt-3 space-y-3">
-        <div className="flex items-center gap-2">
-          <div className="flex-1 h-1 bg-[#09101F] rounded-full overflow-hidden">
-            <div
-              className={`h-full rounded-full transition-all ${usage.today / usage.limit > 0.8 ? 'bg-orange-500' : 'bg-[#6C5CE7]'}`}
-              style={{ width: `${Math.min((usage.today / usage.limit) * 100, 100)}%` }}
-            />
-          </div>
-          <span className={`text-[10px] shrink-0 ${usage.today >= usage.limit ? 'text-orange-400' : 'text-slate-500'}`}>
-            {usage.today}/{usage.limit} runs
-          </span>
-        </div>
-
-        {!isDeveloperMode ? (
-        <div className="flex items-center gap-2">
-          <button onClick={onShowProfile}
-            className="w-7 h-7 rounded-full flex items-center justify-center text-xs text-white shrink-0 hover:opacity-80 transition-opacity"
-            style={{ background: user?.user_metadata?.avatar_color || '#6C5CE7' }}
-            title="Edit profile" aria-label="Edit profile">
-            {(user?.user_metadata?.display_name || user?.email || '?')[0].toUpperCase()}
-          </button>
-          <p className="text-xs text-white truncate flex-1 min-w-0">
-            {user?.user_metadata?.display_name || user?.email?.split('@')[0]}
-          </p>
-          <button onClick={toggleTheme} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
-            className="text-slate-500 hover:text-white transition-colors p-1">
-            {theme === 'dark' ? <Sun size={14} /> : <Moon size={14} />}
-          </button>
-          <button onClick={() => setConfirmSignOut(true)} title="Sign out" aria-label="Sign out"
-            className="text-slate-500 hover:text-red-400 transition-colors p-1">
-            <LogOut size={14} />
-          </button>
-        </div>
-        ) : null}
-      </div>
-      {confirmSignOut && (
-        <ConfirmDialog title={`Sign out of ${BRAND}?`} subtitle={user?.email}
-          confirmLabel="Sign out" busyLabel="Signing out…" danger
-          onCancel={() => setConfirmSignOut(false)} onConfirm={signOut}>
-          Any unsaved changes in open editors (Design, Prompt Studio, tests) will be lost. Runs and saved work are kept.
-        </ConfirmDialog>
-      )}
+      {(isDeveloperMode || framed) && roleNavigation}
     </aside>
   )
 }

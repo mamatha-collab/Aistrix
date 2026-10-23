@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef } from 'react'
-import { APP_PUBLIC_SELECT } from '../lib/appColumns'
+import { filterMarketApps, loadMarketApp, loadMarketApps } from '../lib/marketplace'
 import { useParams, useNavigate, Link } from 'react-router-dom'
 import { supabase } from '../supabase'
 import { track, EVENTS } from '../lib/analytics'
+import { ArrowUpRight, Bookmark, Check, RefreshCw, Search } from 'lucide-react'
+import { DeveloperRowPortal } from '../components/DeveloperShell'
+import '../marketplace.css'
 
-import { BRAND } from '../lib/brand'
 const CATEGORY_ICONS = {
   'Productivity':        '⚡',
   'Writing & Content':   '✍️',
@@ -19,126 +21,137 @@ const CATEGORY_ICONS = {
 }
 
 // ─── Marketplace listing grid ─────────────────────────────────────────────────
-export function MarketplacePage() {
+export function MarketplacePage({ user }) {
+  const [savedIds, setSavedIds] = useState(new Set())
+  const [savingId, setSavingId] = useState(null)
+  const [saveError, setSaveError] = useState('')
+  useEffect(() => {
+    let live = true
+    if (user?.id) supabase.from('favorites').select('app_id').eq('user_id', user.id).then(({data}) => { if (live) setSavedIds(new Set((data || []).map(row => String(row.app_id)))) })
+    return () => { live = false }
+  }, [user?.id])
+  async function saveApp(appId) {
+    setSavingId(appId); setSaveError('')
+    try {
+      const {error} = await supabase.from('favorites').upsert({user_id:user.id, app_id:appId}, {onConflict:'user_id,app_id', ignoreDuplicates:true})
+      if (error) throw error
+      setSavedIds(previous => new Set([...previous, String(appId)]))
+      window.dispatchEvent(new Event('aistrix:library-changed'))
+    } catch { setSaveError('Could not save the app. Please try again.') }
+    finally { setSavingId(null) }
+  }
   const [listings, setListings]     = useState(null)
   const [category, setCategory]     = useState('All')
   const [search, setSearch] = useState('')
+  const [priceFilter, setPriceFilter] = useState('all')
   const [page, setPage] = useState(0)
-  const [hasMore, setHasMore] = useState(false)
   const [loadError, setLoadError] = useState('')
   const loadSequence = useRef(0)
   const navigate = useNavigate()
 
   useEffect(() => { track(EVENTS.MARKETPLACE_VIEWED) }, [])
-  useEffect(() => { const timer = setTimeout(load, 200); return () => { clearTimeout(timer); loadSequence.current += 1 } }, [page, category, search]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); return () => { loadSequence.current += 1 } }, [user?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   async function load() {
     const sequence = ++loadSequence.current
     setLoadError(''); setListings(null)
     try {
-      let query = supabase.from('marketplace_listings')
-        .select('*, apps!inner(name, description, is_published, price_per_run, is_paid)', { count: 'exact' })
-        .eq('status', 'live').eq('apps.is_published', true)
-        .order('updated_at', { ascending: false }).order('id', { ascending: true })
-      if (category !== 'All') query = query.eq('category', category)
-      if (search.trim()) query = query.ilike('title', '%' + search.trim().replace(/[\\%_]/g, '\\$&') + '%')
-      const { data: rows, error, count } = await query.range(page * 24, page * 24 + 23)
-      if (error) throw new Error(error.message)
+      const rows = await loadMarketApps(supabase)
       const userIds = [...new Set((rows || []).map(row => row.user_id).filter(Boolean))]
-      const { data: profiles, error: profileError } = userIds.length
+      const { data: profiles } = userIds.length
         ? await supabase.from('developer_profiles').select('user_id, display_name').in('user_id', userIds)
         : { data: [] }
-      if (profileError) throw new Error(profileError.message)
       if (sequence !== loadSequence.current) return
       const profileMap = Object.fromEntries((profiles || []).map(profile => [profile.user_id, profile]))
       setListings((rows || []).map(row => ({ ...row, developer_profiles: profileMap[row.user_id] ?? null })))
-      setHasMore(count != null ? (page + 1) * 24 < count : rows?.length === 24)
+      setPage(0)
     } catch (error) { if (sequence === loadSequence.current) { setListings([]); setLoadError(error.message || 'Marketplace could not be loaded.') } }
   }
-  const categories = ['All', ...Object.keys(CATEGORY_ICONS)]
-  const filtered = listings || []
+  const categories = ['All', ...new Set([...Object.keys(CATEGORY_ICONS), ...(listings || []).map(row => row.category).filter(Boolean)])]
+  const matching = filterMarketApps(listings || [], category, search)
+    .filter(row => priceFilter === 'all' || (priceFilter === 'paid' ? row.apps?.is_paid : !row.apps?.is_paid))
+  const filtered = matching.slice(page * 24, (page + 1) * 24)
+  const hasMore = (page + 1) * 24 < matching.length
 
   return (
-    <div className="flex-1 overflow-y-auto text-white">
-      <div className="max-w-6xl mx-auto px-6 py-8 space-y-6">
-        {/* Hero */}
-        <div className="text-center space-y-2 py-4">
-          <h2 className="text-3xl font-bold text-white">AI Apps for every workflow</h2>
-          <p className="text-slate-400 text-sm">Discover and launch AI apps built on {BRAND}</p>
-        </div>
+    <div className="market-page flex flex-col flex-1 min-h-0 min-w-0 text-white">
+      <DeveloperRowPortal side="content">
+        <section className="market-discovery-toolbar" aria-label="Market discovery">
+          <div className="market-search-field"><Search size={17} aria-hidden="true" /><label htmlFor="market-search" className="sr-only">Search apps by title</label><input id="market-search" type="search" value={search} onChange={event => { setSearch(event.target.value); setPage(0) }} placeholder="Search apps…" /></div>
+          <label className="market-filter-field market-price-filter"><span className="sr-only">Price filter</span><select value={priceFilter} onChange={event=>{setPriceFilter(event.target.value);setPage(0)}}><option value="all">All prices</option><option value="free">Free apps</option><option value="paid">Paid apps</option></select></label>
+          <button onClick={load} disabled={listings===null} aria-label="Refresh apps" title="Refresh apps" className="market-refresh"><RefreshCw size={16} className={listings===null?'animate-spin':''} /></button>
+          <nav className="market-group-tiles" aria-label="App groups">{categories.map(c=><button key={c} onClick={()=>{setCategory(c);setPage(0)}} aria-pressed={category===c} aria-label={c==='All'?'All apps':c} title={c==='All'?'All apps':c}><span aria-hidden="true">{c==='All'?'✦':CATEGORY_ICONS[c] || '🔮'}</span><span>{c==='All'?'All apps':c}</span></button>)}</nav>
+        </section>
+      </DeveloperRowPortal>
+      <div className="market-catalog-scroll flex-1 overflow-y-auto">
+      <div className="w-full max-w-[1600px] mx-auto px-4 md:px-6 py-5 space-y-4">
+        <div className="flex items-center gap-3"><h1 className="text-xl font-semibold tracking-tight">Market</h1>{listings!==null&&!loadError&&<p className="text-xs text-slate-400">{matching.length} {matching.length===1?'app':'apps'} available</p>}</div>
+        {loadError && <div role="alert" className="text-sm text-red-400">{loadError} <button onClick={load} className="underline">Retry Marketplace</button></div>}
 
-        <div className="max-w-lg mx-auto"><label htmlFor="market-search" className="sr-only">Search apps by title</label><input id="market-search" type="search" value={search} onChange={event => { setSearch(event.target.value); setPage(0) }} placeholder="Search apps by title…" className="w-full rounded-xl border border-white/10 bg-[#0E1424] p-3 text-sm text-white" /></div>
-        {loadError && <div role="alert" className="text-sm text-red-400 text-center">{loadError} <button onClick={load} className="underline">Retry Marketplace</button></div>}
-        {/* Category filter */}
-        <div className="flex flex-wrap gap-2 justify-center">
-          {categories.map(c => (
-            <button key={c} onClick={() => { setCategory(c); setPage(0) }}
-              className={`text-xs font-semibold px-3 py-1.5 rounded-full border transition-colors ${
-                category === c
-                  ? 'bg-[#6C5CE7] border-[#6C5CE7] text-white'
-                  : 'bg-white/5 border-white/10 text-slate-400 hover:text-white hover:border-white/20'
-              }`}>
-              {c !== 'All' && (CATEGORY_ICONS[c] ?? '🔮')} {c}
-            </button>
-          ))}
-        </div>
-
+        {saveError && <p role="alert" className="text-center text-sm text-red-400">{saveError}</p>}
         {/* Grid */}
         {loadError ? null : listings === null ? (
           <div className="text-center text-slate-500 py-20 text-sm">Loading…</div>
         ) : filtered.length === 0 ? (
           <div className="text-center text-slate-500 py-20 text-sm">
-            {search ? `No results for "${search}"` : 'No apps listed yet.'}
+            {search ? `No results for "${search}"` : category !== 'All' || priceFilter !== 'all' ? 'No apps match these filters.' : 'No public apps are available yet.'}
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-            {filtered.map(l => <ListingCard key={l.id} listing={l} onClick={() => { track(EVENTS.MARKETPLACE_APP_CLICKED, { app_id: l.app_id, title: l.title, category: l.category }); navigate(`/marketplace/${l.app_id}`) }} />)}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+            {filtered.map((l, index) => <ListingCard key={l.id} listing={l} index={page * 24 + index} saved={savedIds.has(String(l.app_id))} saving={savingId === l.app_id} onSave={user ? () => saveApp(l.app_id) : undefined} onClick={() => { track(EVENTS.MARKETPLACE_APP_CLICKED, { app_id: l.app_id, title: l.title, category: l.category }); navigate(`/marketplace/${l.app_id}`) }} />)}
           </div>
         )}
         {!loadError && listings !== null && <nav aria-label="Marketplace pages" className="flex items-center justify-center gap-4 text-sm"><button disabled={page === 0} onClick={() => setPage(value => value - 1)} className="disabled:opacity-40">Previous</button><span>Page {page + 1}</span><button disabled={!hasMore} onClick={() => setPage(value => value + 1)} className="disabled:opacity-40">Next</button></nav>}
+      </div>
       </div>
     </div>
   )
 }
 
-function ListingCard({ listing: l, onClick }) {
+function ListingCard({ listing: l, index = 0, onClick, saved, saving, onSave }) {
   const app = l.apps
   const isPaid = app?.is_paid
   const price = app?.price_per_run
+  const [shine] = useState(() => {
+    const duration = 10 + Math.random() * 9
+    return { '--shine-duration': `${duration}s`, '--shine-delay': `${-Math.random() * duration}s` }
+  })
 
   return (
-    <article
-      className="text-left bg-[#0E1424] border border-white/5 hover:border-[#6C5CE7]/30 rounded-2xl p-5 space-y-3 transition-all hover:shadow-lg hover:shadow-[#6C5CE7]/5 group">
-      <div className="flex items-start justify-between gap-2">
-        <div className="w-10 h-10 rounded-xl bg-[#6C5CE7]/20 flex items-center justify-center text-lg shrink-0">
-          {CATEGORY_ICONS[l.category] ?? '🔮'}
+    <article className="market-app-card group" style={{ ...shine, '--card-accent': app?.color || '#8b7cf8', '--card-border-accent': `hsl(${(250 + index * 137.508) % 360} 65% 65%)` }}>
+      <div className="flex items-start gap-2.5">
+        <div className="market-app-icon" aria-hidden="true">
+          {app?.emoji || CATEGORY_ICONS[l.category] || '🔮'}
         </div>
-        <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${isPaid ? 'bg-amber-500/10 text-amber-400' : 'bg-emerald-500/10 text-emerald-400'}`}>
-          {isPaid ? (price ? `$${price}/run` : 'Paid') : 'Free'}
-        </span>
+        <div className="min-w-0 flex-1">
+          <button onClick={onClick} className="market-app-title">{l.title}</button>
+          {l.category && <p className="market-app-meta mt-0.5 truncate text-[10px] leading-4">{l.category}</p>}
+        </div>
+        {onSave && <button disabled={saved || saving} onClick={onSave} aria-label={`${saved ? 'Saved' : 'Save'} ${l.title}`} aria-pressed={saved} title={saved ? 'Saved to My apps' : 'Save to My apps'} className="market-app-save">
+          {saved ? <Check size={14} /> : <Bookmark size={14} className={saving ? 'animate-pulse' : ''} />}
+        </button>}
       </div>
 
-      <div>
-        <button onClick={onClick} className="text-left text-sm font-bold text-white group-hover:text-[#A29BFE] transition-colors">{l.title}</button>
-        {l.tagline && <p className="text-xs text-slate-400 mt-0.5 line-clamp-2">{l.tagline}</p>}
-      </div>
-
+      {l.tagline && <p className="market-app-description">{l.tagline}</p>}
       {l.tags?.length > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {l.tags.slice(0, 3).map(t => (
-            <span key={t} className="text-[10px] bg-white/5 text-slate-500 px-2 py-0.5 rounded-full">{t}</span>
+        <div className="flex gap-1 overflow-hidden">
+          {l.tags.slice(0, 2).map(t => (
+            <span key={t} className="market-app-tag max-w-[48%] truncate rounded-md px-1.5 py-0.5 text-[9px] leading-3">{t}</span>
           ))}
         </div>
       )}
 
-      <div className="flex items-center justify-between">
-        {l.category && <p className="text-[10px] text-slate-600">{l.category}</p>}
+      <div className="market-app-footer">
+        <span className={`market-app-price shrink-0 text-[10px] font-semibold ${isPaid ? 'is-paid' : 'is-free'}`}>
+          {isPaid ? (price ? `$${price}/run` : 'Paid') : 'Free to use'}
+        </span>
         {l.developer_profiles?.display_name && (
           <Link to={`/dev/${l.user_id}`} onClick={e => e.stopPropagation()}
-            className="text-[10px] text-slate-600 hover:text-[#A29BFE] transition-colors">
+            className="market-app-author ml-auto min-w-0 truncate text-[10px] transition-colors">
             by {l.developer_profiles.display_name}
           </Link>
         )}
+        <button onClick={onClick} aria-label={`Open ${l.title}`} className="market-app-open"><ArrowUpRight size={15} /></button>
       </div>
     </article>
   )
@@ -170,15 +183,12 @@ export function MarketplaceAppPage({ appId }) {
     const sequence = ++detailSequence.current
     setDetailError(''); setNotFound(false); setListing(null); setApp(null); setEntitlement(null); setReviews([]); setMyRating(0); setMyReviewText(''); setError(null)
     try {
-      const { data, error: listingError } = await supabase.from('marketplace_listings')
-        .select(`*, apps!inner(${APP_PUBLIC_SELECT})`).eq('app_id', id).eq('status', 'live').eq('apps.is_published', true).maybeSingle()
-      if (listingError) throw new Error(listingError.message)
+      const data = await loadMarketApp(supabase, id)
       if (sequence !== detailSequence.current) return
       if (!data?.apps) { setNotFound(true); return }
-      const { data: profile, error: profileError } = data.user_id
+      const { data: profile } = data.user_id
         ? await supabase.from('developer_profiles').select('display_name, bio, avatar_url').eq('user_id', data.user_id).maybeSingle()
         : { data: null }
-      if (profileError) throw new Error(profileError.message)
       const { data: { session } } = await supabase.auth.getSession()
       let entitlementValue = false
       if (session && data.apps.is_paid) {

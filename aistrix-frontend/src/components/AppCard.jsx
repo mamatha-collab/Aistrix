@@ -15,9 +15,9 @@ function getDerivedBadges(app) {
     badges.push({ label: '📈 Active', cls: 'text-cyan-400 bg-cyan-400/10 border-cyan-400/20' })
   }
   if (app.is_paid && app.price_per_run > 0) {
-    badges.push({ label: '💳 Credits', cls: 'text-amber-400 bg-amber-400/10 border-amber-400/20' })
+    badges.push({ label: 'Pay per run', cls: 'text-amber-400 bg-amber-400/10 border-amber-400/20' })
   } else {
-    badges.push({ label: '🔑 BYOK', cls: 'text-slate-400 bg-white/5 border-white/10' })
+    badges.push({ label: 'Free to use', cls: 'text-slate-400 bg-white/5 border-white/10' })
   }
   return badges
 }
@@ -117,7 +117,7 @@ export function AppTab({ app, selected, starred, isOwn, onClick, onToggleFavorit
   )
 }
 
-export default function AppCard({ app, selected, starred, isOwn, sharedRole, onClick, onRun, onToggleFavorite, showPublishToggle, onPublishToggle }) {
+export default function AppCard({ clientMode = false, app, selected, starred, isOwn, sharedRole, onClick, onRun, onToggleFavorite, showPublishToggle, onPublishToggle }) {
   const staticBadges = STATIC_BADGES.filter(b => app[b.key])
   const derivedBadges = getDerivedBadges(app)
   const allBadges = [...staticBadges, ...derivedBadges]
@@ -214,7 +214,7 @@ export default function AppCard({ app, selected, starred, isOwn, sharedRole, onC
       </div>
 
       {/* Meta row */}
-      <div className="flex items-center justify-between text-[11px] text-slate-400">
+      {!clientMode && <div className="flex items-center justify-between text-[11px] text-slate-400">
         <div className="flex items-center gap-2">
           <span>⚡ {app.total_runs || 0} runs</span>
           {statusInfo && <span className={statusInfo.cls}>{statusInfo.label}</span>}
@@ -251,8 +251,9 @@ export default function AppCard({ app, selected, starred, isOwn, sharedRole, onC
         </div>
       </div>
 
+      }
       {/* Readiness row */}
-      {readinessBadges.length > 0 && (
+      {!clientMode && readinessBadges.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {readinessBadges.map(b => (
             <span key={b.label}

@@ -1,3 +1,4 @@
+import './business-workspace.css'
 import { useState, useEffect, useRef, useCallback, lazy, Suspense, startTransition } from 'react'
 import { noteAuthEvent } from './lib/session'
 import { supabase } from './supabase'
@@ -66,7 +67,7 @@ const PUBLIC_PAGES = { '/privacy': PrivacyPage, '/terms': TermsPage }
 // and support screenshots all reflect the section actually on screen instead
 // of everything staying at "/".
 const VIEW_PATH_MAP = {
-  apps: '/apps', overview: '/dashboard', profiles: '/profiles', flows: '/flows',
+  marketplace: '/marketplace', apps: '/apps', overview: '/dashboard', profiles: '/profiles', flows: '/flows',
   history: '/history',
   goals: '/goals', events: '/events', analytics: '/analytics', reports: '/reports',
   settings: '/settings', alerts: '/alerts', developer: '/developer',
@@ -106,6 +107,7 @@ function shouldShowStarterOnboarding(pathname = window.location.pathname) {
 
 export default function App() {
   const [selectedApp, setSelectedApp] = useState(null)
+  const [openFlowId, setOpenFlowId] = useState(null)   // a workflow picked in the Business left pane
   const [session, setSession] = useState(null)
   const [loading, setLoading] = useState(true)
   const [showHistory, setShowHistory] = useState(false)
@@ -129,7 +131,7 @@ export default function App() {
     // If no explicit path, restore to developer when mode was left as developer
     const savedMode = localStorage.getItem('aistrix_mode')
     if (savedMode === 'developer') return 'developer'
-    return 'flows'
+    return 'marketplace'
   })
   const [userRole, setUserRole] = useState(null)
   const [deletedAppId, setDeletedAppId] = useState(null)
@@ -457,7 +459,7 @@ export default function App() {
     knowledge_vault: <KnowledgeVaultPage user={session.user} />,
     marketplace:     location.pathname.startsWith('/marketplace/')
                        ? <MarketplaceAppPage appId={location.pathname.split('/marketplace/')[1]?.split('/')[0]} />
-                       : <MarketplacePage />,
+                       : <MarketplacePage user={session.user} />,
   }
 
   const activePage = viewMap[activeView]
@@ -472,7 +474,7 @@ export default function App() {
       <Route path="/*" element={
         // Keyed by workspace: switching remounts the shell so every page
         // reloads its data for the newly active workspace.
-        <DeveloperShell active={activeView === 'developer'} key={workspaces.active?.id || 'no-workspace'} className="app-shell flex h-dvh overflow-hidden bg-[#09101F]">
+        <DeveloperShell active badge={activeView === 'developer' ? 'Developer' : 'Business'} key={workspaces.active?.id || 'no-workspace'} className={`app-shell flex h-dvh overflow-hidden bg-[#09101F] ${activeView !== 'developer' ? 'business-workspace' : ''}`}>
 
           {showMobileSidebar && (
             <div className="fixed inset-0 bg-black/50 z-30 md:hidden" onClick={() => setShowMobileSidebar(false)} />
@@ -487,6 +489,8 @@ export default function App() {
                 user={session.user}
                 userRole={userRole}
                 onSelectApp={app => { setSelectedApp(app); setShowMobileSidebar(false); navigateToView('apps') }}
+                onOpenFlow={id => { setOpenFlowId(id); setShowMobileSidebar(false); navigateToView('flows') }}
+                paneRefreshKey={activeView}
                 onClose={() => setShowMobileSidebar(false)}
                 onShowProfile={() => setShowProfile(true)}
                 onShowHistory={() => changeView('history')}
@@ -498,7 +502,7 @@ export default function App() {
                   // whole switch after the developer answers the dialog.
                   const guard = buildNavigationGuardRef.current
                   if (next !== 'developer' && guard && !guard(() => switchMode(next))) return
-                  if (!changeView(next === 'developer' ? 'developer' : 'flows')) return
+                  if (!changeView(next === 'developer' ? 'developer' : 'marketplace')) return
                   setMode(next)
                   localStorage.setItem('aistrix_mode', next)
                   if (next === 'developer') {
@@ -513,6 +517,7 @@ export default function App() {
           <div className="flex flex-col flex-1 overflow-hidden min-w-0">
             {activeView !== 'developer' && (
               <TopBar
+                marketDetail={location.pathname.startsWith('/marketplace/')}
                 onShowHistory={() => setShowHistory(true)}
                 onShowSettings={() => setShowSettings(true)}
                 noKeys={noKeys}
@@ -555,7 +560,8 @@ export default function App() {
                   <div className={activeView === 'flows' ? 'page-layer-active' : 'page-layer-hidden'}>
                     <ErrorBoundary compact title="AI Workflows couldn't load">
                       <Suspense fallback={null}>
-                        <FlowsPage user={session.user} onShowHistory={() => setShowHistory(true)} />
+                        <FlowsPage search={search} user={session.user} onShowHistory={() => setShowHistory(true)}
+                          openFlowId={openFlowId} onOpenedFlow={() => setOpenFlowId(null)} />
                       </Suspense>
                     </ErrorBoundary>
                   </div>
@@ -563,13 +569,15 @@ export default function App() {
                   <div className={activeView === 'apps' ? 'page-layer-active' : 'page-layer-hidden'}>
                     <ErrorBoundary compact title="AI Apps couldn't load">
                     <AppGrid
+                      clientMode
                       onSelectApp={setSelectedApp}
                       selectedApp={selectedApp}
                       user={session.user}
                       search={search}
+                      onSearch={setSearch}
                       runCounts={runCounts}
                       deletedAppId={deletedAppId}
-                      onOpenCreate={() => setShowTypeSelector(true)}
+                      onOpenCreate={() => changeView('developer')}
                       onNavChange={navigateToView}
                       createdApp={createdApp}
                       onCreatedAppConsumed={() => setCreatedApp(null)}
@@ -619,10 +627,10 @@ export default function App() {
               { view: 'keys',      Icon: Settings, label: 'Keys',     action: () => setShowSettings(true) },
               { view: 'account',   Icon: User,     label: 'Account',  action: () => setShowProfile(true) },
             ] : [
-              { view: 'apps',      Icon: LayoutGrid, label: 'Apps' },
+              { view: 'marketplace', Icon: LayoutGrid, label: 'Marketplace' },
+              { view: 'apps',      Icon: LayoutGrid, label: 'My apps' },
               { view: 'flows',     Icon: Workflow,   label: 'Workflows' },
-              { view: 'history',   Icon: History,    label: 'History',  action: () => setShowHistory(true) },
-              { view: 'settings',  Icon: Settings,   label: 'Settings' },
+              { view: 'history',   Icon: History,    label: 'Activity', action: () => changeView('history') },
             ]).map(({ view, Icon, label, action }) => (
               <button key={view}
                 onClick={() => action ? action() : changeView(view)}

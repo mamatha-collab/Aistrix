@@ -35,12 +35,12 @@ test('Design, Test and Deploy load without crashing', async ({ page }) => {
 
   await signIn(page)
   await page.goto('/developer')
-  await expect(page.getByText('App Pipeline')).toBeVisible()
+  await expect(page.getByText('Your apps')).toBeVisible()
   await expectNoCrash(page)
 
   for (const stage of ['Design', 'Test', 'Deploy']) {
     await openStage(page, stage)
-    await expect(page.getByText('App Pipeline')).toBeVisible()
+    await expect(page.getByText('Your apps')).toBeVisible()
     await expectNoCrash(page)
   }
 

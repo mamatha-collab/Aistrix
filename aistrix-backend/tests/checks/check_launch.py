@@ -49,8 +49,10 @@ class Query:
             keys = UNIQUE.get(self.table)
             if keys and any(all(r.get(k) == self.value.get(k) for k in keys) for r in rows):
                 raise Exception("duplicate key value violates unique constraint (23505)")
-            rows.append(dict(self.value))
-            return NS(data=[dict(self.value)])
+            value = {"id": len(rows) + 1, "created_at": datetime.now(timezone.utc).isoformat(),
+                     "attempts": 0, "next_attempt_at": datetime.now(timezone.utc).isoformat(), **self.value}
+            rows.append(value)
+            return NS(data=[dict(value)])
         hits = [r for r in rows if all(f(r) for f in self.filters)]
         if self.action == "update":
             for r in hits: r.update(self.value)
@@ -61,11 +63,31 @@ class Query:
 
 
 DELETED_USERS, REMOVED_FILES = [], []
-client = NS(table=Query,
+def rpc(name, params):
+    def execute():
+        if name != "claim_developer_notifications":
+            return NS(data=True)
+        now = datetime.now(timezone.utc).isoformat()
+        claimed = []
+        for row in TABLES.get("developer_notifications", []):
+            if params.get("p_id") is not None and row["id"] != params["p_id"]:
+                continue
+            if not ((row.get("status") == "pending" and row["next_attempt_at"] <= now)
+                    or (row.get("status") == "sending" and row["lease_expires_at"] <= now)):
+                continue
+            row.update(status="sending", attempts=row["attempts"] + 1, lease_token=str(__import__('uuid').uuid4()),
+                       lease_expires_at=(datetime.now(timezone.utc) + timedelta(seconds=120)).isoformat())
+            claimed.append(dict(row))
+        return NS(data=claimed)
+    return NS(execute=execute)
+
+
+client = NS(table=Query, rpc=rpc,
             auth=NS(admin=NS(delete_user=lambda uid: DELETED_USERS.append(uid))),
             storage=NS(from_=lambda bucket: NS(remove=lambda paths: REMOVED_FILES.extend((bucket, p) for p in paths))))
 main._service_client = lambda: client
 EMAILS = []
+provider_send_email = main.send_email
 async def send_email(to, subject, html): EMAILS.append((to, subject, html)); return True
 async def lookup_email(uid): return f"{uid}@example.test"
 async def load_app(app_id): return next((dict(a) for a in TABLES["apps"] if a["id"] == app_id), None)
@@ -116,6 +138,98 @@ main._service_client = lambda: NS(table=broken)
 ok("a notification failure never breaks the work that triggered it", run(main.notify_developer("dev", "refund", "y", "s", "t", "b")) is False)
 main._service_client = lambda: client
 
+# Failed attempts survive event deduplication and restart into a new worker.
+reset()
+ATTEMPTS = []
+async def flaky_email(to, subject, html):
+    ATTEMPTS.append((main._EMAIL_IDEMPOTENCY_KEY.get(), to, subject, html, main._EMAIL_FROM_OVERRIDE.get()))
+    return len(ATTEMPTS) > 1
+main.send_email = flaky_email
+sent = run(main.notify_developer("dev", "refund", "retry", "Refund", "Refund", "body"))
+queued = TABLES["developer_notifications"][0]
+ok("failed email remains pending with a future retry", not sent and queued["status"] == "pending"
+   and queued["next_attempt_at"] > datetime.now(timezone.utc).isoformat() and queued["attempts"] == 1)
+run(main.notify_developer("dev", "refund", "retry", "changed", "changed", "changed"))
+ok("duplicate events preserve the original queued payload", len(TABLES["developer_notifications"]) == 1
+   and queued["payload"]["subject"] == "Refund" and len(ATTEMPTS) == 1)
+queued["next_attempt_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+run(main._developer_jobs_tick())
+ok("another worker delivers a failed attempt with stable content and idempotency key",
+   queued["status"] == "sent" and queued["attempts"] == 2 and ATTEMPTS[0] == ATTEMPTS[1])
+
+reset()
+async def missing_email(uid): return None
+main._lookup_email = missing_email
+run(main.notify_developer("dev", "refund", "missing", "Refund", "Refund", "body"))
+queued = TABLES["developer_notifications"][0]
+ok("missing recipient is retried rather than marked delivered", queued["status"] == "pending")
+main._lookup_email = lookup_email
+TABLES["developer_profiles"].append({"user_id": "dev", "email_alerts": False})
+queued["next_attempt_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+before = len(ATTEMPTS)
+run(main._developer_jobs_tick())
+ok("opting out before a queued retry suppresses delivery", queued["status"] == "suppressed"
+   and queued["payload"] is None and len(ATTEMPTS) == before)
+
+# Provider acknowledged, but the acknowledgement checkpoint was lost.
+reset()
+DELIVERED, REQUESTS = set(), []
+async def idempotent_email(to, subject, html):
+    key = main._EMAIL_IDEMPOTENCY_KEY.get()
+    DELIVERED.add(key); REQUESTS.append(key)
+    return True
+main.send_email = idempotent_email
+checkpoint = main._notification_checkpoint
+async def lose_ack(row, patch):
+    if patch.get("status") == "sent" and len(REQUESTS) == 1:
+        raise RuntimeError("ack lost")
+    await checkpoint(row, patch)
+main._notification_checkpoint = lose_ack
+run(main.notify_developer("dev", "refund", "ack", "Refund", "Refund", "body"))
+queued = TABLES["developer_notifications"][0]
+queued["next_attempt_at"] = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
+run(main._developer_jobs_tick())
+ok("lost acknowledgement retries the same provider operation", len(REQUESTS) == 2 and len(DELIVERED) == 1
+   and queued["status"] == "sent")
+main._notification_checkpoint = checkpoint
+main.send_email = send_email
+
+reset()
+run(main.notify_developer("dev", "refund", "expired", "Refund", "Refund", "body"))
+queued = TABLES["developer_notifications"][0]
+# Model a worker crash before acknowledging an old send.
+queued.update(status="sending", attempts=2,
+              created_at=(datetime.now(timezone.utc) - timedelta(hours=21)).isoformat(),
+              lease_expires_at=(datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat(),
+              payload={"subject": "Refund", "html": "body", "to": "dev@example.test"})
+before = len(EMAILS)
+run(main._developer_jobs_tick())
+ok("ambiguous old sends stop before the provider idempotency window expires", queued["status"] == "failed" and len(EMAILS) == before)
+
+# Exercise the actual HTTP adapter, without sending any email.
+real_async_client, real_resend_key = main.httpx.AsyncClient, main.RESEND_API_KEY
+HTTP_REQUESTS = []
+class EmailHTTP:
+    async def __aenter__(self): return self
+    async def __aexit__(self, *a): pass
+    async def post(self, url, **kw):
+        HTTP_REQUESTS.append(kw)
+        return NS(status_code=200)
+main.httpx.AsyncClient = lambda **kw: EmailHTTP()
+main.RESEND_API_KEY = 'fake-provider-key'
+async def send_with_context():
+    key_token = main._EMAIL_IDEMPOTENCY_KEY.set('project/event/1')
+    from_token = main._EMAIL_FROM_OVERRIDE.set('frozen@example.test')
+    try:
+        return await provider_send_email('dev@example.test', 'Refund', '<p>Refund</p>')
+    finally:
+        main._EMAIL_IDEMPOTENCY_KEY.reset(key_token)
+        main._EMAIL_FROM_OVERRIDE.reset(from_token)
+ok("provider requests carry the stable key and frozen sender", run(send_with_context())
+   and HTTP_REQUESTS[0]['headers']['Idempotency-Key'] == 'project/event/1'
+   and HTTP_REQUESTS[0]['json']['from'] == 'frozen@example.test')
+main.httpx.AsyncClient, main.RESEND_API_KEY = real_async_client, real_resend_key
+
 # A refund emails the developer.
 reset(apps=[{"id": "app-1", "name": "Pitch <b>", "created_by": "dev", "is_published": True}],
       purchases=[{"id": "p1", "app_id": "app-1", "buyer_id": "buyer", "dev_id": "dev", "plan": "pay_per_run", "gross_amount": 25,
@@ -123,7 +237,7 @@ reset(apps=[{"id": "app-1", "name": "Pitch <b>", "created_by": "dev", "is_publis
                   "payout_status": "pending", "payout_attempts": 0}])
 EMAILS.clear()
 async def rpc_ok(*a, **k): return NS(data=True)
-client.rpc = lambda name, params: NS(execute=lambda: NS(data=True))
+client.rpc = rpc
 run(main._record_refund({"payment_intent": "pi_9", "amount_refunded": 1000}))
 ok("a refund emails the developer what changed (app names escaped)", len(EMAILS) == 1 and "$10.00" in EMAILS[0][2]
    and "Pitch &lt;b&gt;" in EMAILS[0][2] and "<b>" not in EMAILS[0][2].split("Pitch")[1][:5])
@@ -207,10 +321,37 @@ os.environ["TRUST_PROXY_HEADERS"] = ""
 main._fernet, main.FRONTEND_URL = None, "http://localhost:5173"
 gaps = main.production_config_gaps()
 ok("missing production settings are named (never their values)", any("SECRET_ENCRYPTION_KEY" in g for g in gaps["missing_required"])
-   and any("FRONTEND_URL" in g for g in gaps["missing_required"]) and "RESEND_API_KEY" in gaps["missing_recommended"])
+   and any("FRONTEND_URL" in g for g in gaps["missing_required"]) and "RESEND_API_KEY" in gaps["missing_required"])
 import os
 os.environ["OPS_HEALTH_TOKEN"] = "ops-secret"
+gaps = main.production_config_gaps()
 details = c.get("/health/details", headers={"X-Ops-Token": "ops-secret"}).json()
 ok("/health/details (operator only) reports the gaps", "config" in details and details["config"]["missing_required"] == gaps["missing_required"]
    and c.get("/health/details").status_code == 404)
+ok("readiness refuses missing production configuration", c.get('/health/ready').status_code == 503)
+main.production_config_gaps = lambda: {'missing_required': [], 'missing_recommended': []}
+client.rpc = lambda name, params: NS(execute=lambda: NS(data={'workflow_lease': False}))
+ok("readiness refuses an incomplete recovery schema", c.get('/health/ready').status_code == 503)
+client.rpc = lambda name, params: NS(execute=lambda: NS(data={k: True for k in ('workflow_lease', 'workflow_snapshot', 'notification_queue', 'recovery_functions', 'server_only')}))
+ok("readiness admits a configured deployment with the new schema", c.get('/health/ready').status_code == 200)
+def unavailable_rpc(*a, **kw): raise RuntimeError('database unavailable')
+client.rpc = unavailable_rpc
+ok("readiness fails closed during a database outage", c.get('/health/ready').status_code == 503)
+
+class MissingRecoveryRPC(Exception):
+    code = 'PGRST202'
+def missing_recovery_rpc(*a, **kw):
+    raise MissingRecoveryRPC('private database error payload must not appear in logs')
+client.rpc = missing_recovery_rpc
+async def missing_recovery_diagnostic():
+    try:
+        await main._developer_jobs_tick()
+    except RuntimeError as error:
+        return str(error)
+diagnostic = run(missing_recovery_diagnostic())
+ok("missing recovery RPC names the migration and operation without exposing error payloads",
+   'recover_interrupted_flow_runs' in diagnostic and '[PGRST202]' in diagnostic
+   and '20261023020000_durable_developer_jobs.sql' in diagnostic and 'private database error' not in diagnostic)
+ok("recovery permission failures explain service-role configuration",
+   'service-role key' in main._developer_job_error(NS(code='42501'), 'claim_developer_notifications'))
 finish()

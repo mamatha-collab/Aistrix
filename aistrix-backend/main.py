@@ -14,6 +14,7 @@ from html import escape as html_escape
 import math
 import operator
 import os
+import random
 import re
 import secrets
 import socket
@@ -2415,7 +2416,7 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
                                                         **({"images": req.images} if req.images else {}))]
                     if attempt_usage.pop("_stop", None) == "refusal":
                         await outcome(False, "refusal")
-                        yield _sse({"error": REFUSAL_MESSAGE})
+                        yield _sse({"kind": "refusal", "error": REFUSAL_MESSAGE})
                         return
                     for k, v in attempt_usage.items():
                         usage[k] = usage.get(k, 0) + v
@@ -2446,7 +2447,7 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
                 stop = usage.pop("_stop", None)
                 if stop == "refusal":
                     await outcome(False, "refusal")
-                    yield _sse({"error": REFUSAL_MESSAGE})
+                    yield _sse({"kind": "refusal", "error": REFUSAL_MESSAGE})
                     return
                 if stop == "max_tokens":
                     # Without this the answer just stops mid-sentence.
@@ -2458,39 +2459,39 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
 
         except (anthropic.AuthenticationError, openai.AuthenticationError):
             await outcome(False, "auth")
-            yield _sse({"error": f"Invalid {provider} API key — check Settings → Keys and make sure the key is active."})
+            yield _sse({"kind": "auth", "error": f"Invalid {provider} API key — check Settings → Keys and make sure the key is active."})
         except (anthropic.PermissionDeniedError,):
             await outcome(False, "permission")
-            yield _sse({"error": f"API key does not have permission for this model. Check your {provider} account."})
+            yield _sse({"kind": "permission", "error": f"API key does not have permission for this model. Check your {provider} account."})
         except (anthropic.RateLimitError, openai.RateLimitError) as e:
             await outcome(False, "rate_limit")
             # OpenAI answers 429 both for "too many requests" and for "no credit left".
             out_of_credit = "insufficient_quota" in (getattr(e, "code", None), getattr(e, "type", None))
             if key_source == "platform":
-                yield _sse({"error": "Rate limit reached. Add your own API key in Settings → Keys for unlimited runs, or wait a moment and try again."})
+                yield _sse({"kind": "rate_limit", "error": "Rate limit reached. Add your own API key in Settings → Keys for unlimited runs, or wait a moment and try again."})
             elif out_of_credit:
                 whose = "Your" if key_source == "own" else "The app developer's"
-                yield _sse({"error": f"{whose} {label} account is out of credit, so {label} refused this run. "
+                yield _sse({"kind": "out_of_credit", "error": f"{whose} {label} account is out of credit, so {label} refused this run. "
                                      f"Add credit in the {label} billing settings, then try again."})
             else:
                 whose = "your" if key_source == "own" else "the app developer's"
-                yield _sse({"error": f"{label} turned this run away: {whose} {label} account hit its rate limit or is out of credit. "
+                yield _sse({"kind": "rate_limit", "error": f"{label} turned this run away: {whose} {label} account hit its rate limit or is out of credit. "
                                      f"Check the account's usage and billing, or wait a moment and try again."})
         except (anthropic.BadRequestError, openai.BadRequestError) as e:
             await outcome(False, "bad_request")
-            yield _sse({"error": f"Prompt config error: {str(e)[:200]}"})
+            yield _sse({"kind": "bad_request", "error": f"Prompt config error: {str(e)[:200]}"})
         except (anthropic.InternalServerError, openai.InternalServerError):
             await outcome(False, "provider_error")
-            yield _sse({"error": f"{provider.capitalize()} service error — try again in a moment."})
+            yield _sse({"kind": "provider_error", "error": f"{provider.capitalize()} service error — try again in a moment."})
         except asyncio.TimeoutError:
             await outcome(False, "timeout")
-            yield _sse({"error": f"Request timed out after {REQUEST_TIMEOUT} seconds. Try a shorter input or switch to a faster model (e.g. Haiku)."})
+            yield _sse({"kind": "timeout", "error": f"Request timed out after {REQUEST_TIMEOUT} seconds. Try a shorter input or switch to a faster model (e.g. Haiku)."})
         except Exception as e:
             # Full detail goes to Sentry/logs only — never to the client.
             await outcome(False, "unexpected")
             sentry_sdk.capture_exception(e)
             print(f"Streaming error [{type(e).__name__}]: {e}")
-            yield _sse({"error": "Unexpected backend error. This has been logged — please try again."})
+            yield _sse({"kind": "unexpected", "error": "Unexpected backend error. This has been logged — please try again."})
 
     async def generate_with_timeout():
         try:
@@ -2499,7 +2500,7 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
                     yield chunk
         except asyncio.TimeoutError:
             await outcome(False, "timeout")
-            yield _sse({"error": f"Request timed out after {REQUEST_TIMEOUT}s. Try a shorter input or faster model."})
+            yield _sse({"kind": "timeout", "error": f"Request timed out after {REQUEST_TIMEOUT}s. Try a shorter input or faster model."})
         finally:
             if log_source and not run_state.get("logged"):
                 await outcome(False, "cancelled")
@@ -2565,7 +2566,8 @@ async def _drain_run(response) -> dict:
             body = json.loads(response.body)
         except Exception:
             body = {}
-        return {"ok": False, "status": response.status_code, "error": body.get("error") or body.get("detail") or "Run failed"}
+        return {"ok": False, "status": response.status_code, "error": body.get("error") or body.get("detail") or "Run failed",
+                "kind": body.get("code"), "streamed": False}
     parts: list[str] = []
     async for chunk in response.body_iterator:
         text = chunk.decode() if isinstance(chunk, bytes) else chunk
@@ -2579,11 +2581,12 @@ async def _drain_run(response) -> dict:
                 return {"ok": True, "status": 200, "output": "".join(parts), "usage": ev.get("usage"),
                         "provider": ev.get("provider"), "model": ev.get("model")}
             elif "contract_error" in ev:
-                return {"ok": False, "status": 422, "error": "Output contract failed", "errors": ev["contract_error"]}
+                return {"ok": False, "status": 422, "error": "Output contract failed", "errors": ev["contract_error"],
+                        "kind": "contract", "streamed": True}
             elif "error" in ev:
                 status = 429 if "rate limit" in ev["error"].lower() else 504 if "timed out" in ev["error"].lower() else 502
-                return {"ok": False, "status": status, "error": ev["error"]}
-    return {"ok": False, "status": 502, "error": "Run ended without a result"}
+                return {"ok": False, "status": status, "error": ev["error"], "kind": ev.get("kind"), "streamed": True}
+    return {"ok": False, "status": 502, "error": "Run ended without a result", "kind": "unexpected", "streamed": True}
 
 
 def _run_error_response(r: dict) -> JSONResponse:
@@ -4077,6 +4080,30 @@ def compute_next_run_at(now: datetime, frequency: str, hour_utc: int, day_of_wee
 FLOW_TRIGGERS = ("interactive", "schedule", "webhook")
 FLOW_OUTPUT_LIMIT = 50000
 FLOW_API_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD")
+# Temporary failures a step may be retried for, when repeating it is harmless
+# (no outside writes). Waits grow and are randomised so retries don't stampede.
+FLOW_TRANSIENT_KINDS = ("provider_error", "rate_limit", "timeout", "spend_unavailable")
+# Failures that happen before the provider does anything.
+FLOW_NOT_DISPATCHED_KINDS = ("auth", "permission", "bad_request", "refusal")
+FLOW_STEP_MAX_ATTEMPTS = 3
+FLOW_RETRY_BASE_SECONDS = float(os.getenv("FLOW_RETRY_BASE_SECONDS", "2"))
+FLOW_RETRY_MAX_SECONDS = float(os.getenv("FLOW_RETRY_MAX_SECONDS", "30"))
+
+
+def flow_retry_delay(attempt: int) -> float:
+    """Wait before attempt `attempt + 1`: exponential, capped, with jitter."""
+    return min(FLOW_RETRY_MAX_SECONDS, FLOW_RETRY_BASE_SECONDS * 2 ** (attempt - 1)) * random.uniform(0.5, 1.0)
+
+
+def flow_step_attempts(step: dict) -> int:
+    try:
+        return max(1, min(int(step.get("max_attempts") or FLOW_STEP_MAX_ATTEMPTS), 5))
+    except (TypeError, ValueError):
+        return FLOW_STEP_MAX_ATTEMPTS
+
+
+def api_step_repeat_safe(step: dict) -> bool:
+    return (step.get("api_method") or "GET").upper() in ("GET", "HEAD")
 
 
 def _step_number(flow: dict, idx: int) -> int:
@@ -4203,6 +4230,7 @@ async def _run_api_step(step: dict, previous: str) -> dict:
         return re.sub(r"\{\{previous_output\}\}", lambda _m: previous, t or "", flags=re.IGNORECASE)
     method = (step.get("api_method") or "GET").upper()
     url = fill(step.get("api_url")).strip()
+    safe = api_step_repeat_safe(step)
     if method not in FLOW_API_METHODS:
         return {"status": "failed", "error": f"uses an unsupported method: {method}"}
     if not url.startswith(("http://", "https://")):
@@ -4223,13 +4251,17 @@ async def _run_api_step(step: dict, previous: str) -> dict:
     except ValueError as e:
         return {"status": "failed", "error": f"URL rejected: {e}"}
     except Exception as e:
-        return {"status": "failed", "error": f"request failed ({type(e).__name__})"}
+        # The request may have arrived even though no answer came back.
+        return {"status": "failed", "error": f"request failed ({type(e).__name__})", "dispatched": True,
+                "transient": True, "repeat_safe": safe, "uncertain": not safe}
     try:
         out = json.dumps(resp.json(), ensure_ascii=False, indent=2)
     except Exception:
         out = resp.text
     if resp.status_code >= 400:
-        return {"status": "failed", "error": f"got HTTP {resp.status_code} from {httpx.URL(url).host}"}
+        busy = resp.status_code == 429 or resp.status_code >= 500
+        return {"status": "failed", "error": f"got HTTP {resp.status_code} from {httpx.URL(url).host}", "dispatched": True,
+                "transient": busy, "repeat_safe": safe, "uncertain": resp.status_code >= 500 and not safe}
     return {"status": "ok", "output": out, "version": None}
 
 
@@ -4430,16 +4462,21 @@ async def run_flow_step(flow: dict, idx: int, *, caller: "ApiCaller", trigger: s
     # flows also show every step the earlier outputs and learned facts.
     context = None if flow.get("kind") == "developer" else (_flow_context(flow, memory, steps, results) or None)
     req = _api_run_request(app_row["id"], view, text, user_context=context)
-    contract = release_contract(app_row, release[1] if release else {"blueprint": await fetch_app_blueprint(app_row["id"])})
+    contract = release_contract(app_row, release[1] if release else await app_draft_state(app_row))
     limit = contract["execution"]["timeout_seconds"]
+    writes = contract["side_effects"] == "external_write"
     try:
         result = await asyncio.wait_for(_drain_run(await execute_run(
             req, _internal_request(), caller=caller, release=release, private_only=private,
             on_complete=_flow_history_recorder(caller, flow, app_row["id"], _step_name(steps, idx), text))), limit)
     except asyncio.TimeoutError:
-        return {"status": "failed", "error": f"took longer than its {limit}-second limit", "version": version}
+        return {"status": "failed", "error": f"took longer than its {limit}-second limit", "version": version,
+                "dispatched": True, "transient": True, "repeat_safe": not writes, "uncertain": writes}
     if not result.get("ok"):
-        return {"status": "failed", "error": f"failed: {result.get('error') or 'run failed'}", "version": version}
+        kind, streamed = result.get("kind"), bool(result.get("streamed"))
+        return {"status": "failed", "error": f"failed: {result.get('error') or 'run failed'}", "version": version,
+                "dispatched": streamed, "transient": kind in FLOW_TRANSIENT_KINDS, "repeat_safe": not writes,
+                "uncertain": writes and streamed and kind not in FLOW_NOT_DISPATCHED_KINDS}
     return {"status": "ok", "output": result.get("output") or "", "version": version, "ai_filled": ai_filled}
 
 
@@ -4449,6 +4486,8 @@ async def _save_flow_run(run: dict, *, new: bool = False) -> None:
         sb = _service_client()
         row = {k: run.get(k) for k in ("id", "flow_id", "user_id", "trigger", "status", "seed_input",
                                        "current_step", "steps", "error", "finished_at")}
+        if "needs_review" in run:          # column from the run-review migration
+            row["needs_review"] = bool(run["needs_review"])
         if new:
             run["lease_token"] = str(uuid.uuid4())
             row.update(lease_token=run["lease_token"],
@@ -4608,12 +4647,24 @@ async def _execute_flow(flow: dict, *, caller: "ApiCaller", trigger: str, run: d
             results.append("")
             await _save_flow_run(run)
             continue
-        try:
-            out = await run_flow_step(flow, idx, caller=caller, trigger=trigger, step_input=current_input,
-                                      results=results, memory=memory, sources=sources)
-        except Exception as e:
-            sentry_sdk.capture_exception(e)
-            out = {"status": "failed", "error": f"failed unexpectedly ({type(e).__name__})"}
+        attempt = 0
+        while True:
+            attempt += 1
+            try:
+                out = await run_flow_step(flow, idx, caller=caller, trigger=trigger, step_input=current_input,
+                                          results=results, memory=memory, sources=sources)
+            except Exception as e:
+                sentry_sdk.capture_exception(e)
+                out = {"status": "failed", "error": f"failed unexpectedly ({type(e).__name__})"}
+            if not (out["status"] == "failed" and out.get("transient") and out.get("repeat_safe")
+                    and attempt < flow_step_attempts(steps[idx] or {})):
+                break
+            # Still the owner and not stopped, before trying again.
+            if await _flow_run_cancelled(run["id"]):
+                run.update(status="cancelled")
+                return run
+            await _save_flow_run(run)
+            await asyncio.sleep(flow_retry_delay(attempt))
         if out["status"] == "waiting_approval":
             records.append({"index": idx, "name": name, "status": "waiting_approval",
                             "output": current_input[:FLOW_OUTPUT_LIMIT]})
@@ -4624,10 +4675,20 @@ async def _execute_flow(flow: dict, *, caller: "ApiCaller", trigger: str, run: d
             return run
         records.append({"index": idx, "name": name, "status": out["status"], "version": out.get("version"),
                         "output": (out.get("output") or "")[:FLOW_OUTPUT_LIMIT], "error": out.get("error"),
-                        **({"ai_filled": out["ai_filled"]} if out.get("ai_filled") else {})})
+                        **({"ai_filled": out["ai_filled"]} if out.get("ai_filled") else {}),
+                        **({"attempts": attempt} if attempt > 1 else {}),
+                        **({"sent": bool(out.get("dispatched"))} if out["status"] == "failed" else {}),
+                        **({"uncertain": True} if out.get("uncertain") else {})})
         if out["status"] != "ok":
-            run.update(status="failed", error=f"Step {_step_number(flow, idx)} ({name}) {out.get('error')}",
-                       finished_at=datetime.now(timezone.utc).isoformat())
+            error = f"Step {_step_number(flow, idx)} ({name}) {out.get('error')}"
+            if out.get("uncertain"):
+                # Never repeated automatically: a person checks the destination.
+                run["needs_review"] = True
+                error += (". It may have reached an outside service before failing, so it wasn't repeated. "
+                          "Check the destination, then continue the run or dismiss it.")
+            elif attempt > 1:
+                error += f" (tried {attempt} times)"
+            run.update(status="failed", error=error, finished_at=datetime.now(timezone.utc).isoformat())
             await _save_flow_run(run)
             return run
         current_input = out.get("output") or ""
@@ -6595,6 +6656,17 @@ class FlowRunStart(BaseModel):
     wait: bool = False        # true: answer when the run stops; false: answer at once, poll GET …/runs/{id}
 
 
+class FlowRunContinue(BaseModel):
+    # Needed when the step that stopped may already have reached an outside
+    # service: the person confirms they checked and want it to run again.
+    confirm_repeat: bool = False
+    wait: bool = False
+
+
+class FlowRunReview(BaseModel):
+    note: Optional[str] = Field(default=None, max_length=1000)
+
+
 class FlowRunResume(BaseModel):
     approve: bool = True
     output: Optional[str] = Field(default=None, max_length=FLOW_OUTPUT_LIMIT)   # edited content (edit steps)
@@ -6728,13 +6800,17 @@ async def validate_flow(flow_id: str, request: Request):
 
 
 @app.get("/v1/flows/{flow_id}/runs")
-async def list_flow_runs(flow_id: str, request: Request, limit: int = 20):
+async def list_flow_runs(flow_id: str, request: Request, limit: int = 20, needs_review: bool = False):
     """Recent runs, newest first: tests, webhook and scheduled runs (those
-    waiting at an approval step are decided from here)."""
+    waiting at an approval step are decided from here). needs_review=true
+    lists only runs a person must look at: interrupted, or possibly half done."""
     flow, caller = await _flow_for_runner(flow_id, request, edit=False)
     editor = await can_edit_flow(flow, caller)
+    columns = "id, trigger, status, current_step, error, started_at, finished_at, user_id"
     try:
-        query = _service_client().table("flow_runs").select("id, trigger, status, current_step, error, started_at, finished_at, user_id").eq("flow_id", flow_id)
+        query = _service_client().table("flow_runs").select(columns + (", needs_review" if needs_review else "")).eq("flow_id", flow_id)
+        if needs_review:
+            query = query.eq("needs_review", True)
         if not editor:
             query = query.eq("user_id", caller.user_id)
         res = await db(query
@@ -6789,6 +6865,94 @@ async def resume_flow_run(flow_id: str, run_id: str, body: FlowRunResume, reques
     runner = ApiCaller(user_id=caller.user_id, user_jwt=caller.user_jwt, workspace_id=caller.workspace_id,
                        live=trigger != "interactive" or bool((run.get("definition") or {}).get("_run_live")))
     return await _run_flow_now_or_later(flow, runner, trigger, run, body.wait)
+
+
+async def _step_repeat_safe(definition: dict, idx: int) -> tuple[bool, str]:
+    """Whether running step idx again can't repeat an outside effect, and
+    what the step reaches when it can."""
+    steps = definition.get("steps") or []
+    step = steps[idx] if 0 <= idx < len(steps) and isinstance(steps[idx], dict) else {}
+    kind = flow_plan.step_type(step)
+    if kind == "human_approval":
+        return True, ""
+    if kind == "api_call":
+        host = urlsplit(str(step.get("api_url") or "")).hostname or "the API"
+        return api_step_repeat_safe(step), host
+    app_row = await load_app_row(step.get("app_id")) if step.get("app_id") else None
+    if not app_row:
+        return True, ""                     # nothing can run; the step will report it
+    _, snapshot = await _step_snapshot(app_row, step)
+    if snapshot is None:
+        return True, ""
+    contract = release_contract(app_row, snapshot)
+    reaches = ", ".join(contract["privacy"].get("external_destinations") or []) or "an outside service"
+    return contract["side_effects"] != "external_write", reaches
+
+
+@app.post("/v1/flows/{flow_id}/runs/{run_id}/continue")
+async def continue_flow_run(flow_id: str, run_id: str, body: FlowRunContinue, request: Request):
+    """Continue a failed or interrupted run from the step where it stopped,
+    with the same definition and releases. Earlier steps aren't repeated. A
+    step that may already have written to an outside service runs again only
+    when the person confirms it (recorded with the run)."""
+    flow, caller = await _flow_for_runner(flow_id, request, edit=False)
+    run = await _load_flow_run(flow_id, run_id)
+    await _authorize_flow_run(flow, caller, run)
+    definition = run.get("definition") if isinstance(run.get("definition"), dict) else None
+    records = list(run.get("steps") or [])
+    if run.get("status") != "failed":
+        raise HTTPException(status_code=409, detail="Only a failed or interrupted run can be continued")
+    if not definition:
+        raise HTTPException(status_code=409, detail="This run started before runs kept their definition, so it can't be continued. Start a new run.")
+    if records and records[-1].get("status") == "rejected":
+        raise HTTPException(status_code=409, detail="This run was rejected at an approval step. Start a new run instead.")
+    idx = int(run.get("current_step") or 0)
+    stopped = next((r for r in records if r.get("index") == idx), None)
+    safe, reaches = await _step_repeat_safe(definition, idx)
+    # Interrupted (no record) or failed after sending: it may have run.
+    may_have_run = stopped is None or bool(stopped.get("sent", True))
+    if may_have_run and not safe and not body.confirm_repeat:
+        name = _step_name(definition.get("steps") or [], idx)
+        return JSONResponse(status_code=409, content={"code": "confirm_repeat", "step": idx, "error": (
+            f"Step {_step_number(definition, idx)} ({name}) writes to {reaches} and may already have done so before the run "
+            "stopped. Check there first; to run it again anyway, continue with confirm_repeat.")})
+    now = datetime.now(timezone.utc).isoformat()
+    history = list(definition.get("_continued") or []) + [{
+        "at": now, "by": caller.user_id, "step": idx, "previous_error": run.get("error"),
+        "confirmed_repeat": bool(body.confirm_repeat and not safe)}]
+    definition = {**definition, "_continued": history[-20:]}
+    lease_token = str(uuid.uuid4())
+    update = {"status": "running", "lease_token": lease_token, "error": None, "finished_at": None,
+              "lease_expires_at": (datetime.now(timezone.utc) + timedelta(seconds=120)).isoformat(),
+              "definition": definition, "steps": [r for r in records if (r.get("index") or 0) < idx]}
+    if "needs_review" in run:
+        update.update(needs_review=False, reviewed_by=caller.user_id, reviewed_at=now)
+    # One continuation at a time: only a run that is still failed is claimed.
+    claimed = await db(_service_client().table("flow_runs").update(update).eq("id", run_id).eq("status", "failed"))
+    if not claimed.data:
+        raise HTTPException(status_code=409, detail="Someone else already continued or changed this run. Reload it.")
+    run.update(update)
+    trigger = run.get("trigger") or "interactive"
+    runner = ApiCaller(user_id=caller.user_id, user_jwt=caller.user_jwt, workspace_id=caller.workspace_id,
+                       live=trigger != "interactive" or bool(definition.get("_run_live")))
+    return await _run_flow_now_or_later(flow, runner, trigger, run, body.wait)
+
+
+@app.post("/v1/flows/{flow_id}/runs/{run_id}/review")
+async def review_flow_run(flow_id: str, run_id: str, body: FlowRunReview, request: Request):
+    """Mark a run that needed attention as reviewed, without running it again."""
+    flow, caller = await _flow_for_runner(flow_id, request)
+    run = await _load_flow_run(flow_id, run_id)
+    if "needs_review" not in run:
+        raise HTTPException(status_code=503, detail="Run review isn't set up on this server yet (database migration pending).")
+    if not run.get("needs_review"):
+        raise HTTPException(status_code=409, detail="This run doesn't need review")
+    patch = {"needs_review": False, "review_note": (body.note or "").strip() or None,
+             "reviewed_by": caller.user_id, "reviewed_at": datetime.now(timezone.utc).isoformat()}
+    saved = await db(_service_client().table("flow_runs").update(patch).eq("id", run_id).eq("needs_review", True))
+    if not saved.data:
+        raise HTTPException(status_code=409, detail="Someone else already reviewed this run. Reload it.")
+    return _public_flow_run({**run, **patch})
 
 
 @app.post("/v1/flows/{flow_id}/runs/{run_id}/cancel")

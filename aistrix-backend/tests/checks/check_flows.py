@@ -539,4 +539,113 @@ direct = run(main.execute_run(main._api_run_request("leaky", APPS["leaky"], "x")
 ok("the run pipeline itself refuses private-only work without an approved private model",
    getattr(direct, "status_code", None) == 409 and b"private-only" in direct.body)
 
+# ── retries, uncertain effects, continuing and reviewing runs ───────────────
+main.FLOW_RETRY_BASE_SECONDS = 0.001
+main.check_rate_limit = allow_rate
+FLAKY = {"fail": 0, "calls": 0}
+async def flaky_stream(system, user_input, model, api_key=None, usage_holder=None, **kw):
+    FLAKY["calls"] += 1
+    if FLAKY["calls"] <= FLAKY["fail"]:
+        raise asyncio.TimeoutError()
+    yield "steady reply"
+main.stream_claude = flaky_stream
+retry_flow = flow([{"id": "s1", "app_id": "writer", "app_name": "Write", "version": "published"}])
+FLAKY.update(fail=2, calls=0)
+body = c.post(f"/v1/flows/{retry_flow['id']}/runs", json={"wait": True, "input": "x"}, headers=H).json()
+ok("a harmless step is retried after temporary failures and then succeeds",
+   body.get("status") == "done" and FLAKY["calls"] == 3 and body["steps"][0].get("attempts") == 3, body)
+FLAKY.update(fail=99, calls=0)
+body = c.post(f"/v1/flows/{retry_flow['id']}/runs", json={"wait": True, "input": "x"}, headers=H).json()
+ok("retries are bounded and the failure says how often it was tried",
+   body.get("status") == "failed" and FLAKY["calls"] == 3 and "(tried 3 times)" in body.get("error", "")
+   and not body.get("needs_review"), body)
+capped = flow([{"id": "s1", "app_id": "writer", "app_name": "Write", "version": "published", "max_attempts": 1}])
+FLAKY.update(fail=99, calls=0)
+c.post(f"/v1/flows/{capped['id']}/runs", json={"wait": True, "input": "x"}, headers=H)
+ok("a step can turn retries off", FLAKY["calls"] == 1)
+main.FLOW_RETRY_BASE_SECONDS = 2
+waits = [main.flow_retry_delay(n) for n in (1, 2, 3, 10)]
+ok("waits grow, are randomised and capped", 1 <= waits[0] <= 2 and 2 <= waits[1] <= 4 and 4 <= waits[2] <= 8 and waits[3] <= 30, waits)
+main.FLOW_RETRY_BASE_SECONDS = 0.001
+main.stream_claude = fake_stream
+
+# a writing API step that breaks mid-request: never repeated, flagged for review
+SENT = []
+async def broken_fetch(method, url, **kw):
+    SENT.append((method, url))
+    raise ConnectionResetError("connection reset")
+main.fetch_safely = broken_fetch
+post = flow([{"id": "s1", "step_type": "api_call", "app_name": "CRM", "api_method": "POST", "api_url": "https://crm.example.com/x"},
+             {"id": "s2", "app_id": "writer", "app_name": "Write", "version": "published"}])
+body = c.post(f"/v1/flows/{post['id']}/runs", json={"wait": True, "input": "x"}, headers=H).json()
+post_run = body.get("id")
+ok("a writing step that may have reached the service isn't repeated and the run is flagged",
+   body.get("status") == "failed" and len(SENT) == 1 and body.get("needs_review") is True and body["steps"][0].get("uncertain")
+   and "wasn't repeated" in body.get("error", ""), body)
+GOT = []
+async def flaky_get(method, url, **kw):
+    GOT.append(method)
+    if len(GOT) < 2:
+        raise ConnectionResetError("connection reset")
+    return FakeResp()
+main.fetch_safely = flaky_get
+get = flow([{"id": "s1", "step_type": "api_call", "app_name": "Lookup", "api_method": "GET", "api_url": "https://crm.example.com/x"}])
+body = c.post(f"/v1/flows/{get['id']}/runs", json={"wait": True, "input": "x"}, headers=H).json()
+ok("a reading API step is retried", body.get("status") == "done" and GOT == ["GET", "GET"], body)
+
+# continuing: the uncertain write needs confirmation; earlier steps aren't repeated
+listed = c.get(f"/v1/flows/{post['id']}/runs?needs_review=true", headers=H).json()["runs"]
+ok("runs needing review can be listed", [r["id"] for r in listed] == [post_run], listed)
+r = c.post(f"/v1/flows/{post['id']}/runs/{post_run}/continue", json={"wait": True}, headers=H)
+ok("continuing a possibly-sent write asks for confirmation first", r.status_code == 409 and r.json()["code"] == "confirm_repeat"
+   and "crm.example.com" in r.json()["error"] and len(SENT) == 1, r.text)
+main.fetch_safely = fake_fetch
+FETCHED.clear(); CALLS.clear()
+r = c.post(f"/v1/flows/{post['id']}/runs/{post_run}/continue", json={"wait": True, "confirm_repeat": True}, headers=H)
+body = r.json()
+saved = next(x for x in SB.db["flow_runs"] if x["id"] == post_run)
+ok("with confirmation the run continues from the stopped step and finishes",
+   r.status_code == 200 and body.get("status") == "done" and len(FETCHED) == 1 and len(CALLS) == 1 and not saved.get("needs_review"), body)
+ok("…and the confirmation is kept with the run", saved["definition"]["_continued"][-1]["confirmed_repeat"] is True
+   and saved["definition"]["_continued"][-1]["by"] == OWNER, saved.get("definition", {}).get("_continued"))
+ok("a finished run can't be continued", c.post(f"/v1/flows/{post['id']}/runs/{post_run}/continue", json={"wait": True}, headers=H).status_code == 409)
+
+two_step = flow([{"id": "s1", "app_id": "scorer", "app_name": "Score", "version": "published"},
+                 {"id": "s2", "app_id": "writer", "app_name": "Write", "version": "published"}])
+async def fail_writer(system, user_input, model, api_key=None, usage_holder=None, **kw):
+    CALLS.append({"system": system})
+    if "WRITER" in system:
+        raise asyncio.TimeoutError()
+    yield json.dumps({"score": 1, "email": "a@b.c"})
+main.stream_claude = fail_writer
+CALLS.clear()
+failed = c.post(f"/v1/flows/{two_step['id']}/runs", json={"wait": True, "input": "x"}, headers=H).json()
+main.stream_claude = fake_stream
+CALLS.clear()
+cont = c.post(f"/v1/flows/{two_step['id']}/runs/{failed['id']}/continue", json={"wait": True}, headers=H).json()
+ok("a harmless failed step continues without confirmation and earlier steps aren't run again",
+   failed.get("status") == "failed" and cont.get("status") == "done" and len(CALLS) == 1 and "WRITER" in CALLS[0]["system"]
+   and [s["index"] for s in cont["steps"]] == [0, 1], cont)
+r = c.post(f"/v1/flows/{two_step['id']}/runs/{failed['id']}/continue", json={"wait": True}, headers={"Authorization": "Bearer jwt-other"})
+ok("other people can't continue someone's run", r.status_code == 404)
+
+# interrupted runs (recovered by the database) are reviewed or continued
+stuck = flow([{"id": "s1", "step_type": "api_call", "app_name": "CRM", "api_method": "POST", "api_url": "https://crm.example.com/x"}])
+rid = str(uuid.uuid4())
+SB.db["flow_runs"].append({"id": rid, "flow_id": stuck["id"], "user_id": OWNER, "trigger": "schedule", "status": "failed",
+                           "current_step": 0, "steps": [], "error": "Execution was interrupted", "needs_review": True,
+                           "definition": stuck, "seed_input": "x"})
+r = c.post(f"/v1/flows/{stuck['id']}/runs/{rid}/continue", json={"wait": True}, headers=H)
+ok("an interrupted write step also needs confirmation", r.status_code == 409 and r.json()["code"] == "confirm_repeat", r.text)
+r = c.post(f"/v1/flows/{stuck['id']}/runs/{rid}/review", json={"note": "Checked the CRM: it arrived."}, headers=H)
+saved = next(x for x in SB.db["flow_runs"] if x["id"] == rid)
+ok("a run can be marked reviewed with a note, without running it",
+   r.status_code == 200 and saved["needs_review"] is False and saved["review_note"] == "Checked the CRM: it arrived." and saved["reviewed_by"] == OWNER, r.text)
+ok("…once", c.post(f"/v1/flows/{stuck['id']}/runs/{rid}/review", json={}, headers=H).status_code == 409)
+legacy = str(uuid.uuid4())
+SB.db["flow_runs"].append({"id": legacy, "flow_id": stuck["id"], "user_id": OWNER, "trigger": "schedule", "status": "failed",
+                           "current_step": 0, "steps": [], "error": "old"})
+ok("runs from before definitions were kept can't be continued",
+   c.post(f"/v1/flows/{stuck['id']}/runs/{legacy}/continue", json={"wait": True}, headers=H).status_code == 409)
+
 finish()

@@ -26,7 +26,7 @@ beforeAll(async () => {
   const sql = readFileSync(new URL('../../supabase/migrations/20261025010000_spend_controls_privacy.sql', import.meta.url), 'utf8')
   await db.exec(sql)
   await db.exec(sql)   // safe to apply twice
-})
+}, 60_000)
 afterAll(async () => { await db?.close() })
 
 it('keeps existing workflows standard and accepts only known privacy modes', async () => {

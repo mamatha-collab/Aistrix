@@ -29,6 +29,7 @@ it('only the live owner can renew a workflow; expired runs fail without replayin
   expect(row.lease_token).toBeNull()
   expect(row.steps[0].output).toBe('sent')
   expect(row.error).toMatch(/external action may have completed/)
+  expect(row.needs_review).toBe(true)
 })
 
 it('approval waits survive sweeps; cancelled and finished runs cannot renew', async () => {

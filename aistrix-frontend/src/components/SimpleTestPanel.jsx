@@ -10,7 +10,7 @@ import { PROVIDER_STYLE, providerById, useProviders } from '../lib/providers'
 import TestSuite from './TestSuite'
 import { downloadReport, testReport } from '../lib/reports'
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
 // Plain-language names for the publish requirements.
 const LABELS = {

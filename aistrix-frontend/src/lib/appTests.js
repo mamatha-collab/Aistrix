@@ -4,7 +4,7 @@ import { supabase } from '../supabase'
 import { errorFromResponse } from './runStream'
 
 import { BRAND } from './brand'
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 const TEST_TIMEOUT_MS = 45000
 
 function timeoutSignal(parentSignal) {

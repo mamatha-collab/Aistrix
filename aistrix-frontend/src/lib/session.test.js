@@ -48,9 +48,12 @@ describe('session expiry vs signing out', () => {
     const s = await import('./session')
     d.saveLocalDraft('design', 'a1', { x: 1 })
     localStorage.setItem('unrelated', 'keep')
+    vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', 'https://fixture.supabase.co')
+    localStorage.setItem('sb-fixture-auth-token', 'old session')
     await s.signOutOnPurpose({ auth: { signOut: async () => s.noteAuthEvent('SIGNED_OUT') } })
     expect(d.readLocalDraft('design', 'a1')).toBeNull()
     expect(localStorage.getItem('unrelated')).toBe('keep')
+    expect(localStorage.getItem('sb-fixture-auth-token')).toBeNull()
     expect(s.sessionExpired()).toBe(false)
   })
 

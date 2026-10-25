@@ -4,7 +4,7 @@ import { parseSSELine } from '../lib/sse'
 import { friendlyErrorMessage } from '../utils/appActions'
 import { PLACEHOLDERS } from '../utils'
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
 // Runner for website visitors who don't have an Aistrix account. Only used
 // when the owner enabled "visitor access" for a free app's widget. The

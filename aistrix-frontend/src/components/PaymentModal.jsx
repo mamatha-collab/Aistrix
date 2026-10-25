@@ -5,12 +5,12 @@ import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { track, EVENTS } from '../lib/analytics'
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
 // Lazy-load Stripe only when needed
 let stripePromise = null
 function getStripe() {
-  const key = import.meta.env.VITE_STRIPE_PUBLIC_KEY
+  const key = process.env.NEXT_PUBLIC_STRIPE_PUBLIC_KEY
   if (!key) return null
   if (!stripePromise) stripePromise = loadStripe(key)
   return stripePromise
@@ -131,7 +131,7 @@ async function startCheckoutSession(app, user, plan) {
 
 export default function PaymentModal({ app, user, onSuccess, onClose }) {
   const stripe = getStripe()
-  const hasStripe = !!import.meta.env.VITE_STRIPE_PUBLIC_KEY
+  const hasStripe = !!process.env.NEXT_PUBLIC_STRIPE_PUBLIC_KEY
   const [plan, setPlan] = useState('pay_per_run')   // pay_per_run | subscription
   const [checkoutLoading, setCheckoutLoading] = useState(false)
   const [checkoutError, setCheckoutError] = useState('')
@@ -160,7 +160,7 @@ export default function PaymentModal({ app, user, onSuccess, onClose }) {
           <h3 className="text-white font-semibold">{app.name} — Paid App</h3>
           <p className="text-slate-400 text-sm">This app costs <strong className="text-white">${app.price_per_run}</strong> per run.</p>
           <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-3">
-            <p className="text-amber-400 text-xs">Stripe is not configured. Add <code>VITE_STRIPE_PUBLIC_KEY</code> to enable payments.</p>
+            <p className="text-amber-400 text-xs">Payments are temporarily unavailable.</p>
           </div>
           <div className="flex gap-3">
             <button onClick={onClose} className="flex-1 bg-[#1F2444] text-slate-300 py-2.5 rounded-xl text-sm">Cancel</button>

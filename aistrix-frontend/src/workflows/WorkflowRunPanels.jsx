@@ -214,7 +214,7 @@ function RunView({ flow, run, onDecided }) {
   )
 }
 
-export function WorkflowTest({ flow, dirty, onSave, onRunChanged }) {
+export function WorkflowTest({ flow, dirty, onSave, onRunChanged, mode = 'test' }) {
   const fields = (flow.trigger?.fields || []).filter(f => f.field)
   const [values, setValues] = useState({})
   const [text, setText] = useState('')
@@ -226,7 +226,7 @@ export function WorkflowTest({ flow, dirty, onSave, onRunChanged }) {
     setStarting(true); setError('')
     try {
       if (dirty) await onSave()
-      follow(await startRun(flow.id, input))
+      follow(await startRun(flow.id, input, { live: mode === 'live' }))
       onRunChanged?.()
     } catch (e) { setError(e.message) }
     finally { setStarting(false) }
@@ -246,15 +246,15 @@ export function WorkflowTest({ flow, dirty, onSave, onRunChanged }) {
         )}
         <button className={primary} disabled={working || !flow.steps.length} onClick={start}>
           {working ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <Play size={13} aria-hidden="true" />}
-          {working ? 'Running…' : 'Run test'}
+          {working ? 'Running…' : mode === 'live' ? 'Run workflow' : 'Run test'}
         </button>
-        <p className="text-[11px] leading-snug text-slate-500">Every app step is a real run on your own AI keys. Draft steps run here only, for you and other editors of that app.{dirty ? ' Your changes are saved first.' : ''}</p>
+        <p className="text-[11px] leading-snug text-slate-500">{mode === 'live' ? 'Runs use published app releases. Draft steps must be published before running in Business.' : 'Every app step is a real run on your own AI keys. Draft steps run here only, for you and other editors of that app.'}{dirty ? ' Your changes are saved first.' : ''}</p>
       </section>
 
       <section aria-label="Test results" className={`${card} space-y-3`}>
         <h3 className="text-sm font-semibold text-white">Results</h3>
         {error && <p role="alert" className="rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-2 text-xs text-red-200">{error}</p>}
-        {!run && !error && <p className="text-xs text-slate-400">Run a test to see what each step produces.</p>}
+        {!run && !error && <p className="text-xs text-slate-400">{mode === 'live' ? 'Run the workflow to see what each step produces.' : 'Run a test to see what each step produces.'}</p>}
         {run && <RunView flow={flow} run={run} onDecided={next => { follow(next); onRunChanged?.() }} />}
       </section>
     </div>

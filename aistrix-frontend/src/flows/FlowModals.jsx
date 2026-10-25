@@ -1,3 +1,4 @@
+import { deleteSchedule, getSchedule, putSchedule, setWebhook, webhookUrl as buildWebhookUrl } from '../workflows/workflowApi'
 import { useState, useEffect } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
@@ -73,27 +74,20 @@ export function WebhookModal({ flow, onClose, onUpdated }) {
   const toast = useToast()
 
   const webhookUrl = token
-    ? `${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/webhooks/${token}`
+    ? buildWebhookUrl(token)
     : null
 
-  async function generate() {
+  async function changeWebhook(enabled) {
     setLoading(true)
-    const newToken = crypto.randomUUID()
-    const { error } = await supabase.from('flows').update({ webhook_token: newToken }).eq('id', flow.id)
-    setLoading(false)
-    if (error) { toast(error.message, 'error'); return }
-    setToken(newToken)
-    onUpdated({ ...flow, webhook_token: newToken })
+    try {
+      const next = await setWebhook(flow.id, enabled)
+      setToken(next)
+      onUpdated({ ...flow, webhook_token: next })
+    } catch (error) { toast(error.message, 'error') }
+    finally { setLoading(false) }
   }
-
-  async function revoke() {
-    setLoading(true)
-    const { error } = await supabase.from('flows').update({ webhook_token: null }).eq('id', flow.id)
-    setLoading(false)
-    if (error) { toast(error.message, 'error'); return }
-    setToken(null)
-    onUpdated({ ...flow, webhook_token: null })
-  }
+  const generate = () => changeWebhook(true)
+  const revoke = () => changeWebhook(false)
 
   function copy() {
     navigator.clipboard.writeText(webhookUrl)
@@ -159,7 +153,7 @@ export function WebhookModal({ flow, onClose, onUpdated }) {
   )
 }
 
-export function ScheduleModal({ flow, userId, onClose, onSaved }) {
+export function ScheduleModal({ flow, onClose, onSaved }) {
   const [schedule, setSchedule] = useState(null)
   const [frequency, setFrequency] = useState('daily')
   const [hourUtc, setHourUtc] = useState(9)
@@ -171,54 +165,35 @@ export function ScheduleModal({ flow, userId, onClose, onSaved }) {
   const toast = useToast()
 
   useEffect(() => {
-    supabase.from('flow_schedules').select('*').eq('flow_id', flow.id).maybeSingle()
-      .then(({ data }) => {
+    getSchedule(flow.id)
+      .then(data => {
         if (data) {
           setSchedule(data); setFrequency(data.frequency); setHourUtc(data.hour_utc)
           setDayOfWeek(data.day_of_week ?? 1); setSeedInput(data.seed_input || ''); setEnabled(data.enabled)
         }
-        setLoading(false)
-      })
-  }, [flow.id])
-
-  function nextRunAt() {
-    const now = new Date()
-    const next = new Date(now)
-    next.setUTCHours(hourUtc, 0, 0, 0)
-    if (frequency === 'weekly') {
-      const daysAhead = (dayOfWeek - next.getUTCDay() + 7) % 7
-      next.setUTCDate(next.getUTCDate() + daysAhead)
-      if (next <= now) next.setUTCDate(next.getUTCDate() + 7)
-    } else if (next <= now) {
-      next.setUTCDate(next.getUTCDate() + 1)
-    }
-    return next.toISOString()
-  }
+      }).catch(error => toast(error.message, 'error')).finally(() => setLoading(false))
+  }, [flow.id, toast])
 
   async function save() {
-    if (!seedInput.trim()) { toast('Add the input for the first step', 'error'); return }
     setSaving(true)
-    const payload = {
-      flow_id: flow.id, user_id: userId, frequency, hour_utc: hourUtc,
-      day_of_week: frequency === 'weekly' ? dayOfWeek : null,
-      seed_input: seedInput.trim(), enabled, next_run_at: nextRunAt(),
-    }
-    const { data, error } = schedule
-      ? await supabase.from('flow_schedules').update(payload).eq('id', schedule.id).select().single()
-      : await supabase.from('flow_schedules').insert(payload).select().single()
-    setSaving(false)
-    if (error) { toast(error.message, 'error'); return }
-    toast(enabled ? 'Schedule saved' : 'Schedule saved (paused)', 'success')
-    onSaved(data)
-    onClose()
+    try {
+      const data = await putSchedule(flow.id, {
+        frequency, hour_utc: hourUtc, day_of_week: frequency === 'weekly' ? dayOfWeek : null,
+        seed_input: seedInput.trim(), enabled,
+      })
+      toast(enabled ? 'Schedule saved' : 'Schedule saved (paused)', 'success')
+      onSaved(data)
+      onClose()
+    } catch (error) { toast(error.message, 'error') }
+    finally { setSaving(false) }
   }
 
   async function remove() {
-    if (!schedule) { onClose(); return }
-    const { error } = await supabase.from('flow_schedules').delete().eq('id', schedule.id)
-    if (error) { toast(error.message, 'error'); return }
-    onSaved(null)
-    onClose()
+    try {
+      if (schedule) await deleteSchedule(flow.id)
+      onSaved(null)
+      onClose()
+    } catch (error) { toast(error.message, 'error') }
   }
 
   const inCls = 'w-full bg-[#1A2038] border border-white/18 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-400 focus:outline-none focus:border-[#6C5CE7] transition-colors'

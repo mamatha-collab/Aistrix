@@ -4,7 +4,7 @@ import { useToast } from '../hooks/useToast'
 import { timeAgo } from '../utils'
 import { scopeToWorkspace } from '../lib/workspace'
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
 // Developer API keys. The backend generates each key and stores only its
 // SHA-256 hash, so the full key is shown exactly once, right after creation.

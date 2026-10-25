@@ -4,6 +4,7 @@ import { useState } from 'react'
 import { supabase } from '../supabase'
 
 import { BRAND } from '../lib/brand'
+import { safeReturnPath } from '../lib/authPaths'
 // RFC 5322-ish, practical email check — accepts plus-addressing (name+tag@domain.com),
 // requires a real-looking domain with a TLD so bare strings like "example.com"
 // (missing the local part) are correctly rejected as malformed, not silently sent to Supabase.
@@ -13,11 +14,11 @@ function isValidEmail(value) {
   return EMAIL_RE.test(value.trim())
 }
 
-const DEMO_EMAIL = import.meta.env.VITE_DEMO_EMAIL
-const DEMO_PASSWORD = import.meta.env.VITE_DEMO_PASSWORD
+const DEMO_EMAIL = process.env.NODE_ENV !== 'production' ? process.env.NEXT_PUBLIC_DEMO_EMAIL : undefined
+const DEMO_PASSWORD = process.env.NODE_ENV !== 'production' ? process.env.NEXT_PUBLIC_DEMO_PASSWORD : undefined
 // "Continue with Google": shown once Google sign-in is set up in Supabase
 // (Authentication → Providers → Google) for this environment.
-const GOOGLE_SIGN_IN = import.meta.env.VITE_AUTH_GOOGLE === 'true'
+const GOOGLE_SIGN_IN = process.env.NEXT_PUBLIC_AUTH_GOOGLE === 'true'
 
 function GoogleMark() {
   return (
@@ -30,7 +31,7 @@ function GoogleMark() {
   )
 }
 
-export default function Auth({ developer = false }) {
+export default function Auth({ developer = false, callbackUrl }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [mode, setMode] = useState('login') // 'login' | 'signup' | 'reset'
@@ -43,6 +44,13 @@ export default function Auth({ developer = false }) {
     setError('')
     setMessage('')
     setPassword('')
+  }
+
+  function returnUrl(nextPath) {
+    if (!nextPath && callbackUrl) return callbackUrl
+    if (!process.env.NEXT_PUBLIC_AUTH_CALLBACK_PATH) return undefined
+    const destination = nextPath || window.location.pathname + window.location.search
+    return `${window.location.origin}/auth/callback?next=${encodeURIComponent(safeReturnPath(destination))}`
   }
 
   async function handleSubmit() {
@@ -63,7 +71,7 @@ export default function Auth({ developer = false }) {
 
     if (mode === 'reset') {
       const { error } = await supabase.auth.resetPasswordForEmail(trimmedEmail, {
-        redirectTo: `${window.location.origin}/reset-password`,
+        redirectTo: returnUrl('/reset-password') || `${window.location.origin}/reset-password`,
       })
       if (error) setError(error.message)
       else setMessage('Password reset link sent — check your email.')
@@ -73,7 +81,7 @@ export default function Auth({ developer = false }) {
 
     const { error } = mode === 'login'
       ? await supabase.auth.signInWithPassword({ email: trimmedEmail, password })
-      : await supabase.auth.signUp({ email: trimmedEmail, password })
+      : await supabase.auth.signUp({ email: trimmedEmail, password, ...(returnUrl() ? { options: { emailRedirectTo: returnUrl() } } : {}) })
 
     if (error) setError(error.message)
     else if (mode === 'signup') setMessage('Check your email to confirm your account!')
@@ -88,14 +96,14 @@ export default function Auth({ developer = false }) {
     // turned on there; otherwise people would land on a raw error page.
     const notSetUp = "Google sign-in isn't set up yet. Use your email and password for now."
     try {
-      const res = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/auth/v1/settings`,
-        { headers: { apikey: import.meta.env.VITE_SUPABASE_ANON_KEY } })
+      const res = await fetch(`${process.env.NEXT_PUBLIC_SUPABASE_URL}/auth/v1/settings`,
+        { headers: { apikey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY } })
       const settings = res.ok ? await res.json() : null
       if (settings && !settings.external?.google) { setError(notSetUp); setLoading(false); return }
     } catch { /* can't tell: try anyway */ }
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
-      options: { redirectTo: `${window.location.origin}${window.location.pathname}` },
+      options: { redirectTo: callbackUrl || returnUrl() || `${window.location.origin}${window.location.pathname}` },
     })
     if (error) {
       setError(/provider is not enabled|unsupported provider/i.test(error.message) ? notSetUp : error.message)
@@ -112,7 +120,7 @@ export default function Auth({ developer = false }) {
 
   const isReset = mode === 'reset'
   const isLogin = mode === 'login'
-  const isDev = import.meta.env.DEV
+  const isDev = (process.env.NODE_ENV !== 'production')
   const canUseDemo = isDev && DEMO_EMAIL && DEMO_PASSWORD
 
   return (

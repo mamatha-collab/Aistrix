@@ -1,3 +1,4 @@
+import { createWorkflow } from '../workflows/workflowApi'
 import { useState } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
@@ -31,12 +32,8 @@ export default function OnboardingWizard({ user, onDismiss, onNavChange }) {
       const { data: flow } = await supabase.from('flows')
         .select('*').eq('name', goal.packName).eq('is_published', true).maybeSingle()
       if (flow) {
-        const { error } = await supabase.from('flows').insert({
-          user_id: user.id, name: flow.name, emoji: flow.emoji,
-          description: flow.description, steps: flow.steps,
-        })
-        if (error) toast(`Couldn't install ${goal.packName}: ${error.message}`, 'error')
-        else toast(`${goal.packName} installed to your AI Workflows!`, 'success')
+        await createWorkflow(user, flow.name, { ...flow, kind: flow.kind || 'business' })
+        toast(`${goal.packName} installed to your AI Workflows!`, 'success')
       }
     } catch (e) { toast(e.message, 'error') }
     setInstalling(false)

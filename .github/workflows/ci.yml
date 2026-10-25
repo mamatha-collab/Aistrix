@@ -50,12 +50,13 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm test
-      - run: npm run build
+      - run: npm run build:vite
+      - run: npm run build:next:test
 
   build-browser:
     name: Build desktop and mobile journeys
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: aistrix-frontend
@@ -69,6 +70,10 @@ jobs:
       - run: npm ci
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e:local
+        env:
+          E2E_BROWSER_CHANNEL: chromium
+      - run: npm run build:next:test
+      - run: npm run test:e2e:next
         env:
           E2E_BROWSER_CHANNEL: chromium
       - uses: actions/upload-artifact@v4

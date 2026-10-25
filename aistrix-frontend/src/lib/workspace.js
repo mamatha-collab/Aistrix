@@ -10,7 +10,7 @@
 // from a team) is never sent.
 
 const STORAGE_KEY = 'aistrix_active_workspace'
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
 let activeId = null
 

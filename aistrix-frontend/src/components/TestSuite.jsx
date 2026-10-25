@@ -29,7 +29,7 @@ import { evaluateCase } from '../lib/promptTests'
 import { isRealCheck, appTypeOf, appTypeLabel, outputSchemaFields, judge, buildTemplateCases, PERSONA_PACKS, PROFILE_INPUTS } from '../lib/testTemplates'
 
 import { BRAND } from '../lib/brand'
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
 // ─── Rule types ───────────────────────────────────────────────────────────────
 const RULE_TYPES = [

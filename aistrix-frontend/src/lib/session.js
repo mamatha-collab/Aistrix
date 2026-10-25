@@ -1,5 +1,6 @@
 // Telling an expired session apart from signing out on purpose.
 import { clearAllLocalDrafts } from './localDraft'
+import { sessionStorageKey } from './authPaths'
 
 const SIGNING_OUT = 'aistrix_signing_out'
 const EXPIRED = 'aistrix_session_expired'
@@ -16,6 +17,7 @@ function hasFlag(key) {
 export async function signOutOnPurpose(client) {
   flag(SIGNING_OUT, true)
   clearAllLocalDrafts()
+  try { localStorage.removeItem(sessionStorageKey(process.env.NEXT_PUBLIC_SUPABASE_URL)) } catch { /* No project/storage in this context. */ }
   await client.auth.signOut()
 }
 

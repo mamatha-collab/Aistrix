@@ -1,11 +1,12 @@
 import BusinessFixture from './BusinessFixture'
 import './supabase'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
-import { MarketplacePage, MarketplaceAppPage } from '../../src/pages/MarketplacePage'
-import DeveloperProfilePage from '../../src/pages/DeveloperProfilePage'
+import { LegacyNavigationBridge } from '../../src/legacy-navigation'
+import { MarketplacePage, MarketplaceAppPage } from '../../src/screens/MarketplacePage'
+import DeveloperProfilePage from '../../src/screens/DeveloperProfilePage'
 import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import DevStudioPage from '../../src/pages/DevStudioPage'
+import DevStudioPage from '../../src/screens/DevStudioPage'
 import CreateAppModal from '../../src/components/CreateAppModal'
 import AIAppBuilder from '../../src/components/AIAppBuilder'
 import AppTypeSelector from '../../src/components/AppTypeSelector'
@@ -42,12 +43,12 @@ function Fixture() {
       ? <AIAppBuilder presentation="inline" navigationGuardRef={navigationGuardRef} onLeave={closeInline} user={user} onClose={() => setInlineType(null)} onBack={() => setInlineType(null)} onCreated={createdInline} />
       : <CreateAppModal presentation="inline" navigationGuardRef={navigationGuardRef} onLeave={closeInline} user={user} initialType={inlineType} onClose={() => setInlineType(null)} onBack={() => setInlineType(null)} onCreated={createdInline} />)}
   </> : null
-  if (new URLSearchParams(location.search).get('scenario')?.startsWith('market-customer')) return <MemoryRouter initialEntries={['/marketplace']}><Routes>
+  if (new URLSearchParams(location.search).get('scenario')?.startsWith('market-customer')) return <MemoryRouter initialEntries={['/marketplace']}><LegacyNavigationBridge><Routes>
     <Route path="/marketplace" element={<MarketplacePage />} />
     <Route path="/marketplace/:id" element={<MarketplaceAppPage />} />
     <Route path="/dev/:userId" element={<DeveloperProfilePage />} />
     <Route path="/app/:id" element={<p>Shared app runner destination</p>} />
-  </Routes></MemoryRouter>
+  </Routes></LegacyNavigationBridge></MemoryRouter>
   if (new URLSearchParams(location.search).get('scenario') === 'business') return <BusinessFixture />
   if (chromeLoading) return <DeveloperLoading />
   if (new URLSearchParams(location.search).get('scenario') === 'signed-out') return <Auth developer />
@@ -61,4 +62,6 @@ function Fixture() {
   </ToastProvider>
 }
 
-createRoot(document.getElementById('root')).render(<Fixture />)
+createRoot(document.getElementById('root')).render(
+  new URLSearchParams(location.search).has('strict') ? <React.StrictMode><Fixture /></React.StrictMode> : <Fixture />,
+)

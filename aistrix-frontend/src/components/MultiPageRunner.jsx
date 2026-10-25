@@ -6,7 +6,7 @@ import { parseSSELine } from '../lib/sse'
 import RunRating from './RunRating'
 import { friendlyErrorMessage } from '../utils/appActions'
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
 export default function MultiPageRunner({ app, user, onClose, onRun, inline = false }) {
   const [pageIndex, setPageIndex] = useState(0)

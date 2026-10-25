@@ -1,3 +1,4 @@
+import { getAppTypeMeta } from '../lib/appTypes'
 const STATIC_BADGES = [
   { key: 'is_verified',  label: '✓ Verified',  cls: 'text-blue-400 bg-blue-400/10 border-blue-400/20' },
   { key: 'is_top_rated', label: '⭐ Top Rated', cls: 'text-yellow-400 bg-yellow-400/10 border-yellow-400/20' },
@@ -22,19 +23,6 @@ function getDerivedBadges(app) {
   return badges
 }
 
-const TYPE_LABELS = {
-  agent:   { icon: '◈',  label: 'Agent',   color: '#FDCB6E' },
-  api:     { icon: '{}', label: 'API',      color: '#0984E3' },
-  data:    { icon: '▦',  label: 'Data',     color: '#E17055' },
-  batch:   { icon: '⊞',  label: 'Batch',    color: '#6C5CE7' },
-  iframe:  { icon: '⬡',  label: 'Embed',   color: '#E84393' },
-  native:  { icon: '⊞',  label: 'Form',    color: '#00B894' },
-  prompt:  { icon: '✦',  label: 'Prompt',  color: '#A29BFE' },
-  structured: { icon: '{}', label: 'JSON', color: '#0984E3' },
-  chatbot: { icon: '💬', label: 'Chatbot', color: '#E84393' },
-  website: { icon: '🌐', label: 'Website',  color: '#00B894' },
-}
-
 const STATUS_BADGE = {
   active:   { label: '● Active',   cls: 'text-green-400' },
   inactive: { label: '○ Inactive', cls: 'text-slate-500' },
@@ -50,7 +38,7 @@ function appSourceLabel(app, isOwn, sharedRole) {
 }
 
 export function AppTab({ app, selected, starred, isOwn, onClick, onToggleFavorite }) {
-  const typeInfo = TYPE_LABELS[app.app_type]
+  const typeInfo = getAppTypeMeta(app.app_type)
   const sourceLabel = appSourceLabel(app, isOwn)
   return (
     <div
@@ -121,7 +109,7 @@ export default function AppCard({ clientMode = false, app, selected, starred, is
   const staticBadges = STATIC_BADGES.filter(b => app[b.key])
   const derivedBadges = getDerivedBadges(app)
   const allBadges = [...staticBadges, ...derivedBadges]
-  const typeInfo = TYPE_LABELS[app.app_type]
+  const typeInfo = getAppTypeMeta(app.app_type)
   const sourceLabel = appSourceLabel(app, isOwn, sharedRole)
   const statusInfo = STATUS_BADGE[app.status]
   const readinessBadges = [

@@ -230,7 +230,7 @@ const TYPE_GUIDES = {
   },
 }
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
 const fmtTokens = ([lo, hi]) => (lo === hi ? lo.toLocaleString() : `${lo.toLocaleString()}–${hi.toLocaleString()}`)
 const fmtUsdOne = v => (v < 0.01 ? '<$0.01' : `$${v.toFixed(2)}`)

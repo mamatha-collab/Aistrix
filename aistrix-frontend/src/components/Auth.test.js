@@ -7,7 +7,7 @@ vi.mock('../lib/session', () => ({ sessionExpired: () => false }))
 
 async function render(googleOn) {
   vi.resetModules()
-  vi.stubEnv('VITE_AUTH_GOOGLE', googleOn ? 'true' : '')
+  vi.stubEnv('NEXT_PUBLIC_AUTH_GOOGLE', googleOn ? 'true' : '')
   const { default: Auth } = await import('./Auth.jsx')
   return renderToStaticMarkup(createElement(Auth, { developer: true }))
 }

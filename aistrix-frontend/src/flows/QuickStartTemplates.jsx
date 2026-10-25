@@ -1,3 +1,4 @@
+import { createWorkflowRecord, updateWorkflowRecord } from '../workflows/workflowApi'
 import { useState, useEffect } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
@@ -68,8 +69,7 @@ export default function QuickStartTemplates({ apps, flows, onCreated, userId, de
           || Object.values(installedByName).find(s => s.app_name.toLowerCase().includes(lower) || lower.includes(s.app_name.toLowerCase()))
       }).filter(Boolean)
 
-      const { error: updateErr } = await supabase.from('flows').update({ steps: fullSteps }).eq('id', installData.flowId)
-      if (updateErr) throw updateErr
+      await updateWorkflowRecord(installData.flowId, { steps: fullSteps })
 
       setInstalled(p => ({
         ...p,
@@ -104,12 +104,7 @@ export default function QuickStartTemplates({ apps, flows, onCreated, userId, de
         return
       }
 
-      const { data, error } = await supabase.from('flows').insert({
-        user_id: userId, name: tpl.name, emoji: tpl.emoji,
-        description: tpl.desc, steps,
-      }).select().single()
-
-      if (error) throw error
+      const data = await createWorkflowRecord({ id: userId }, { name: tpl.name, emoji: tpl.emoji, description: tpl.desc, steps })
       setInstalled(p => ({ ...p, [tpl.name]: { flowId: data.id, stepCount: steps.length, missingNames } }))
       onCreated(data)
       if (missingNames.length > 0) {

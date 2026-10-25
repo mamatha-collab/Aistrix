@@ -5,7 +5,7 @@ import { useToast } from '../hooks/useToast'
 import { useFocusTrap } from '../hooks/useFocusTrap'
 import { ROLE_LABELS, canManage } from '../hooks/useWorkspaces'
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 const INVITE_ROLES = ['admin', 'developer', 'member', 'billing']
 const ROLE_HELP = {
   owner: 'Everything, including deleting the workspace',

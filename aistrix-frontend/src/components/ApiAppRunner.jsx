@@ -7,7 +7,7 @@ import RunRating from './RunRating'
 import { friendlyErrorMessage } from '../utils/appActions'
 import { fieldKeyFromLabel } from '../utils/schemaContracts'
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
 function buildCurl(app, fieldValues, apiUrl) {
   const body = Object.fromEntries(

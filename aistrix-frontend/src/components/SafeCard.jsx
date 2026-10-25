@@ -3,7 +3,7 @@ import ErrorBoundary from './ErrorBoundary'
 // Development only (removed from production builds): set localStorage
 // 'aistrix_crash_card' to a card's name to check it fails on its own.
 function crashForTest(name) {
-  if (import.meta.env.DEV && name && (() => { try { return localStorage.getItem('aistrix_crash_card') === name } catch { return false } })()) {
+  if ((process.env.NODE_ENV !== 'production') && name && (() => { try { return localStorage.getItem('aistrix_crash_card') === name } catch { return false } })()) {
     throw new Error(`Test crash in "${name}"`)
   }
 }

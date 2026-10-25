@@ -7,43 +7,23 @@ import Sidebar from './components/SidebarClean'
 import DeveloperShell, { DeveloperLoading } from './components/DeveloperShell'
 import TopBar from './components/TopBarClean'
 import AppGrid from './components/AppGrid'
+import { WorkspaceRouteContext } from './components/WorkspaceRouteContext'
+import { standaloneScreen } from './lib/workspaceRoutes'
+import WorkspaceScreens from './components/WorkspaceScreens'
 import DetailPanel from './components/DetailPanel'
 import Auth from './components/Auth'
 import ErrorBoundary from './components/ErrorBoundary'
-import { Routes, Route, useNavigate, useLocation } from 'react-router-dom'
+import { useNavigate, useLocation } from './navigation'
 import { identify, resetIdentity, track, EVENTS } from './lib/analytics'
-import { getUserRole, isAdmin, isModerator } from './utils/roles'
+import { getUserRole } from './utils/roles'
 import { useKeyboard } from './hooks/useKeyboard'
 import { useMediaQuery } from './hooks/useMediaQuery'
 import { useWorkspaces } from './hooks/useWorkspaces'
 import { Code2, History, LayoutGrid, Settings, User, Workflow } from 'lucide-react'
 
-// Lazy-load heavy pages — only downloaded when first visited
-const Gallery         = lazy(() => import('./pages/Gallery'))
-const AppPage         = lazy(() => import('./pages/AppPage'))
-const AppDocsPage     = lazy(() => import('./pages/AppDocsPage'))
-const AppEmbedPage    = lazy(() => import('./pages/AppEmbedPage'))
-const OverviewPage    = lazy(() => import('./pages/OverviewPage'))
-const SettingsPage    = lazy(() => import('./pages/SettingsPage'))
-const AlertsPage      = lazy(() => import('./pages/AlertsPage'))
-const ProfilesPage    = lazy(() => import('./pages/ProfilesPage'))
-const FlowsPage       = lazy(() => import('./pages/FlowsPage'))
-const GoalsPage       = lazy(() => import('./pages/GoalsPage'))
-const EventsPage      = lazy(() => import('./pages/EventsPage'))
-const DataSourcesPage = lazy(() => import('./pages/DataSourcesPage'))
-const IntegrationsPage = lazy(() => import('./pages/IntegrationsPage'))
-const AdminPage       = lazy(() => import('./pages/AdminPage'))
-const ModeratorPage   = lazy(() => import('./pages/ModeratorPage'))
-const AnalyticsPage   = lazy(() => import('./pages/AnalyticsPage'))
-const ReportsPage     = lazy(() => import('./pages/ReportsPage'))
-const DevStudioPage    = lazy(() => import('./pages/DevStudioPage'))
-const KnowledgeVaultPage = lazy(() => import('./pages/KnowledgeVaultPage'))
-const PrivacyPage       = lazy(() => import('./pages/LegalPages').then(m => ({ default: m.PrivacyPage })))
-const TermsPage         = lazy(() => import('./pages/LegalPages').then(m => ({ default: m.TermsPage })))
-const MarketplacePage    = lazy(() => import('./pages/MarketplacePage').then(m => ({ default: m.MarketplacePage })))
-const MarketplaceAppPage = lazy(() => import('./pages/MarketplacePage').then(m => ({ default: m.MarketplaceAppPage })))
-const DeveloperProfilePage = lazy(() => import('./pages/DeveloperProfilePage'))
-const InvitePage           = lazy(() => import('./pages/InvitePage'))
+const FlowsPage = lazy(() => import('./screens/FlowsPage'))
+const PrivacyPage = lazy(() => import('./screens/LegalPages').then(m => ({ default: m.PrivacyPage })))
+const TermsPage = lazy(() => import('./screens/LegalPages').then(m => ({ default: m.TermsPage })))
 
 // Lazy-load modal/panel components — all of these are gated behind a `show*`
 // toggle and never needed for the initial shell render, so there's no reason
@@ -105,7 +85,7 @@ function shouldShowStarterOnboarding(pathname = window.location.pathname) {
   return currentMode !== 'developer' && !isDeveloperExperiencePath(pathname)
 }
 
-export default function App() {
+export default function App({ routeContent }) {
   const [selectedApp, setSelectedApp] = useState(null)
   const [openFlowId, setOpenFlowId] = useState(null)   // a workflow picked in the Business left pane
   const [session, setSession] = useState(null)
@@ -337,15 +317,11 @@ export default function App() {
   const PublicPage = PUBLIC_PAGES[location.pathname]
   if (PublicPage) return <Suspense fallback={null}><PublicPage /></Suspense>
 
-  // Widgets are framed into other websites: they must render for signed-out
-  // visitors too (AppEmbedPage shows its own sign-in gate when needed).
-  if (location.pathname.startsWith('/embed/')) {
-    return (
-      <Routes>
-        <Route path="/embed/:id" element={<Suspense fallback={null}><AppEmbedPage /></Suspense>} />
-      </Routes>
-    )
-  }
+  const standalone = standaloneScreen(location.pathname)
+  // Visitor embeds do not need a user or workspace bootstrap.
+  if (standalone === 'embed') return <WorkspaceRouteContext.Provider value={{ user: session?.user, activeView }}>
+    <Suspense fallback={null}>{routeContent || <WorkspaceScreens screen="embed" />}</Suspense>
+  </WorkspaceRouteContext.Provider>
 
   if (loading && activeView === 'developer') return <DeveloperLoading />
 
@@ -357,15 +333,9 @@ export default function App() {
 
   if (!session) return <Auth developer={activeView === 'developer'} />
 
-  // Invite links: signed-out visitors log in first (the path is remembered
-  // above and restored after login), then the invite is accepted here.
-  if (location.pathname.startsWith('/invite/')) {
-    return (
-      <Routes>
-        <Route path="/invite/:token" element={<Suspense fallback={null}><InvitePage user={session.user} /></Suspense>} />
-      </Routes>
-    )
-  }
+  if (standalone) return <WorkspaceRouteContext.Provider value={{ user: session.user, activeView, changeView }}>
+    <Suspense fallback={null}>{routeContent || <WorkspaceScreens screen={standalone} user={session.user} />}</Suspense>
+  </WorkspaceRouteContext.Provider>
 
   if (workspaces.loading && activeView === 'developer') return <DeveloperLoading />
 
@@ -440,38 +410,23 @@ export default function App() {
             </ErrorBoundary>
   ) : null
 
-  const viewMap = {
-    overview:    <OverviewPage    user={session.user} onSelectApp={app => { setSelectedApp(app); navigateToView('apps') }} />,
-    profiles:    <ProfilesPage    user={session.user} />,
-    history:     <RunHistory      user={session.user} onClose={() => changeView('flows')} inline />,
-    flows:       null, // handled by shared build container below
-    goals:       <GoalsPage       user={session.user} />,
-    events:      <EventsPage      user={session.user} onRunEvent={event => { setSelectedApp({ id: event.app_id, name: event.app_name, emoji: event.app_emoji }); navigateToView('apps') }} />,
-    analytics:   <AnalyticsPage   user={session.user} />,
-    reports:     <ReportsPage     user={session.user} />,
-    settings:    <SettingsPage    user={session.user} />,
-    alerts:      <AlertsPage      user={session.user} />,
-    developer:   <DevStudioPage creationContent={creationFlow} navigationGuardRef={buildNavigationGuardRef} user={session.user} onOpenCreate={() => setShowTypeSelector(true)} onShowSettings={() => setShowSettings(true)} onShowProfile={() => setShowProfile(true)} noKeys={noKeys} onNavChange={changeView} search={search} onSearch={setSearch} searchRef={searchInputRef} createdApp={createdApp} onCreatedAppConsumed={() => setCreatedApp(null)} />,
-    data_sources:<DataSourcesPage user={session.user} />,
-    integrations:<IntegrationsPage user={session.user} />,
-    admin:          isAdmin(userRole)     ? <AdminPage          user={session.user} /> : null,
-    moderator:      isModerator(userRole) ? <ModeratorPage      user={session.user} userRole={userRole} /> : null,
-    knowledge_vault: <KnowledgeVaultPage user={session.user} />,
-    marketplace:     location.pathname.startsWith('/marketplace/')
-                       ? <MarketplaceAppPage appId={location.pathname.split('/marketplace/')[1]?.split('/')[0]} />
-                       : <MarketplacePage user={session.user} />,
+  const screenContext = {
+    user: session.user, userRole, activeView, changeView, pathname: location.pathname,
+    onSelectApp: app => { setSelectedApp(app); navigateToView('apps') },
+    onRunEvent: event => { setSelectedApp({ id: event.app_id, name: event.app_name, emoji: event.app_emoji }); navigateToView('apps') },
+    developerProps: {
+      creationContent: creationFlow, navigationGuardRef: buildNavigationGuardRef,
+      onOpenCreate: () => setShowTypeSelector(true), onShowSettings: () => setShowSettings(true),
+      onShowProfile: () => setShowProfile(true), noKeys, onNavChange: changeView,
+      search, onSearch: setSearch, searchRef: searchInputRef, createdApp,
+      onCreatedAppConsumed: () => setCreatedApp(null),
+    },
   }
-
-  const activePage = viewMap[activeView]
+  const activePage = routeContent
+    ? <WorkspaceRouteContext.Provider value={screenContext}>{routeContent}</WorkspaceRouteContext.Provider>
+    : <WorkspaceScreens {...screenContext} screen={activeView} />
 
   return (
-    <Routes>
-      <Route path="/app/:id" element={<Suspense fallback={null}><AppPage /></Suspense>} />
-      <Route path="/app/:id/docs" element={<Suspense fallback={null}><AppDocsPage /></Suspense>} />
-      <Route path="/embed/:id" element={<Suspense fallback={null}><AppEmbedPage /></Suspense>} />
-      <Route path="/gallery" element={<Suspense fallback={null}><Gallery /></Suspense>} />
-      <Route path="/dev/:userId" element={<Suspense fallback={null}><DeveloperProfilePage /></Suspense>} />
-      <Route path="/*" element={
         // Keyed by workspace: switching remounts the shell so every page
         // reloads its data for the newly active workspace.
         <DeveloperShell active badge={activeView === 'developer' ? 'Developer' : 'Business'} key={workspaces.active?.id || 'no-workspace'} className={`app-shell flex h-dvh overflow-hidden bg-[#09101F] ${activeView !== 'developer' ? 'business-workspace' : ''}`}>
@@ -555,7 +510,7 @@ export default function App() {
             <main className={`relative flex flex-1 overflow-hidden ${activeView === 'developer' ? '' : 'pb-14 md:pb-0'}`} onClick={() => activeView === 'apps' && setSelectedApp(null)}>
               {/* Shared build container — flows + apps stay mounted; only the active layer animates in */}
               {buildMounted && (
-                <div className={`absolute inset-0 flex overflow-hidden ${(activeView === 'flows' || activeView === 'apps') ? '' : 'hidden'}`}>
+                <div data-workspace-route={activeView === 'apps' || activeView === 'flows' ? activeView : undefined} className={`absolute inset-0 flex overflow-hidden ${(activeView === 'flows' || activeView === 'apps') ? '' : 'hidden'}`}>
                   {/* AI Workflows layer */}
                   <div className={activeView === 'flows' ? 'page-layer-active' : 'page-layer-hidden'}>
                     <ErrorBoundary compact title="AI Workflows couldn't load">
@@ -678,7 +633,5 @@ export default function App() {
             </Suspense></ErrorBoundary>
           )}
         </DeveloperShell>
-      } />
-    </Routes>
   )
 }

@@ -22,13 +22,15 @@ export function marketListing(app) {
   }
 }
 
-export async function loadMarketApps(client) {
+export async function loadMarketApps(client, { select = MARKET_APP_SELECT, developerId } = {}) {
   const apps = []
   // PostgREST caps responses. Read every page so search/category filters
   // include the whole catalog, rather than just the first server page.
   for (let start = 0; ; start += CHUNK_SIZE) {
-    const { data, error } = await client.from('apps').select(MARKET_APP_SELECT)
+    let query = client.from('apps').select(select)
       .eq('is_published', true).eq('visibility', 'public')
+    if (developerId) query = query.eq('created_by', developerId)
+    const { data, error } = await query
       .order('created_at', { ascending: false }).order('id', { ascending: true })
       .range(start, start + CHUNK_SIZE - 1)
     if (error) throw new Error(error.message)
@@ -38,8 +40,8 @@ export async function loadMarketApps(client) {
   return apps.map(marketListing)
 }
 
-export async function loadMarketApp(client, id) {
-  const { data, error } = await client.from('apps').select(MARKET_APP_SELECT)
+export async function loadMarketApp(client, id, { select = MARKET_APP_SELECT } = {}) {
+  const { data, error } = await client.from('apps').select(select)
     .eq('id', id).eq('is_published', true).eq('visibility', 'public').maybeSingle()
   if (error) throw new Error(error.message)
   return data ? marketListing(data) : null

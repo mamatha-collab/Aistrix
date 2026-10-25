@@ -396,4 +396,31 @@ async def lose_worker():
 ok("lease loss cancels the active step and prevents later steps", run(lose_worker()) and ENTERED == [0] and CANCELLED == [0])
 main.run_flow_step, main._heartbeat_flow_run = real_step, real_heartbeat
 
+# Developer and Business share workflow identity, permissions and runtime.
+shared = flow([{"id": "s1", "app_id": "writer", "app_name": "Published", "version": "published"}])
+SB.db["flow_members"] = [{"flow_id": shared["id"], "user_id": OTHER, "role": "viewer"}]
+OH = {"Authorization": "Bearer jwt-other"}
+CALLS.clear()
+live = c.post(f"/v1/flows/{shared['id']}/runs", json={"wait": True, "live": True, "input": "hello"}, headers=OH)
+ok("shared viewers run published workflows from Business", live.status_code == 200 and live.json().get("status") == "done", live.json())
+ok("Business run uses the same published app snapshot", CALLS and "LIVE WRITER v3" in CALLS[-1]["system"])
+ok("shared viewers cannot test drafts", c.post(f"/v1/flows/{shared['id']}/runs", json={"wait": True}, headers=OH).status_code == 404)
+owner_run = c.post(f"/v1/flows/{shared['id']}/runs", json={"wait": True, "live": True}, headers=H).json()
+ok("viewers cannot read another person's run", c.get(f"/v1/flows/{shared['id']}/runs/{owner_run['id']}", headers=OH).status_code == 404)
+viewer_runs = c.get(f"/v1/flows/{shared['id']}/runs", headers=OH).json().get("runs", [])
+ok("viewer run history contains only their own runs", len(viewer_runs) == 1 and all(r["user_id"] == OTHER for r in viewer_runs))
+ok("viewers cannot manage schedules", c.put(f"/v1/flows/{shared['id']}/schedule", json={"hour_utc": 9}, headers=OH).status_code == 404)
+ok("Business refuses explicit draft steps even for the owner", c.post(f"/v1/flows/{d['id']}/runs", json={"live": True, "wait": True}, headers=H).status_code == 409)
+legacy_unpublished = flow([{"id": "s1", "app_id": "newapp", "app_name": "Unpublished"}])
+blocked = c.post(f"/v1/flows/{legacy_unpublished['id']}/runs", json={"live": True, "wait": True}, headers=H).json()
+ok("Business cannot fall back to an owner's unpublished legacy draft", blocked.get("status") == "failed" and "isn't published" in blocked.get("error", ""), blocked)
+SB.db["flow_members"] = []
+ok("revoked members lose runtime access", c.get(f"/v1/flows/{shared['id']}/runs/{live.json()['id']}", headers=OH).status_code == 404)
+
+live_pause = flow([{"id": "s1", "step_type": "human_approval", "app_name": "Review"},
+                   {"id": "s2", "app_id": "newapp", "app_name": "Unpublished"}])
+paused_live = c.post(f"/v1/flows/{live_pause['id']}/runs", json={"live": True, "wait": True}, headers=H).json()
+resumed_live = c.post(f"/v1/flows/{live_pause['id']}/runs/{paused_live['id']}/resume", json={"approve": True, "wait": True}, headers=H).json()
+ok("Business approval resume retains release-only execution", resumed_live.get("status") == "failed" and "isn't published" in resumed_live.get("error", ""), resumed_live)
+
 finish()

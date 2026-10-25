@@ -4,6 +4,7 @@ import { defineConfig } from '@playwright/test'
 // persistence and API responses. No account, provider calls or cloud writes.
 export default defineConfig({
   testDir: './e2e/local',
+  outputDir: './test-results/local',
   testMatch: /.*\.e2e\.js$/,
   timeout: 45_000,
   expect: { timeout: 10_000 },

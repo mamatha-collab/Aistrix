@@ -1,3 +1,5 @@
+import { isWiredWorkflow, updateWorkflowRecord } from '../workflows/workflowApi'
+import { WorkflowTest, WorkflowRuns } from '../workflows/WorkflowRunPanels'
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
@@ -44,7 +46,7 @@ function NativeStepForm({ schema, values, onChange }) {
   )
 }
 
-export default function FlowRunner({ flow, user, onClose, onShowHistory, onRunComplete }) {
+function LegacyFlowRunner({ flow, user, onClose, onShowHistory, onRunComplete }) {
   const [stepIndex, setStepIndex] = useState(0)
   const [inputs, setInputs] = useState({})
   const [formValues, setFormValues] = useState({})
@@ -388,8 +390,8 @@ export default function FlowRunner({ flow, user, onClose, onShowHistory, onRunCo
             const mergedProv = { ...prevProv }
             const now = new Date().toISOString()
             for (const key of Object.keys(facts)) mergedProv[key] = { step_name: current.app_name, step_index: stepIndex, updated_at: now }
-            supabase.from('flows').update({ memory: merged, memory_provenance: mergedProv }).eq('id', flow.id)
-              .then(({ error }) => { if (error) toast(`Learned facts weren't saved: ${error.message}`, 'error') })
+            updateWorkflowRecord(flow.id, { memory: merged, memory_provenance: mergedProv })
+              .catch(error => toast(`Learned facts weren't saved: ${error.message}`, 'error'))
             return mergedProv
           })
           return merged
@@ -438,8 +440,8 @@ export default function FlowRunner({ flow, user, onClose, onShowHistory, onRunCo
       setProvenance(prevProv => {
         const mergedProv = { ...prevProv }
         delete mergedProv[key]
-        supabase.from('flows').update({ memory: merged, memory_provenance: mergedProv }).eq('id', flow.id)
-          .then(({ error }) => { if (error) toast(`Delete wasn't saved: ${error.message}`, 'error') })
+        updateWorkflowRecord(flow.id, { memory: merged, memory_provenance: mergedProv })
+          .catch(error => toast(`Delete wasn't saved: ${error.message}`, 'error'))
         return mergedProv
       })
       return merged
@@ -875,4 +877,21 @@ export default function FlowRunner({ flow, user, onClose, onShowHistory, onRunCo
       </div>
     </div>
   )
+}
+
+
+export default function FlowRunner(props) {
+  const [view, setView] = useState('run')
+  if (!isWiredWorkflow(props.flow)) return <LegacyFlowRunner {...props} />
+  return <div role="dialog" aria-modal="true" aria-label={props.flow.name} className="fixed inset-0 z-50 overflow-auto bg-[#0E1424] p-4 sm:p-6">
+    <div className="mb-4 flex items-center justify-between gap-3">
+      <h2 className="text-lg font-semibold text-white">{props.flow.name}</h2>
+      <button onClick={props.onClose} className="text-sm text-slate-300">Close workflow</button>
+    </div>
+    <div className="mb-4 flex gap-4 text-sm text-slate-300">
+      <button onClick={() => setView('run')} aria-current={view === 'run' ? 'page' : undefined}>Run workflow</button>
+      <button onClick={() => setView('runs')} aria-current={view === 'runs' ? 'page' : undefined}>Run history</button>
+    </div>
+    {view === 'run' ? <WorkflowTest key={props.flow.id} flow={props.flow} mode="live" /> : <WorkflowRuns key={props.flow.id} flow={props.flow} />}
+  </div>
 }

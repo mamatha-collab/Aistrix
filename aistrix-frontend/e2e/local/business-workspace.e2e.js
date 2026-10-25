@@ -60,7 +60,7 @@ test('Market highlights the catalog with discovery controls and settings in the 
     expect(row.height).toBe(93)
     expect(search.y).toBeGreaterThanOrEqual(row.y)
     expect(search.y+search.height).toBeLessThanOrEqual(row.y+row.height)
-    await expect(page.getByRole('navigation',{name:'Business sections'}).getByRole('button',{name:'Market',exact:true})).toHaveAttribute('aria-current','page')
+    await expect(page.getByRole('navigation',{name:'Business sections'}).getByRole('button',{name:'Marketplace',exact:true})).toHaveAttribute('aria-current','page')
   }
   await toolbar.getByLabel('Price filter').selectOption('paid')
   await expect(page.getByText('0 apps available',{exact:true})).toBeVisible()
@@ -89,7 +89,7 @@ test('Market highlights the catalog with discovery controls and settings in the 
   if (!isMobile) {
     await page.getByRole('button',{name:'Collapse the side panel'}).click()
     await expect(page.locator('aside')).toHaveCSS('width','56px')
-    await expect(page.getByRole('navigation',{name:'Business sections'}).getByRole('button',{name:'Market',exact:true})).toBeVisible()
+    await expect(page.getByRole('navigation',{name:'Business sections'}).getByRole('button',{name:'Marketplace',exact:true})).toBeVisible()
     await page.getByRole('button',{name:'Expand the side panel'}).click()
     const frameBefore=await page.locator('[data-frame-nav]').boundingBox()
     const mainBefore=await page.locator('main').boundingBox()

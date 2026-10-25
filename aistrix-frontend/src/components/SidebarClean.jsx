@@ -1,25 +1,13 @@
+import { BUSINESS_NAV } from '../lib/entities'
 import AistrixWordmark from './AistrixWordmark'
 import { DeveloperRowSection, DeveloperSidebarBrand, DeveloperSidebarSlot, useDeveloperSidebar, useShellFramed } from './DeveloperShell'
 import BusinessPane from './BusinessPane'
 import { useState, useEffect } from 'react'
 import {
-  BarChart3,
-  Bell,
-  BookOpen,
   Briefcase,
   CodeXml,
-  Box,
-  ChartColumn,
   ChevronDown,
-  CircleDot,
-  Database,
-  History,
-  Link,
-  Settings,
   Shield,
-  ShoppingBag,
-  User,
-  Workflow,
   X,
   Zap,
 } from 'lucide-react'
@@ -27,26 +15,6 @@ import {
 import { BRAND } from '../lib/brand'
 
 const DEVELOPER_NAV = []
-
-const BUSINESS_NAV = [
-  { label: 'WORKSPACE', alwaysOpen: true, items: [
-    { icon: ShoppingBag, label: 'Marketplace', view: 'marketplace' },
-    { icon: Box,          label: 'My apps',         view: 'apps' },
-    { icon: Workflow,     label: 'Workflows',    view: 'flows' },
-  ]},
-  { label: 'SETTINGS & TOOLS', items: [
-    { icon: Settings, label: 'Account & workspace', view: 'settings' },
-    { icon: BookOpen, label: 'Knowledge Vault', view: 'knowledge_vault' },
-    { icon: CircleDot, label: 'Overview',  view: 'overview' },
-    { icon: History,   label: 'History',   view: 'history' },
-    { icon: BarChart3, label: 'Analytics', view: 'analytics' },
-    { icon: Bell,      label: 'Alerts',    view: 'alerts' },
-    { icon: Database, label: 'Data Sources', view: 'data_sources' },
-    { icon: Link,     label: 'Integrations', view: 'integrations' },
-    { icon: User,        label: 'Profiles', view: 'profiles' },
-    { icon: ChartColumn, label: 'Usage',    view: 'reports' },
-  ]},
-]
 
 export default function SidebarClean({ user, userRole, onClose, activeView, onNavChange, mode, onModeChange, onSelectApp, onOpenFlow, paneRefreshKey }) {
 

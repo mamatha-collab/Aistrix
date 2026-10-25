@@ -13,7 +13,7 @@ function fakeBrowser() {
 
 async function load() {
   vi.resetModules()
-  vi.stubEnv('VITE_POSTHOG_KEY', 'phc_test')
+  vi.stubEnv('NEXT_PUBLIC_POSTHOG_KEY', 'phc_test')
   return import('./analytics')
 }
 const settle = () => new Promise(resolve => setTimeout(resolve, 0))
@@ -73,12 +73,16 @@ describe('the cookie notice', () => {
   beforeEach(() => { vi.clearAllMocks(); fakeBrowser() })
 
   it('asks with Accept and Decline and links the Privacy Policy, until a choice is made', async () => {
-    await load()
+    const analytics = await load()
     const { renderToStaticMarkup } = await import('react-dom/server')
     const { createElement } = await import('react')
-    const { MemoryRouter } = await import('react-router-dom')
-    const { default: CookieConsent } = await import('../components/CookieConsent.jsx')
-    const html = () => renderToStaticMarkup(createElement(MemoryRouter, null, createElement(CookieConsent)))
+    const { default: CookieConsent, CookieConsentDialog } = await import('../components/CookieConsent.jsx')
+    // The initial server/client tree is deliberately identical; browser storage
+    // is consulted only after hydration by CookieConsent's effect.
+    expect(renderToStaticMarkup(createElement(CookieConsent))).toBe('')
+    const html = () => renderToStaticMarkup(createElement(CookieConsentDialog, {
+      open: analytics.analyticsConfigured && !analytics.consentChoice(), onChoice: analytics.setConsent,
+    }))
     expect(html()).toContain('aria-label="Cookie choice"')
     expect(html()).toContain('>Accept</button>')
     expect(html()).toContain('>Decline</button>')

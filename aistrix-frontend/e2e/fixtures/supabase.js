@@ -67,6 +67,7 @@ class Query {
   eq(key, value) { this.filters.push(row => key.split('.').reduce((item, part) => item?.[part], row) === value); return this }
   or(expression) { const alternatives = expression.split(',').map(part => part.split('.eq.')); this.filters.push(row => alternatives.some(([key,value]) => String(row[key]) === value)); return this }
   in(key, values) { this.filters.push(row => values.includes(row[key])); return this }
+  gte(key, value) { this.filters.push(row => row[key] != null && row[key] >= value); return this }
   is(key, value) { this.filters.push(row => (row[key] ?? null) === value); return this }
   not(key, operator, value) {
     if (operator !== 'is') throw new Error(`Unsupported fixture operator: ${operator}`)
@@ -93,6 +94,9 @@ class Query {
     return wait.then(() => this.execute()).then(resolve, reject)
   }
   execute() {
+    if (this.table === 'public_developer_profiles' && !state.tables.public_developer_profiles) {
+      return { data: null, error: { code: 'PGRST205', message: 'Could not find public_developer_profiles in the schema cache' } }
+    }
     const failureKey = `${this.table}:${this.op}`
     if (state.failures[failureKey]) return { data: null, error: { message: state.failures[failureKey], code: 'FIXTURE_ERROR' } }
     const rows = state.tables[this.table] ||= []

@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from '../supabase'
 import { errorFromResponse } from './runErrors'
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
 // Display details that aren't part of the API response.
 export const PROVIDER_STYLE = {

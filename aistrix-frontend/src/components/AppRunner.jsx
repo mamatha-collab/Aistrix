@@ -142,7 +142,7 @@ async function findNextAppRecommendation(app, userId) {
   return null
 }
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 const BATCH_MAX_ROWS = 500
 const BATCH_DONE_STATUSES = new Set(['completed', 'completed_with_errors', 'stopped', 'cancelled', 'failed'])
 

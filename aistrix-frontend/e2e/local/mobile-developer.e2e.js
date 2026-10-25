@@ -25,7 +25,7 @@ test('phone opens a clean monitoring workspace with four destinations', async ({
 
 test('apps are grouped and feedback expands only when requested', async ({ page }, testInfo) => {
   await page.goto('/e2e/fixtures/?scenario=operations')
-  await nav(page).getByRole('button', { name: 'Apps', exact: true }).click()
+  await nav(page).getByRole('button', { name: 'My apps', exact: true }).click()
   await expect(page.getByRole('heading', { name: /Live apps · 1/ })).toBeVisible()
   await expect(page.getByRole('heading', { name: /In Build · 1/ })).toBeVisible()
   await page.getByRole('button').filter({ has: page.getByText('Fixture Assistant', { exact: true }) }).click()
@@ -70,7 +70,7 @@ test('release maintenance requires confirmation and preserves the draft', async 
     const app = window.buildFixture.tables.apps[0]
     window.buildFixture.tables.app_versions = [1, 2].map(version_num => ({ app_id: app.id, version_num, version_data: { ...app.prod_snapshot, system_prompt: `Released prompt ${version_num}` }, created_at: new Date().toISOString(), changelog: `Release ${version_num}` }))
   })
-  await nav(page).getByRole('button', { name: 'Apps', exact: true }).click()
+  await nav(page).getByRole('button', { name: 'My apps', exact: true }).click()
   await page.getByRole('button').filter({ has: page.getByText('Fixture Assistant', { exact: true }) }).click()
   await page.getByRole('button', { name: 'Release history', exact: true }).click()
   await page.getByRole('button', { name: 'Roll back', exact: true }).click()

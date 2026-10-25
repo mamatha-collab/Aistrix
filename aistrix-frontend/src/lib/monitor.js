@@ -4,7 +4,7 @@
 import { supabase } from '../supabase'
 import { errorFromResponse } from './runStream'
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 export const MONITOR_PERIODS = [[1, '24 hours'], [7, '7 days'], [30, '30 days']]
 
 async function get(path, fallback, signal) {

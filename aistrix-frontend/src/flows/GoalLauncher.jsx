@@ -1,5 +1,5 @@
+import { createWorkflowRecord } from '../workflows/workflowApi'
 import { useState } from 'react'
-import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { QUICK_START_TEMPLATES, PACK_COLORS } from './flowConstants'
 
@@ -30,10 +30,7 @@ export function GoalLauncher({ apps, flows, userId, onInstalled, onRunFlow }) {
           || apps.find(a => a.name.toLowerCase().includes(lower) || lower.includes(a.name.toLowerCase()))
         return match ? { app_id: match.id, app_name: match.name, app_emoji: match.emoji } : null
       }).filter(Boolean)
-      const { data, error } = await supabase.from('flows').insert({
-        user_id: userId, name: tpl.name, emoji: tpl.emoji, description: tpl.desc, steps,
-      }).select().single()
-      if (error) throw error
+      const data = await createWorkflowRecord({ id: userId }, { name: tpl.name, emoji: tpl.emoji, description: tpl.desc, steps })
       onInstalled(data)
       toast(`"${tpl.name}" ready — ${steps.length} steps`, 'success')
       setQuery(''); setFocused(false)

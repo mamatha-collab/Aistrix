@@ -1,45 +1,12 @@
-import { StrictMode } from 'react'
-import * as Sentry from '@sentry/react'
-
-// Sentry — only initialises if DSN is provided
-if (import.meta.env.VITE_SENTRY_DSN) {
-  Sentry.init({
-    dsn: import.meta.env.VITE_SENTRY_DSN,
-    environment: import.meta.env.VITE_ENVIRONMENT || 'production',
-    integrations: [Sentry.browserTracingIntegration()],
-    tracesSampleRate: 0.1,
-    // Only skip if explicitly set to 'skip' — allows testing in dev
-    beforeSend: (event) => import.meta.env.VITE_SENTRY_DISABLE === 'true' ? null : event,
-  })
-}
-import { initTheme } from './utils/theme.js'
-initTheme()
-import { installApiWorkspaceHeader } from './lib/workspace.js'
-installApiWorkspaceHeader()
+import { createRoot } from 'react-dom/client'
+import BrowserApplication from './BrowserApplication.jsx'
+import LegacyBrowserNavigation from './legacy-navigation.jsx'
+import './index.css'
 import { reloadOnceForNewVersion } from './utils/chunkReload.js'
-// Vite fires this when a lazily-loaded file is gone after a deploy: reload
-// once to get the new build instead of failing.
+
+// Retained only for the Vite rollback/test build during the Next.js migration.
 window.addEventListener('vite:preloadError', event => {
   if (reloadOnceForNewVersion()) event.preventDefault()
 })
-import { createRoot } from 'react-dom/client'
-import { BrowserRouter } from 'react-router-dom'
-import './index.css'
-import App from './App.jsx'
-import { ToastProvider } from './components/Toast.jsx'
-import ErrorBoundary from './components/ErrorBoundary.jsx'
-import CookieConsent from './components/CookieConsent.jsx'
-import SafeCard from './components/SafeCard.jsx'
 
-createRoot(document.getElementById('root')).render(
-  <StrictMode>
-    <ErrorBoundary>
-      <BrowserRouter>
-        <ToastProvider>
-          <App />
-          <SafeCard name="Cookie notice" quiet><CookieConsent /></SafeCard>
-        </ToastProvider>
-      </BrowserRouter>
-    </ErrorBoundary>
-  </StrictMode>,
-)
+createRoot(document.getElementById('root')).render(<BrowserApplication RouterComponent={LegacyBrowserNavigation} />)

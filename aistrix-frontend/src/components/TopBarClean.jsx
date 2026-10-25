@@ -1,3 +1,4 @@
+import { BUSINESS_NAV } from '../lib/entities'
 import { useState, useRef, useEffect } from 'react'
 import { CirclePlay, KeyRound, LogOut, Menu, Moon, Search, Settings, Sun, X } from 'lucide-react'
 import NotificationsPanel from './NotificationsPanel'
@@ -10,7 +11,7 @@ import { signOutOnPurpose } from '../lib/session'
 import { supabase } from '../supabase'
 import '../marketplace.css'
 
-const TITLES = { apps:'Apps', flows:'Workflows', marketplace:'Marketplace', overview:'Overview', history:'Run history', analytics:'Analytics', reports:'Usage & reports', events:'Schedules', goals:'Goals', alerts:'Alerts', profiles:'Profiles', integrations:'Integrations', settings:'Settings', data_sources:'Data sources', knowledge_vault:'Knowledge vault', admin:'Administration', moderator:'Moderation' }
+const TITLES = { ...Object.fromEntries(BUSINESS_NAV.flatMap(group => group.items).map(item => [item.view, item.label])), events:'Schedules', goals:'Goals', admin:'Administration', moderator:'Moderation' }
 
 export default function TopBarClean({ onShowHistory, onShowSettings, onToggleSidebar, search='', onSearch, searchRef, user, onNavChange, activeView, marketDetail = false,
   workspaces=[], activeWorkspace, onSwitchWorkspace, onCreateWorkspace, onManageWorkspace }) {

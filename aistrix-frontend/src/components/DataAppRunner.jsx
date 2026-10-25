@@ -7,7 +7,7 @@ import RunRating from './RunRating'
 import { friendlyErrorMessage } from '../utils/appActions'
 import { normaliseUrl, readUrl } from '../lib/runStream'
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 // Must stay under the backend's MAX_INPUT_LENGTH (20k chars by default).
 const CHUNK_CHARS = 15000
 const MAX_CHUNKS = 12

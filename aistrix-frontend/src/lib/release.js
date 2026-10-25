@@ -4,7 +4,7 @@
 import { supabase } from '../supabase'
 import { RunError, errorFromResponse } from './runStream'
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
 async function headers() {
   const { data: { session } } = await supabase.auth.getSession()

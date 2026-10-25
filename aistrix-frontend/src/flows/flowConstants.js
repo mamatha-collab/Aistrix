@@ -1,5 +1,5 @@
 import { BRAND, BRAND_DOMAIN } from '../lib/brand'
-export const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+export const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 export const EMOJIS = ['⚡','🔗','🔄','📋','🧩','🚀','💡','🎯','📈','🛠️','💼','🎓','🔬','✍️','📊']
 
 export const QUICK_START_TEMPLATES = [

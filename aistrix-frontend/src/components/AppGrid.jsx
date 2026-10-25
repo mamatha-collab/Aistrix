@@ -1,3 +1,4 @@
+import { createWorkflowRecord } from '../workflows/workflowApi'
 import { useState, useEffect, useMemo } from 'react'
 import { APP_PUBLIC_SELECT, withPrivateFields } from '../lib/appColumns'
 import { publishApp, unpublishApp } from '../lib/release'
@@ -145,15 +146,13 @@ function DomainTemplateCard({ domain, domainApps, selectedApp, user, onSelectApp
       setInstalled(true); setInstalling(false)
       onNavChange?.('flows'); return
     }
-    const { error } = await supabase.from('flows').insert({
-      user_id: user.id,
+    try { await createWorkflowRecord(user, {
       name: `${domain.name} Workflow`,
       emoji: domain.emoji,
       description: domain.description || `A complete ${domain.name.toLowerCase()} workflow`,
       steps: domainApps.map(a => ({ app_id: a.id, app_name: a.name, app_emoji: a.emoji })),
-    })
-    setInstalling(false)
-    if (error) { toast(`Couldn't install this workflow: ${error.message}`, 'error'); return }
+    }) } catch (error) { toast(`Couldn't install this workflow: ${error.message}`, 'error'); return }
+    finally { setInstalling(false) }
     setInstalled(true)
     onNavChange?.('flows')
   }

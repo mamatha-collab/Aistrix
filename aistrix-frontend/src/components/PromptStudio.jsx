@@ -7,7 +7,7 @@ import { useToast } from '../hooks/useToast'
 import { saveAppFields } from '../lib/appFields'
 import ConfirmDialog from './ConfirmDialog'
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
 // ─── Model cost table (USD per 1M tokens) ────────────────────────────────────
 const MODEL_COSTS = {

@@ -1,3 +1,4 @@
+import { getAppTypeMeta } from '../lib/appTypes'
 import { useRef, useState } from 'react'
 import { APP_PUBLIC_SELECT } from '../lib/appColumns'
 import { persistBlueprintPhase } from '../lib/blueprintStorage'
@@ -82,7 +83,7 @@ Rules:
 const APP_TYPES = ['prompt', 'native', 'structured', 'data', 'chatbot']
 
 // The names developers see in the type picker.
-const TYPE_NAMES = { prompt: 'Prompt App', native: 'Form App', structured: 'Structured Output', data: 'Data App', chatbot: 'Chatbot' }
+const TYPE_NAMES = Object.fromEntries(APP_TYPES.map(type => [type, getAppTypeMeta(type).label]))
 
 // The builder's note is for developers, not engineers: translate any internal
 // names that slip through ('native', key_value, output_fields…).

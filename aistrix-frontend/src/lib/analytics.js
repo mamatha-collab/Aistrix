@@ -1,7 +1,7 @@
 /**
  * Analytics — thin PostHog wrapper.
  *
- * Initialises PostHog once from VITE_POSTHOG_KEY / VITE_POSTHOG_HOST.
+ * Initialises PostHog once from NEXT_PUBLIC_POSTHOG_KEY / NEXT_PUBLIC_POSTHOG_HOST.
  * All exports are no-ops when the key is absent, so callers never need
  * to guard every call site.
  *
@@ -10,8 +10,8 @@
  *   track('app_run_completed', { app_id, app_name, provider })
  */
 
-const KEY  = import.meta.env.VITE_POSTHOG_KEY
-const HOST = import.meta.env.VITE_POSTHOG_HOST || 'https://app.posthog.com'
+const KEY  = process.env.NEXT_PUBLIC_POSTHOG_KEY
+const HOST = process.env.NEXT_PUBLIC_POSTHOG_HOST || 'https://app.posthog.com'
 
 // Analytics cookies need the visitor's consent first (CookieConsent): nothing
 // is loaded or sent until they accept, and declining (or withdrawing) stops it.

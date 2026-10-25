@@ -421,7 +421,9 @@ def assert_public_url(url: str) -> None:
         infos = socket.getaddrinfo(hostname, None)
     except socket.gaierror:
         raise ValueError("Could not resolve host")
-    if not infos or not any(_is_public_ip(info[4][0]) for info in infos):
+    # A resolver/client can choose any returned address. One public answer
+    # must not authorize a second private/internal destination.
+    if not infos or not all(_is_public_ip(info[4][0]) for info in infos):
         raise ValueError("URL resolves to a non-public address, which is not allowed")
 
 
@@ -3983,7 +3985,7 @@ async def _step_release(app_row: dict, step: dict, caller: "ApiCaller", trigger:
     configuration, for authorized testing only: someone who can edit the
     app, running the workflow themselves — never on a schedule or webhook."""
     if step.get("version") == "draft":
-        if trigger != "interactive":
+        if trigger != "interactive" or caller.live:
             return None, ("uses the app's draft. Drafts only run when someone who can edit the app tests "
                           "the workflow; switch the step to a published release.")
         if not await can_edit_app(app_row, caller):
@@ -4003,7 +4005,7 @@ async def _step_release(app_row: dict, step: dict, caller: "ApiCaller", trigger:
     if prod:
         return (live_num, prod), None
     # Workflows saved before steps had a version ran the draft for its editors.
-    if trigger == "interactive" and not step.get("version") and await can_edit_app(app_row, caller):
+    if trigger == "interactive" and not caller.live and not step.get("version") and await can_edit_app(app_row, caller):
         return None, None
     return None, "uses an app that isn't published yet"
 
@@ -6351,6 +6353,7 @@ async def trigger_via_webhook(token: str, request: Request):
 
 # ─── Workflow runs from Dev Studio (Workflows → Test) ────────────────────────
 class FlowRunStart(BaseModel):
+    live: bool = False        # Business executes published releases; Developer may test drafts.
     input: str = Field(default="", max_length=MAX_INPUT_LENGTH)
     wait: bool = False        # true: answer when the run stops; false: answer at once, poll GET …/runs/{id}
 
@@ -6393,24 +6396,51 @@ async def _run_flow_now_or_later(flow: dict, caller: "ApiCaller", trigger: str, 
     return _public_flow_run(dict(run, steps=list(run.get("steps") or [])))
 
 
-async def _flow_for_runner(flow_id: str, request: Request) -> tuple[dict, ApiCaller]:
-    """The workflow and the person testing it: its owner, or a builder in its
-    workspace, signed in. Everyone else runs workflows through their webhook."""
+async def flow_member_role(flow_id: str, user_id: str) -> Optional[str]:
+    try:
+        res = await db(_service_client().table("flow_members").select("role")
+                       .eq("flow_id", flow_id).eq("user_id", user_id).limit(1))
+        return res.data[0]["role"] if res and res.data else None
+    except Exception as e:
+        if _missing_table(e):
+            return None
+        raise _access_check_failed(e)
+
+
+async def can_edit_flow(flow: dict, caller: "ApiCaller") -> bool:
+    if flow.get("user_id") == caller.user_id:
+        return True
+    if flow.get("workspace_id") and await workspace_role(flow["workspace_id"], caller.user_id) in BUILD_ROLES:
+        return True
+    return await flow_member_role(flow["id"], caller.user_id) == "editor"
+
+
+async def _flow_for_runner(flow_id: str, request: Request, *, edit: bool = True) -> tuple[dict, ApiCaller]:
+    """One object/access policy for Developer testing and Business execution.
+    Viewers may execute releases and access their own runs; editors may test
+    drafts and manage schedules. The app runner checks each app's access too.
+    """
     if not _UUID_RE.fullmatch(flow_id or ""):
         raise HTTPException(status_code=404, detail="Workflow not found")
     caller = await resolve_api_caller(request, required=True)
     if caller.via_key:
-        raise HTTPException(status_code=403, detail="Test workflows signed in to Dev Studio, or run them through their webhook link.")
+        raise HTTPException(status_code=403, detail="Sign in to run workflows, or use their webhook link.")
     sb = _service_client()
     if not sb:
         raise HTTPException(status_code=503, detail="Workflows aren't configured on this server")
     res = await db(sb.table("flows").select("*").eq("id", flow_id).maybe_single())
     flow = res.data if res else None
-    allowed = bool(flow) and (flow.get("user_id") == caller.user_id or (
-        bool(flow.get("workspace_id")) and (await workspace_role(flow["workspace_id"], caller.user_id)) in BUILD_ROLES))
+    allowed = bool(flow) and await can_edit_flow(flow, caller)
+    if flow and not allowed and not edit:
+        allowed = bool(flow.get("workspace_id") and await workspace_role(flow["workspace_id"], caller.user_id)) or bool(await flow_member_role(flow["id"], caller.user_id))
     if not allowed:
         raise HTTPException(status_code=404, detail="Workflow not found")
     return flow, caller
+
+
+async def _authorize_flow_run(flow: dict, caller: "ApiCaller", run: dict) -> None:
+    if run.get("user_id") != caller.user_id and not await can_edit_flow(flow, caller):
+        raise HTTPException(status_code=404, detail="Run not found")
 
 
 async def _load_flow_run(flow_id: str, run_id: str) -> dict:
@@ -6431,9 +6461,15 @@ async def _load_flow_run(flow_id: str, run_id: str) -> dict:
 async def start_flow_run(flow_id: str, body: FlowRunStart, request: Request):
     """Test a workflow: runs every step now (drafts allowed for their
     editors) and stops at an approval step until it's resumed."""
-    flow, caller = await _flow_for_runner(flow_id, request)
+    flow, caller = await _flow_for_runner(flow_id, request, edit=not body.live)
     if not (flow.get("steps") or []):
         raise HTTPException(status_code=422, detail="Add a step to the workflow first")
+    if body.live:
+        if any((step or {}).get("version") == "draft" for step in flow.get("steps") or []):
+            raise HTTPException(status_code=409, detail="Business runs use published releases. Publish draft steps and save the workflow first.")
+        caller = ApiCaller(user_id=caller.user_id, user_jwt=caller.user_jwt, workspace_id=caller.workspace_id, live=True)
+        # Stored with the immutable definition so approval resume keeps live semantics.
+        flow = {**flow, "_run_live": True}
     run = {"id": str(uuid.uuid4()), "flow_id": flow["id"], "user_id": caller.user_id, "trigger": "interactive",
            "status": "running", "seed_input": (body.input or "")[:FLOW_OUTPUT_LIMIT],
            "current_step": 0, "steps": [], "error": None, "finished_at": None, "definition": flow}
@@ -6445,11 +6481,14 @@ async def start_flow_run(flow_id: str, body: FlowRunStart, request: Request):
 async def list_flow_runs(flow_id: str, request: Request, limit: int = 20):
     """Recent runs, newest first: tests, webhook and scheduled runs (those
     waiting at an approval step are decided from here)."""
-    await _flow_for_runner(flow_id, request)
+    flow, caller = await _flow_for_runner(flow_id, request, edit=False)
+    editor = await can_edit_flow(flow, caller)
     try:
-        res = await db(_service_client().table("flow_runs")
-                       .select("id, trigger, status, current_step, error, started_at, finished_at, user_id")
-                       .eq("flow_id", flow_id).order("started_at", desc=True).limit(max(1, min(limit, 100))))
+        query = _service_client().table("flow_runs").select("id, trigger, status, current_step, error, started_at, finished_at, user_id").eq("flow_id", flow_id)
+        if not editor:
+            query = query.eq("user_id", caller.user_id)
+        res = await db(query
+                       .order("started_at", desc=True).limit(max(1, min(limit, 100))))
     except Exception as e:
         if _missing_table(e):
             raise HTTPException(status_code=503, detail="Workflow runs aren't set up on this server yet (database migration pending).")
@@ -6459,16 +6498,19 @@ async def list_flow_runs(flow_id: str, request: Request, limit: int = 20):
 
 @app.get("/v1/flows/{flow_id}/runs/{run_id}")
 async def get_flow_run(flow_id: str, run_id: str, request: Request):
-    await _flow_for_runner(flow_id, request)
-    return _public_flow_run(await _load_flow_run(flow_id, run_id))
+    flow, caller = await _flow_for_runner(flow_id, request, edit=False)
+    run = await _load_flow_run(flow_id, run_id)
+    await _authorize_flow_run(flow, caller, run)
+    return _public_flow_run(run)
 
 
 @app.post("/v1/flows/{flow_id}/runs/{run_id}/resume")
 async def resume_flow_run(flow_id: str, run_id: str, body: FlowRunResume, request: Request):
     """Approve (optionally with edited content) or reject the approval step a
     run is waiting at. Approving continues the run from the next step."""
-    flow, caller = await _flow_for_runner(flow_id, request)
+    flow, caller = await _flow_for_runner(flow_id, request, edit=False)
     run = await _load_flow_run(flow_id, run_id)
+    await _authorize_flow_run(flow, caller, run)
     records = run.get("steps") or []
     if run.get("status") != "waiting_approval" or not records or records[-1].get("status") != "waiting_approval":
         raise HTTPException(status_code=409, detail="This run isn't waiting for approval")
@@ -6495,7 +6537,7 @@ async def resume_flow_run(flow_id: str, run_id: str, body: FlowRunResume, reques
     run["current_step"] = idx + 1
     trigger = run.get("trigger") or "interactive"
     runner = ApiCaller(user_id=caller.user_id, user_jwt=caller.user_jwt, workspace_id=caller.workspace_id,
-                       live=trigger != "interactive")
+                       live=trigger != "interactive" or bool((run.get("definition") or {}).get("_run_live")))
     return await _run_flow_now_or_later(flow, runner, trigger, run, body.wait)
 
 
@@ -6503,8 +6545,9 @@ async def resume_flow_run(flow_id: str, run_id: str, body: FlowRunResume, reques
 async def cancel_flow_run(flow_id: str, run_id: str, request: Request):
     """Stop a run that's working or waiting for approval. A step already
     running finishes, but nothing after it runs."""
-    await _flow_for_runner(flow_id, request)
+    flow, caller = await _flow_for_runner(flow_id, request, edit=False)
     run = await _load_flow_run(flow_id, run_id)
+    await _authorize_flow_run(flow, caller, run)
     if run.get("status") not in ("running", "waiting_approval"):
         raise HTTPException(status_code=409, detail="This run has already finished")
     now = datetime.now(timezone.utc).isoformat()

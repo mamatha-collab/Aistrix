@@ -1,6 +1,6 @@
 import { supabase } from '../supabase'
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 // The server no longer accepts this sign-in (expired, or signed out elsewhere).
 const SIGNED_OUT = 'Your sign-in has ended. Sign out and sign in again to continue.'
 

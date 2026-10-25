@@ -6,7 +6,7 @@
 import { supabase } from '../supabase'
 import { errorFromResponse } from './runStream'
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 export const SECRET_FIELDS = ['api_key', 'apikey', 'token', 'access_token', 'auth_token', 'secret', 'password']
 const REF = /^\s*\{\{\s*secrets\.[A-Za-z0-9_]+\s*\}\}\s*$/
 

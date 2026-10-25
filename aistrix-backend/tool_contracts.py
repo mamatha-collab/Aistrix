@@ -78,7 +78,7 @@ def field_problems(fields: Any, where: str) -> list[str]:
     return problems
 
 
-def _tool_effect(tool: dict) -> str:
+def tool_effect(tool: dict) -> str:
     kind = tool.get("type") or ""
     if kind == "http":
         method = str(((tool.get("config") or {}) if isinstance(tool.get("config"), dict) else {}).get("method") or "POST").upper()
@@ -139,7 +139,7 @@ def build_contract(snapshot: dict, *, custom_model_url: Optional[str] = None, ma
     blueprint = snapshot.get("blueprint") if isinstance(snapshot.get("blueprint"), dict) else {}
     tools = [t for t in (snapshot.get("tools") or []) if isinstance(t, dict)]
     declared = blueprint.get("contract") if isinstance(blueprint.get("contract"), dict) else {}
-    derived = max((_tool_effect(t) for t in tools), key=SIDE_EFFECTS.index, default="none")
+    derived = max((tool_effect(t) for t in tools), key=SIDE_EFFECTS.index, default="none")
     effects = declared.get("side_effects") if declared.get("side_effects") in SIDE_EFFECTS else derived
     if SIDE_EFFECTS.index(effects) < SIDE_EFFECTS.index(derived):
         effects = derived
@@ -169,7 +169,7 @@ def contract_problems(snapshot: dict, *, max_timeout: int, secret_ref: re.Patter
     """Why a draft can't be released under the current contract version."""
     blueprint = snapshot.get("blueprint") if isinstance(snapshot.get("blueprint"), dict) else {}
     tools = [t for t in (snapshot.get("tools") or []) if isinstance(t, dict)]
-    derived = max((_tool_effect(t) for t in tools), key=SIDE_EFFECTS.index, default="none")
+    derived = max((tool_effect(t) for t in tools), key=SIDE_EFFECTS.index, default="none")
     problems = []
     for key, where in (("input_schema", "Input"), ("output_schema", "Output")):
         node = blueprint.get(key)

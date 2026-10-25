@@ -73,6 +73,29 @@ def _reference_problem(ref: Any, idx: int, ids: list, label: str) -> Optional[st
     return f"{label} reads from a step that doesn't exist ({head})"
 
 
+def private_step_problems(step: dict, contract: Optional[dict]) -> list[str]:
+    """Why a step can't run in a private-only workflow. Checked when the run
+    is compiled and again just before the step sends anything."""
+    kind = step_type(step)
+    if kind == "human_approval":
+        return []
+    if kind == "api_call":
+        return ["calls an outside API, which a private-only workflow can't do"]
+    problems = []
+    if step.get("ai_fill"):
+        problems.append("fills inputs with an outside AI model, which a private-only workflow can't do")
+    if not contract:
+        return problems + ["uses a release that can't be checked for private use"]
+    privacy = contract.get("privacy") or {}
+    if privacy.get("model_route") != "private":
+        problems.append("uses an outside AI model; private-only workflows need an approved private model")
+    if contract.get("side_effects") != "none":
+        problems.append("has tools that reach outside services")
+    if privacy.get("output_webhook"):
+        problems.append("sends its results to a webhook")
+    return problems
+
+
 def compile_flow(flow: dict, contracts: dict[int, Optional[dict]]) -> tuple[Optional[dict], list[dict]]:
     """(plan, problems). problems: [{"step": index | None, "text": ...}].
     A plan is returned only when there are no problems."""
@@ -87,6 +110,7 @@ def compile_flow(flow: dict, contracts: dict[int, Optional[dict]]) -> tuple[Opti
         return None, problems
     if (flow.get("privacy") or "standard") not in PRIVACY_MODES:
         problem(None, f"has an unknown privacy setting: {flow.get('privacy')}")
+    private = flow.get("privacy") == "private_only"
     steps = flow.get("steps")
     if not isinstance(steps, list) or not steps:
         problem(None, "has no steps")
@@ -165,7 +189,12 @@ def compile_flow(flow: dict, contracts: dict[int, Optional[dict]]) -> tuple[Opti
                     problem(i, f'Input "{name}" is required but isn\'t connected')
         if step.get("id"):
             steps_before[step["id"]] = contract
+        if private:
+            for text in private_step_problems(step, contract):
+                problem(i, text)
 
+    if private and flow.get("integration_webhook_url"):
+        problem(None, "sends its results to a webhook, which a private-only workflow can't do")
     if problems:
         return None, problems
     return build_plan(flow, contracts), []

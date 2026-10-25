@@ -45,6 +45,7 @@ from supabase import create_client, Client
 from supabase.lib.client_options import SyncClientOptions
 from telemetry import configured_outbox
 import flow_plan
+import spend_guard
 import tool_contracts
 
 load_dotenv()
@@ -1937,7 +1938,10 @@ def release_contract(app_row: dict, snapshot: dict) -> dict:
         snapshot, custom_model_url=app_row.get("custom_model_url"), max_timeout=REQUEST_TIMEOUT,
         private_hosts=PRIVATE_MODEL_HOSTS, secret_ref=_SECRET_REF)
     route = tool_contracts.model_route(app_row.get("custom_model_url"), PRIVATE_MODEL_HOSTS)
-    return {**contract, "privacy": {**(contract.get("privacy") or {}), "model_route": route}}
+    if route == "private" and not app_row.get("custom_model_name"):
+        route = "external"          # without a model name the run falls back to the app's provider
+    return {**contract, "privacy": {**(contract.get("privacy") or {}), "model_route": route,
+                                    "output_webhook": bool(app_row.get("webhook_url"))}}
 
 
 def _fields_to_input(fields: dict[str, Any]) -> str:
@@ -2020,7 +2024,7 @@ async def run_app(req: RunRequest, request: Request):
 
 
 async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller", on_complete=None, track: bool = True,
-                      release: Optional[tuple[int, dict]] = None):
+                      release: Optional[tuple[int, dict]] = None, private_only: bool = False):
     """Shared run pipeline for /run (browser) and /v1/apps/{id}/run (API).
 
     `caller` is already authenticated and carries the active workspace. For
@@ -2028,7 +2032,8 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
     the database — never from the request — so paid/private prompts can't be
     swapped or bypassed. `release` = (version number, snapshot) runs that
     fixed release for everyone, editors included (workflow steps pinned to
-    "Published · vN").
+    "Published · vN"). `private_only` runs only on the app's approved private
+    model, with no outside tools or webhook, and never falls back to a provider.
     """
     user_jwt, caller_id = caller.user_jwt, caller.user_id
     # ── App resolution + access ──────────────────────────────────────────────
@@ -2089,7 +2094,20 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
             return JSONResponse(status_code=422, content={
                 "error": f"Fill in the required field{'s' if len(missing) > 1 else ''}: {', '.join(missing)}"})
 
-    if req.custom_model_url:
+    private_host = None
+    if private_only:
+        req.custom_model_url = (app_row or {}).get("custom_model_url")
+        req.custom_model_name = (app_row or {}).get("custom_model_name")
+        if not (app_row and req.custom_model_name
+                and tool_contracts.model_route(req.custom_model_url, PRIVATE_MODEL_HOSTS) == "private"):
+            return JSONResponse(status_code=409, content={"code": "private_only", "error":
+                "This app isn't set up for private-only work: it needs a custom model on a host the operator has approved."})
+        if app_row.get("webhook_url"):
+            return JSONResponse(status_code=409, content={"code": "private_only", "error":
+                "This app sends its results to a webhook, so it can't run in a private-only workflow."})
+        private_host = (urlsplit(req.custom_model_url).hostname or "").lower()
+
+    if req.custom_model_url and not private_host:
         try:
             assert_public_url(req.custom_model_url)
         except ValueError as e:
@@ -2250,7 +2268,11 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
         _load_app_secrets(req.app_id) if (req.app_id and owner_id) else _default({}),
         _default(prod.get("blueprint") or {}) if prod else fetch_app_blueprint(req.app_id) if req.app_id else _default({}),
     )
-    webhook_url = app_row.get("webhook_url") if app_row else None
+    webhook_url = app_row.get("webhook_url") if (app_row and not private_only) else None
+
+    if private_only and any(tool_contracts.tool_effect(t) != "none" for t in tools):
+        return JSONResponse(status_code=409, content={"code": "private_only", "error":
+            "This app has tools that reach outside services, so it can't run in a private-only workflow."})
 
     if req.images and (tools or custom):
         return JSONResponse(status_code=400, content={"code": "images_not_supported", "error": (
@@ -2288,9 +2310,22 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
     telemetry_id = str(uuid.uuid4())
     telemetry_created = datetime.now(timezone.utc).isoformat()
 
+    spend = {"id": None, "failure": None, "settled": False}
+
+    def settle_spend(finished: bool) -> None:
+        if not spend["id"] or spend["settled"]:
+            return
+        spend["settled"] = True
+        actual = model_cost_usd(model, usage)
+        has_usage = bool(usage.get("input_tokens") or usage.get("output_tokens"))
+        settle_run_spend(spend["id"], actual, spend_guard.settle_outcome(
+            finished=finished, failure_kind=spend["failure"], actual=actual, has_usage=has_usage))
+
     async def outcome(success: bool, kind: Optional[str] = None):
         """Final outcome of this run: ops alerting, plus the app's run log
         (failures included) so Monitor shows error rates and response times."""
+        if not success and not spend["failure"]:
+            spend["failure"] = kind
         _record_run_outcome(success, kind)
         if success or not log_source or run_state.get("logged"):
             return
@@ -2305,6 +2340,7 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
         # after that yield would never run.
         await outcome(True)
         run_state["finished"] = True
+        settle_spend(True)
         if entitlement and entitlement_used:
             asyncio.create_task(notify_low_runs(entitlement, entitlement_used, app_name))
         if webhook_url:
@@ -2467,14 +2503,33 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
         finally:
             if log_source and not run_state.get("logged"):
                 await outcome(False, "cancelled")
+            settle_spend(run_state["finished"])
             if entitlement and not run_state["finished"]:
                 asyncio.create_task(release_entitlement_run(entitlement))
+
+    # Hold the run's worst-case cost before any provider is called. Custom
+    # models are paid by whoever runs them, outside the platform.
+    if not custom:
+        payer = {"own": "own", "developer": "developer", "owner": "owner"}.get(key_source, "platform")
+        key_owner = caller_id if payer == "own" else owner_id if payer in ("developer", "owner") else None
+        amount = spend_guard.estimate_usd(
+            MODEL_PRICES.get(model), prompt_chars=len(system) + len(req.input or ""), images=len(req.images or []),
+            calls=spend_guard.calls_for(tools=bool(tools), max_tool_steps=req.max_tool_steps or 10, structured=bool(contract_fields)))
+        spend["id"], refusal = await reserve_run_spend(payer=payer, key_owner=key_owner, workspace_id=caller.workspace_id,
+                                                       app_id=(app_row or {}).get("id"), model=model, amount=amount)
+        if refusal:
+            if refusal.get("code") == "spend_unavailable":
+                return JSONResponse(status_code=503, content={"code": "spend_unavailable",
+                    "error": "Spending limits couldn't be checked right now, so the run didn't start. Try again in a moment."})
+            return JSONResponse(status_code=429, content={"code": "spend_limit", "scope": refusal.get("scope"),
+                "error": spend_guard.refusal_message(refusal, payer=payer, label=label)})
 
     # Take the paid run last, after every check that can still refuse the
     # request, so a refused request never uses up a purchased run.
     if entitlement:
         entitlement_used = await reserve_entitlement_run(entitlement)
         if entitlement_used is None:
+            settle_run_spend(spend["id"], None, "released")
             return JSONResponse(status_code=402, content={"error": entitlement_block_reason(
                 {**entitlement, "runs_this_period": entitlement.get("run_quota") or 0}) or "Purchase access to run this app"})
 
@@ -3751,6 +3806,74 @@ async def get_file_download_url(file_id: str, request: Request, expires_in: int 
     return {"url": url, "expires_in": min(max(expires_in, 60), 3600)}
 
 
+# ─── Spending limits: usage and caps ─────────────────────────────────────────
+class SpendCapRequest(BaseModel):
+    limit_usd: Optional[float] = Field(default=None, ge=0, le=1_000_000)    # null removes the limit
+    period: str = "month"
+
+
+async def _spend_scope(scope: str, scope_id: str) -> dict:
+    sb = _service_client()
+    cap_res = await db(sb.table("spend_caps").select("period, limit_usd").eq("scope", scope).eq("scope_id", scope_id).limit(1))
+    cap = (cap_res.data or [None])[0] if cap_res else None
+    period = (cap or {}).get("period") or "month"
+    used = await db(sb.rpc("spend_used", {"p_scope": scope, "p_scope_id": scope_id,
+                                          "p_since": spend_period_start(period).isoformat()}))
+    value = used.data[0] if isinstance(used.data, list) and used.data else used.data
+    return {"period": period, "limit_usd": float(cap["limit_usd"]) if cap else None,
+            "used_usd": round(float(value or 0), 4), "since": spend_period_start(period).isoformat()}
+
+
+async def _spend_caller(request: Request) -> ApiCaller:
+    caller = await resolve_api_caller(request, required=True)
+    if caller.via_key:
+        raise HTTPException(status_code=403, detail="Sign in to manage spending limits; API keys can't change them.")
+    if not await spend_controls_ready():
+        raise HTTPException(status_code=503, detail="Spending limits aren't set up on this server yet (database migration pending).")
+    return caller
+
+
+async def _save_spend_cap(scope: str, scope_id: str, body: SpendCapRequest, user_id: str) -> None:
+    if body.period not in SPEND_PERIODS:
+        raise HTTPException(status_code=422, detail='period must be "day" or "month"')
+    table = _service_client().table("spend_caps")
+    if body.limit_usd is None:
+        await db(table.delete().eq("scope", scope).eq("scope_id", scope_id))
+    else:
+        await db(table.upsert({"scope": scope, "scope_id": scope_id, "period": body.period,
+                               "limit_usd": round(body.limit_usd, 4), "updated_by": user_id,
+                               "updated_at": datetime.now(timezone.utc).isoformat()}, on_conflict="scope,scope_id"))
+
+
+@app.get("/v1/spend")
+async def get_spend(request: Request):
+    """AI spending on your own keys (all your apps' end users included), and
+    your active workspace's when you manage its billing."""
+    caller = await _spend_caller(request)
+    out = {"key": await _spend_scope("key", caller.user_id), "workspace": None}
+    if caller.workspace_id and await workspace_role(caller.workspace_id, caller.user_id) in BILLING_ROLES:
+        out["workspace"] = {"id": caller.workspace_id, **await _spend_scope("workspace", caller.workspace_id)}
+    return out
+
+
+@app.put("/v1/spend/caps/key")
+async def put_key_spend_cap(body: SpendCapRequest, request: Request):
+    """Limit what runs may spend on your AI keys per day or month."""
+    caller = await _spend_caller(request)
+    await _save_spend_cap("key", caller.user_id, body, caller.user_id)
+    return {"key": await _spend_scope("key", caller.user_id)}
+
+
+@app.put("/v1/workspaces/{workspace_id}/spend-cap")
+async def put_workspace_spend_cap(workspace_id: str, body: SpendCapRequest, request: Request):
+    """Limit what runs in a workspace may spend, whoever's key pays."""
+    caller = await _spend_caller(request)
+    if not _UUID_RE.fullmatch(workspace_id or "") or await workspace_role(workspace_id, caller.user_id) not in BILLING_ROLES:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    await _save_spend_cap("workspace", workspace_id, body, caller.user_id)
+    return {"workspace": {"id": workspace_id, **await _spend_scope("workspace", workspace_id)}}
+
+
 @app.get("/credits")
 async def get_credits(request: Request):
     auth_header = request.headers.get("Authorization", "")
@@ -4261,9 +4384,12 @@ async def run_flow_step(flow: dict, idx: int, *, caller: "ApiCaller", trigger: s
     steps = flow.get("steps") or []
     step = steps[idx] or {}
     kind = step.get("step_type")
+    private = flow.get("privacy") == "private_only"
     if kind == "human_approval":
         return {"status": "waiting_approval"}
     if kind == "api_call":
+        if private:
+            return {"status": "failed", "error": flow_plan.private_step_problems(step, None)[0]}
         return await _run_api_step(step, step_input)
     app_row = await load_app_row(step.get("app_id")) if step.get("app_id") else None
     if not app_row:
@@ -4271,6 +4397,12 @@ async def run_flow_step(flow: dict, idx: int, *, caller: "ApiCaller", trigger: s
     release, problem = await _step_release(app_row, step, caller, trigger)
     if problem:
         return {"status": "failed", "error": problem}
+    if private:
+        # Checked again here: the app may have changed since the run started.
+        snapshot = release[1] if release else await app_draft_state(app_row)
+        reasons = flow_plan.private_step_problems(step, release_contract(app_row, snapshot))
+        if reasons:
+            return {"status": "failed", "error": f"can't run privately: {'; '.join(reasons)}. Nothing was sent."}
     version = "draft" if not release else (f"v{release[0]}" if release[0] else "live")
     view = {**app_row, **{k: release[1][k] for k in DRAFT_FIELDS if k in release[1]}} if release else app_row
     ai_filled: list = []
@@ -4302,7 +4434,7 @@ async def run_flow_step(flow: dict, idx: int, *, caller: "ApiCaller", trigger: s
     limit = contract["execution"]["timeout_seconds"]
     try:
         result = await asyncio.wait_for(_drain_run(await execute_run(
-            req, _internal_request(), caller=caller, release=release,
+            req, _internal_request(), caller=caller, release=release, private_only=private,
             on_complete=_flow_history_recorder(caller, flow, app_row["id"], _step_name(steps, idx), text))), limit)
     except asyncio.TimeoutError:
         return {"status": "failed", "error": f"took longer than its {limit}-second limit", "version": version}
@@ -4458,7 +4590,7 @@ async def _execute_flow(flow: dict, *, caller: "ApiCaller", trigger: str, run: d
             sources[step_id] = _flow_data(r.get("output") or "")
     # Learning facts for the workflow's memory (Business flows) runs on the
     # runner's own key.
-    learns = flow.get("kind") != "developer"
+    learns = flow.get("kind") != "developer" and flow.get("privacy") != "private_only"
     fact_key = await fetch_user_api_key_by_id(caller.user_id, "claude") if (learns and caller.user_id) else None
 
     for idx in range(run["current_step"], len(steps)):
@@ -4502,7 +4634,7 @@ async def _execute_flow(flow: dict, *, caller: "ApiCaller", trigger: str, run: d
         results.append(current_input)
         if (steps[idx] or {}).get("id"):
             sources[steps[idx]["id"]] = _flow_data(current_input)
-        facts = await extract_facts_headless(current_input, fact_key)
+        facts = await extract_facts_headless(current_input, fact_key) if learns else {}
         if facts:
             memory = merge_memory(memory, facts)
             now_iso = datetime.now(timezone.utc).isoformat()
@@ -4516,7 +4648,8 @@ async def _execute_flow(flow: dict, *, caller: "ApiCaller", trigger: str, run: d
         return run
     run.update(status="done", current_step=len(steps), finished_at=datetime.now(timezone.utc).isoformat())
     await _save_flow_run(run)
-    await _post_flow_integration(flow, steps, results)
+    if flow.get("privacy") != "private_only":
+        await _post_flow_integration(flow, steps, results)
     return run
 
 
@@ -4971,6 +5104,11 @@ async def _developer_jobs_tick() -> None:
     if not sb:
         return
     await _developer_job_rpc(sb, "recover_interrupted_flow_runs")
+    if await spend_controls_ready():
+        try:
+            await db(sb.rpc("expire_spend_reservations", {}))
+        except Exception as e:
+            print(f"spending hold expiry failed: {type(e).__name__}")
     rows = (await _developer_job_rpc(sb, "claim_developer_notifications")).data or []
     # Claimed leases are short: send concurrently, not a long serial queue.
     await asyncio.gather(*(_deliver_developer_notification(row) for row in rows))
@@ -6929,6 +7067,94 @@ def model_cost_usd(model: Optional[str], usage: Optional[dict]) -> Optional[floa
         return None
     pin, pout = MODEL_PRICES[model]
     return round(((usage.get("input_tokens") or 0) * pin + (usage.get("output_tokens") or 0) * pout) / 1_000_000, 6)
+
+
+# ─── Spending limits ──────────────────────────────────────────────────────────
+# Each model run holds its worst-case cost (spend_guard) in the database before
+# the provider is called and settles to real usage afterwards. Caps are
+# optional: per key owner and per workspace (set through the API), and for the
+# platform's own keys (PLATFORM_SPEND_CAP_USD). The controls switch on once
+# their migration is applied; after that, a run that can't be checked doesn't run.
+def _spend_cap_env() -> Optional[float]:
+    raw = (os.getenv("PLATFORM_SPEND_CAP_USD") or "").strip()
+    try:
+        return max(0.0, float(raw)) if raw else None
+    except ValueError:
+        print("PLATFORM_SPEND_CAP_USD isn't a number; no platform spending cap is set")
+        return None
+
+
+PLATFORM_SPEND_CAP_USD = _spend_cap_env()
+PLATFORM_SPEND_PERIOD = "month" if os.getenv("PLATFORM_SPEND_PERIOD") == "month" else "day"
+SPEND_PERIODS = ("day", "month")
+_SPEND_READY: dict = {"value": None, "checked": 0.0}
+_SPEND_TASKS: set = set()
+
+
+async def spend_controls_ready() -> bool:
+    """True once the spending migration is in this backend's database."""
+    now = time.monotonic()
+    cached = _SPEND_READY["value"]
+    if cached is not None and now - _SPEND_READY["checked"] < (300 if cached else 60):
+        return cached
+    ready = False
+    sb = _service_client()
+    if sb and SUPABASE_SERVICE_ROLE_KEY:
+        try:
+            res = await db(sb.rpc("spend_controls_status", {}))
+            ready = bool(_rpc_value(res).get("ready"))
+        except Exception:
+            ready = False
+    _SPEND_READY.update(value=ready, checked=now)
+    return ready
+
+
+def _rpc_value(res) -> dict:
+    data = getattr(res, "data", None)
+    data = data[0] if isinstance(data, list) and data else data
+    return data if isinstance(data, dict) else {}
+
+
+async def reserve_run_spend(*, payer: str, key_owner: Optional[str], workspace_id: Optional[str],
+                            app_id: Optional[str], model: str, amount: Optional[float]) -> tuple[Optional[str], Optional[dict]]:
+    """(reservation id, refusal). No reservation while the controls aren't installed."""
+    if not await spend_controls_ready():
+        return None, None
+    rid = str(uuid.uuid4())
+    uuid_or_none = lambda v: v if v and _UUID_RE.fullmatch(str(v)) else None
+    try:
+        res = await db(_service_client().rpc("reserve_spend", {
+            "p_id": rid, "p_key_owner": uuid_or_none(key_owner), "p_workspace": uuid_or_none(workspace_id),
+            "p_payer": payer, "p_app": uuid_or_none(app_id), "p_model": model, "p_amount": amount,
+            "p_platform_limit": PLATFORM_SPEND_CAP_USD, "p_platform_period": PLATFORM_SPEND_PERIOD,
+            "p_hold_seconds": REQUEST_TIMEOUT + 300}))
+    except Exception as e:
+        sentry_sdk.capture_exception(e)
+        print(f"spending check failed: {type(e).__name__}")
+        return None, {"ok": False, "code": "spend_unavailable"}
+    result = _rpc_value(res)
+    return (rid, None) if result.get("ok") else (None, result or {"ok": False, "code": "spend_unavailable"})
+
+
+def settle_run_spend(rid: Optional[str], actual: Optional[float], outcome: str) -> None:
+    """Settle in the background; an unsettled hold expires as "uncertain"."""
+    if not rid:
+        return
+
+    async def settle():
+        try:
+            await db(_service_client().rpc("settle_spend", {"p_id": rid, "p_actual": actual, "p_outcome": outcome}))
+        except Exception as e:
+            print(f"spending settlement deferred to expiry: {type(e).__name__}")
+    task = asyncio.create_task(settle())
+    _SPEND_TASKS.add(task)
+    task.add_done_callback(_SPEND_TASKS.discard)
+
+
+def spend_period_start(period: str, now: Optional[datetime] = None) -> datetime:
+    now = now or datetime.now(timezone.utc)
+    day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    return day.replace(day=1) if period == "month" else day
 
 
 JUDGE_MODELS = {"openai": "gpt-4o-mini", "gemini": "gemini-3.8-flash"}     # Claude grades with JUDGE_MODEL

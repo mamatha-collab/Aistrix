@@ -110,4 +110,26 @@ ok("old workflows without step ids still compile", errors_of(flow([{"app_id": "a
 ok("typed trigger fields are checked too", any("expects number" in e for e in errors_of(
     {**flow([{"id": "s1", "app_id": "b", "input_map": {"to": {"from": "trigger.name"}, "score": {"from": "trigger.name"}}}]),
      "trigger": {"fields": [{"field": "name", "type": "string"}]}}, {0: writer})))
+# ── private-only workflows ───────────────────────────────────────────────────
+private_app = {**writer, "side_effects": "none", "privacy": {"model_route": "private", "output_webhook": False}}
+outside_app = {**writer, "side_effects": "none", "privacy": {"model_route": "external"}}
+def private(steps, **extra): return flow(steps, privacy="private_only", **extra)
+wired = {"to": {"value": "x"}, "score": {"value": 1}}
+ok("a private-only workflow of approved private apps compiles",
+   errors_of(private([{"id": "s1", "app_id": "b", "input_map": wired}, {"id": "s2", "step_type": "human_approval"}]), {0: private_app}) == [])
+ok("…and its plan id differs from the same workflow without the setting",
+   flow_plan.compile_flow(private([{"id": "s1", "app_id": "b", "input_map": wired}]), {0: private_app})[0]["id"]
+   != flow_plan.compile_flow(flow([{"id": "s1", "app_id": "b", "input_map": wired}]), {0: private_app})[0]["id"])
+ok("an outside model is refused", any("outside AI model" in e for e in errors_of(private([{"id": "s1", "app_id": "b", "input_map": wired}]), {0: outside_app})))
+ok("tools that reach outside are refused", any("reach outside" in e for e in errors_of(
+    private([{"id": "s1", "app_id": "b", "input_map": wired}]), {0: {**private_app, "side_effects": "external_read"}})))
+ok("an app webhook is refused", any("webhook" in e for e in errors_of(
+    private([{"id": "s1", "app_id": "b", "input_map": wired}]), {0: {**private_app, "privacy": {"model_route": "private", "output_webhook": True}}})))
+ok("API steps are refused", any("outside API" in e for e in errors_of(private([{"id": "s1", "step_type": "api_call"}]))))
+ok("AI-filled inputs are refused", any("fills inputs" in e for e in errors_of(
+    private([{"id": "s1", "app_id": "b", "ai_fill": True, "input_map": wired}]), {0: private_app})))
+ok("a release that can't be checked is refused", any("can't be checked" in e for e in errors_of(private([{"id": "s1", "app_id": "b"}]))))
+ok("a workflow webhook is refused", "sends its results to a webhook, which a private-only workflow can't do" in errors_of(
+    private([{"id": "s1", "app_id": "b", "input_map": wired}], integration_webhook_url="https://hooks.example.com/x"), {0: private_app}))
+ok("unknown privacy settings are refused", any("privacy setting" in e for e in errors_of({**good, "privacy": "mostly"})))
 finish()

@@ -482,4 +482,61 @@ body = c.post(f"/v1/flows/{slow['id']}/runs", json={"wait": True, "input": "x"},
 ok("a step that runs past its release's time limit fails clearly", body.get("status") == "failed" and "0.2-second limit" in body.get("error", ""), body)
 main.release_contract, main.stream_claude = real_contract, fake_stream
 
+# ── private-only workflows run only on approved private models ──────────────
+main.PRIVATE_MODEL_HOSTS = frozenset({"llm.internal.test"})
+PRIVATE_CALLS = []
+class FakeCompletions:
+    async def create(self, **kw):
+        PRIVATE_CALLS.append({"model": kw["model"], "input": kw["messages"][-1]["content"]})
+        async def chunks():
+            yield SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="private answer"))])
+        return chunks()
+class FakeOpenAI:
+    def __init__(self, base_url=None, api_key=None):
+        self.base_url = base_url
+        PRIVATE_CALLS.append({"base_url": base_url})
+        self.chat = SimpleNamespace(completions=FakeCompletions())
+main.openai.AsyncOpenAI = FakeOpenAI
+async def allow_rate(*a, **k): return True, ""
+main.check_rate_limit = allow_rate          # custom-model runs are rate limited like platform runs
+APPS["vault"] = app("vault", "DRAFT VAULT", live_version=1, custom_model_url="https://llm.internal.test/v1", custom_model_name="house-model",
+                    prod_snapshot={"system_prompt": "LIVE VAULT v1", "blueprint": {}})
+APPS["leaky"] = app("leaky", "DRAFT LEAKY", live_version=1, prod_snapshot={"system_prompt": "LIVE LEAKY v1", "blueprint": {}})
+SB.db["apps"] += [APPS["vault"], APPS["leaky"]]
+
+priv = flow([{"id": "s1", "app_id": "vault", "app_name": "Vault", "version": "published"}], privacy="private_only", kind="business")
+CALLS.clear(); PRIVATE_CALLS.clear(); FACT_CALLS.clear()
+body = c.post(f"/v1/flows/{priv['id']}/runs", json={"wait": True, "input": "salary data"}, headers=H).json()
+ok("a private-only workflow runs on the approved private model", body.get("status") == "done"
+   and body["steps"][0]["output"] == "private answer" and PRIVATE_CALLS[0]["base_url"] == "https://llm.internal.test/v1", body)
+ok("…never on an outside provider, and learns nothing with an outside model", CALLS == [] and FACT_CALLS == [], (CALLS, FACT_CALLS))
+
+mixed = flow([{"id": "s1", "app_id": "vault", "app_name": "Vault", "version": "published"},
+              {"id": "s2", "app_id": "leaky", "app_name": "Leaky", "version": "published"}], privacy="private_only")
+CALLS.clear(); PRIVATE_CALLS.clear()
+r = c.post(f"/v1/flows/{mixed['id']}/runs", json={"wait": True, "input": "salary data"}, headers=H)
+ok("a private-only workflow with an outside-model step is refused before anything is sent",
+   r.status_code == 422 and "outside AI model" in r.json()["error"] and CALLS == [] and PRIVATE_CALLS == [], r.text)
+
+two = flow([{"id": "s1", "step_type": "human_approval", "app_name": "Review"},
+            {"id": "s2", "app_id": "vault", "app_name": "Vault", "version": "published"}], privacy="private_only")
+paused = c.post(f"/v1/flows/{two['id']}/runs", json={"wait": True, "input": "salary data"}, headers=H).json()
+APPS["vault"]["custom_model_url"] = "https://api.public-llm.test/v1"     # changed while the run waited
+PRIVATE_CALLS.clear(); CALLS.clear()
+resumed = c.post(f"/v1/flows/{two['id']}/runs/{paused['id']}/resume", json={"approve": True, "wait": True}, headers=H).json()
+ok("a step whose app stopped being private is refused when it would run, and nothing is sent",
+   resumed.get("status") == "failed" and "can't run privately" in resumed.get("error", "") and PRIVATE_CALLS == [] and CALLS == [], resumed)
+APPS["vault"]["custom_model_url"] = "https://llm.internal.test/v1"
+
+api_priv = flow([{"id": "s1", "step_type": "api_call", "app_name": "CRM", "api_method": "POST", "api_url": "https://crm.example.com/x"}],
+                privacy="private_only")
+FETCHED.clear()
+r = c.post(f"/v1/flows/{api_priv['id']}/runs", json={"wait": True, "input": "x"}, headers=H)
+ok("API steps can't run in a private-only workflow", r.status_code == 422 and "outside API" in r.json()["error"] and FETCHED == [], r.text)
+
+direct = run(main.execute_run(main._api_run_request("leaky", APPS["leaky"], "x"), main._internal_request(),
+                              caller=main.ApiCaller(user_id=OWNER), private_only=True))
+ok("the run pipeline itself refuses private-only work without an approved private model",
+   getattr(direct, "status_code", None) == 409 and b"private-only" in direct.body)
+
 finish()

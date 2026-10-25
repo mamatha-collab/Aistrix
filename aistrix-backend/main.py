@@ -44,6 +44,8 @@ from sentry_sdk.integrations.starlette import StarletteIntegration
 from supabase import create_client, Client
 from supabase.lib.client_options import SyncClientOptions
 from telemetry import configured_outbox
+import flow_plan
+import tool_contracts
 
 load_dotenv()
 
@@ -264,6 +266,8 @@ REQUEST_TIMEOUT           = int(os.getenv("REQUEST_TIMEOUT", "180"))
 HOURLY_LIMIT              = int(os.getenv("RATE_LIMIT_PER_HOUR", "30"))
 DAILY_LIMIT               = int(os.getenv("RATE_LIMIT_PER_DAY", "200"))
 MAX_INPUT_LENGTH          = int(os.getenv("MAX_INPUT_LENGTH", "20000"))
+# Hosts of self-run models an operator has approved for private-only work.
+PRIVATE_MODEL_HOSTS       = frozenset(h.strip().lower() for h in os.getenv("PRIVATE_MODEL_HOSTS", "").split(",") if h.strip())
 MAX_SYSTEM_LENGTH         = int(os.getenv("MAX_SYSTEM_LENGTH", "10000"))
 
 # Ops-facing failure-rate alerting — pings a generic webhook (Slack incoming
@@ -1923,6 +1927,17 @@ async def fetch_app_blueprint(app_id: str) -> dict[str, Any]:
     except Exception as e:
         print(f"fetch_app_blueprint error: {e}")
         return {}
+
+
+def release_contract(app_row: dict, snapshot: dict) -> dict:
+    """The contract of one release (or the draft), with the model route as the
+    app is set up now: the route is checked when the step runs, not trusted
+    from publish time."""
+    contract = tool_contracts.contract_for_release(
+        snapshot, custom_model_url=app_row.get("custom_model_url"), max_timeout=REQUEST_TIMEOUT,
+        private_hosts=PRIVATE_MODEL_HOSTS, secret_ref=_SECRET_REF)
+    route = tool_contracts.model_route(app_row.get("custom_model_url"), PRIVATE_MODEL_HOSTS)
+    return {**contract, "privacy": {**(contract.get("privacy") or {}), "model_route": route}}
 
 
 def _fields_to_input(fields: dict[str, Any]) -> str:
@@ -4010,6 +4025,55 @@ async def _step_release(app_row: dict, step: dict, caller: "ApiCaller", trigger:
     return None, "uses an app that isn't published yet"
 
 
+async def _step_snapshot(app_row: dict, step: dict) -> tuple[Optional[int], Optional[dict]]:
+    """The release a step would run, for compiling: (version number, snapshot).
+    Access rules are checked when the step runs (_step_release)."""
+    if step.get("version") == "draft":
+        return None, await app_draft_state(app_row)
+    live_num = app_row.get("live_version")
+    prod = app_row.get("prod_snapshot") if isinstance(app_row.get("prod_snapshot"), dict) else None
+    pinned = step.get("pinned_version")
+    if pinned and pinned != live_num:
+        res = await db(_service_client().table("app_versions").select("version_data")
+                       .eq("app_id", app_row["id"]).eq("version_num", pinned).limit(1))
+        data = (res.data or [{}])[0].get("version_data") if res else None
+        return (int(pinned), data) if isinstance(data, dict) else (None, None)
+    return (live_num, prod) if prod else (None, None)
+
+
+async def compile_flow_definition(flow: dict) -> tuple[dict, list[dict]]:
+    """Check a workflow before it runs and fix what it will run: published
+    steps are pinned to the release that is live now, so a release made
+    mid-run can't change it. Returns (definition with "_plan", problems)."""
+    steps = [dict(s) if isinstance(s, dict) else s for s in (flow.get("steps") or [])]
+    contracts: dict[int, Optional[dict]] = {}
+    for i, step in enumerate(steps):
+        if not isinstance(step, dict) or flow_plan.step_type(step) != "app" or not step.get("app_id"):
+            continue
+        app_row = await load_app_row(step["app_id"])
+        if not app_row:
+            continue                     # reported when the step runs
+        num, snapshot = await _step_snapshot(app_row, step)
+        if snapshot is None:
+            continue
+        contracts[i] = release_contract(app_row, snapshot)
+        if step.get("version") != "draft" and num and not step.get("pinned_version"):
+            step["pinned_version"] = num
+    definition = {**flow, "steps": steps}
+    plan, problems = flow_plan.compile_flow(definition, contracts)
+    if plan:
+        definition["_plan"] = plan
+    return definition, problems
+
+
+def flow_problem_text(flow: dict, problems: list[dict]) -> str:
+    """Compiler problems as one line, numbered the way the builder shows steps."""
+    steps = flow.get("steps") or []
+    return "; ".join(f"the workflow {p['text']}" if p["step"] is None
+                     else f"step {_step_number(flow, p['step'])} ({_step_name(steps, p['step'])}): {p['text']}"
+                     for p in problems[:10])
+
+
 async def _run_api_step(step: dict, previous: str) -> dict:
     """An API Call step, server side (same checks as /proxy)."""
     def fill(t):
@@ -4234,9 +4298,14 @@ async def run_flow_step(flow: dict, idx: int, *, caller: "ApiCaller", trigger: s
     # flows also show every step the earlier outputs and learned facts.
     context = None if flow.get("kind") == "developer" else (_flow_context(flow, memory, steps, results) or None)
     req = _api_run_request(app_row["id"], view, text, user_context=context)
-    result = await _drain_run(await execute_run(
-        req, _internal_request(), caller=caller, release=release,
-        on_complete=_flow_history_recorder(caller, flow, app_row["id"], _step_name(steps, idx), text)))
+    contract = release_contract(app_row, release[1] if release else {"blueprint": await fetch_app_blueprint(app_row["id"])})
+    limit = contract["execution"]["timeout_seconds"]
+    try:
+        result = await asyncio.wait_for(_drain_run(await execute_run(
+            req, _internal_request(), caller=caller, release=release,
+            on_complete=_flow_history_recorder(caller, flow, app_row["id"], _step_name(steps, idx), text))), limit)
+    except asyncio.TimeoutError:
+        return {"status": "failed", "error": f"took longer than its {limit}-second limit", "version": version}
     if not result.get("ok"):
         return {"status": "failed", "error": f"failed: {result.get('error') or 'run failed'}", "version": version}
     return {"status": "ok", "output": result.get("output") or "", "version": version, "ai_filled": ai_filled}
@@ -4321,7 +4390,9 @@ async def _post_flow_integration(flow: dict, steps: list, results: list) -> None
 
 
 def _public_flow_run(run: dict) -> dict:
-    return {k: v for k, v in run.items() if k not in ("lease_token", "lease_expires_at", "definition")}
+    plan = (run.get("definition") or {}).get("_plan") if isinstance(run.get("definition"), dict) else None
+    return {**{k: v for k, v in run.items() if k not in ("lease_token", "lease_expires_at", "definition")},
+            "plan_id": (plan or {}).get("id")}
 
 
 async def _heartbeat_flow_run(run: dict) -> None:
@@ -4334,10 +4405,17 @@ async def _heartbeat_flow_run(run: dict) -> None:
 
 async def run_flow(flow: dict, *, caller: "ApiCaller", trigger: str, seed_input: str = "", run: Optional[dict] = None) -> dict:
     if run is None:
+        flow, problems = await compile_flow_definition(flow)
         run = {"id": str(uuid.uuid4()), "flow_id": flow["id"], "user_id": caller.user_id, "trigger": trigger,
                "status": "running", "seed_input": (seed_input or "")[:FLOW_OUTPUT_LIMIT],
                "current_step": 0, "steps": [], "error": None, "finished_at": None, "definition": flow}
         await _save_flow_run(run, new=True)
+        if problems:
+            # Recorded so a schedule's or webhook's owner sees why nothing ran.
+            run.update(status="failed", error=f"Not run: {flow_problem_text(flow, problems)}",
+                       finished_at=datetime.now(timezone.utc).isoformat())
+            await _save_flow_run(run)
+            return run
     # Approvals continue the definition that started the run, even if edited.
     flow = run.get("definition") or flow
     execution = asyncio.create_task(_execute_flow(flow, caller=caller, trigger=trigger, run=run))
@@ -6491,11 +6569,24 @@ async def start_flow_run(flow_id: str, body: FlowRunStart, request: Request):
         caller = ApiCaller(user_id=caller.user_id, user_jwt=caller.user_jwt, workspace_id=caller.workspace_id, live=True)
         # Stored with the immutable definition so approval resume keeps live semantics.
         flow = {**flow, "_run_live": True}
+    flow, problems = await compile_flow_definition(flow)
+    if problems:
+        return JSONResponse(status_code=422, content={"error": f"This workflow can't run yet: {flow_problem_text(flow, problems)}",
+                                                      "problems": problems})
     run = {"id": str(uuid.uuid4()), "flow_id": flow["id"], "user_id": caller.user_id, "trigger": "interactive",
            "status": "running", "seed_input": (body.input or "")[:FLOW_OUTPUT_LIMIT],
            "current_step": 0, "steps": [], "error": None, "finished_at": None, "definition": flow}
     await _save_flow_run(run, new=True)
     return await _run_flow_now_or_later(flow, caller, "interactive", run, body.wait)
+
+
+@app.post("/v1/flows/{flow_id}/validate")
+async def validate_flow(flow_id: str, request: Request):
+    """The checks a run makes before it starts, without running anything:
+    {"ok", "plan_id", "problems": [{"step", "text"}]}."""
+    flow, _ = await _flow_for_runner(flow_id, request)
+    definition, problems = await compile_flow_definition(flow)
+    return {"ok": not problems, "plan_id": (definition.get("_plan") or {}).get("id"), "problems": problems}
 
 
 @app.get("/v1/flows/{flow_id}/runs")
@@ -6640,7 +6731,8 @@ async def app_schema(app_id: str, request: Request, version: str = "live"):
     a release number), for wiring workflow steps."""
     _, app_row = await _editable_app(app_id, request)
     if version == "draft":
-        blueprint, output_type = await fetch_app_blueprint(app_id), app_row.get("output_type")
+        snapshot = await app_draft_state(app_row)
+        blueprint, output_type = snapshot["blueprint"], app_row.get("output_type")
     else:
         if version != "live" and not version.isdigit():
             raise HTTPException(status_code=400, detail='version must be "draft", "live" or a release number')
@@ -6653,11 +6745,12 @@ async def app_schema(app_id: str, request: Request, version: str = "live"):
         if not isinstance(snapshot, dict):
             raise HTTPException(status_code=404, detail="That version doesn't exist")
         blueprint, output_type = snapshot.get("blueprint") or {}, snapshot.get("output_type")
+    contract = release_contract(app_row, snapshot)
     output = _schema_fields(blueprint, "output_schema")
-    contract = blueprint.get("output_contract") or {}
-    structured = bool(output) and (output_type == "json" or (isinstance(contract, dict) and contract.get("format") == "json"))
+    out_contract = blueprint.get("output_contract") or {}
+    structured = bool(output) and (output_type == "json" or (isinstance(out_contract, dict) and out_contract.get("format") == "json"))
     return {"version": version, "input": _schema_fields(blueprint, "input_schema"),
-            "output": output if structured else [], "structured": structured}
+            "output": output if structured else [], "structured": structured, "contract": contract}
 
 
 MIN_CARD_PRICE = 0.50          # Stripe's smallest USD card charge
@@ -7952,6 +8045,10 @@ async def promote_app(app_id: str, request: Request):
     state = await app_draft_state(app_row)
     if state_hash(state) != tests.get("draft_hash"):
         return JSONResponse(status_code=409, content={"error": "The draft changed while publishing — run the tests again."})
+    contract_checks = tool_contracts.contract_problems(state, max_timeout=REQUEST_TIMEOUT, secret_ref=_SECRET_REF)
+    if contract_checks:
+        return JSONResponse(status_code=409, content={
+            "error": "Not ready to publish yet", "checks": contract_checks, "test_problems": []})
     sb = _service_client()
     if not sb:
         raise HTTPException(status_code=503, detail="Publishing isn't configured on this server")
@@ -7977,8 +8074,12 @@ async def promote_app(app_id: str, request: Request):
         await db(sb.table("apps").update({"is_published": True, "has_draft_changes": False}).eq("id", app_id))
         return {"ok": True, "promoted_at": app_row.get("promoted_at"), "draft_hash": state_hash(state), "is_published": True,
                 "version": live, "unchanged": True}
-    version = await _save_published_version(sb, app_row, state, tests, caller.user_id)
-    update = {"prod_snapshot": state, "promoted_at": now, "is_published": True, "has_draft_changes": False}
+    # Releases carry their contract; draft_hash stays the hash of the draft.
+    released = {**state, "contract": tool_contracts.build_contract(
+        state, custom_model_url=app_row.get("custom_model_url"), max_timeout=REQUEST_TIMEOUT,
+        private_hosts=PRIVATE_MODEL_HOSTS, secret_ref=_SECRET_REF)}
+    version = await _save_published_version(sb, app_row, released, tests, caller.user_id)
+    update = {"prod_snapshot": released, "promoted_at": now, "is_published": True, "has_draft_changes": False}
     if review:
         # Saved as the version staff will review; it goes live when approved.
         update.update(is_published=False, status="pending", review_notes=None)

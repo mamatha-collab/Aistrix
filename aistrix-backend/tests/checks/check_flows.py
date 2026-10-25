@@ -173,9 +173,10 @@ ok("other people can't run or read it", c.post(f"/v1/flows/{f['id']}/runs", json
 # wiring that doesn't fit the app's input
 bad = flow([{"id": "s1", "app_id": "writer", "app_name": "Draft reply", "version": "published",
              "input_map": {"score": {"from": "trigger.nothing"}}}])
-body = c.post(f"/v1/flows/{bad['id']}/runs", json={"wait": True, "input": "{}"}, headers=H).json()
-ok("a missing required field stops the step with a clear message",
-   body["status"] == "failed" and "doesn't fit the app" in body["error"] and '"to" is required' in body["error"], body.get("error"))
+CALLS.clear()
+r = c.post(f"/v1/flows/{bad['id']}/runs", json={"wait": True, "input": "{}"}, headers=H)
+ok("a missing required field is refused before anything runs, with a clear message",
+   r.status_code == 422 and 'Input "to" is required' in r.json()["error"] and r.json()["problems"][0]["step"] == 0 and CALLS == [], r.text)
 
 # ── draft steps: editors testing only ────────────────────────────────────────
 d = flow([{"id": "s1", "app_id": "writer", "app_name": "Draft reply", "version": "draft"}])
@@ -422,5 +423,63 @@ live_pause = flow([{"id": "s1", "step_type": "human_approval", "app_name": "Revi
 paused_live = c.post(f"/v1/flows/{live_pause['id']}/runs", json={"live": True, "wait": True}, headers=H).json()
 resumed_live = c.post(f"/v1/flows/{live_pause['id']}/runs/{paused_live['id']}/resume", json={"approve": True, "wait": True}, headers=H).json()
 ok("Business approval resume retains release-only execution", resumed_live.get("status") == "failed" and "isn't published" in resumed_live.get("error", ""), resumed_live)
+
+# ── compiled before running: plan ids, pinning, refusals, time limits ───────
+good = flow([{"id": "s1", "app_id": "scorer", "app_name": "Score", "version": "published",
+              "input_map": {"company": {"from": "trigger.company"}, "seats": {"from": "trigger.seats", "transform": "to_number"}}},
+             {"id": "s2", "app_id": "writer", "app_name": "Write", "version": "published",
+              "input_map": {"to": {"from": "s1.email"}, "score": {"from": "s1.score"}}}])
+v = c.post(f"/v1/flows/{good['id']}/validate", headers=H).json()
+ok("validate compiles a well-wired workflow to a plan", v["ok"] and v["plan_id"].startswith("plan_") and v["problems"] == [], v)
+ok("validating again gives the same plan id", c.post(f"/v1/flows/{good['id']}/validate", headers=H).json()["plan_id"] == v["plan_id"])
+ok("only people who can edit it can validate it", c.post(f"/v1/flows/{good['id']}/validate", headers={"Authorization": "Bearer jwt-other"}).status_code == 404)
+body = c.post(f"/v1/flows/{good['id']}/runs", json={"wait": True, "input": json.dumps({"company": "Acme", "seats": "5"})}, headers=H).json()
+ok("a run records the plan it executed", body.get("status") == "done" and body.get("plan_id") == v["plan_id"], body)
+saved = next(x for x in SB.db["flow_runs"] if x["id"] == body["id"])
+ok("published steps are pinned to the release live when the run started",
+   [s.get("pinned_version") for s in saved["definition"]["steps"]] == [2, 3])
+ok("…and the saved workflow itself isn't changed", all(not s.get("pinned_version") for s in good["steps"]))
+read = c.get(f"/v1/flows/{good['id']}/runs/{body['id']}", headers=H).json()
+ok("the plan id is readable later, the definition still isn't", read.get("plan_id") == v["plan_id"] and "definition" not in read)
+
+forward = flow([{"id": "s1", "app_id": "writer", "app_name": "Write", "version": "published", "input_map": {"to": {"from": "s2.text"}, "score": {"value": 1}}},
+                {"id": "s2", "app_id": "scorer", "app_name": "Score", "version": "published"}])
+v = c.post(f"/v1/flows/{forward['id']}/validate", headers=H).json()
+ok("validate reports a forward reference without running anything", not v["ok"] and v["plan_id"] is None
+   and v["problems"][0]["step"] == 0 and "later step" in v["problems"][0]["text"], v)
+CALLS.clear()
+r = c.post(f"/v1/flows/{forward['id']}/runs", json={"wait": True}, headers=H)
+ok("a test run of it is refused with the same problem", r.status_code == 422 and "later step" in r.json()["error"] and CALLS == [], r.text)
+before = len(SB.db["flow_runs"])
+try:
+    run(main.run_scheduled_workspace(SB, {"flow_id": forward["id"], "user_id": OWNER}))
+    refused = False
+except RuntimeError as e:
+    refused = "Not run:" in str(e) and "later step" in str(e)
+recorded = SB.db["flow_runs"][before:] if len(SB.db["flow_runs"]) > before else []
+ok("a scheduled run of it is recorded as not run, so the owner sees why",
+   refused and recorded and recorded[-1]["status"] == "failed" and recorded[-1]["steps"] == [] and CALLS == [], recorded)
+types = flow([{"id": "s1", "app_id": "scorer", "app_name": "Score", "version": "published"},
+              {"id": "s2", "app_id": "writer", "app_name": "Write", "version": "published",
+               "input_map": {"to": {"from": "s1.score"}, "score": {"from": "s1.score"}}}])
+v = c.post(f"/v1/flows/{types['id']}/validate", headers=H).json()
+ok("incompatible wiring is found from the releases' contracts", not v["ok"] and any('"to" expects string but gets number' in p["text"] for p in v["problems"]), v)
+
+schema = c.get("/v1/apps/scorer/schema", headers=H).json()
+ok("an app's schema includes its contract", schema["contract"]["contract_version"] == 1
+   and schema["contract"]["output"]["structured"] and schema["contract"]["side_effects"] == "none")
+
+async def slow_stream(*a, **k):
+    await asyncio.sleep(2)
+    yield "late"
+real_contract, main.stream_claude = main.release_contract, slow_stream
+def quick(app_row, snapshot):
+    contract = real_contract(app_row, snapshot)
+    return {**contract, "execution": {**contract["execution"], "timeout_seconds": 0.2}}
+main.release_contract = quick
+slow = flow([{"id": "s1", "app_id": "writer", "app_name": "Write", "version": "published"}])
+body = c.post(f"/v1/flows/{slow['id']}/runs", json={"wait": True, "input": "x"}, headers=H).json()
+ok("a step that runs past its release's time limit fails clearly", body.get("status") == "failed" and "0.2-second limit" in body.get("error", ""), body)
+main.release_contract, main.stream_claude = real_contract, fake_stream
 
 finish()

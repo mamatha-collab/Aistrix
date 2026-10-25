@@ -126,6 +126,26 @@ ok("promote saves the draft as the live version and publishes", r.status_code ==
    and apps_patch["prod_snapshot"]["system_prompt"] == "DRAFT PROMPT" and apps_patch["prod_snapshot"]["blueprint"] == DRAFT_BP
    and [t["name"] for t in apps_patch["prod_snapshot"]["tools"]] == ["draft_tool"] and apps_patch["has_draft_changes"] is False)
 ok("…and keeps blueprint_prod in step for the Deploy diff", ("app_blueprints", {"blueprint_prod": DRAFT_BP}) in UPDATES)
+contract = apps_patch["prod_snapshot"].get("contract") or {}
+ok("the release carries a versioned contract derived from its tools", contract.get("contract_version") == 1
+   and contract["side_effects"] == "external_write" and contract["execution"]["timeout_seconds"] == main.REQUEST_TIMEOUT
+   and contract["privacy"]["model_route"] == "external")
+ok("…while draft_hash stays the hash of the draft itself", r.json()["draft_hash"] == main.state_hash(run_state := __import__("asyncio").run(main.app_draft_state(APP)))
+   and "contract" not in run_state)
+for bad, why in (({"side_effects": "none"}, "declares fewer side effects than its tools"),
+                 ({"timeout_seconds": 1}, "an out-of-range timeout"),
+                 ({"data_class": "secret"}, "an unknown data class")):
+    DRAFT_BP["contract"] = bad
+    UPDATES.clear()
+    r = c.post("/v1/apps/app-1/promote", headers=owner)
+    ok(f"publishing is refused for a contract with {why}", r.status_code == 409 and r.json()["checks"] and UPDATES == [])
+DRAFT_BP.pop("contract")
+original_input = DRAFT_BP["input_schema"]
+DRAFT_BP["input_schema"] = {"fields": [{"field": "to", "type": "string"}, {"field": "to", "type": "colour"}]}
+r = c.post("/v1/apps/app-1/promote", headers=owner)
+ok("publishing is refused for duplicate or unknown-type fields", r.status_code == 409
+   and any("defined twice" in m for m in r.json()["checks"]) and any("unknown type" in m for m in r.json()["checks"]))
+DRAFT_BP["input_schema"] = original_input
 
 async def moving_status(app_row, user_id=None):
     return {"draft_hash": "an-older-draft", "all_passed": True, "requirements": []}

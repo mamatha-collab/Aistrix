@@ -2,6 +2,16 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "Aistrix Frontend (Next, staging)",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": [
+        "run",
+        "dev"
+      ],
+      "cwd": "aistrix-frontend",
+      "port": 3000
+    },
+    {
       "name": "Aistrix Frontend (Vite)",
       "runtimeExecutable": "npm",
       "runtimeArgs": [

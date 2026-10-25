@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { CalendarClock, Circle, CircleAlert, CircleCheck, CircleMinus, CirclePause, CircleStop, CircleX, Copy, Download, LoaderCircle, Play, RefreshCw, Sparkles } from 'lucide-react'
+import { ArrowLeft, CalendarClock, Circle, CircleAlert, CircleCheck, CircleMinus, CirclePause, CircleStop, CircleX, Copy, Download, LoaderCircle, Play, RefreshCw, Sparkles } from 'lucide-react'
 import { releaseProblems, isApproval } from './workflowModel'
 import { cancelRun, deleteSchedule, getRun, getSchedule, listRuns, putSchedule, resumeRun, setWebhook, startRun, webhookUrl } from './workflowApi'
 
@@ -257,6 +257,141 @@ export function WorkflowTest({ flow, dirty, onSave, onRunChanged, mode = 'test' 
         {!run && !error && <p className="text-xs text-slate-400">{mode === 'live' ? 'Run the workflow to see what each step produces.' : 'Run a test to see what each step produces.'}</p>}
         {run && <RunView flow={flow} run={run} onDecided={next => { follow(next); onRunChanged?.() }} />}
       </section>
+    </div>
+  )
+}
+
+// ── Business: running a workflow ────────────────────────────────────────────
+// A page in the workspace (not a window over it): what the workflow does,
+// its inputs in plain words, the live result, and the person's recent runs.
+const humanize = name => {
+  const text = String(name || '').replace(/[_-]+/g, ' ').trim()
+  return text ? text[0].toUpperCase() + text.slice(1) : ''
+}
+
+function stepSummary(step) {
+  if (isApproval(step)) return { label: step.app_name || 'Review & approve', note: 'Pauses here until you approve or reject.' }
+  if (step.step_type === 'api_call') {
+    let host = ''
+    try { host = new URL(step.api_url).hostname } catch { /* not a full URL */ }
+    return { label: step.app_name || 'Send data', note: host ? `Sends results to ${host}.` : 'Sends results to another service.' }
+  }
+  return { label: step.app_name || 'App step', note: step.run_if?.from ? 'Runs only when its condition is met.' : null }
+}
+
+function RunStatusIcon({ status }) {
+  return status === 'running' ? <LoaderCircle size={13} className="animate-spin text-[#C9C2FF]" />
+    : status === 'done' ? <CircleCheck size={13} className="text-green-400" />
+    : status === 'waiting_approval' ? <CirclePause size={13} className="text-sky-300" />
+    : status === 'cancelled' ? <CircleStop size={13} className="text-slate-400" />
+    : <CircleX size={13} className="text-red-400" />
+}
+
+export function WorkflowRunPage({ flow, onBack }) {
+  const fields = (flow.trigger?.fields || []).filter(f => f.field)
+  const steps = flow.steps || []
+  const [values, setValues] = useState({})
+  const [text, setText] = useState('')
+  const [starting, setStarting] = useState(false)
+  const [recent, setRecent] = useState(null)
+  const [allRuns, setAllRuns] = useState(false)
+  const { run, follow, error, setError } = useRun(flow.id)
+
+  const loadRecent = useCallback(() => {
+    listRuns(flow.id).then(rs => setRecent(rs.slice(0, 5)), () => setRecent([]))
+  }, [flow.id])
+  useEffect(() => { loadRecent() }, [loadRecent])
+  useEffect(() => { if (run && run.status !== 'running') loadRecent() }, [run?.id, run?.status])   // eslint-disable-line react-hooks/exhaustive-deps
+
+  const missing = fields.filter(f => f.required === true && !String(values[f.field] ?? '').trim()).map(f => humanize(f.label || f.field))
+  const input = fields.length ? JSON.stringify(Object.fromEntries(fields.map(f => [f.field, values[f.field] ?? '']))) : text
+  const working = starting || run?.status === 'running'
+  const start = async () => {
+    setStarting(true); setError('')
+    try { follow(await startRun(flow.id, input, { live: true })) }
+    catch (e) { setError(e.message) }
+    finally { setStarting(false) }
+  }
+  const openRun = async id => {
+    setError('')
+    try { follow(await getRun(flow.id, id)) } catch (e) { setError(e.message) }
+  }
+
+  return (
+    <div className="flex-1 overflow-y-auto">
+      <div className="mx-auto w-full max-w-6xl space-y-6 px-4 py-6 sm:px-6">
+        <button onClick={onBack} className="inline-flex items-center gap-1.5 text-sm text-[#A29BFE] hover:underline">
+          <ArrowLeft size={14} aria-hidden="true" /> Back to Workflows
+        </button>
+        <header className="flex items-start gap-4">
+          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-[#6C5CE7]/15 text-3xl">{flow.emoji || '🔀'}</div>
+          <div className="min-w-0">
+            <h1 className="text-xl font-semibold text-white sm:text-2xl">{flow.name}</h1>
+            {flow.description && <p className="mt-1 text-sm leading-relaxed text-slate-400">{flow.description}</p>}
+            <p className="mt-2 text-xs text-slate-500">{steps.length} {steps.length === 1 ? 'step' : 'steps'}{steps.some(isApproval) ? ' · includes an approval' : ''}</p>
+          </div>
+        </header>
+
+        {allRuns ? <div className="space-y-3">
+          <button onClick={() => setAllRuns(false)} className="text-xs text-[#A29BFE] hover:underline">← Run the workflow</button>
+          <WorkflowRuns flow={flow} />
+        </div> : (
+        <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_300px]">
+          <div className="min-w-0 space-y-4">
+            <section aria-label="Start the workflow" className={`${card} space-y-3 p-5`}>
+              <h2 className="text-sm font-semibold text-white">Start the workflow</h2>
+              {fields.length ? fields.map(f => (
+                <label key={f.field} className="block text-xs font-medium text-slate-300">
+                  {humanize(f.label || f.field)}{f.required === true && <span className="ml-0.5 text-red-400">*</span>}
+                  <input className={`${field} mt-1 py-2 text-sm`} placeholder={f.description || ''}
+                    type={f.type === 'number' ? 'number' : f.type === 'date' ? 'date' : 'text'}
+                    value={values[f.field] || ''} onChange={e => setValues(v => ({ ...v, [f.field]: e.target.value }))} />
+                </label>
+              )) : (
+                <textarea aria-label="What the workflow starts with" rows={5} className={`${field} py-2 text-sm`}
+                  placeholder="What should the workflow work on? Paste or describe it here." value={text} onChange={e => setText(e.target.value)} />
+              )}
+              <div className="flex flex-wrap items-center gap-3">
+                <button className={`${primary} px-5 py-2.5 text-sm`} disabled={working || !steps.length || missing.length > 0} onClick={start}>
+                  {working ? <LoaderCircle size={14} className="animate-spin" aria-hidden="true" /> : <Play size={14} aria-hidden="true" />}
+                  {working ? 'Running…' : 'Run workflow'}
+                </button>
+                {missing.length > 0 && !working && <span className="text-xs text-slate-500">Fill in {missing.join(', ')} to start.</span>}
+              </div>
+            </section>
+            <section aria-label="Results" className={`${card} space-y-3 p-5`}>
+              <h2 className="text-sm font-semibold text-white">Results</h2>
+              {error && <p role="alert" className="rounded-lg border border-red-500/25 bg-red-500/10 px-3 py-2 text-xs text-red-200">{error}</p>}
+              {!run && !error && <p className="text-xs text-slate-400">Each step's result appears here as the workflow runs. You can download them when it finishes.</p>}
+              {run && <RunView flow={flow} run={run} onDecided={next => follow(next)} />}
+            </section>
+          </div>
+          <aside className="min-w-0 space-y-4">
+            <section className={`${card} p-5`}>
+              <h2 className="mb-3 text-sm font-semibold text-white">How it works</h2>
+              <ol className="list-decimal space-y-2 pl-4 text-xs leading-relaxed text-slate-400">
+                {steps.map((step, i) => { const s = stepSummary(step); return <li key={step.id || i}><span className="text-slate-200">{s.label}</span>{s.note && <span className="block text-slate-500">{s.note}</span>}</li> })}
+              </ol>
+              <p className="mt-3 text-[11px] leading-relaxed text-slate-500">Runs use the published version of each app. Results are kept in this workflow's run history.</p>
+            </section>
+            <section className={`${card} p-5`}>
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className="text-sm font-semibold text-white">Your recent runs</h2>
+                <button onClick={loadRecent} className={tiny} aria-label="Refresh runs"><RefreshCw size={12} /></button>
+              </div>
+              {recent === null ? <p className="text-xs text-slate-500">Loading runs…</p>
+                : recent.length === 0 ? <p className="text-xs text-slate-500">Your runs of this workflow will appear here.</p>
+                : <ul className="space-y-1.5">{recent.map(r => <li key={r.id}>
+                  <button onClick={() => openRun(r.id)} aria-current={run?.id === r.id ? 'true' : undefined}
+                    className={`w-full rounded-xl border px-3 py-2 text-left ${run?.id === r.id ? 'border-[#6C5CE7]/40 bg-[#6C5CE7]/10' : 'border-white/8 bg-[#111827] hover:border-white/20'}`}>
+                    <span className="flex items-center gap-2 text-xs font-semibold text-white"><RunStatusIcon status={r.status} />{runLabel(r)}</span>
+                    <span className="block pl-5 text-[10px] text-slate-500">{r.started_at ? new Date(r.started_at).toLocaleString() : ''}</span>
+                  </button></li>)}</ul>}
+              <button onClick={() => setAllRuns(true)} className="mt-3 text-xs text-[#A29BFE] hover:underline">All runs</button>
+            </section>
+          </aside>
+        </div>)}
+      </div>
     </div>
   )
 }

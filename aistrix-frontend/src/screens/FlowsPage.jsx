@@ -159,6 +159,13 @@ export default function FlowsPage({ user, onShowHistory, search = '', openFlowId
     toast(flow.is_published ? 'Unpublished' : 'Published to marketplace', 'success')
   }
 
+  // A wired workflow opens as this screen's page, not a window over it.
+  if (runningFlow && isWiredWorkflow(runningFlow)) return (
+    <div className="flex-1 flex flex-col overflow-hidden">
+      <FlowRunner flow={runningFlow} user={user} onClose={() => { runningFlowCallback?.(false); setRunningFlow(null); setRunningFlowCallback(null) }} />
+    </div>
+  )
+
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {runningFlow && <FlowRunner

@@ -1,5 +1,5 @@
 import { isWiredWorkflow, updateWorkflowRecord } from '../workflows/workflowApi'
-import { WorkflowTest, WorkflowRuns } from '../workflows/WorkflowRunPanels'
+import { WorkflowRunPage } from '../workflows/WorkflowRunPanels'
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
@@ -880,18 +880,9 @@ function LegacyFlowRunner({ flow, user, onClose, onShowHistory, onRunComplete })
 }
 
 
+// Wired workflows run as a page in the workspace; older step-by-step
+// workflows keep their guided window.
 export default function FlowRunner(props) {
-  const [view, setView] = useState('run')
   if (!isWiredWorkflow(props.flow)) return <LegacyFlowRunner {...props} />
-  return <div role="dialog" aria-modal="true" aria-label={props.flow.name} className="fixed inset-0 z-50 overflow-auto bg-[#0E1424] p-4 sm:p-6">
-    <div className="mb-4 flex items-center justify-between gap-3">
-      <h2 className="text-lg font-semibold text-white">{props.flow.name}</h2>
-      <button onClick={props.onClose} className="text-sm text-slate-300">Close workflow</button>
-    </div>
-    <div className="mb-4 flex gap-4 text-sm text-slate-300">
-      <button onClick={() => setView('run')} aria-current={view === 'run' ? 'page' : undefined}>Run workflow</button>
-      <button onClick={() => setView('runs')} aria-current={view === 'runs' ? 'page' : undefined}>Run history</button>
-    </div>
-    {view === 'run' ? <WorkflowTest key={props.flow.id} flow={props.flow} mode="live" /> : <WorkflowRuns key={props.flow.id} flow={props.flow} />}
-  </div>
+  return <WorkflowRunPage key={props.flow.id} flow={props.flow} onBack={props.onClose} />
 }

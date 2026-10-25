@@ -13,7 +13,7 @@ existing code; see `implementation-plan.md` for the updated four-phase roadmap.
 
 | Area | Evidence and current behavior |
 | --- | --- |
-| Frontend | `aistrix-frontend/package.json`: React 19, Vite, React Router, Supabase client. This is not Next.js. Keep the existing app. |
+| Frontend | `aistrix-frontend/package.json`: Next.js App Router, React 19, Supabase client. The earlier Vite + React Router app is archived as the git tag `archive/react-vite`. |
 | Marketplace and execution | `src/pages/MarketplacePage.jsx`, `AppPage.jsx`, `components/AppRunner.jsx`, `ApiAppRunner.jsx`, `DataAppRunner.jsx`, `ConversationThread.jsx`: discovery and distinct app runners. Historical ToolRunner/ToolRenderer names and smart-email-rewriter were not found in the source search. Do not assume the historical five-mode renderer exists. |
 | Developer lifecycle | `src/pages/DevStudioPage.jsx`, `pages/devstudio/*`; backend publish, promote, review, version, rollback and schema endpoints in `main.py`. Existing release gates should be extended. |
 | Workflows | `src/workflows/WorkflowDesigner.jsx`, `workflowModel.js`, `workflowApi.js`; backend `resolve_input_map`, `flow_condition_met`, `run_flow_step`, `run_flow`, `/v1/flows/*`: typed field wiring, fixed conversions, conditional skipping, API/app/approval steps, schedules, history and cancellation. |

@@ -1,4 +1,4 @@
-// Explicit staging/production selection mirrors the current Vite commands.
+// Explicit staging/production selection: loads .env.<mode> like the earlier build commands.
 // Existing .env files remain untouched; only allowlisted public aliases migrate.
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'

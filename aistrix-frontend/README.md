@@ -86,13 +86,12 @@ Restart `npm run dev:next` after changing environment settings. The launcher
 prints the selected API origin. Port 8000 is left available for an existing API
 session. No production environment file or deployment is changed by this setup.
 
-## Regression and rollback build
+## Regression tests and the archived React build
 
-`npm run dev:vite`, `npm run build:vite`, `npm run build:vite:staging` and
-`npm run preview:vite` retain the old build for rollback verification. It is not
-a second production frontend. `npm test` runs Vitest/PGlite; `npm run test:e2e:local`
-runs existing component journeys with in-memory service fixtures. The Vite build
-uses the same public settings allowlist. These fixture checks do not call production
+The earlier React (Vite + React Router) frontend is no longer in this tree. It is
+kept in git as the tag `archive/react-vite`. `npm test` runs Vitest/PGlite;
+`npm run test:e2e:local` runs existing component journeys with in-memory service
+fixtures, served by Vite only as a test harness. These fixture checks do not call production
 services. The hosted suite (`npm run test:e2e`) separately requires a dedicated
 staging test account and defaults to localhost:3000; it excludes fixture suites.
 

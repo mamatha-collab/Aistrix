@@ -50,7 +50,6 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm test
-      - run: npm run build:vite
       - run: npm run build:next:test
 
   build-browser:

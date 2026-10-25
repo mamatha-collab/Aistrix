@@ -1,7 +1,6 @@
 import BusinessFixture from './BusinessFixture'
 import './supabase'
-import { MemoryRouter, Routes, Route } from 'react-router-dom'
-import { LegacyNavigationBridge } from '../../src/legacy-navigation'
+import MemoryNavigation from './memoryNavigation'
 import { MarketplacePage, MarketplaceAppPage } from '../../src/screens/MarketplacePage'
 import DeveloperProfilePage from '../../src/screens/DeveloperProfilePage'
 import React, { useEffect, useRef, useState } from 'react'
@@ -17,7 +16,7 @@ import { ToastProvider } from '../../src/components/Toast'
 import '../../src/index.css'
 import { initTheme } from '../../src/utils/theme.js'
 
-initTheme()   // same as src/main.jsx: apply the saved light/dark choice on load
+initTheme()   // apply the saved light/dark choice on load, as the app does
 
 function Fixture() {
   const [chromeLoading, setChromeLoading] = useState(new URLSearchParams(location.search).has('loading'))
@@ -43,12 +42,13 @@ function Fixture() {
       ? <AIAppBuilder presentation="inline" navigationGuardRef={navigationGuardRef} onLeave={closeInline} user={user} onClose={() => setInlineType(null)} onBack={() => setInlineType(null)} onCreated={createdInline} />
       : <CreateAppModal presentation="inline" navigationGuardRef={navigationGuardRef} onLeave={closeInline} user={user} initialType={inlineType} onClose={() => setInlineType(null)} onBack={() => setInlineType(null)} onCreated={createdInline} />)}
   </> : null
-  if (new URLSearchParams(location.search).get('scenario')?.startsWith('market-customer')) return <MemoryRouter initialEntries={['/marketplace']}><LegacyNavigationBridge><Routes>
-    <Route path="/marketplace" element={<MarketplacePage />} />
-    <Route path="/marketplace/:id" element={<MarketplaceAppPage />} />
-    <Route path="/dev/:userId" element={<DeveloperProfilePage />} />
-    <Route path="/app/:id" element={<p>Shared app runner destination</p>} />
-  </Routes></LegacyNavigationBridge></MemoryRouter>
+  if (new URLSearchParams(location.search).get('scenario')?.startsWith('market-customer')) return <MemoryNavigation initialPath="/marketplace">{({ pathname }) =>
+    pathname === '/marketplace' ? <MarketplacePage />
+      : /^\/marketplace\/[^/]+$/.test(pathname) ? <MarketplaceAppPage />
+      : /^\/dev\/[^/]+$/.test(pathname) ? <DeveloperProfilePage />
+      : /^\/app\/[^/]+$/.test(pathname) ? <p>Shared app runner destination</p>
+      : null
+  }</MemoryNavigation>
   if (new URLSearchParams(location.search).get('scenario') === 'business') return <BusinessFixture />
   if (chromeLoading) return <DeveloperLoading />
   if (new URLSearchParams(location.search).get('scenario') === 'signed-out') return <Auth developer />

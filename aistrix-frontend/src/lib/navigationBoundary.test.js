@@ -36,6 +36,17 @@ describe('Next.js migration boundaries', () => {
     expect(prohibited).toEqual([])
   })
 
+  it('has no React Router or Vite application entry left after the rollback build was archived', () => {
+    const root = resolve(source, '..')
+    const self = fileURLToPath(import.meta.url)
+    const sources = [...files(source), ...files(resolve(root, 'e2e'))].filter(path => /\.[jm]sx?$/.test(path) && path !== self)
+    const routerImports = sources.filter(path => /['"]react-router(-dom)?['"]|legacy-navigation/.test(readFileSync(path, 'utf8')))
+    expect(routerImports).toEqual([])
+    const manifest = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'))
+    expect({ ...manifest.dependencies, ...manifest.devDependencies }).not.toHaveProperty('react-router-dom')
+    for (const entry of ['index.html', 'vite.config.js', 'src/main.jsx']) expect(existsSync(resolve(root, entry)), entry).toBe(false)
+  })
+
   it('gives every workspace screen an explicit standard App Router page', () => {
     for (const path of Object.keys(WORKSPACE_ROUTES)) {
       expect(existsSync(resolve(source, 'app/(workspace)', path.slice(1), 'page.jsx')), path).toBe(true)

@@ -112,8 +112,10 @@ test('customers can search all pages, filter and open the shared app runtime', a
   await expect(page.getByText('Page 1', { exact:true })).toBeVisible()
   await page.getByRole('button', { name:'Listed app 26', exact:true }).click()
   // Fixture uses one app with many listings to exercise paging; detail returns the first.
-  await page.getByRole('link', { name:'Open app →' }).click()
-  await expect(page.getByText('Shared app runner destination')).toBeVisible()
+  // The app runs right on its Market page: no second page to open.
+  await expect(page.getByRole('region', { name:/^Run / })).toBeVisible()
+  await expect(page.getByRole('heading', { name:'How to use' })).toBeVisible()
+  await expect(page.getByRole('heading', { name:'Your recent runs' })).toBeVisible()
 })
 
 test('customer read outages show an error and recover without pretending the catalog is empty', async ({ page }) => {
@@ -125,7 +127,7 @@ test('customer read outages show an error and recover without pretending the cat
   await page.evaluate(() => { delete window.buildFixture.failures['apps:select'] })
   await page.getByRole('button', { name:'Retry Marketplace' }).click()
   await page.getByRole('button', { name:'Listed app 1', exact:true }).click()
-  await expect(page.getByRole('link', { name:'Open app →' })).toBeVisible()
+  await expect(page.getByRole('region', { name:/^Run / })).toBeVisible()
 })
 
 test('customers see public apps without listings and can open them; private apps and drafts stay hidden', async ({ page }) => {
@@ -147,8 +149,7 @@ test('customers see public apps without listings and can open them; private apps
   await expect(page.getByRole('button', { name:'Public draft app', exact:true })).toHaveCount(0)
   await page.getByRole('button', { name:'Available without listing', exact:true }).click()
   await expect(page.getByRole('heading', { name:'Available without listing', exact:true })).toBeVisible()
-  await page.getByRole('link', { name:'Open app →' }).click()
-  await expect(page.getByText('Shared app runner destination')).toBeVisible()
+  await expect(page.getByRole('region', { name:'Run Available without listing' })).toBeVisible()
 })
 
 test('paid customer access reflects unused quota and can be refreshed', async ({ page }) => {
@@ -163,5 +164,5 @@ test('paid customer access reflects unused quota and can be refreshed', async ({
   await page.evaluate(() => { window.buildFixture.tables.app_entitlements[0].run_quota=2 })
   await page.getByRole('button', { name:'Refresh access' }).click()
   await expect(page.getByRole('button', { name:'Buy one run' })).toHaveCount(0)
-  await expect(page.getByRole('link', { name:'Open app →' })).toBeVisible()
+  await expect(page.getByRole('region', { name:/^Run / })).toBeVisible()
 })

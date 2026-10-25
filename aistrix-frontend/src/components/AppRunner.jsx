@@ -880,6 +880,11 @@ export default function AppRunner({ app, user, onClose, onRun, inline = false })
             <label className="text-xs text-slate-400">
               {bulkMode ? (batchCsv ? 'Batch rows (CSV — first row is the header)' : 'Bulk inputs (one per line)') : 'Your input'}
             </label>
+            {!bulkMode && app.sample_input && (
+              <button onClick={() => setInput(app.sample_input)} className="ml-auto mr-2 text-[10px] text-[#A29BFE] hover:underline">
+                Try an example
+              </button>
+            )}
             <button
               onClick={() => { setBulkMode(v => !v); setInput(''); setBulkResults([]); setBatchCsv(false) }}
               className={`text-[10px] px-2 py-1 rounded-lg transition-colors ${bulkMode ? 'bg-[#6C5CE7]/20 text-[#6C5CE7]' : 'bg-[#1F2444] text-slate-400 hover:text-white'}`}>

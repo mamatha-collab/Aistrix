@@ -1,22 +1,13 @@
 import AistrixWordmark from '../components/AistrixWordmark'
-import { APP_PUBLIC_SELECT, withPrivateField } from '../lib/appColumns'
-import { useParams, useNavigate, useSearchParams } from '../navigation'
-import { useState, useEffect, lazy, Suspense } from 'react'
+import AppRunSurface from '../components/AppRunSurface'
+import { loadRunnableApp } from '../lib/runnableApp'
+import { useParams, useNavigate, useSearchParams, Link } from '../navigation'
+import { useState, useEffect } from 'react'
 import { supabase } from '../supabase'
 import { track, EVENTS } from '../lib/analytics'
 
-import { BRAND } from '../lib/brand'
-import { isFileApp } from '../lib/fileApps'
-// Lazy-loaded — AppRunner is also dynamically imported from DetailPanel.jsx;
-// importing it statically here pins it to this page's chunk and makes that
-// dynamic import ineffective (Vite has to pull in this whole page's chunk
-// just to run an app from the dashboard). Lazy here too so it splits into
-// its own shared chunk both places can fetch on demand.
-const AppRunner = lazy(() => import('../components/AppRunner'))
-const DataAppRunner = lazy(() => import('../components/DataAppRunner'))
-const ApiAppRunner = lazy(() => import('../components/ApiAppRunner'))
-const ConversationThread = lazy(() => import('../components/ConversationThread'))
-
+// A published app on its own page (share links, checkout returns). The same
+// run section as the Marketplace app page.
 export default function AppPage() {
   const { id } = useParams()
   const navigate = useNavigate()
@@ -24,6 +15,7 @@ export default function AppPage() {
   const [user, setUser] = useState(null)
   const [app, setApp] = useState(null)
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
   const [checkoutBanner, setCheckoutBanner] = useState(null) // 'success' | 'cancelled' | null
 
   useEffect(() => {
@@ -37,129 +29,86 @@ export default function AppPage() {
       setSearchParams({}, { replace: true })
       track(EVENTS.CHECKOUT_CANCELLED, { app_id: id })
     }
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setUser(session?.user ?? null)
-    })
+    supabase.auth.getSession().then(({ data: { session } }) => setUser(session?.user ?? null))
     fetchApp()
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-run when id changes
   }, [id])
 
   async function fetchApp() {
-    const { data } = await supabase
-      .from('apps')
-      .select(`${APP_PUBLIC_SELECT}, domains(name, emoji, color)`)
-      .eq('id', id)
-      .eq('is_published', true)
-      .single()
-    setApp(data ? await withPrivateField(supabase, data) : data)
-    setLoading(false)
+    setLoading(true); setLoadError('')
+    try { setApp(await loadRunnableApp(supabase, id)) }
+    catch (e) { setLoadError(e.message || 'The app could not be loaded.') }
+    finally { setLoading(false) }
   }
 
-  if (loading) return (
-    <div className="min-h-screen bg-[#0F1225] flex items-center justify-center">
-      <div className="text-slate-400 text-sm">Loading...</div>
-    </div>
-  )
-
-  if (!app) return (
-    <div className="min-h-screen bg-[#0F1225] flex items-center justify-center">
-      <div className="text-center">
-        <p className="text-white text-lg font-medium mb-2">App not found</p>
-        <button onClick={() => navigate('/')} className="text-[#6C5CE7] text-sm hover:underline">← Back to marketplace</button>
-      </div>
-    </div>
-  )
-
-  if (!user) return (
-    <div className="min-h-screen bg-[#0F1225] flex items-center justify-center p-6">
-      <div className="bg-[#171B33] border border-white/10 rounded-2xl p-8 w-full max-w-sm text-center">
-        <div className="w-14 h-14 rounded-2xl flex items-center justify-center text-3xl mx-auto mb-4"
-          style={{ background: (app?.color || '#6C5CE7') + '33' }}>
-          {app?.emoji || '🤖'}
-        </div>
-        <h1 className="text-white text-lg font-semibold mb-1">{app?.name}</h1>
-        <p className="text-slate-400 text-sm mb-6 leading-relaxed">{app?.description}</p>
-        <div className="flex gap-2 flex-wrap justify-center mb-3">
-          {(app?.tags || []).map(t => (
-            <span key={t} className="text-[10px] bg-[#1F2444] text-slate-400 px-2 py-0.5 rounded">{t}</span>
-          ))}
-        </div>
-        <p className="text-slate-500 text-xs mb-5">Sign in to run this app for free</p>
-        <button
-          onClick={() => navigate('/')}
-          className="w-full bg-[#6C5CE7] hover:bg-[#7D6FF0] text-white text-sm py-2.5 rounded-xl font-medium transition-colors"
-        >
-          Sign in to {BRAND}
-        </button>
-      </div>
-    </div>
-  )
-
-  return (
-    <div className="min-h-screen bg-[#0F1225] flex flex-col">
-      <header className="h-14 bg-[#171B33] border-b border-white/5 flex items-center px-6 gap-4">
-        <button onClick={() => navigate('/')} className="text-slate-400 hover:text-white text-sm transition-colors">
-          ← Back to marketplace
-        </button>
-        <div className="flex items-center gap-2 ml-4">
-          <div className="w-7 h-7 rounded-lg bg-[#6C5CE7] flex items-center justify-center text-white font-bold text-sm">A</div>
+  const frame = children => (
+    <div className="min-h-screen w-full flex-1 bg-[#0F1225] flex flex-col">
+      <header className="h-14 shrink-0 bg-[#171B33] border-b border-white/5 flex items-center gap-4 px-4 sm:px-6">
+        <Link to="/marketplace" className="flex items-center gap-2">
+          <img src="/aistrix-logo.svg" alt="" className="w-7 h-7" />
           <span className="text-white font-semibold"><AistrixWordmark /></span>
-        </div>
+        </Link>
+        <button onClick={() => navigate('/marketplace')} className="ml-auto text-slate-400 hover:text-white text-sm transition-colors">
+          ← Back to Market
+        </button>
       </header>
-
-      <main className="flex-1 flex flex-col items-center justify-center p-6">
-        <div className="w-full max-w-2xl">
-          {checkoutBanner === 'success' && (
-            <div className="mb-4 bg-emerald-500/10 border border-emerald-500/20 rounded-xl px-4 py-3 flex items-center justify-between">
-              <p className="text-emerald-400 text-sm font-semibold">✓ Payment successful — your access is now active</p>
-              <button aria-label="Close" onClick={() => setCheckoutBanner(null)} className="text-slate-500 hover:text-white text-sm">✕</button>
-            </div>
-          )}
-          {checkoutBanner === 'cancelled' && (
-            <div className="mb-4 bg-slate-500/10 border border-white/10 rounded-xl px-4 py-3 flex items-center justify-between">
-              <p className="text-slate-400 text-sm">Payment cancelled — you can try again when ready.</p>
-              <button aria-label="Close" onClick={() => setCheckoutBanner(null)} className="text-slate-500 hover:text-white text-sm">✕</button>
-            </div>
-          )}
-          <div className="flex items-center gap-4 mb-8">
-            <div className="w-14 h-14 rounded-2xl flex items-center justify-center text-3xl" style={{ background: (app.color || '#6C5CE7') + '33' }}>
-              {app.emoji}
-            </div>
-            <div>
-              <h1 className="text-white text-xl font-semibold">{app.name}</h1>
-              <p className="text-slate-400 text-sm mt-0.5">{app.description}</p>
-              <div className="flex gap-1 mt-2">
-                {(app.tags || []).map(t => (
-                  <span key={t} className="text-[10px] bg-[#1F2444] text-slate-400 px-2 py-0.5 rounded">{t}</span>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-[#171B33] border border-white/10 rounded-2xl p-6">
-            <Suspense fallback={null}>
-              {isFileApp(app)
-                ? <DataAppRunner app={app} user={user} inline onRun={() => setApp(prev => ({ ...prev, total_runs: (prev.total_runs || 0) + 1 }))} />
-                : app.app_type === 'api'
-                ? <ApiAppRunner app={app} user={user} inline onRun={() => setApp(prev => ({ ...prev, total_runs: (prev.total_runs || 0) + 1 }))} />
-                : (app.has_memory || app.app_type === 'chatbot')
-                ? <ConversationThread app={app} user={user} inline onRun={() => setApp(prev => ({ ...prev, total_runs: (prev.total_runs || 0) + 1 }))} />
-                : <AppRunner app={app} user={user} inline onRun={() => setApp(prev => ({ ...prev, total_runs: (prev.total_runs || 0) + 1 }))} />}
-            </Suspense>
-          </div>
-
-          <div className="mt-4 flex items-center justify-between text-xs text-slate-500">
-            <span>▶ {app.total_runs || 0} total runs</span>
-            <button
-              onClick={() => { navigator.clipboard.writeText(window.location.href) }}
-              className="text-[#6C5CE7] hover:underline"
-            >
-              🔗 Copy share link
-            </button>
-          </div>
-        </div>
+      <main className="flex-1 w-full overflow-y-auto">
+        <div className="w-full max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8">{children}</div>
       </main>
     </div>
   )
-}
 
+  if (loading) return frame(<p role="status" className="text-center text-slate-400 text-sm py-16">Loading…</p>)
+
+  if (loadError) return frame(<div role="alert" className="text-center py-16 space-y-3">
+    <p className="text-red-400 text-sm">{loadError}</p>
+    <button onClick={fetchApp} className="text-[#A29BFE] text-sm hover:underline">Try again</button>
+  </div>)
+
+  if (!app) return frame(<div className="text-center py-16 space-y-3">
+    <p className="text-white text-lg font-medium">App not found</p>
+    <p className="text-slate-400 text-sm">It may have been unpublished or the link is incomplete.</p>
+    <Link to="/marketplace" className="text-[#A29BFE] text-sm hover:underline">Browse the Market</Link>
+  </div>)
+
+  const icon = <div className="w-14 h-14 shrink-0 rounded-2xl flex items-center justify-center text-3xl" style={{ background: (app.color || '#6C5CE7') + '33' }}>
+    {app.emoji || '🤖'}
+  </div>
+
+  if (!user) return frame(
+    <div className="mx-auto bg-[#171B33] border border-white/10 rounded-2xl p-8 w-full max-w-sm text-center">
+      <div className="flex justify-center mb-4">{icon}</div>
+      <h1 className="text-white text-lg font-semibold mb-1">{app.name}</h1>
+      <p className="text-slate-400 text-sm mb-6 leading-relaxed">{app.description}</p>
+      <Link to={`/login?next=${encodeURIComponent(`/app/${app.id}`)}`}
+        className="block w-full bg-[#6C5CE7] hover:bg-[#7D6FF0] text-white text-sm py-2.5 rounded-xl font-medium transition-colors">
+        Sign in to run this app
+      </Link>
+    </div>)
+
+  return frame(<>
+    {checkoutBanner && (
+      <div className={`mb-5 rounded-xl px-4 py-3 flex items-center justify-between border ${checkoutBanner === 'success' ? 'bg-emerald-500/10 border-emerald-500/20' : 'bg-slate-500/10 border-white/10'}`}>
+        <p className={`text-sm ${checkoutBanner === 'success' ? 'text-emerald-400 font-semibold' : 'text-slate-400'}`}>
+          {checkoutBanner === 'success' ? '✓ Payment successful — your access is now active' : 'Payment cancelled — you can try again when ready.'}
+        </p>
+        <button aria-label="Close" onClick={() => setCheckoutBanner(null)} className="text-slate-500 hover:text-white text-sm">✕</button>
+      </div>
+    )}
+    <div className="flex items-start gap-4 mb-6">
+      {icon}
+      <div className="min-w-0">
+        <h1 className="text-white text-xl sm:text-2xl font-semibold">{app.name}</h1>
+        {app.description && <p className="text-slate-400 text-sm mt-1 leading-relaxed">{app.description}</p>}
+        <div className="flex flex-wrap items-center gap-2 mt-2">
+          <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${app.is_paid ? 'bg-amber-500/10 text-amber-400' : 'bg-emerald-500/10 text-emerald-400'}`}>
+            {app.is_paid ? (app.price_per_run ? `$${app.price_per_run} per run` : 'Paid') : 'Free'}
+          </span>
+          {(app.tags || []).map(t => <span key={t} className="text-[11px] bg-[#1F2444] text-slate-400 px-2 py-0.5 rounded-full">{t}</span>)}
+          <Link to={`/marketplace/${app.id}`} className="text-xs text-[#A29BFE] hover:underline">Reviews and details</Link>
+        </div>
+      </div>
+    </div>
+    <AppRunSurface app={app} user={user} onRun={() => setApp(prev => ({ ...prev, total_runs: (prev.total_runs || 0) + 1 }))} />
+  </>)
+}

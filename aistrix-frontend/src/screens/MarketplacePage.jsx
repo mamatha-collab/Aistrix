@@ -6,6 +6,8 @@ import { loadPublicProfiles } from '../lib/publicProfiles'
 import { track, EVENTS } from '../lib/analytics'
 import { ArrowUpRight, Bookmark, Check, RefreshCw, Search } from 'lucide-react'
 import { DeveloperRowPortal } from '../components/DeveloperShell'
+import AppRunSurface from '../components/AppRunSurface'
+import { loadRunnableApp } from '../lib/runnableApp'
 import '../marketplace.css'
 
 const CATEGORY_ICONS = {
@@ -180,6 +182,8 @@ export function MarketplaceAppPage({ appId, initialListing = null }) {
   const [myRating, setMyRating]     = useState(0)
   const [myReviewText, setMyReviewText] = useState('')
   const [submittingReview, setSubmittingReview] = useState(false)
+  const [user, setUser]             = useState(null)
+  const [runApp, setRunApp]         = useState(null)    // the app as its runner needs it (signed in only)
 
   const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
@@ -187,7 +191,7 @@ export function MarketplaceAppPage({ appId, initialListing = null }) {
 
   async function load() {
     const sequence = ++detailSequence.current
-    setDetailError(''); setNotFound(false); setListing(initialListing); setApp(initialListing?.apps || null); setEntitlement(null); setReviews([]); setMyRating(0); setMyReviewText(''); setError(null)
+    setDetailError(''); setNotFound(false); setListing(initialListing); setApp(initialListing?.apps || null); setEntitlement(null); setReviews([]); setMyRating(0); setMyReviewText(''); setError(null); setRunApp(null)
     try {
       const data = await loadMarketApp(supabase, id)
       if (sequence !== detailSequence.current) return
@@ -204,7 +208,11 @@ export function MarketplaceAppPage({ appId, initialListing = null }) {
       const { data: reviewRows, error: reviewError } = await supabase.from('app_reviews')
         .select('rating, review_text, created_at, user_id').eq('app_id', id).order('created_at', { ascending: false }).limit(10)
       if (reviewError) throw new Error(reviewError.message)
+      // The runner loading separately must not hide the app's details.
+      let runnable = null
+      if (session) { try { runnable = await loadRunnableApp(supabase, id) } catch { runnable = false } }
       if (sequence !== detailSequence.current) return
+      setUser(session?.user ?? null); setRunApp(runnable)
       setListing({ ...data, developer_profiles: profile ?? null }); setApp(data.apps)
       setEntitlement(entitlementValue); setReviews(reviewRows || [])
       track(EVENTS.MARKETPLACE_APP_VIEWED, { app_id: id })
@@ -283,20 +291,11 @@ export function MarketplaceAppPage({ appId, initialListing = null }) {
 
   return (
     <div className="flex-1 overflow-y-auto text-white">
-      {/* Breadcrumb */}
-      <div className="border-b border-white/5 bg-[#0E1424]/80 backdrop-blur-sm sticky top-0 z-10">
-        <div className="max-w-4xl mx-auto px-6 py-3 flex items-center gap-2 text-sm">
-          <button onClick={() => navigate('/marketplace')} className="text-[#A29BFE] font-semibold hover:text-white transition-colors">
-            ← Marketplace
-          </button>
-        </div>
-      </div>
-
-      <div className="max-w-4xl mx-auto px-6 py-8 space-y-8">
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-8">
         {/* App header */}
         <div className="flex items-start gap-5">
           <div className="w-16 h-16 rounded-2xl bg-[#6C5CE7]/20 flex items-center justify-center text-3xl shrink-0">
-            {CATEGORY_ICONS[listing.category] ?? '🔮'}
+            {app?.emoji || CATEGORY_ICONS[listing.category] || '🔮'}
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-3 flex-wrap">
@@ -325,20 +324,35 @@ export function MarketplaceAppPage({ appId, initialListing = null }) {
         </div>
 
         {/* Description */}
-        {listing.description && (
+        {listing.description && listing.description.trim() !== (listing.tagline || '').trim() && (
           <div className="bg-[#0E1424] border border-white/5 rounded-2xl p-5">
             <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-wrap">{listing.description}</p>
           </div>
         )}
 
-        <section className="bg-[#0E1424] border border-white/10 rounded-2xl p-6 space-y-3">
-          <h2 className="text-sm font-semibold text-white">{isPaid && !entitlement ? 'Get access' : 'Open app'}</h2>
-          <p className="text-sm text-slate-400">{isPaid && !entitlement ? `Purchase one run${price ? ` for $${price}` : ''}, or open the app to check your access.` : 'Use the full app with its forms, files, tools and saved conversation features.'}</p>
-          {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
-          {isPaid && !entitlement && <button onClick={() => startCheckout('pay_per_run')} disabled={checkingOut} className="rounded-xl bg-[#6C5CE7] px-5 py-2 text-sm font-semibold text-white disabled:opacity-40">{checkingOut ? 'Redirecting…' : 'Buy one run'}</button>}
-          <Link to={`/app/${id}`} className="inline-block rounded-xl border border-[#6C5CE7]/40 px-5 py-2 text-sm text-[#A29BFE] ml-2">Open app →</Link>
-          <button onClick={load} className="block text-xs text-slate-400 underline">Refresh access</button>
-        </section>
+        {/* Run it right here: no second page to open. */}
+        {!user ? (
+          <section className="bg-[#0E1424] border border-white/10 rounded-2xl p-6 space-y-3">
+            <h2 className="text-sm font-semibold text-white">Run this app</h2>
+            <p className="text-sm text-slate-400">Sign in to run it{isPaid ? ' and get access' : ' for free'}. Your results are saved to your run history.</p>
+            <Link to={`/login?next=${encodeURIComponent(`/marketplace/${id}`)}`} className="inline-block rounded-xl bg-[#6C5CE7] px-5 py-2 text-sm font-semibold text-white">Sign in to run</Link>
+          </section>
+        ) : isPaid && !entitlement ? (
+          <section className="bg-[#0E1424] border border-white/10 rounded-2xl p-6 space-y-3">
+            <h2 className="text-sm font-semibold text-white">Get access</h2>
+            <p className="text-sm text-slate-400">{`Purchase one run${price ? ` for ${price}` : ''} to use this app.`}</p>
+            {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
+            <button onClick={() => startCheckout('pay_per_run')} disabled={checkingOut} className="rounded-xl bg-[#6C5CE7] px-5 py-2 text-sm font-semibold text-white disabled:opacity-40">{checkingOut ? 'Redirecting…' : 'Buy one run'}</button>
+            <button onClick={load} className="block text-xs text-slate-400 underline">Already bought it? Refresh access</button>
+          </section>
+        ) : runApp ? (
+          <AppRunSurface app={runApp} user={user} onRun={() => setRunApp(prev => ({ ...prev, total_runs: (prev.total_runs || 0) + 1 }))} />
+        ) : runApp === false ? (
+          <section role="alert" className="bg-[#0E1424] border border-white/10 rounded-2xl p-6 space-y-2">
+            <p className="text-sm text-slate-300">The app couldn't be loaded for running.</p>
+            <button onClick={load} className="text-sm text-[#A29BFE] hover:underline">Try again</button>
+          </section>
+        ) : null}
 
         {/* Reviews */}
         <div className="space-y-4">

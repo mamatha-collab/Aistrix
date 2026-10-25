@@ -372,4 +372,41 @@ def refuse(**kw): raise stripe.error.InvalidRequestError("You can only create ne
 stripe.AccountLink.create = refuse
 r = c.post("/stripe/connect/onboard", headers=newdev)
 ok("a Stripe refusal is explained, not a server error", r.status_code == 502 and "signed up for Connect" in r.json()["detail"])
+
+# ── Checkout returns only to this site ───────────────────────────────────────
+main.ALLOWED_ORIGINS = ["https://staging.aistrix.test", "http://localhost:3000"]
+main.FRONTEND_URL = "https://aistrix.test"
+SESSIONS = []
+async def verify_jwt(token): return token if token in ("buyer", "dev") else None
+async def no_workspace(user_id, requested): return None
+async def not_subscribed(app_id, user_id): return None
+main.verify_user_jwt, main.resolve_user_workspace, main._refuse_if_subscribed = verify_jwt, no_workspace, not_subscribed
+Query.single = Query.maybe_single
+stripe.checkout.Session.create = lambda **kw: SESSIONS.append(kw) or NS(url="https://checkout.stripe.test/cs", id="cs_new")
+stripe.Price.create = lambda **kw: NS(id="price_new")
+def checkout_with(success, cancel, plan="pay_per_run"):
+    return c.post("/create-checkout-session", headers=buyer,
+                  json={"app_id": "paid-app", "plan": plan, "success_url": success, "cancel_url": cancel})
+for site in ("https://aistrix.test", "https://staging.aistrix.test", "http://localhost:3000", "https://AISTRIX.test:443"):
+    r = checkout_with(f"{site}/app/paid-app?checkout=success", f"{site}/marketplace/paid-app")
+    ok(f"checkout may return to the site's own address {site}", r.status_code == 200 and SESSIONS[-1]["success_url"].endswith("checkout=success"))
+r = checkout_with("https://aistrix.test/app/paid-app?checkout=success", "https://aistrix.test/app/paid-app", plan="subscription")
+ok("subscription checkout accepts the site's own addresses", r.status_code == 200 and SESSIONS[-1]["mode"] == "subscription")
+before = len(SESSIONS)
+for success, cancel, why in (
+    ("https://evil.test/thanks", "https://aistrix.test/app/paid-app", "another website after payment"),
+    ("https://aistrix.test/app/paid-app", "https://evil.test/", "another website on cancel"),
+    ("https://aistrix.test.evil.test/x", "https://aistrix.test/", "a look-alike host"),
+    ("https://aistrix.test@evil.test/x", "https://aistrix.test/", "a user-info trick"),
+    ("http://aistrix.test/x", "https://aistrix.test/", "the site over plain http"),
+    ("https://aistrix.test:8443/x", "https://aistrix.test/", "the site on another port"),
+    ("javascript:alert(1)", "https://aistrix.test/", "a script address"),
+    ("/app/paid-app", "https://aistrix.test/", "a relative address"),
+    ("https://aistrix.test:99999/x", "https://aistrix.test/", "an invalid port"),
+):
+    r = checkout_with(success, cancel)
+    ok(f"checkout refuses to return to {why}", r.status_code == 400 and "can only return" in r.json()["detail"])
+ok("…and no Stripe session is created for a refused address", len(SESSIONS) == before)
+r = c.post("/create-checkout-session", json={"app_id": "paid-app", "success_url": "https://evil.test/", "cancel_url": "https://evil.test/"})
+ok("an unsigned caller is told to sign in first", r.status_code == 401)
 finish()

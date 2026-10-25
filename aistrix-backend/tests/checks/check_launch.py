@@ -318,7 +318,7 @@ main.ALLOWED_CLIENT_IPS = []
 os.environ["TRUST_PROXY_HEADERS"] = ""
 
 # ── Production configuration report ──────────────────────────────────────────
-main._fernet, main.FRONTEND_URL = None, "http://localhost:5173"
+main._fernet, main.FRONTEND_URL = None, "http://localhost:3000"
 gaps = main.production_config_gaps()
 ok("missing production settings are named (never their values)", any("SECRET_ENCRYPTION_KEY" in g for g in gaps["missing_required"])
    and any("FRONTEND_URL" in g for g in gaps["missing_required"]) and "RESEND_API_KEY" in gaps["missing_required"])

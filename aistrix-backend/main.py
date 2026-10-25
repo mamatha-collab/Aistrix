@@ -197,7 +197,7 @@ class OnlyAllowedClients:
 
 app.add_middleware(OnlyAllowedClients)
 
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
+ALLOWED_ORIGINS = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:3000").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
@@ -212,7 +212,7 @@ SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 RESEND_API_KEY            = os.getenv("RESEND_API_KEY")
 EMAIL_FROM                = os.getenv("EMAIL_FROM", f"{BRAND_NAME} <noreply@{BRAND_DOMAIN}>")
 STRIPE_PLATFORM_FEE_PCT   = float(os.getenv("STRIPE_PLATFORM_FEE_PCT", "20"))  # % Aistrix keeps
-FRONTEND_URL              = os.getenv("FRONTEND_URL", "http://localhost:5173")
+FRONTEND_URL              = os.getenv("FRONTEND_URL", "http://localhost:3000")
 GITHUB_CLIENT_ID          = os.getenv("GITHUB_CLIENT_ID")
 GITHUB_CLIENT_SECRET      = os.getenv("GITHUB_CLIENT_SECRET")
 GITHUB_REDIRECT_URI       = os.getenv("GITHUB_REDIRECT_URI")  # e.g. https://api.aistrix.ai/auth/github/callback
@@ -4626,6 +4626,25 @@ class CheckoutSessionRequest(BaseModel):
     run_quota: Optional[int] = None    # for subscription plans
 
 
+def _origin(url: str) -> Optional[str]:
+    try:
+        parts = urlsplit(url.strip())
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.scheme not in ("http", "https") or not parts.hostname or parts.username or parts.password:
+        return None
+    default = 443 if parts.scheme == "https" else 80
+    return f"{parts.scheme}://{parts.hostname.lower()}" + (f":{port}" if port and port != default else "")
+
+
+def is_own_site_url(url: str) -> bool:
+    """True only for addresses on this platform's own site (ALLOWED_ORIGINS or
+    FRONTEND_URL), so payment returns can't send buyers to another website."""
+    origin = _origin(url or "")
+    return bool(origin) and origin in {_origin(o) for o in [*ALLOWED_ORIGINS, FRONTEND_URL]}
+
+
 @app.post("/create-checkout-session")
 async def create_checkout_session(req: CheckoutSessionRequest, request: Request):
     """Create a Stripe Checkout Session for one-time purchase or subscription."""
@@ -4642,6 +4661,8 @@ async def create_checkout_session(req: CheckoutSessionRequest, request: Request)
     workspace_id = await resolve_user_workspace(user_id, request.headers.get("X-Workspace-Id"))
     if workspace_id and (await workspace_role(workspace_id, user_id)) not in BILLING_ROLES:
         raise HTTPException(status_code=403, detail="Only workspace owners, admins and billing members can buy apps")
+    if not (is_own_site_url(req.success_url) and is_own_site_url(req.cancel_url)):
+        raise HTTPException(status_code=400, detail=f"Checkout can only return to the {BRAND_NAME} site")
 
     stripe.api_key = secret_key
 

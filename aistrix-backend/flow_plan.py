@@ -8,6 +8,7 @@ type checks; the run reports the release problem at that step, as before.
 import hashlib
 import json
 from typing import Any, Optional
+from urllib.parse import urlsplit
 
 FLOW_SCHEMA_VERSION = 1
 SUPPORTED_SCHEMA_VERSIONS = (1,)
@@ -21,6 +22,23 @@ PRIVACY_MODES = ("standard", "private_only")
 _KIND = {"string": "text", "enum": "text", "date": "text", "number": "number", "boolean": "boolean",
          "string_array": "list", "number_array": "list", "array": "list", "object": "object"}
 _TRANSFORM_KIND = {"to_text": "text", "to_number": "number", "to_boolean": "boolean", "json": None}
+
+
+def api_url_origin(url: Any) -> Optional[tuple]:
+    """(scheme, host, port) of an API step's address, or None when it isn't
+    http(s) or its server part would be filled in from earlier output."""
+    text = str(url or "").strip()
+    if not text.lower().startswith(("http://", "https://")):
+        return None
+    authority = text.split("//", 1)[1].split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+    if "{{" in authority or "}}" in authority:
+        return None
+    parts = urlsplit(text)
+    try:
+        port = parts.port
+    except ValueError:
+        return None
+    return (parts.scheme.lower(), parts.hostname.lower(), port) if parts.hostname else None
 
 
 def step_type(step: dict) -> str:
@@ -143,6 +161,8 @@ def compile_flow(flow: dict, contracts: dict[int, Optional[dict]]) -> tuple[Opti
             problem(i, f"has an unknown step type: {kind}")
         elif kind == "app" and not step.get("app_id"):
             problem(i, "needs an app")
+        elif kind == "api_call" and api_url_origin(step.get("api_url")) is None:
+            problem(i, "needs an address starting with http:// or https:// whose server part doesn't come from earlier output")
         cond = step.get("run_if")
         if isinstance(cond, dict) and cond.get("from"):
             ref_problem = _reference_problem(cond["from"], i, ids, 'Its "run only if" check')

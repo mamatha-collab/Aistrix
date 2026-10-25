@@ -244,22 +244,19 @@ ok("signing secret is stable per app and differs between apps",
 SENT = {}
 
 
-class FakeHTTP:
-    def __init__(self, *a, **k): pass
-    async def __aenter__(self): return self
-    async def __aexit__(self, *a): return False
-    async def post(self, url, content=None, headers=None):
-        SENT.update(url=url, body=content, headers=headers); return NS(status_code=204)
+async def fake_safe_post(method, url, *, content=None, headers=None, max_redirects=5, **kw):
+    SENT.update(method=method, url=url, body=content, headers=headers, max_redirects=max_redirects); return NS(status_code=204)
 
-real_client, real_public = main.httpx.AsyncClient, main.assert_public_url
-main.httpx.AsyncClient, main.assert_public_url = FakeHTTP, (lambda u: None)
+real_fetch = main.fetch_safely
+main.fetch_safely = fake_safe_post
 reset_app(webhook_url="https://hooks.example.com/aistrix")
 r = c.post("/v1/apps/app-1/webhook/test", headers=owner)
 t, v1 = [p.split("=", 1)[1] for p in SENT["headers"]["X-Aistrix-Signature"].split(",")]
 expected = hmac.new(secret.encode(), t.encode() + b"." + SENT["body"], hashlib.sha256).hexdigest()
 ok("Send test: signed sample payload, receiver's status returned", r.json() == {"ok": True, "status": 204} and b'"event": "test"' in SENT["body"])
 ok("signature = HMAC-SHA256(secret, '<t>.<body>')", hmac.compare_digest(expected, v1))
-main.httpx.AsyncClient, main.assert_public_url = real_client, real_public
+ok("deliveries go through the checked outbound path and don't follow redirects", SENT["method"] == "POST" and SENT["max_redirects"] == 0)
+main.fetch_safely = real_fetch
 reset_app(webhook_url=None)
 ok("Send test without a saved URL → 400", c.post("/v1/apps/app-1/webhook/test", headers=owner).status_code == 400)
 

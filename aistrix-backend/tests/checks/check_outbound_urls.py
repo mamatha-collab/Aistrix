@@ -61,7 +61,7 @@ async def check_redirect():
             await main.fetch_safely("GET", "https://tool.example/run")
             ok("mixed DNS redirect rejected", False)
         except ValueError:
-            ok("mixed DNS redirect rejected before destination request", requests == ["https://tool.example/run"])
+            ok("mixed DNS redirect rejected before destination request (first hop pinned to its checked address)", requests == ["https://8.8.8.8/run"])
 
 
 asyncio.run(check_redirect())

@@ -46,8 +46,10 @@ from supabase import create_client, Client
 from supabase.lib.client_options import SyncClientOptions
 from telemetry import configured_outbox
 import flow_plan
+import outbound
 import spend_guard
 import tool_contracts
+from outbound import assert_public_url, fetch_safely
 
 load_dotenv()
 
@@ -398,57 +400,9 @@ async def require_verified_user(request: Request) -> str:
 # and re-validate every redirect hop (a bare `follow_redirects=True` would
 # otherwise let an attacker redirect from an allowed public URL to an internal
 # one).
-_BLOCKED_HOSTNAMES = {"metadata.google.internal"}
-
-
-def _is_public_ip(ip_str: str) -> bool:
-    try:
-        ip = ipaddress.ip_address(ip_str)
-    except ValueError:
-        return False
-    return not (
-        ip.is_private or ip.is_loopback or ip.is_link_local
-        or ip.is_multicast or ip.is_reserved or ip.is_unspecified
-    )
-
-
-def assert_public_url(url: str) -> None:
-    """Raise ValueError if `url` isn't a plain http(s) URL that resolves to a
-    public IP address."""
-    parts = urlsplit(url)
-    if parts.scheme not in ("http", "https"):
-        raise ValueError("URL must use http:// or https://")
-    hostname = parts.hostname
-    if not hostname:
-        raise ValueError("URL has no hostname")
-    if hostname.lower() in _BLOCKED_HOSTNAMES:
-        raise ValueError("This host is not allowed")
-    try:
-        infos = socket.getaddrinfo(hostname, None)
-    except socket.gaierror:
-        raise ValueError("Could not resolve host")
-    # A resolver/client can choose any returned address. One public answer
-    # must not authorize a second private/internal destination.
-    if not infos or not all(_is_public_ip(info[4][0]) for info in infos):
-        raise ValueError("URL resolves to a non-public address, which is not allowed")
-
-
-async def fetch_safely(method: str, url: str, *, timeout: float = 15, max_redirects: int = 5, **kwargs) -> httpx.Response:
-    """httpx request wrapper that validates the target (and every redirect
-    hop) with `assert_public_url` before following it. Use this instead of a
-    bare `httpx.AsyncClient(follow_redirects=True)` for any caller-influenced
-    URL."""
-    assert_public_url(url)
-    async with httpx.AsyncClient(follow_redirects=False, timeout=timeout) as client:
-        current = url
-        for _ in range(max_redirects + 1):
-            resp = await client.request(method, current, **kwargs)
-            if resp.status_code in (301, 302, 303, 307, 308) and resp.headers.get("location"):
-                current = str(httpx.URL(current).join(resp.headers["location"]))
-                assert_public_url(current)
-                continue
-            return resp
-    raise ValueError("Too many redirects")
+# The checks themselves live in outbound.py (DNS pinning, allow/block lists,
+# credential-safe redirects); assert_public_url and fetch_safely are imported
+# from there.
 
 
 # ─── Anonymous (unauthenticated) rate limiting ────────────────────────────────
@@ -1191,6 +1145,15 @@ def _internal_request() -> Request:
                     "query_string": b"", "client": ("127.0.0.1", 0)})
 
 
+def _tool_allowed_hosts(config: dict) -> Optional[list[str]]:
+    """A tool's own destination list ("allowed_hosts" in its config), so a
+    model can't be talked into sending its data anywhere else."""
+    hosts = config.get("allowed_hosts") if isinstance(config, dict) else None
+    if isinstance(hosts, str):
+        hosts = [h for h in hosts.split(",")]
+    return [str(h).strip() for h in hosts if str(h).strip()] if isinstance(hosts, list) and hosts else None
+
+
 async def execute_tool(tool: dict, tool_input: dict, ctx: Optional[dict] = None) -> str:
     """ctx carries run-scoped server data: {"secrets", "caller_id", "api_key", "provider"}.
     A tool whose secret is missing fails clearly instead of calling out with
@@ -1218,7 +1181,8 @@ async def _execute_tool(tool: dict, tool_input: dict, ctx: dict) -> str:
         elif tool_type == "fetch":
             url = tool_input.get("url", "")
             try:
-                r = await fetch_safely("GET", url, timeout=10, headers={"User-Agent": f"{BRAND_NAME}/1.0"})
+                r = await fetch_safely("GET", url, timeout=10, headers={"User-Agent": f"{BRAND_NAME}/1.0"},
+                                       allowed_hosts=_tool_allowed_hosts(config))
             except ValueError as e:
                 return f"Invalid URL: {e}"
             text = re.sub(r"<[^>]+>", " ", r.text)
@@ -1249,9 +1213,11 @@ async def _execute_tool(tool: dict, tool_input: dict, ctx: dict) -> str:
             body_fields = {k: v for k, v in tool_input.items() if k != "url"}
             try:
                 if method == "GET":
-                    r = await fetch_safely("GET", url, timeout=15, params=body_fields, headers=headers)
+                    r = await fetch_safely("GET", url, timeout=15, params=body_fields, headers=headers,
+                                           allowed_hosts=_tool_allowed_hosts(config))
                 else:
-                    r = await fetch_safely(method, url, timeout=15, json=body_fields, headers=headers)
+                    r = await fetch_safely(method, url, timeout=15, json=body_fields, headers=headers,
+                                           allowed_hosts=_tool_allowed_hosts(config))
             except ValueError as e:
                 return f"Invalid URL: {e}"
             return f"HTTP {r.status_code}: {r.text[:2000]}"
@@ -3929,14 +3895,13 @@ def webhook_secret(app_id: str) -> str:
 async def _post_webhook(webhook_url: str, app_id: str, payload: dict) -> int:
     """POSTs the payload signed with the app's secret: header
     X-Aistrix-Signature = "t=<unix time>,v1=<hex HMAC-SHA256 of '<t>.<body>'>"."""
-    assert_public_url(webhook_url)
     body = json.dumps(payload, ensure_ascii=False).encode()
     ts = str(int(time.time()))
     sig = hmac.new(webhook_secret(app_id).encode(), ts.encode() + b"." + body, hashlib.sha256).hexdigest()
-    async with httpx.AsyncClient(timeout=10) as client:
-        res = await client.post(webhook_url, content=body, headers={
-            "Content-Type": "application/json", "User-Agent": f"{BRAND_NAME}-Webhook/1.0",
-            "X-Aistrix-Signature": f"t={ts},v1={sig}"})
+    # Redirects aren't followed: a signed delivery goes to the saved address only.
+    res = await fetch_safely("POST", webhook_url, timeout=10, max_redirects=0, content=body, headers={
+        "Content-Type": "application/json", "User-Agent": f"{BRAND_NAME}-Webhook/1.0",
+        "X-Aistrix-Signature": f"t={ts},v1={sig}"})
     return res.status_code
 
 
@@ -4235,6 +4200,10 @@ async def _run_api_step(step: dict, previous: str) -> dict:
         return {"status": "failed", "error": f"uses an unsupported method: {method}"}
     if not url.startswith(("http://", "https://")):
         return {"status": "failed", "error": "needs a URL starting with http:// or https://"}
+    # Earlier output may fill the path or query, never choose the server.
+    designed = flow_plan.api_url_origin(step.get("api_url"))
+    if not designed or designed != flow_plan.api_url_origin(url):
+        return {"status": "failed", "error": "has an address whose server would come from earlier output; fix the server part of the URL"}
     headers = {"User-Agent": f"{BRAND_NAME}-Workflow/1.0", "Accept": "application/json, text/plain, */*"}
     raw = step.get("api_headers")
     if raw:

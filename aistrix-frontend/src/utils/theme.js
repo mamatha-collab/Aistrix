@@ -36,33 +36,20 @@ const LIGHT = {
   '--t-shadow':    'rgba(28,39,64,0.12)',
 }
 
-function injectThemeStyle(vars) {
-  let el = document.getElementById('aistrix-theme-vars')
+const varsCss = vars => `:root{${Object.entries(vars).map(([k, v]) => `${k}:${v}`).join(';')}}`
+
+function injectStyle(id, css) {
+  let el = document.getElementById(id)
   if (!el) {
     el = document.createElement('style')
-    el.id = 'aistrix-theme-vars'
+    el.id = id
     document.head.appendChild(el)
   }
-  const rules = Object.entries(vars).map(([k, v]) => `${k}:${v}`).join(';')
-  el.textContent = `:root{${rules}}`
+  el.textContent = css
 }
 
-// Also inject override styles that reference CSS vars
-function injectOverrides(isDark) {
-  let el = document.getElementById('aistrix-theme-overrides')
-  if (!el) {
-    el = document.createElement('style')
-    el.id = 'aistrix-theme-overrides'
-    document.head.appendChild(el)
-  }
-
-  if (isDark) {
-    el.textContent = ''
-    return
-  }
-
-  // Map the app's hardcoded Tailwind hex classes onto the live theme vars.
-  el.textContent = `
+// Light mode maps the app's hardcoded Tailwind hex classes onto the theme vars.
+const LIGHT_OVERRIDES = `
     /* Backgrounds */
     [data-theme="light"] [class*="bg-"][class*="09101F"],
     [data-theme="light"] [class*="bg-"][class*="09101f"],
@@ -144,14 +131,23 @@ function injectOverrides(isDark) {
     /* Body */
     [data-theme="light"] body { background-color: var(--t-bg); color: var(--t-text); }
   `
-}
 
 export function applyTheme(theme) {
   const isDark = theme === 'dark'
   document.documentElement.setAttribute('data-theme', theme)
   document.documentElement.style.colorScheme = isDark ? 'dark' : 'light'
-  injectThemeStyle(isDark ? DARK : LIGHT)
-  injectOverrides(isDark)
+  injectStyle('aistrix-theme-vars', varsCss(isDark ? DARK : LIGHT))
+  injectStyle('aistrix-theme-overrides', isDark ? '' : LIGHT_OVERRIDES)
+  try { document.cookie = `${THEME_COOKIE}=${isDark ? 'dark' : 'light'}; path=/; max-age=31536000; samesite=lax` } catch { /* Cookies may be disabled. */ }
+}
+
+// The server renders the saved theme (app/layout.jsx reads this cookie), so a
+// light theme never flashes dark on load. localStorage stays the client copy.
+export const THEME_COOKIE = 'aistrix_theme'
+
+export function themeHead(theme) {
+  const isDark = theme !== 'light'
+  return { vars: varsCss(isDark ? DARK : LIGHT), overrides: isDark ? '' : LIGHT_OVERRIDES }
 }
 
 export function initTheme() {

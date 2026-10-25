@@ -436,7 +436,7 @@ export default function DevStudioPage({
       {confirmSignOut && (
         <ConfirmDialog title={`Sign out of ${BRAND}?`} subtitle={user?.email}
           confirmLabel="Sign out" busyLabel="Signing out…" danger
-          onCancel={() => setConfirmSignOut(false)} onConfirm={signOut}>
+          onCancel={() => setConfirmSignOut(false)} onConfirm={async () => { await signOut(); setConfirmSignOut(false) }}>
           Any unsaved changes in open editors (Design, Prompt Studio, tests) will be lost. Runs and saved work are kept.
         </ConfirmDialog>
       )}

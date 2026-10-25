@@ -167,6 +167,6 @@ export default function MobileDeveloper({ user, apps, phaseByAppId, loading, err
     <nav aria-label="Developer mobile navigation" className="shrink-0 flex border-t border-white/8 bg-[#111827] pb-[env(safe-area-inset-bottom)]">
       {[[Activity, 'monitor', 'Monitor'], [ENTITIES.apps.Icon, 'apps', ENTITIES.apps.label], [MessageSquare, 'feedback', 'Feedback'], [Settings2, 'manage', 'Manage']].map(([Icon, id, label]) => <button key={id} onClick={() => { if (id === 'feedback') setFilter(''); navigate(id) }} aria-current={view === id ? 'page' : undefined} className={`flex-1 min-h-16 flex flex-col items-center justify-center gap-1 text-xs ${view === id ? 'text-[#A29BFE]' : 'text-slate-400'}`}><Icon size={20} /><span>{label}</span></button>)}
     </nav>
-    {confirmSignOut && <ConfirmDialog title={`Sign out of ${BRAND}?`} subtitle={user.email} confirmLabel="Sign out" busyLabel="Signing out…" danger onCancel={() => setConfirmSignOut(false)} onConfirm={onSignOut}>You can sign in again to check your apps.</ConfirmDialog>}
+    {confirmSignOut && <ConfirmDialog title={`Sign out of ${BRAND}?`} subtitle={user.email} confirmLabel="Sign out" busyLabel="Signing out…" danger onCancel={() => setConfirmSignOut(false)} onConfirm={async () => { await onSignOut(); setConfirmSignOut(false) }}>You can sign in again to check your apps.</ConfirmDialog>}
   </div>
 }

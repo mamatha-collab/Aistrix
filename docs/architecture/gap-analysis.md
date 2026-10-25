@@ -8,21 +8,21 @@ Go AEX in Phase 2, sandboxed workers in Phase 3, and scaling in Phase 4.
 | Requirement | Assessment | Next acceptance gate |
 | --- | --- | --- |
 | Marketplace/developer/admin journeys | Partial: existing screens, release/review endpoints, billing and access controls | Real staging customer/developer/admin journeys, revoked-member and cross-tenant checks |
-| Versioned tool contract | Partial: blueprint input/output fields, published snapshots, schema endpoint | Explicit contract version, execution/auth/timeout/side-effect/privacy fields; reject invalid definitions without breaking old releases |
-| Workflow compiler | Partial: wiring, conversions and conditions exist | Reject duplicate IDs, forward/missing references, incompatible types and unsupported schema versions before execution; stable immutable plan IDs |
-| Durable queue/workers | Partial: snapshots, checkpoints, leases and failure recovery | Durable enqueue/claim, bounded backoff, dead letters, concurrency fencing; restart without repeating uncertain side effects |
+| Versioned tool contract | Local: versioned release contracts (fields, timeout, secrets, side effects, data class, model route); invalid definitions refused at publish; old releases derive one (phase1-functionality-2026-10-25.md) | Hosted publish/run acceptance |
+| Workflow compiler | Local: refs, types, required inputs, ids, format versions checked before runs; pinned releases and stable plan ids | Hosted acceptance |
+| Durable queue/workers | Local: leases, bounded jittered step retries for harmless steps, needs-review flags, continue-with-confirmation, notification dead letters | Restart/load evidence on hosted workers |
 | Next.js frontend | Full local native route migration complete: public SSR, cookie sessions, all workspaces/runners, Next navigation, standard app structure and default scripts | Hosted auth/isolation/billing parity, profile migration rollout, staging cutover and rollback; see nextjs-completion-2026-10-24.md |
 | Go AEX engine and decision contract | Missing as a separate inspected implementation | Versioned API, deterministic routing, policy/state/cost tests and Python-tool integration |
 | Sandboxed developer workers | Hostile-code isolation unverified | Resource/egress controls, tenant denial and recovery tests |
-| Privacy guard | Missing enforceable per-workflow routing policy | Private-only forbids external model, developer API and fallback routes before payload transmission |
-| Cost enforcement | Partial: usage counters, credits and cost estimates | Atomic reservations across concurrent runs/retries, settlement, global/tenant hard caps, unknown-price rejection |
+| Privacy guard | Local: private-only workflows enforced at compile and before each step; approved private model hosts only | Operator-approved private model and hosted test |
+| Cost enforcement | Local: atomic reservations, settlement, per-key/workspace/platform caps, unknown-price refusal, uncertain holds (migration unapplied) | Apply migration; hosted concurrency test |
 | External inference/BYOK | Existing adapters and encrypted-key write paths | Provider-policy integration, token/time/context/retry limits, rotation/revocation and plaintext-key cleanup |
 | Private inference | Custom-model URL path exists; no benchmarked private serving proven | Explicitly approved destination and model/license, quality dataset, metering and measured economics; no automatic GPU provisioning |
 | Caching/optimization/evaluation | App quality checks exist; AEX savings benchmark and tenant-scoped optimizer unproven | Identical dataset baseline, quality, cost per successful run, latency and policy-isolated cache tests |
-| Outbound endpoint security | Public-address validation and redirect checks; mixed DNS bypass fixed in initial increment | DNS rebinding protection, destination allowlists, credential-safe redirects and host egress tests |
+| Outbound endpoint security | Local: DNS pinning per hop, operator and per-tool allowlists, credential-safe redirects, fixed API-step servers | Host egress firewall evidence |
 | Observability/audit | Run history, cost estimates, outbox and monitoring exist | Workflow/step/decision/provider tracing, minimized payload retention, policy/version attribution |
 | Production operations | CI, image and operational documentation exist | Apply/verify pending migrations in selected staging; container/restart/load/restore/rollback evidence |
-| Three reference workflows | Some reusable building blocks; all three deployed cases unverified | Invoice, support email and business-data integration complete with real test destinations and approvals |
+| Three reference workflows | Local: invoice, support email and sales-data sync install and run end to end against built-in test destinations with approvals | Real third-party destinations later |
 
 Keep `workspaces` as the initial tenant boundary rather than introducing a
 parallel organization system without a migration design. Reuse React components,

@@ -202,6 +202,22 @@ def compile_flow(flow: dict, contracts: dict[int, Optional[dict]]) -> tuple[Opti
             want = _KIND.get(target_field.get("type") or "string")
             if have and want and have != want:
                 problem(i, f"{label} expects {target_field.get('type') or 'string'} but gets {have}; add a conversion")
+        body_map = step.get("api_body_map")
+        if body_map is not None and not isinstance(body_map, dict):
+            problem(i, "has a request body map that isn't a field map")
+            body_map = {}
+        for target, spec in (body_map or {}).items():
+            label = f'Body field "{target}"'
+            if not isinstance(spec, dict):
+                problem(i, f"{label} has wiring that isn't valid")
+            elif spec.get("transform") and spec["transform"] not in TRANSFORMS:
+                problem(i, f"{label} uses an unknown conversion: {spec['transform']}")
+            elif "value" not in spec:
+                ref_problem = _reference_problem(spec.get("from"), i, ids, label)
+                if ref_problem:
+                    problem(i, ref_problem)
+                elif _undeclared_output(spec["from"], steps_before):
+                    problem(i, f"{label} reads {spec['from']}, which that step's release doesn't produce")
         # An empty map means the step takes the previous output as text.
         if contract and input_map and not step.get("ai_fill"):
             for name, field in input_fields.items():

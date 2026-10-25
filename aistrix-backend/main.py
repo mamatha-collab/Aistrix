@@ -47,6 +47,7 @@ from supabase.lib.client_options import SyncClientOptions
 from telemetry import configured_outbox
 import flow_plan
 import outbound
+import reference_workflows
 import spend_guard
 import tool_contracts
 from outbound import assert_public_url, fetch_safely
@@ -219,6 +220,8 @@ RESEND_API_KEY            = os.getenv("RESEND_API_KEY")
 EMAIL_FROM                = os.getenv("EMAIL_FROM", f"{BRAND_NAME} <noreply@{BRAND_DOMAIN}>")
 STRIPE_PLATFORM_FEE_PCT   = float(os.getenv("STRIPE_PLATFORM_FEE_PCT", "20"))  # % Aistrix keeps
 FRONTEND_URL              = os.getenv("FRONTEND_URL", "http://localhost:3000")
+# This API's own public address (test destination URLs point here).
+API_PUBLIC_URL            = (os.getenv("API_PUBLIC_URL") or "http://localhost:8001").rstrip("/")
 GITHUB_CLIENT_ID          = os.getenv("GITHUB_CLIENT_ID")
 GITHUB_CLIENT_SECRET      = os.getenv("GITHUB_CLIENT_SECRET")
 GITHUB_REDIRECT_URI       = os.getenv("GITHUB_REDIRECT_URI")  # e.g. https://api.aistrix.ai/auth/github/callback
@@ -4189,8 +4192,10 @@ def flow_problem_text(flow: dict, problems: list[dict]) -> str:
                      for p in problems[:10])
 
 
-async def _run_api_step(step: dict, previous: str) -> dict:
-    """An API Call step, server side (same checks as /proxy)."""
+async def _run_api_step(step: dict, previous: str, sources: Optional[dict] = None) -> dict:
+    """An API Call step, server side (same checks as /proxy). With
+    api_body_map the JSON body is built from wired fields, like an app step's
+    inputs; otherwise api_body is text with {{previous_output}} filled in."""
     def fill(t):
         return re.sub(r"\{\{previous_output\}\}", lambda _m: previous, t or "", flags=re.IGNORECASE)
     method = (step.get("api_method") or "GET").upper()
@@ -4212,9 +4217,22 @@ async def _run_api_step(step: dict, previous: str) -> dict:
             headers.update({str(k): str(v) for k, v in (extra or {}).items()})
         except (ValueError, AttributeError):
             return {"status": "failed", "error": "has headers that aren't valid JSON"}
-    body = fill(step.get("api_body")) or None
-    if body and "Content-Type" not in headers:
+    if isinstance(step.get("api_body_map"), dict) and step["api_body_map"]:
+        body = json.dumps(resolve_input_map(step["api_body_map"], sources or {}), ensure_ascii=False, default=str)
+        headers = {k: v for k, v in headers.items() if k.lower() != "content-type"}
         headers["Content-Type"] = "application/json"
+    else:
+        body = fill(step.get("api_body")) or None
+        if body and not any(k.lower() == "content-type" for k in headers):
+            headers["Content-Type"] = "application/json"
+    own = own_test_destination(url)
+    if own:
+        status, payload = await handle_test_destination(method, *own, body=(body or "").encode(),
+                                                        content_type=headers.get("Content-Type"))
+        if status >= 400:
+            return {"status": "failed", "error": f"got HTTP {status} from the test destination: {payload.get('error')}",
+                    "dispatched": True, "transient": status == 503, "repeat_safe": safe, "uncertain": False}
+        return {"status": "ok", "output": json.dumps(payload, ensure_ascii=False, indent=2), "version": None}
     try:
         resp = await fetch_safely(method, url, timeout=20, content=body.encode() if body else None, headers=headers)
     except ValueError as e:
@@ -4391,7 +4409,7 @@ async def run_flow_step(flow: dict, idx: int, *, caller: "ApiCaller", trigger: s
     if kind == "api_call":
         if private:
             return {"status": "failed", "error": flow_plan.private_step_problems(step, None)[0]}
-        return await _run_api_step(step, step_input)
+        return await _run_api_step(step, step_input, sources)
     app_row = await load_app_row(step.get("app_id")) if step.get("app_id") else None
     if not app_row:
         return {"status": "failed", "error": "uses an app that no longer exists"}
@@ -6616,6 +6634,204 @@ async def trigger_via_webhook(token: str, request: Request):
         "steps_run": sum(1 for r in (run or {}).get("steps", []) if r.get("status") == "ok"),
         "message": "Workflow triggered. Results saved to run history.",
     }
+
+
+# ─── Test destinations ───────────────────────────────────────────────────────
+# Each developer gets private URLs that capture what a workflow sends (instead
+# of a real accounting system, CRM or outbox) and a sample dataset to read.
+# The URL carries a token derived from the user id, so nothing is stored to
+# create them. Workflow API steps that target them are handled in-process.
+_DESTINATION_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,39}")
+TEST_DELIVERY_RETENTION_DAYS = 14
+DATASET_ROWS = {"sales-data": reference_workflows.SALES_ROWS}
+
+
+def test_destination_token(user_id: str) -> str:
+    master = os.getenv("WEBHOOK_SIGNING_KEY") or SUPABASE_SERVICE_ROLE_KEY or ""
+    return hmac.new(master.encode(), f"test-destination:{user_id}".encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def test_destination_url(user_id: str, name: str) -> str:
+    return f"{API_PUBLIC_URL}/v1/test-destinations/{user_id}/{test_destination_token(user_id)}/{name}"
+
+
+def own_test_destination(url: str) -> Optional[tuple[str, str, str]]:
+    """(user id, token, name) when url is one of this API's test destinations."""
+    parts, base = urlsplit(url), urlsplit(API_PUBLIC_URL)
+    if (parts.scheme, (parts.hostname or "").lower(), parts.port) != (base.scheme, (base.hostname or "").lower(), base.port):
+        return None
+    match = re.fullmatch(r"/v1/test-destinations/([^/]+)/([^/]+)/([^/]+)/?", parts.path)
+    return (match.group(1), match.group(2), match.group(3)) if match else None
+
+
+async def handle_test_destination(method: str, user_id: str, token: str, name: str, *,
+                                  body: bytes = b"", content_type: Optional[str] = None) -> tuple[int, dict]:
+    method = method.upper()
+    if not (_UUID_RE.fullmatch(user_id or "") and _DESTINATION_NAME.fullmatch(name or "")
+            and hmac.compare_digest(token or "", test_destination_token(user_id))):
+        return 404, {"error": "Unknown test destination"}
+    if method in ("GET", "HEAD"):
+        if name in DATASET_ROWS:
+            return 200, {"source": name, "rows": DATASET_ROWS[name]}
+        return 200, {"destination": name, "ok": True}
+    if method not in ("POST", "PUT", "PATCH", "DELETE"):
+        return 405, {"error": "Use POST, PUT, PATCH or DELETE to deliver"}
+    if len(body) > 65536:
+        return 413, {"error": "Deliveries are limited to 64 KB"}
+    sb = _service_client()
+    if not sb:
+        return 503, {"error": "Test destinations aren't configured on this server"}
+    try:
+        res = await db(sb.table("test_deliveries").insert({
+            "user_id": user_id, "destination": name, "method": method,
+            "content_type": (content_type or "")[:100] or None, "body": body.decode("utf-8", errors="replace")}))
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=TEST_DELIVERY_RETENTION_DAYS)).isoformat()
+        await db(sb.table("test_deliveries").delete().eq("user_id", user_id).lt("created_at", cutoff))
+    except Exception as e:
+        if _missing_table(e):
+            return 503, {"error": "Test destinations aren't set up on this server yet (database migration pending)."}
+        raise
+    return 200, {"received": True, "destination": name, "delivery_id": ((res.data or [{}])[0]).get("id")}
+
+
+@app.api_route("/v1/test-destinations/{user_id}/{token}/{name}", methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"])
+async def test_destination(user_id: str, token: str, name: str, request: Request):
+    """A developer's test destination: captures deliveries, or serves a sample dataset."""
+    status, payload = await handle_test_destination(request.method, user_id, token, name, body=await request.body(),
+                                                    content_type=request.headers.get("content-type"))
+    return JSONResponse(status_code=status, content=payload)
+
+
+async def _signed_in_builder(request: Request) -> ApiCaller:
+    caller = await resolve_api_caller(request, required=True)
+    if caller.via_key:
+        raise HTTPException(status_code=403, detail="Sign in to do this; API keys can't.")
+    return caller
+
+
+@app.get("/v1/test-destinations")
+async def list_test_destinations(request: Request):
+    """Your test destination URLs, for API steps and tools."""
+    caller = await _signed_in_builder(request)
+    return {"destinations": [{"name": n, "description": d, "url": test_destination_url(caller.user_id, n)}
+                             for n, d in reference_workflows.DESTINATIONS.items()],
+            "datasets": [{"name": n, "description": d, "url": test_destination_url(caller.user_id, n)}
+                         for n, d in reference_workflows.DATASETS.items()]}
+
+
+@app.get("/v1/test-deliveries")
+async def list_test_deliveries(request: Request, destination: Optional[str] = None, limit: int = 50):
+    """What your workflows delivered to your test destinations, newest first."""
+    caller = await _signed_in_builder(request)
+    try:
+        query = _service_client().table("test_deliveries").select("id, destination, method, content_type, body, created_at") \
+            .eq("user_id", caller.user_id)
+        if destination:
+            query = query.eq("destination", destination)
+        res = await db(query.order("created_at", desc=True).limit(max(1, min(limit, 200))))
+    except Exception as e:
+        if _missing_table(e):
+            raise HTTPException(status_code=503, detail="Test destinations aren't set up on this server yet (database migration pending).")
+        raise
+    deliveries = []
+    for row in res.data or []:
+        parsed, errs = _parse_json_output(row.get("body") or "")
+        deliveries.append({**row, "json": parsed if not errs else None})
+    return {"deliveries": deliveries}
+
+
+@app.delete("/v1/test-deliveries")
+async def clear_test_deliveries(request: Request):
+    caller = await _signed_in_builder(request)
+    await db(_service_client().table("test_deliveries").delete().eq("user_id", caller.user_id))
+    return {"ok": True}
+
+
+# ─── Reference workflows ─────────────────────────────────────────────────────
+@app.get("/v1/reference-workflows")
+async def list_reference_workflows(request: Request):
+    """Ready-made workflows to install: their apps, steps and a sample input."""
+    caller = await _signed_in_builder(request)
+    out = []
+    for key in reference_workflows.CATALOG:
+        wf = reference_workflows.build(key, lambda n: test_destination_url(caller.user_id, n))
+        out.append({"key": key, "name": wf["name"], "emoji": wf["emoji"], "description": wf["description"],
+                    "apps": [a["name"] for a in wf["apps"]], "steps": [s["app_name"] for s in wf["steps"]],
+                    "sample_input": wf["sample_input"]})
+    return {"workflows": out}
+
+
+def _unique_name(name: str, taken: set) -> str:
+    candidate, n = name, 2
+    while candidate.lower() in taken:
+        candidate, n = f"{name} ({n})", n + 1
+    taken.add(candidate.lower())
+    return candidate
+
+
+@app.post("/v1/reference-workflows/{key}/install")
+async def install_reference_workflow(key: str, request: Request):
+    """Create a reference workflow and its apps (as drafts) for you to test,
+    change and publish. Its API steps deliver to your test destinations."""
+    caller = await _signed_in_builder(request)
+    if key not in reference_workflows.CATALOG:
+        raise HTTPException(status_code=404, detail="Reference workflow not found")
+    workspace_id = caller.workspace_id
+    if workspace_id and workspace_id != await personal_workspace_id(caller.user_id) \
+            and await workspace_role(workspace_id, caller.user_id) not in BUILD_ROLES:
+        raise HTTPException(status_code=403, detail="Only people who build in this workspace can install workflows")
+    sb = _service_client()
+    if not sb:
+        raise HTTPException(status_code=503, detail="Workflows aren't configured on this server")
+    wf = reference_workflows.build(key, lambda n: test_destination_url(caller.user_id, n))
+    names = await db(sb.table("apps").select("name").eq("created_by", caller.user_id))
+    taken = {str(r.get("name") or "").lower() for r in (names.data or [])}
+    created: dict[str, dict] = {}
+    try:
+        for spec in wf["apps"]:
+            row = {"name": _unique_name(spec["name"], taken), "emoji": spec["emoji"], "description": spec["description"],
+                   "system_prompt": spec["system_prompt"], "ai_provider": spec["ai_provider"], "ai_model": spec["ai_model"],
+                   "output_type": spec["output_type"], "is_published": False, "visibility": "private",
+                   "created_by": caller.user_id, "workflow_order": 999, "total_runs": 0,
+                   **({"workspace_id": workspace_id} if workspace_id else {})}
+            res = await db(sb.table("apps").insert(row))
+            app_row = (res.data or [None])[0]
+            if not app_row:
+                raise RuntimeError("app not created")
+            created[spec["key"]] = app_row
+            await db(sb.table("app_blueprints").insert({"app_id": app_row["id"], "user_id": caller.user_id,
+                                                        "blueprint": spec["blueprint"]}))
+        steps = []
+        for step in wf["steps"]:
+            out = {k: v for k, v in step.items() if k != "app"}
+            if "app" in step:
+                app_row = created[step["app"]]
+                out.update(app_id=app_row["id"], app_emoji=app_row.get("emoji"), version="draft", pinned_version=None)
+            steps.append(out)
+        flows = await db(sb.table("flows").select("name").eq("user_id", caller.user_id))
+        flow_row = {"name": _unique_name(wf["name"], {str(r.get("name") or "").lower() for r in (flows.data or [])}),
+                    "emoji": wf["emoji"], "description": wf["description"], "kind": "developer",
+                    "user_id": caller.user_id, "steps": steps, "trigger": wf["trigger"],
+                    **({"workspace_id": workspace_id} if workspace_id else {})}
+        res = await db(sb.table("flows").insert(flow_row))
+        flow = (res.data or [None])[0]
+        if not flow:
+            raise RuntimeError("workflow not created")
+    except Exception as e:
+        for app_row in created.values():         # don't leave half an install behind
+            try:
+                await db(sb.table("apps").delete().eq("id", app_row["id"]).eq("created_by", caller.user_id))
+            except Exception:
+                pass
+        if isinstance(e, HTTPException):
+            raise
+        sentry_sdk.capture_exception(e)
+        raise HTTPException(status_code=503, detail="The workflow couldn't be installed. Nothing was kept; try again.") from e
+    return {"flow_id": flow["id"], "name": flow["name"],
+            "apps": [{"id": a["id"], "name": a["name"]} for a in created.values()],
+            "sample_input": wf["sample_input"],
+            "next": "Test it from Dev Studio → Workflows with the sample input. Its apps are drafts: publish them "
+                    "(tests first) before running it on a schedule or webhook."}
 
 
 # ─── Workflow runs from Dev Studio (Workflows → Test) ────────────────────────

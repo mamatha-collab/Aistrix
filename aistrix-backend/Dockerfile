@@ -14,7 +14,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY main.py telemetry.py tool_contracts.py flow_plan.py spend_guard.py outbound.py ./
+COPY main.py telemetry.py tool_contracts.py flow_plan.py spend_guard.py outbound.py reference_workflows.py ./
 
 # Runs as a non-root user. /data holds the run-telemetry outbox: mount a
 # persistent volume there so run outcomes survive a restart.

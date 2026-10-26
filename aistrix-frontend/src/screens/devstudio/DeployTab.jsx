@@ -5,6 +5,7 @@ import { track, EVENTS } from '../../lib/analytics'
 import { supabase } from '../../supabase'
 import { useToast } from '../../hooks/useToast'
 import { publishApp, unpublishApp, getRelease, listVersions } from '../../lib/release'
+import { workflowsUsingApp } from '../../workflows/workflowApi'
 import { PROMOTE_FIELDS, TOOL_FIELDS, reviewState, sameReviewValue } from '../../lib/promotionReview'
 import { downloadReport, deployReport } from '../../lib/reports'
 import { PROVIDER_STYLE, providerById, useProviderStatus } from '../../lib/providers'
@@ -33,7 +34,8 @@ function diffSnippet(value, other) {
 
 // What end users run, compared field by field when promoting (see backend DRAFT_FIELDS).
 
-function PromoteModal({ app, onClose, onPromoted }) {
+// review: the server's first-release review state (release.review): none | required | pending | rejected.
+function PromoteModal({ app, review, onClose, onPromoted }) {
   const toast = useToast()
   const [step, setStep] = useState('diff')   // 'diff' | 'confirm'
   const [promoting, setPromoting] = useState(false)
@@ -137,7 +139,7 @@ function PromoteModal({ app, onClose, onPromoted }) {
             ) : !bpDiff.prod ? (
               <div className="bg-green-500/8 border border-green-500/20 rounded-xl px-4 py-3">
                 <p className="text-green-300 text-sm font-semibold">First promotion</p>
-                <p className="text-slate-300 text-xs mt-1">No snapshot exists yet — this will publish the current blueprint as production.</p>
+                <p className="text-slate-300 text-xs mt-1">No version exists yet. This saves the current blueprint as version 1. {review === 'none' ? 'It goes live right away.' : review ? `An app's first release is checked by the ${BRAND} team before it goes live; its status shows here.` : `If this is your first release, the ${BRAND} team may check it before it goes live.`}</p>
               </div>
             ) : (
               <div className="space-y-3">
@@ -160,7 +162,11 @@ function PromoteModal({ app, onClose, onPromoted }) {
               <div className="bg-[#6C5CE7]/10 border border-[#6C5CE7]/30 rounded-xl px-4 py-3">
                 <p className="text-[#A29BFE] text-sm font-semibold">Ready to promote</p>
                 <p className="text-slate-300 text-xs mt-1 leading-relaxed">
-                  This will snapshot the current blueprint as the new production version and clear the draft flag. The app will remain live.
+                  {app.is_published
+                    ? 'This saves the current blueprint as the new production version and clears the draft flag. The app stays live.'
+                    : review && review !== 'none'
+                      ? `This saves the current blueprint as a new version and sends it for review. It goes live once the ${BRAND} team approves it.`
+                      : 'This saves the current blueprint as the new production version and puts the app live.'}
                 </p>
               </div>
               <button onClick={promote} disabled={promoting}
@@ -292,6 +298,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
   const [trigger, setTrigger]       = useState(undefined)   // undefined = loading, null = none, string = token
   const [triggerBusy, setTriggerBusy] = useState(false)
   const [confirmTrigger, setConfirmTrigger] = useState(null)   // 'replace' | 'off'
+  const [unpublishAsk, setUnpublishAsk] = useState(null)         // null | { workflows: null (checking) | [] | list, unchecked }
   const [webhookSecret, setWebhookSecret] = useState('')
   const [testingWebhook, setTestingWebhook] = useState(false)
   const [visitorAccess, setVisitorAccess] = useState(!!app.embed_public)
@@ -438,6 +445,15 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
       setPublishing(false)
       loadRelease()
     }
+  }
+
+  // Taking an app offline stops people using it at once, so ask first and say
+  // what depends on it: workflows with a step that runs this app.
+  function askUnpublish() {
+    setUnpublishAsk({ workflows: null, unchecked: false })
+    workflowsUsingApp(user, app.id)
+      .then(workflows => setUnpublishAsk(a => a && { workflows, unchecked: false }))
+      .catch(() => setUnpublishAsk(a => a && { workflows: [], unchecked: true }))
   }
 
   // A teammate changed a setting first: show their values instead of ours.
@@ -788,7 +804,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
           </div>
         </div>
         {live && (
-          <button onClick={togglePublish} disabled={publishing}
+          <button onClick={askUnpublish} disabled={publishing}
             className="w-full text-xs py-2 rounded-xl bg-white/4 hover:bg-white/8 text-slate-400 border border-white/8 transition-colors disabled:opacity-40">
             {publishing ? 'Unpublishing…' : '⏸ Unpublish (set to draft)'}
           </button>
@@ -1039,9 +1055,29 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
         </ConfirmDialog>
       )}
 
+      {unpublishAsk && (
+        <ConfirmDialog title="Unpublish this app?" subtitle={`${app.emoji || ''} ${app.name}`.trim()}
+          confirmLabel="Unpublish" busyLabel="Unpublishing…" danger confirmDisabled={unpublishAsk.workflows === null}
+          onCancel={() => setUnpublishAsk(null)}
+          onConfirm={async () => { await togglePublish(); setUnpublishAsk(null) }}>
+          <div className="space-y-2">
+            <p>People can't run it as soon as you confirm. Its versions and history are kept, and you can publish it again later.</p>
+            {unpublishAsk.workflows === null && <p className="text-slate-400">Checking which workflows use it…</p>}
+            {unpublishAsk.unchecked && <p className="text-amber-300">Couldn't check which workflows use this app. Steps that run it may stop working for the people who run them.</p>}
+            {unpublishAsk.workflows?.length > 0 && <div>
+              <p className="text-amber-300">{unpublishAsk.workflows.length === 1
+                ? '1 workflow has a step that runs this app. It may stop working for the people who run it:'
+                : `${unpublishAsk.workflows.length} workflows have steps that run this app. They may stop working for the people who run them:`}</p>
+              <ul className="mt-1 list-disc pl-5">{unpublishAsk.workflows.map(flow => <li key={flow.id}>{flow.name}{flow.webhook_token ? ' (webhook is on)' : ''}</li>)}</ul>
+            </div>}
+          </div>
+        </ConfirmDialog>
+      )}
+
       {showPromote && (
         <PromoteModal
           app={app}
+          review={release?.review}
           user={user}
           onClose={() => setShowPromote(false)}
           onPromoted={updated => { setApp(updated); onUpdate?.(updated); loadRelease(); setJustLive({ version: updated.live_version || null }) }}

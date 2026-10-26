@@ -5,6 +5,7 @@ import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { timeAgo } from '../utils'
 import { isFileApp } from '../lib/fileApps'
+import { workflowsUsingApp } from '../workflows/workflowApi'
 
 // Lazy-loaded — all of these are gated behind a toggle/modal/portal and are
 // never needed for the panel's initial render, so there's no reason for them
@@ -132,6 +133,9 @@ export default function DetailPanel({ app, user, onClose, onRun, onDeleted }) {
   const [showAnalytics, setShowAnalytics] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  // Workflows with a step that runs this app, found when the delete question opens:
+  // null = checking, 'unchecked' = the lookup failed, otherwise the list.
+  const [dependents, setDependents] = useState(null)
   const [localTotalRuns, setLocalTotalRuns] = useState(null)
   const [editing, setEditing] = useState(false)
   const [showTools, setShowTools] = useState(false)
@@ -213,6 +217,14 @@ export default function DetailPanel({ app, user, onClose, onRun, onDeleted }) {
       recentRuns: runs?.slice(0, 3) ?? [],
     })
   }
+
+  useEffect(() => {
+    if (!confirmDelete) return undefined
+    let live = true
+    setDependents(null)
+    workflowsUsingApp(user, app.id).then(rows => { if (live) setDependents(rows) }, () => { if (live) setDependents('unchecked') })
+    return () => { live = false }
+  }, [confirmDelete, app.id, user])
 
   async function handleDelete() {
     setDeleting(true)
@@ -409,6 +421,13 @@ export default function DetailPanel({ app, user, onClose, onRun, onDeleted }) {
               This will permanently remove the app and all its tools.<br />
               Run history will be kept. This cannot be undone.
             </p>
+            {currentApp.is_published && <p className="text-amber-300 text-xs mb-4 leading-relaxed">It is live: people using it lose access immediately.</p>}
+            {dependents === null && <p className="text-slate-400 text-xs mb-4">Checking which workflows use it…</p>}
+            {dependents === 'unchecked' && <p className="text-amber-300 text-xs mb-4 leading-relaxed">Couldn't check which workflows use this app. Their steps that run it will fail.</p>}
+            {Array.isArray(dependents) && dependents.length > 0 && <div className="text-left text-xs mb-4">
+              <p className="text-amber-300 leading-relaxed">{dependents.length === 1 ? '1 workflow has a step that runs this app. That step will fail:' : `${dependents.length} workflows have steps that run this app. Those steps will fail:`}</p>
+              <ul className="mt-1 list-disc pl-5 text-slate-300">{dependents.map(flow => <li key={flow.id}>{flow.name}</li>)}</ul>
+            </div>}
             <div className="flex gap-3">
               <button onClick={() => setConfirmDelete(false)}
                 className="flex-1 bg-[#1F2444] hover:bg-[#272C52] text-slate-300 text-sm py-2.5 rounded-xl transition-colors font-medium">

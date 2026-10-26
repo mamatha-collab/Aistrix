@@ -8579,7 +8579,9 @@ async def get_release(app_id: str, request: Request):
     draft = state_hash(state)
     prod = app_row.get("prod_snapshot") if isinstance(app_row.get("prod_snapshot"), dict) else None
     tests = await app_test_status(app_row, caller.user_id)
-    checks = await _isolated_checks(app_id, caller.user_jwt)
+    # The same checks Publish makes, so this page never says "ready" for a draft Publish would refuse.
+    checks = await _isolated_checks(app_id, caller.user_jwt) + tool_contracts.contract_problems(
+        state, max_timeout=REQUEST_TIMEOUT, secret_ref=_SECRET_REF)
     return {
         "is_published": bool(app_row.get("is_published")), "promoted_at": app_row.get("promoted_at"),
         "live_version": app_row.get("live_version"), "has_live_version": bool(prod), "draft_hash": draft, "live_hash": state_hash(prod) if prod else None,

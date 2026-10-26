@@ -20,6 +20,15 @@ export async function listWorkflows(user, { kind } = {}) {
   return (data || []).map(normalizeWorkflow)
 }
 
+// Workflows (of this person's workspace) that have a step running this app.
+// A string is what PostgREST needs to match inside a JSON array of objects.
+export async function workflowsUsingApp(user, appId) {
+  const { data, error } = await scopeToWorkspace(supabase.from('flows').select('id, name, kind, webhook_token'), user)
+    .contains('steps', JSON.stringify([{ app_id: appId }]))
+  if (error) throw new Error(friendly(error))
+  return data || []
+}
+
 function check(error) {
   if (error) throw new Error(/flows_user_name_unique|duplicate/.test(error.message) ? 'You already have a workflow with that name.' : friendly(error))
 }
@@ -44,9 +53,30 @@ export async function updateWorkflowRecord(id, fields) {
   return normalizeWorkflow(data[0])
 }
 
-export const saveWorkflow = flow => updateWorkflowRecord(flow.id, {
-  name: flow.name.trim(), steps: flow.steps, trigger: flow.trigger,
-})
+// Thrown when someone else saved the workflow after it was opened. `current`
+// is their version, so the editor can show it instead of overwriting it.
+export class WorkflowConflict extends Error {
+  constructor(current) {
+    super('Someone saved this workflow before you. Their version is shown now; your latest edits were not saved.')
+    this.name = 'WorkflowConflict'
+    this.current = current
+  }
+}
+
+// Saves what the editor edits. Rows that carry a revision (database update
+// 20261025040000) only save if nobody changed them since they were opened.
+export async function saveWorkflow(flow) {
+  let query = supabase.from('flows').update({ name: flow.name.trim(), steps: flow.steps, trigger: flow.trigger }).eq('id', flow.id)
+  if (typeof flow.revision === 'number') query = query.eq('revision', flow.revision)
+  const { data, error } = await query.select(COLUMNS)
+  check(error)
+  if (data?.length) return normalizeWorkflow(data[0])
+  if (typeof flow.revision === 'number') {
+    const { data: current } = await supabase.from('flows').select(COLUMNS).eq('id', flow.id).maybeSingle()
+    if (current) throw new WorkflowConflict(normalizeWorkflow(current))
+  }
+  throw new Error('This workflow was deleted or you no longer have access to it. Reload to see your workflows.')
+}
 
 export async function deleteWorkflow(id) {
   const { error } = await supabase.from('flows').delete().eq('id', id)

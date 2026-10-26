@@ -298,7 +298,8 @@ export function WorkflowRunPage({ flow, onBack }) {
   const { run, follow, error, setError } = useRun(flow.id)
 
   const loadRecent = useCallback(() => {
-    listRuns(flow.id).then(rs => setRecent(rs.slice(0, 5)), () => setRecent([]))
+    // Runs waiting for a decision come first, however old: nothing else moves until they're decided.
+    listRuns(flow.id).then(rs => setRecent([...rs.filter(r => r.status === 'waiting_approval'), ...rs.filter(r => r.status !== 'waiting_approval').slice(0, 5)]), () => setRecent([]))
   }, [flow.id])
   useEffect(() => { loadRecent() }, [loadRecent])
   useEffect(() => { if (run && run.status !== 'running') loadRecent() }, [run?.id, run?.status])   // eslint-disable-line react-hooks/exhaustive-deps

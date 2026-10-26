@@ -59,6 +59,14 @@ const LIFECYCLE_GROUPS = [
   { id: 'manage', label: 'Manage' },
 ]
 
+// What each return address means (see /github/callback and /stripe/connect/onboard in the API).
+const RETURN_FLOWS = {
+  'github_connected=1': { tab: 'improve', kind: 'success', message: 'GitHub is connected. Open "Optional: GitHub issue tracking" to choose where issues go.' },
+  'github_connected=0': { tab: 'improve', kind: 'error', message: "GitHub didn't finish connecting. Open \"Optional: GitHub issue tracking\" and choose Connect GitHub to try again." },
+  'stripe_connect=success': { tab: 'monetize', kind: 'info', message: 'Back from Stripe. Check the payout account status below; Stripe may need a moment to enable payouts.' },
+  'stripe_connect=refresh': { tab: 'monetize', kind: 'info', message: 'Your payout setup link expired. Choose "Set up payouts" to get a new link and continue.' },
+}
+
 const VIEW_KEY = 'aistrix:developer-view'
 function savedView() {
   try {
@@ -97,6 +105,8 @@ export default function DevStudioPage({
   }
   const [settingsOpen, setSettingsOpen] = useState(false)
   function openSettings(focus = 'top') { guarded(() => setSettingsOpen(focus)) }
+  // "Add key" buttons in Test and Deploy: the shell's key dialog when it has one, else the Keys page.
+  const openKeys = onShowSettings || (() => openSettings('keys'))
   function onOpenCreate() { guarded(() => { setSettingsOpen(false); setTabState('design'); requestCreate?.() }) }
   function setTab(next) {
     if (next === tab && !pageContent) return true
@@ -172,15 +182,14 @@ export default function DevStudioPage({
 
   useEffect(() => {
     load()
-    // Handle OAuth / Connect return redirects
+    // The server sends people back here after GitHub sign-in and Stripe payout
+    // setup. Land them where the result is shown, and say what happened.
     const params = new URLSearchParams(window.location.search)
-    if (params.get('github_connected') === '1') {
-      // toast shown by next render; clean up URL
+    const returned = RETURN_FLOWS[`github_connected=${params.get('github_connected')}`] || RETURN_FLOWS[`stripe_connect=${params.get('stripe_connect')}`]
+    if (returned) {
       window.history.replaceState(window.history.state, '', window.location.pathname)
-    }
-    if (params.get('stripe_connect') === 'success') {
-      window.history.replaceState(window.history.state, '', window.location.pathname)
-      setTab('monetize')
+      setTabState(returned.tab)
+      toast(returned.message, returned.kind, 8000)
     }
   }, [user.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -651,8 +660,8 @@ export default function DevStudioPage({
                 <ErrorBoundary compact title={`${DEV_PHASES[tab]?.label || 'Dev Studio'} section could not load`} resetKey={`${tab}:${phaseScopedActiveAppId}`}>
                   <Suspense fallback={TAB_LOADING}>
                   {tab === 'design' && <DesignTab   navigationGuardRef={navigationGuardRef} apps={activePhaseApps} allApps={apps} loading={loading} onOpenCreate={onOpenCreate} user={user} onAppUpdated={updateAppInState} onGoToTest={appId => { moveAppPhase(appId, 'test'); setDeployFixReason('') }} selectedAppId={phaseScopedActiveAppId} onSelectApp={setActiveAppId} deployFixReason={deployFixReason} phaseByAppId={phaseByAppId} />}
-                  {tab === 'test'   && <TestTab     apps={activePhaseApps} allApps={apps} user={user} selectedAppId={phaseScopedActiveAppId} phaseByAppId={phaseByAppId} onMovePhase={moveAppPhase} onOpenKeys={onShowSettings} />}
-                  {tab === 'deploy' && <DeployTab   apps={activePhaseApps} user={user} onAppUpdated={updateAppInState} onFixInDesign={returnToDesignForPublishFix} onMonitor={appId => navigateOperations('monitor', appId)} selectedAppId={phaseScopedActiveAppId} onSelectApp={setActiveAppId} onMovePhase={moveAppPhase} onOpenKeys={onShowSettings} />}
+                  {tab === 'test'   && <TestTab     apps={activePhaseApps} allApps={apps} user={user} selectedAppId={phaseScopedActiveAppId} phaseByAppId={phaseByAppId} onMovePhase={moveAppPhase} onOpenKeys={openKeys} />}
+                  {tab === 'deploy' && <DeployTab   apps={activePhaseApps} user={user} onAppUpdated={updateAppInState} onFixInDesign={returnToDesignForPublishFix} onMonitor={appId => navigateOperations('monitor', appId)} selectedAppId={phaseScopedActiveAppId} onSelectApp={setActiveAppId} onMovePhase={moveAppPhase} onOpenKeys={openKeys} />}
                   </Suspense>
                 </ErrorBoundary>
               </>) : (

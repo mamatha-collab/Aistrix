@@ -185,6 +185,7 @@ test('unpublishing refreshes the preview to show that the app is offline', async
   await open(page, '?scenario=live')
   await expect(page.getByText(/^Live · v2/)).toBeVisible()
   await page.getByRole('button', { name: '⏸ Unpublish (set to draft)', exact: true }).click()
+  await page.getByRole('dialog', { name: 'Unpublish this app?' }).getByRole('button', { name: 'Unpublish', exact: true }).click()
   await expect(page.getByText('Unpublished — this is the last live version', { exact: true })).toBeVisible()
   expect(await page.evaluate(() => window.buildFixture.tables.apps[0].is_published)).toBe(false)
 })

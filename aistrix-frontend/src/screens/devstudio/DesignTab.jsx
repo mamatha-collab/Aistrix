@@ -503,7 +503,9 @@ function ReadinessBar({ app, bp, serverProblems }) {
         <p className={`text-[11px] pt-1 ${serverProblems.length ? 'text-amber-300/90' : 'text-emerald-400/90'}`}>
           {serverProblems.length
             ? `Deploy will still block this saved version: ${serverProblems.length} to fix - ${serverProblems.join(' · ')}`
-            : 'Deploy uses the same saved-version checks: all design checks pass'}
+            : score >= 100
+              ? 'Deploy uses the same saved-version checks: all design checks pass'
+              : "Deploy's checks found nothing blocking in the saved version, but the design above is still incomplete."}
         </p>
       )}
     </div>
@@ -525,8 +527,8 @@ function BuildFlowGuide({ app, bp, isDirty, serverProblems }) {
           <p className="text-xs font-bold text-white uppercase tracking-wider">Build flow</p>
           <p className="text-[11px] text-slate-400 mt-1">One path for every app: choose type, configure the blueprint, save it, then test the same draft.</p>
         </div>
-        <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full border ${serverProblems?.length ? 'text-amber-300 bg-amber-500/10 border-amber-500/20' : 'text-emerald-300 bg-emerald-500/10 border-emerald-500/20'}`}>
-          {serverProblems?.length ? 'Deploy checks pending' : 'Deploy-aligned'}
+        <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full border ${serverProblems?.length || score < 100 ? 'text-amber-300 bg-amber-500/10 border-amber-500/20' : 'text-emerald-300 bg-emerald-500/10 border-emerald-500/20'}`}>
+          {serverProblems?.length ? 'Deploy checks pending' : score < 100 ? 'Design incomplete' : 'Deploy-aligned'}
         </span>
       </div>
       <div className="grid md:grid-cols-4 gap-2">

@@ -3,7 +3,7 @@ import { CircleAlert, Copy, Play, Plus, Trash2 } from 'lucide-react'
 import ConfirmDialog from '../../components/ConfirmDialog'
 import { WorkflowCanvas, StepSettings } from '../../workflows/WorkflowDesigner'
 import { WorkflowDeploy, WorkflowRuns, WorkflowTest } from '../../workflows/WorkflowRunPanels'
-import { createWorkflow, deleteWorkflow, fetchSchema, saveWorkflow } from '../../workflows/workflowApi'
+import { createWorkflow, deleteWorkflow, fetchSchema, saveWorkflow, WorkflowConflict } from '../../workflows/workflowApi'
 import { releaseProblems, schemaKey, schemaVersion, workflowIssues } from '../../workflows/workflowModel'
 
 const card = 'rounded-2xl border border-white/8 bg-[#171B33] p-4 sm:p-5'
@@ -91,7 +91,14 @@ export function WorkflowsTab({ apps = [], user, workflows: list, setWorkflows: s
       setFlow(row); setSaved(snapshot(row))
       setMessage('Saved')
       return row
-    } catch (e) { setMessage(e.message); throw e }
+    } catch (e) {
+      if (e instanceof WorkflowConflict) {
+        // Show the other person's version rather than overwrite it.
+        setList(l => l.map(f => (f.id === e.current.id ? e.current : f)))
+        setFlow(e.current); setSaved(snapshot(e.current))
+      }
+      setMessage(e.message); throw e
+    }
     finally { setBusy(false) }
   }
   const create = async () => {

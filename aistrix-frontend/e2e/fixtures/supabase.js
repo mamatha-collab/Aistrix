@@ -69,6 +69,12 @@ class Query {
   in(key, values) { this.filters.push(row => values.includes(row[key])); return this }
   gte(key, value) { this.filters.push(row => row[key] != null && row[key] >= value); return this }
   is(key, value) { this.filters.push(row => (row[key] ?? null) === value); return this }
+  // JSON containment as PostgREST does it: every object in the wanted array is matched by one in the column.
+  contains(key, value) {
+    const wanted = typeof value === 'string' ? JSON.parse(value) : value
+    const matches = (have, want) => want && typeof want === 'object' ? Object.entries(want).every(([k, v]) => matches(have?.[k], v)) : have === want
+    this.filters.push(row => Array.isArray(row[key]) && wanted.every(want => row[key].some(have => matches(have, want)))); return this
+  }
   not(key, operator, value) {
     if (operator !== 'is') throw new Error(`Unsupported fixture operator: ${operator}`)
     this.filters.push(row => value === null ? row[key] != null : row[key] !== value)

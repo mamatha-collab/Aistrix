@@ -139,7 +139,10 @@ for bad, why in (({"side_effects": "none"}, "declares fewer side effects than it
     UPDATES.clear()
     r = c.post("/v1/apps/app-1/promote", headers=owner)
     ok(f"publishing is refused for a contract with {why}", r.status_code == 409 and r.json()["checks"] and UPDATES == [])
+    rel = c.get("/v1/apps/app-1/release", headers=owner).json()
+    ok(f"the release view reports the same problem for {why}", not rel["ready"] and rel["checks"] == r.json()["checks"])
 DRAFT_BP.pop("contract")
+ok("…and ready again once the contract is valid", c.get("/v1/apps/app-1/release", headers=owner).json()["ready"])
 original_input = DRAFT_BP["input_schema"]
 DRAFT_BP["input_schema"] = {"fields": [{"field": "to", "type": "string"}, {"field": "to", "type": "colour"}]}
 r = c.post("/v1/apps/app-1/promote", headers=owner)

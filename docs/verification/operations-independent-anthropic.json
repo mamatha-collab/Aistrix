@@ -1,0 +1,105 @@
+{
+  "started_at": "2026-10-20T02:41:54.656267+00:00",
+  "database_host": "qhfxnpsvdolaftaljvdp.supabase.co",
+  "api_host": "127.0.0.1",
+  "hosted_app_verified": false,
+  "checks": [
+    {
+      "name": "running API targets the explicitly selected staging database",
+      "passed": true
+    },
+    {
+      "name": "running API has explicit recovery storage",
+      "passed": true
+    },
+    {
+      "name": "deployed schema and permissions pass every readiness check",
+      "passed": true
+    },
+    {
+      "name": "owner, editor and customer have independent authenticated identities",
+      "passed": true
+    },
+    {
+      "name": "real customer model run succeeds",
+      "passed": true
+    },
+    {
+      "name": "customer report reaches editor without private run content or identity",
+      "passed": true
+    },
+    {
+      "name": "customer cannot inspect developer feedback or telemetry",
+      "passed": true
+    },
+    {
+      "name": "anonymous caller cannot inspect telemetry",
+      "passed": true
+    },
+    {
+      "name": "consented evidence is visible to a separate editor",
+      "passed": true
+    },
+    {
+      "name": "withdrawn consent removes previously shared evidence",
+      "passed": true
+    },
+    {
+      "name": "editor cannot bypass consent through raw customer history",
+      "passed": true
+    },
+    {
+      "name": "triage note and regression link persist across independent editor sessions",
+      "passed": true
+    },
+    {
+      "name": "verification refuses empty evidence",
+      "passed": true
+    },
+    {
+      "name": "verified reports leave the open queue but remain in history",
+      "passed": true
+    },
+    {
+      "name": "revoked editor loses API access immediately",
+      "passed": true
+    },
+    {
+      "name": "revoked editor loses their own authored regression evidence",
+      "passed": true
+    },
+    {
+      "name": "real staging Monitor reconciles runs beyond API row cap",
+      "passed": true
+    },
+    {
+      "name": "real staging Eval counts and final page exceed API row cap",
+      "passed": true
+    },
+    {
+      "name": "bounded concurrent API load has no failed responses",
+      "passed": true
+    }
+  ],
+  "load": {
+    "requests": 8,
+    "concurrency": 2,
+    "successful": 8,
+    "p50_seconds": 0.728,
+    "p95_seconds": 0.853,
+    "max_seconds": 0.853,
+    "scope": "local API with hosted staging database; synthetic monitoring/feedback reads, no model load"
+  },
+  "fixture_namespace": "12692882079f486585da0b2c2ce6c434",
+  "real_customer_run": {
+    "provider": "claude",
+    "model": "claude-haiku-4-5-20251001",
+    "http_status": 200,
+    "succeeded": true,
+    "telemetry_recorded": true,
+    "failed_outcomes": 0
+  },
+  "status": "passed",
+  "fixtures_cleaned": true,
+  "finished_at": "2026-10-20T02:42:21.365452+00:00"
+}

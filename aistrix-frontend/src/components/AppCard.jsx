@@ -1,3 +1,4 @@
+import { getAppTypeMeta } from '../lib/appTypes'
 const STATIC_BADGES = [
   { key: 'is_verified',  label: '✓ Verified',  cls: 'text-blue-400 bg-blue-400/10 border-blue-400/20' },
   { key: 'is_top_rated', label: '⭐ Top Rated', cls: 'text-yellow-400 bg-yellow-400/10 border-yellow-400/20' },
@@ -15,20 +16,11 @@ function getDerivedBadges(app) {
     badges.push({ label: '📈 Active', cls: 'text-cyan-400 bg-cyan-400/10 border-cyan-400/20' })
   }
   if (app.is_paid && app.price_per_run > 0) {
-    badges.push({ label: '💳 Credits', cls: 'text-amber-400 bg-amber-400/10 border-amber-400/20' })
+    badges.push({ label: 'Pay per run', cls: 'text-amber-400 bg-amber-400/10 border-amber-400/20' })
   } else {
-    badges.push({ label: '🔑 BYOK', cls: 'text-slate-400 bg-white/5 border-white/10' })
+    badges.push({ label: 'Free to use', cls: 'text-slate-400 bg-white/5 border-white/10' })
   }
   return badges
-}
-
-const TYPE_LABELS = {
-  agent:   { icon: '◈',  label: 'Agent',   color: '#FDCB6E' },
-  api:     { icon: '{}', label: 'API',      color: '#0984E3' },
-  data:    { icon: '▦',  label: 'Data',     color: '#E17055' },
-  iframe:  { icon: '⬡',  label: 'Embed',   color: '#E84393' },
-  native:  { icon: '⊞',  label: 'Form',    color: '#00B894' },
-  website: { icon: '🌐', label: 'Website',  color: '#00B894' },
 }
 
 const STATUS_BADGE = {
@@ -46,7 +38,7 @@ function appSourceLabel(app, isOwn, sharedRole) {
 }
 
 export function AppTab({ app, selected, starred, isOwn, onClick, onToggleFavorite }) {
-  const typeInfo = TYPE_LABELS[app.app_type]
+  const typeInfo = getAppTypeMeta(app.app_type)
   const sourceLabel = appSourceLabel(app, isOwn)
   return (
     <div
@@ -113,11 +105,11 @@ export function AppTab({ app, selected, starred, isOwn, onClick, onToggleFavorit
   )
 }
 
-export default function AppCard({ app, selected, starred, isOwn, sharedRole, onClick, onRun, onToggleFavorite, showPublishToggle, onPublishToggle }) {
+export default function AppCard({ clientMode = false, app, selected, starred, isOwn, sharedRole, onClick, onRun, onToggleFavorite, showPublishToggle, onPublishToggle }) {
   const staticBadges = STATIC_BADGES.filter(b => app[b.key])
   const derivedBadges = getDerivedBadges(app)
   const allBadges = [...staticBadges, ...derivedBadges]
-  const typeInfo = TYPE_LABELS[app.app_type]
+  const typeInfo = getAppTypeMeta(app.app_type)
   const sourceLabel = appSourceLabel(app, isOwn, sharedRole)
   const statusInfo = STATUS_BADGE[app.status]
   const readinessBadges = [
@@ -127,6 +119,10 @@ export default function AppCard({ app, selected, starred, isOwn, sharedRole, onC
     app.app_type === 'api' && { label: 'API-ready', color: '#FDCB6E' },
     app.app_type === 'native' && { label: 'Guided form', color: '#6C5CE7' },
     app.app_type === 'data' && { label: 'Data input', color: '#E17055' },
+    app.app_type === 'vision' && { label: 'Image input', color: '#E17055' },
+    app.app_type === 'voice' && { label: 'Audio input', color: '#E17055' },
+    app.app_type === 'structured' && { label: 'Schema-checked', color: '#0984E3' },
+    app.app_type === 'chatbot' && { label: 'Chatbot', color: '#E84393' },
   ].filter(Boolean)
   const primaryActionLabel = (app.total_runs || 0) > 0 ? 'Run app' : 'Open app'
 
@@ -206,7 +202,7 @@ export default function AppCard({ app, selected, starred, isOwn, sharedRole, onC
       </div>
 
       {/* Meta row */}
-      <div className="flex items-center justify-between text-[11px] text-slate-400">
+      {!clientMode && <div className="flex items-center justify-between text-[11px] text-slate-400">
         <div className="flex items-center gap-2">
           <span>⚡ {app.total_runs || 0} runs</span>
           {statusInfo && <span className={statusInfo.cls}>{statusInfo.label}</span>}
@@ -243,8 +239,9 @@ export default function AppCard({ app, selected, starred, isOwn, sharedRole, onC
         </div>
       </div>
 
+      }
       {/* Readiness row */}
-      {readinessBadges.length > 0 && (
+      {!clientMode && readinessBadges.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {readinessBadges.map(b => (
             <span key={b.label}

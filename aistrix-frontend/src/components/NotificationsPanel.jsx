@@ -28,7 +28,7 @@ export default function NotificationsPanel({ user, onNavChange }) {
 
     // Real-time subscription
     const channel = supabase
-      .channel('notifications')
+      .channel(`notifications:${user.id}:${Date.now()}:${Math.random().toString(36).slice(2)}`)
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications', filter: `user_id=eq.${user.id}` },
         payload => setNotifications(prev => [payload.new, ...prev])
       )

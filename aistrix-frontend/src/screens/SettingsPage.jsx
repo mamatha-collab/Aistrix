@@ -1,0 +1,365 @@
+import { useState, useEffect } from 'react'
+import { supabase } from '../supabase'
+import { useToast } from '../hooks/useToast'
+import SafeCard from '../components/SafeCard'
+import { applyTheme } from '../utils/theme'
+import { PROVIDER_STYLE, removeProviderKey, saveProviderKey, useProviders } from '../lib/providers'
+import { AccountData, DeveloperEmailAlerts, DeveloperPlan } from '../components/AccountSettings'
+
+import { BRAND } from '../lib/brand'
+const AVATAR_COLORS = ['#6C5CE7','#E84393','#00B894','#0984E3','#FDCB6E','#E17055','#74B9FF','#A29BFE','#55EFC4','#FD79A8']
+
+function Section({ id, title, description, children }) {
+  return (
+    <div id={id} className="bg-[#171B33] border border-white/5 rounded-2xl overflow-hidden scroll-mt-4">
+      <div className="px-6 py-4 border-b border-white/5">
+        <p className="text-white font-medium">{title}</p>
+        {description && <p className="text-xs text-slate-400 mt-0.5">{description}</p>}
+      </div>
+      {/* Each section fails on its own: the others keep working. */}
+      <div className="p-6"><SafeCard name={title}>{children}</SafeCard></div>
+    </div>
+  )
+}
+
+// `developer`: the one Settings page in the Developer workspace. It leaves out
+// Business-only sections (AI Memory is used when running apps as a business
+// user).
+// `embedded`: shown inside another screen that already has the title and padding (phone).
+export default function SettingsPage({ user, developer = false, focus = null, embedded = false }) {
+  const toast = useToast()
+  useEffect(() => {
+    if (focus !== 'keys') return
+    const el = document.getElementById('settings-api-keys')
+    el?.scrollIntoView({ block: 'start' })
+    el?.querySelector('input:not([hidden])')?.focus({ preventScroll: true })
+  }, [focus])
+
+  // Profile
+  const meta = user?.user_metadata || {}
+  const [displayName, setDisplayName] = useState(meta.display_name || '')
+  const [avatarColor, setAvatarColor] = useState(meta.avatar_color || '#6C5CE7')
+  const [savingProfile, setSavingProfile] = useState(false)
+
+  // Theme
+  const [theme, setTheme] = useState(() => localStorage.getItem('aistrix_theme') || 'dark')
+
+  // Daily run limit
+
+  // Notifications
+  const [notifPermission, setNotifPermission] = useState(() =>
+    typeof Notification !== 'undefined' ? Notification.permission : 'default'
+  )
+
+  // API Keys
+  const [keyInputs, setKeyInputs] = useState({})
+  const [keySaving, setKeySaving] = useState({})
+  const [keyShow, setKeyShow] = useState({})
+
+  const providers = useProviders()
+  const PROVIDERS = providers.map(p => {
+    const style = PROVIDER_STYLE[p.id] || {}
+    return { ...p, ...style, name: style.name || p.name || p.label || p.id, color: style.color || '#6C5CE7', placeholder: style.placeholder || 'Paste provider API key' }
+  })
+  const keys = Object.fromEntries(providers.filter(p => p.connected).map(p => [p.id, p]))
+
+  async function saveProfile() {
+    setSavingProfile(true)
+    const { error } = await supabase.auth.updateUser({
+      data: { display_name: displayName.trim(), avatar_color: avatarColor },
+    })
+    setSavingProfile(false)
+    if (error) { toast(error.message, 'error'); return }
+    toast('Profile saved', 'success')
+  }
+
+  function toggleTheme() {
+    const next = theme === 'dark' ? 'light' : 'dark'
+    document.documentElement.classList.add('theme-transitioning')
+    setTheme(next)
+    localStorage.setItem('aistrix_theme', next)
+    applyTheme(next)
+    setTimeout(() => document.documentElement.classList.remove('theme-transitioning'), 350)
+  }
+
+  async function requestNotifications() {
+    if (typeof Notification === 'undefined') {
+      toast('Browser notifications are not available in this environment.', 'info')
+      return
+    }
+    const result = await Notification.requestPermission()
+    setNotifPermission(result)
+    toast(result === 'granted' ? 'Notifications enabled' : 'Permission denied', result === 'granted' ? 'success' : 'error')
+  }
+
+  // Saved through the backend: it checks the key with the provider and
+  // stores it encrypted.
+  async function saveKey(provider) {
+    const raw = keyInputs[provider]?.trim()
+    if (!raw) return
+    setKeySaving(prev => ({ ...prev, [provider]: true }))
+    try {
+      await saveProviderKey(provider, raw)
+      setKeyInputs(prev => ({ ...prev, [provider]: '' }))
+      toast(`${PROVIDER_STYLE[provider]?.name || provider} key saved`, 'success')
+    } catch (e) {
+      toast(e.message, 'error', 6000)
+    } finally {
+      setKeySaving(prev => ({ ...prev, [provider]: false }))
+    }
+  }
+
+  async function removeKey(provider) {
+    try {
+      await removeProviderKey(provider)
+      toast('Key removed', 'info')
+    } catch (e) { toast(e.message, 'error') }
+  }
+
+  const initial = (displayName || user?.email || '?')[0].toUpperCase()
+  const [memory, setMemory] = useState([])
+  const [newKey, setNewKey] = useState('')
+  const [newVal, setNewVal] = useState('')
+
+  const PRESET_MEMORY = [
+    { key: 'Preferred tone', placeholder: 'Professional, casual, formal, friendly...' },
+    { key: 'Preferred language', placeholder: 'English, Spanish, French...' },
+    { key: 'Writing style', placeholder: 'Concise, detailed, bullet points, narrative...' },
+    { key: 'About me', placeholder: 'A sentence about yourself the AI should always know...' },
+  ]
+
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- run once on mount only
+  useEffect(() => { loadMemory() }, [])
+
+  async function loadMemory() {
+    const { data } = await supabase.from('user_memory').select('key, value').eq('user_id', user.id)
+    if (data) setMemory(data)
+  }
+
+  async function saveMemoryItem(key, value) {
+    if (!value.trim()) { await deleteMemoryItem(key); return }
+    const { error } = await supabase.from('user_memory').upsert({ user_id: user.id, key, value: value.trim(), updated_at: new Date().toISOString() }, { onConflict: 'user_id,key' })
+    if (error) { toast(error.message, 'error'); return }
+    setMemory(prev => { const exists = prev.find(m => m.key === key); return exists ? prev.map(m => m.key === key ? { key, value } : m) : [...prev, { key, value }] })
+  }
+
+  async function deleteMemoryItem(key) {
+    const { error } = await supabase.from('user_memory').delete().eq('user_id', user.id).eq('key', key)
+    if (error) { toast(error.message, 'error'); return }
+    setMemory(prev => prev.filter(m => m.key !== key))
+  }
+
+  async function addCustomMemory() {
+    if (!newKey.trim() || !newVal.trim()) return
+    await saveMemoryItem(newKey.trim(), newVal.trim())
+    setNewKey(''); setNewVal('')
+    toast('Memory saved', 'success', 2000)
+  }
+
+  const inputCls = 'w-full bg-[#1F2444] border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-[#6C5CE7] transition-colors'
+
+  return (
+    <div className={embedded ? 'space-y-5' : 'flex-1 overflow-y-auto px-6 py-6 space-y-5 max-w-6xl'}>
+      <div hidden={embedded}>
+        <h1 className="text-white text-xl font-semibold">Settings</h1>
+        <p className="text-slate-400 text-sm mt-0.5">{developer ? 'Your profile, appearance, notifications and AI keys.' : 'Manage your account and preferences.'}</p>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
+      <div className="space-y-5 min-w-0">
+      {/* Profile */}
+      <Section title="Profile" description={`Your public name and avatar shown throughout ${BRAND}.`}>
+        <div className="flex items-center gap-5 mb-5">
+          <div className="w-14 h-14 rounded-2xl flex items-center justify-center text-white text-2xl font-bold shrink-0"
+            style={{ background: avatarColor }}>{initial}</div>
+          <div className="flex flex-wrap gap-1.5">
+            {AVATAR_COLORS.map(c => (
+              <button key={c} onClick={() => setAvatarColor(c)}
+                className={`w-6 h-6 rounded-full transition-all ${avatarColor === c ? 'ring-2 ring-white ring-offset-1 ring-offset-[#171B33] scale-110' : 'hover:scale-105'}`}
+                style={{ background: c }} />
+            ))}
+          </div>
+        </div>
+        <div className="space-y-3">
+          <div>
+            <label className="text-xs text-slate-400 block mb-1.5">Display name</label>
+            <input className={inputCls} placeholder="Your name" value={displayName}
+              onChange={e => setDisplayName(e.target.value)} onKeyDown={e => e.key === 'Enter' && saveProfile()} />
+          </div>
+          <div>
+            <label className="text-xs text-slate-400 block mb-1.5">Email</label>
+            <p className="text-sm text-slate-500 bg-[#1F2444] rounded-xl px-3 py-2.5">{user?.email}</p>
+          </div>
+          <button onClick={saveProfile} disabled={savingProfile}
+            className="bg-[#6C5CE7] hover:bg-[#7D6FF0] disabled:opacity-40 text-white text-sm px-5 py-2 rounded-xl font-medium transition-colors">
+            {savingProfile ? 'Saving...' : 'Save profile'}
+          </button>
+        </div>
+      </Section>
+
+      {/* Appearance */}
+      <Section title="Appearance" description={`Customize how ${BRAND} looks.`}>
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm text-white">Color theme</p>
+            <p className="text-xs text-slate-400 mt-0.5">Currently {theme === 'dark' ? 'Dark' : 'Soft Ivory (Light)'}</p>
+          </div>
+          <button onClick={toggleTheme}
+            className="flex items-center gap-2 bg-[#1F2444] hover:bg-[#272C52] border border-white/10 text-slate-300 text-sm px-4 py-2 rounded-xl transition-colors">
+            {theme === 'dark' ? '☀️ Switch to Light' : '🌙 Switch to Dark'}
+          </button>
+        </div>
+      </Section>
+
+      </div>
+      <div className="space-y-5 min-w-0">
+      {/* API Keys */}
+      <Section id="settings-api-keys" title="API Keys" description={developer
+        ? 'Your apps, tests and developer tools run on your own keys. They never leave the server.'
+        : "Use your own keys — they never leave the server and don't count against your quota."}>
+        <div className="space-y-4">
+          {PROVIDERS.map(p => (
+            <div key={p.id} className="bg-[#1F2444] border border-white/5 rounded-xl p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg flex items-center justify-center text-white text-xs font-bold" style={{ background: p.color }}>
+                    {p.name[0]}
+                  </div>
+                  <div>
+                    <p className="text-sm text-white font-medium">{p.name}</p>
+                    <p className="text-[10px] text-slate-500">{p.company}</p>
+                  </div>
+                </div>
+                {keys[p.id] ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-[10px] text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full">✓ Connected{keys[p.id].last4 ? ` ····${keys[p.id].last4}` : ''}</span>
+                    <button onClick={() => removeKey(p.id)} className="text-[10px] text-red-400 hover:text-red-300">Remove</button>
+                  </div>
+                ) : <span className="text-[10px] text-slate-500">Not connected</span>}
+              </div>
+              {!keys[p.id] && (
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    name="username"
+                    autoComplete="username"
+                    value={user?.email || `aistrix-${p.id}-key`}
+                    readOnly
+                    hidden
+                  />
+                  <div className="flex-1 relative">
+                    <input
+                      name={`${p.id}-api-key`}
+                      type={keyShow[p.id] ? 'text' : 'password'}
+                      autoComplete="new-password"
+                      value={keyInputs[p.id] || ''}
+                      onChange={e => setKeyInputs(prev => ({ ...prev, [p.id]: e.target.value }))}
+                      onKeyDown={e => e.key === 'Enter' && saveKey(p.id)}
+                      placeholder={p.placeholder}
+                      className="w-full bg-[#0F1225] border border-white/10 rounded-lg px-3 py-2 pr-8 text-xs text-white placeholder-slate-600 focus:outline-none focus:border-[#6C5CE7] transition-colors font-mono"
+                    />
+                    <button type="button" tabIndex={-1}
+                      onClick={() => setKeyShow(prev => ({ ...prev, [p.id]: !prev[p.id] }))}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 text-[10px]">
+                      {keyShow[p.id] ? '🙈' : '👁'}
+                    </button>
+                  </div>
+                  <button onClick={() => saveKey(p.id)} disabled={keySaving[p.id] || !keyInputs[p.id]}
+                    className="bg-[#6C5CE7] hover:bg-[#7D6FF0] disabled:opacity-40 text-white text-xs px-3 py-2 rounded-lg transition-colors shrink-0">
+                    {keySaving[p.id] ? '...' : 'Save'}
+                  </button>
+                </div>
+              )}
+            </div>
+          ))}
+          <p className="text-[11px] text-slate-500">Keys are stored encrypted and only retrieved server-side when you run an app.</p>
+        </div>
+      </Section>
+
+      {/* Notifications */}
+      <Section title="Notifications" description="Get notified when long-running apps finish.">
+        <div className="flex items-center justify-between">
+          <div>
+            <p className="text-sm text-white">Browser notifications</p>
+            <p className="text-xs text-slate-400 mt-0.5">
+              {notifPermission === 'granted' ? '✓ Enabled — you\'ll be notified when runs complete'
+                : notifPermission === 'denied' ? '✕ Blocked in browser settings'
+                : 'Not yet enabled'}
+            </p>
+          </div>
+          {notifPermission !== 'granted' && notifPermission !== 'denied' && (
+            <button onClick={requestNotifications}
+              className="bg-[#6C5CE7] hover:bg-[#7D6FF0] text-white text-sm px-4 py-2 rounded-xl transition-colors">
+              Enable
+            </button>
+          )}
+          {notifPermission === 'granted' && (
+            <span className="text-xs text-green-400 bg-green-400/10 px-3 py-1.5 rounded-xl">✓ Active</span>
+          )}
+          {notifPermission === 'denied' && (
+            <span className="text-xs text-slate-400">Update in browser settings</span>
+          )}
+        </div>
+        {developer && user && <DeveloperEmailAlerts user={user} />}
+      </Section>
+
+      {developer && <Section id="settings-plan" title="Developer plan" description="Your tier, its limits and what you've used.">
+        <DeveloperPlan />
+      </Section>}
+
+      <Section id="settings-account" title="Your account" description="Download your data or delete your account.">
+        <AccountData />
+      </Section>
+
+      {/* AI Memory */}
+      {!developer && <Section title="AI Memory" description="Things you want every app to know about you. Toggle memory on in the app runner to inject these automatically.">
+        <div className="space-y-3">
+          {PRESET_MEMORY.map(({ key, placeholder }) => {
+            const existing = memory.find(m => m.key === key)
+            return (
+              <div key={key} className="flex gap-2 items-center">
+                <label className="text-xs text-slate-400 w-36 shrink-0">{key}</label>
+                <input
+                  className="flex-1 bg-[#1F2444] border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-[#6C5CE7] transition-colors"
+                  placeholder={placeholder}
+                  defaultValue={existing?.value || ''}
+                  onBlur={e => saveMemoryItem(key, e.target.value)}
+                />
+                {existing && (
+                  <button aria-label={`Delete ${key}`} onClick={() => deleteMemoryItem(key)} className="text-slate-600 hover:text-red-400 text-xs transition-colors shrink-0">✕</button>
+                )}
+              </div>
+            )
+          })}
+
+          {memory.filter(m => !PRESET_MEMORY.find(p => p.key === m.key)).map(m => (
+            <div key={m.key} className="flex gap-2 items-center">
+              <span className="text-xs text-slate-400 w-36 shrink-0 truncate">{m.key}</span>
+              <input
+                className="flex-1 bg-[#1F2444] border border-white/10 rounded-xl px-3 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-[#6C5CE7] transition-colors"
+                defaultValue={m.value}
+                onBlur={e => saveMemoryItem(m.key, e.target.value)}
+              />
+              <button aria-label={`Delete ${m.key}`} onClick={() => deleteMemoryItem(m.key)} className="text-slate-600 hover:text-red-400 text-xs transition-colors shrink-0">✕</button>
+            </div>
+          ))}
+
+          <div className="border-t border-white/5 pt-3">
+            <p className="text-[10px] text-slate-500 mb-2">Add custom memory</p>
+            <div className="flex gap-2">
+              <input className="w-32 bg-[#1F2444] border border-white/10 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-[#6C5CE7] transition-colors"
+                placeholder="Key" value={newKey} onChange={e => setNewKey(e.target.value)} />
+              <input className="flex-1 bg-[#1F2444] border border-white/10 rounded-xl px-3 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-[#6C5CE7] transition-colors"
+                placeholder="Value" value={newVal} onChange={e => setNewVal(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && addCustomMemory()} />
+              <button onClick={addCustomMemory} disabled={!newKey || !newVal}
+                className="bg-[#6C5CE7] hover:bg-[#7D6FF0] disabled:opacity-40 text-white text-xs px-3 py-2 rounded-xl transition-colors shrink-0">Add</button>
+            </div>
+          </div>
+        </div>
+      </Section>}
+      </div>
+      </div>
+    </div>
+  )
+}

@@ -1,22 +1,61 @@
 import { useState, useEffect, useTransition, useRef } from 'react'
+import { APP_PUBLIC_SELECT, APP_PRIVATE_COLUMNS, withPrivateField } from '../lib/appColumns'
+// The private fields this form just wrote (the insert can't read them back).
+const pickPrivate = p => Object.fromEntries(APP_PRIVATE_COLUMNS.filter(k => k in p).map(k => [k, p[k]]))
+import { saveAppFields } from '../lib/appFields'
 import { supabase } from '../supabase'
 import { useFocusTrap } from '../hooks/useFocusTrap'
+import { useBuilderNavigation } from '../hooks/useBuilderNavigation'
+import { confirmDiscard } from '../lib/confirmDiscard'
+import { PROVIDER_STYLE, defaultAppProvider, modelOptions, providerById, useProviders } from '../lib/providers'
+import BillingModeHint from './BillingModeHint'
+import { moveToolKeysToSecrets } from '../lib/toolSecrets'
+import { TypeGuideSteps } from './TypeBuilderGuide'
 import { useToast } from '../hooks/useToast'
-import { parseSSELine } from '../lib/sse'
+import { generateJSON, normaliseUrl, readUrl, streamRun } from '../lib/runStream'
+import { TOOL_DEFAULT_SCHEMAS } from '../utils/toolTypes'
+import OutputSchemaEditor from './OutputSchemaEditor'
+import { formSchemaToInputFields, getOutputSchemaFields, outputFieldsErrors } from '../utils/schemaContracts'
+import { saveStarterBlueprint } from '../utils/appContracts'
+
+import { BRAND } from '../lib/brand'
+const TYPE_DEFAULTS = {
+  native: { emoji: '⊞', placeholder: 'Fill out the form fields and submit...' },
+  data: { emoji: '▦', output_type: 'table', placeholder: 'Upload or paste data to analyze...' },
+  website: { emoji: '🌐', placeholder: 'Ask about products, services, pricing, hours, or policies...' },
+  structured: {
+    emoji: '{}',
+    output_type: 'json',
+    placeholder: 'Paste messy text to extract structured fields...',
+    system_prompt: 'You extract useful information from the user input and return only valid JSON that matches the output schema. Do not include markdown fences, explanations, or extra keys.',
+  },
+  api: { emoji: '{}', output_type: 'json', placeholder: 'Send JSON fields through the API...' },
+  chatbot: {
+    emoji: '💬',
+    placeholder: 'Start a conversation...',
+    system_prompt: 'You are a friendly, knowledgeable chatbot with a clear persona. Greet the user warmly, ask clarifying questions when needed, remember the conversation context within the session, and give concise, useful answers in the configured tone.',
+    description: 'A conversational AI assistant with a custom persona and memory.',
+    tags: 'chatbot, support, assistant',
+  },
+  prompt: { emoji: '✦', placeholder: 'Describe what you need...' },
+  vision: {
+    emoji: '👁',
+    placeholder: 'e.g. Read the totals on this receipt',
+    system_prompt: 'You analyse the images the user provides. Describe only what is visible, extract the details they ask for, and say clearly when something is unreadable or missing. Do not guess.',
+  },
+  voice: {
+    emoji: '🎙',
+    placeholder: 'Upload a recording to transcribe and summarise',
+    system_prompt: 'You receive the transcript of a recording. Summarise it clearly, list decisions and action items with owners when mentioned, and note anything unclear in the transcript. Do not invent details.',
+  },
+}
+
+function defaultForType(type, key, fallback = '') {
+  return TYPE_DEFAULTS[type]?.[key] ?? fallback
+}
 
 const EMOJI_OPTIONS = ['🤖','🧠','✍️','📊','🔍','💡','📝','🎯','🚀','🛠️','💬','📈','🔧','🎨','📧','🌐','⚡','🏆','🎓','🔑']
 
-const MODELS = {
-  claude: [
-    { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (Recommended)' },
-    { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (Fast)' },
-    { id: 'claude-opus-4-8', label: 'Claude Opus 4.8 (Powerful)' },
-  ],
-  openai: [
-    { id: 'gpt-4o-mini', label: 'GPT-4o Mini (Recommended)' },
-    { id: 'gpt-4o', label: 'GPT-4o (Powerful)' },
-  ],
-}
 
 const FIELD_TYPES = [
   { id: 'text',     label: 'Short text' },
@@ -181,7 +220,7 @@ function LocalToolBuilder({ tools, onChange }) {
   function addTool() {
     if (!name.trim() || !description.trim()) return
     onChange([...tools, { type, name: name.trim(), description: description.trim(), config,
-      input_schema: { type: 'object', properties: {}, required: [] } }])
+      input_schema: TOOL_DEFAULT_SCHEMAS[type] || { type: 'object', properties: {}, required: [] } }])
     setName(''); setDescription(''); setConfig({}); setType('search'); setShowForm(false)
   }
 
@@ -249,7 +288,7 @@ function LocalToolBuilder({ tools, onChange }) {
               </div>
               <div>
                 <label className="text-[10px] text-slate-400 block mb-1">SMTP / SendGrid key</label>
-                <input className={inCls} placeholder="API key or smtp://..." type="password"
+                <input className={inCls} placeholder="API key or smtp://..." type="password" name="email-tool-api-key" autoComplete="new-password"
                   value={config.api_key || ''} onChange={e => setConfig(c => ({ ...c, api_key: e.target.value }))} />
               </div>
             </div>
@@ -263,7 +302,7 @@ function LocalToolBuilder({ tools, onChange }) {
           {type === 'calendar' && (
             <div>
               <label className="text-[10px] text-slate-400 block mb-1">Calendar API key / OAuth</label>
-              <input className={inCls} placeholder="Google Calendar API key"
+              <input className={inCls} placeholder="Google Calendar API key" type="password" name="calendar-api-key" autoComplete="new-password"
                 value={config.api_key || ''} onChange={e => setConfig(c => ({ ...c, api_key: e.target.value }))} />
             </div>
           )}
@@ -337,40 +376,49 @@ function QualityScore({ form, appType, formSchema }) {
 }
 
 // ─── Main modal ───────────────────────────────────────────────────────────────
-export default function CreateAppModal({ user, onClose, onBack, onCreated, onUpdated, existingApp, initialType = 'prompt', websitePrefilled }) {
+// `withGuide`: start on the type guide ("Start building →" moves on to
+// step 1), so creating an app stays in this one popup.
+export default function CreateAppModal({ user, onClose, onBack, onCreated, onUpdated, existingApp, initialType = 'prompt', websitePrefilled, withGuide = false, presentation = 'modal', navigationGuardRef, onLeave }) {
   const modalRef = useRef(null)
-  useFocusTrap(modalRef, { onEscape: onClose })
   const toast = useToast()
+  const providers = useProviders()
   const isEdit = !!existingApp
   const [appType] = useState(existingApp?.app_type || initialType)
   const [domains, setDomains] = useState([])
   const [form, setForm] = useState({
     name: existingApp?.name || websitePrefilled?.name || '',
-    emoji: existingApp?.emoji || websitePrefilled?.emoji || (initialType === 'native' ? '⊞' : '🤖'),
-    description: existingApp?.description || websitePrefilled?.description || '',
-    system_prompt: existingApp?.system_prompt || websitePrefilled?.system_prompt || '',
+    emoji: existingApp?.emoji || websitePrefilled?.emoji || defaultForType(initialType, 'emoji', '🤖'),
+    description: existingApp?.description || websitePrefilled?.description || defaultForType(initialType, 'description'),
+    system_prompt: existingApp?.system_prompt || websitePrefilled?.system_prompt || defaultForType(initialType, 'system_prompt'),
     ai_provider: existingApp?.ai_provider || 'claude',
-    ai_model: existingApp?.ai_model || 'claude-sonnet-4-6',
-    tags: existingApp?.tags?.join(', ') || websitePrefilled?.tags || '',
-    input_placeholder: existingApp?.input_placeholder || websitePrefilled?.input_placeholder || '',
+    ai_model: existingApp?.ai_model || 'claude-sonnet-5-5',
+    tags: existingApp?.tags?.join(', ') || websitePrefilled?.tags || defaultForType(initialType, 'tags'),
+    input_placeholder: existingApp?.input_placeholder || websitePrefilled?.input_placeholder || defaultForType(initialType, 'placeholder'),
     webhook_url: existingApp?.webhook_url || '',
     domain_id: existingApp?.domain_id || null,
     required_context: existingApp?.required_context || [],
     compose_hint: existingApp?.compose_hint || '',
-    output_type: existingApp?.output_type || (initialType === 'api' ? 'json' : initialType === 'data' ? 'table' : 'markdown'),
+    output_type: existingApp?.output_type || defaultForType(initialType, 'output_type', 'markdown'),
     visibility: existingApp?.visibility || 'public',
     is_paid: existingApp?.is_paid || false,
     price_per_run: existingApp?.price_per_run || 0,
-    has_memory: existingApp?.has_memory || false,
+    has_memory: existingApp?.has_memory || initialType === 'chatbot',
     custom_model_url: existingApp?.custom_model_url || '',
     custom_model_name: existingApp?.custom_model_name || '',
     sample_input: existingApp?.sample_input || '',
+    greeting: existingApp?.greeting || '',
+    tone: existingApp?.tone || '',
+    billing_mode: existingApp?.billing_mode || 'free',
+    free_runs_per_user_day: existingApp?.free_runs_per_user_day ?? '',
   })
   const [formSchema, setFormSchema] = useState(existingApp?.form_schema || [])
+  const [outputFields, setOutputFields] = useState([])
+  const [existingBlueprint, setExistingBlueprint] = useState(null)
   const [pendingTools, setPendingTools] = useState([])
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [step, setStep] = useState(websitePrefilled ? 2 : 1)
+  const [intro, setIntro] = useState(withGuide && !existingApp && !websitePrefilled)
   const [showPreview, setShowPreview] = useState(false)
   const [previewInput, setPreviewInput] = useState('')
   const [previewResult, setPreviewResult] = useState('')
@@ -381,90 +429,105 @@ export default function CreateAppModal({ user, onClose, onBack, onCreated, onUpd
   const isApi     = appType === 'api'
   const isData    = appType === 'data'
   const isWebsite = appType === 'website'
+  const isStructured = appType === 'structured'
+  const isChatbot = appType === 'chatbot'
+  const hasOutputSchema = isStructured || isApi
   const [generating, setGenerating] = useState(false)
   const [websiteUrl, setWebsiteUrl] = useState('')
   const [websiteScraping, setWebsiteScraping] = useState(false)
-  // If prefilled data came from CreateFromWebsiteModal, skip the URL step
+  // If the caller passed prefilled website data, skip the URL step
   const [websiteScraped, setWebsiteScraped] = useState(!!websitePrefilled)
+  const [websiteSource, setWebsiteSource] = useState(null)   // { url, text } read on this form's URL step
+  const [websiteKnown, setWebsiteKnown] = useState(websitePrefilled?.known || {})   // what the site generator worked out for Design
+
+  // Unsaved changes = anything that differs from how the form opened (type
+  // defaults count as unchanged; for Edit, the saved app and its saved
+  // output fields once loaded).
+  const [startState] = useState(() => JSON.stringify({ form, formSchema, pendingTools, websiteUrl }))
+  const startOutputFields = useRef('[]')
+  const hasChanges = JSON.stringify({ form, formSchema, pendingTools, websiteUrl }) !== startState
+    || JSON.stringify(outputFields) !== startOutputFields.current
+
+  function closeWithWarning() {
+    if (confirmDiscard(hasChanges)) onClose()
+  }
+
+  function goBack() {
+    if (intro) { onBack?.(); return }
+    if (step === 1) {
+      if (withGuide) setIntro(true)
+      else onBack?.()
+      return
+    }
+    setError('')
+    setStep(s => s - 1)
+  }
+
+  const showTopBack = !existingApp && !intro && step === 1 && (withGuide || !!onBack)
+  useFocusTrap(modalRef, { onEscape: closeWithWarning, enabled: presentation !== 'inline' })
+  useBuilderNavigation({ enabled: presentation === 'inline', navigationGuardRef, hasChanges, busy: saving || generating || websiteScraping || previewRunning, onLeave })
 
   async function scrapeWebsite() {
-    const url = websiteUrl.trim()
+    const url = normaliseUrl(websiteUrl)
     if (!url) return
     setWebsiteScraping(true); setError('')
     try {
-      const { data: { session } } = await supabase.auth.getSession()
-      const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
-        body: JSON.stringify({
-          input: url,
-          system_prompt: `You are an AI app generator. The user has given you a website URL: ${url}
+      const page = await readUrl(url, { maxChars: 20000 })
+      if (page.text.split(/\s+/).filter(Boolean).length < 80) {
+        throw new Error('That page has very little readable text. Try its About, Services, Pricing or Docs page.')
+      }
+      const parsed = await generateJSON(`You are an AI app generator. You have been given real text read from a business or service website.
 
-Analyse the URL and what you know about the business or service at that URL, then generate a complete AI assistant app for it.
+Based on this content, generate a complete AI assistant app that helps users of this business.
 
 Return ONLY valid JSON with these fields:
 {
   "name": "short app name, e.g. 'Acme Support Assistant'",
   "emoji": "one relevant emoji",
   "description": "one sentence describing what this app does for users",
-  "system_prompt": "a detailed system prompt (200+ chars) that tells an AI assistant how to help users of this business — include the business name, what they offer, tone, and how to handle common questions",
+  "system_prompt": "a detailed system prompt (300+ chars) for an assistant representing this business — business name, what they offer, tone, common questions, and what to say when the answer isn't in the site content",
   "tags": "comma-separated tags, e.g. 'support, retail, customer service'",
-  "input_placeholder": "a helpful prompt placeholder, e.g. 'Ask about our products, hours, or services…'"
-}`,
-          ai_provider: 'claude', ai_model: 'claude-sonnet-4-6',
-        }),
-      })
-      const reader = res.body.getReader(); const decoder = new TextDecoder()
-      let buf = '', full = ''
-      while (true) {
-        const { done, value } = await reader.read(); if (done) break
-        buf += decoder.decode(value, { stream: true })
-        const lines = buf.split('\n'); buf = lines.pop()
-        for (const line of lines) { const d = parseSSELine(line); if (d?.token) full += d.token }
-      }
-      const parsed = JSON.parse(full.replace(/^```json?\n?/i, '').replace(/\n?```$/i, '').trim())
-      if (parsed.name)              set('name', parsed.name)
+  "input_placeholder": "a helpful prompt placeholder, e.g. 'Ask about our products, hours, or services…'",
+  "business_problem": "one sentence: what visitors of this site need help with",
+  "audience": "who visits this site, from its content (e.g. 'Homeowners in Leeds looking for a plumber')",
+  "missing_data_fallback": "one sentence: what the assistant does when the answer isn't on the site"
+}`, `Text read from ${page.url}:\n\n${page.text.slice(0, 12000)}`)
+      if (!parsed?.name || !parsed?.system_prompt) throw new Error('The AI response was missing the app name or instructions. Try again.')
+      set('name', parsed.name)
       if (parsed.emoji)             set('emoji', parsed.emoji)
       if (parsed.description)       set('description', parsed.description)
-      if (parsed.system_prompt)     set('system_prompt', parsed.system_prompt)
-      if (parsed.tags)              set('tags', parsed.tags)
+      set('system_prompt', parsed.system_prompt)
+      if (parsed.tags)              set('tags', Array.isArray(parsed.tags) ? parsed.tags.join(', ') : parsed.tags)
       if (parsed.input_placeholder) set('input_placeholder', parsed.input_placeholder)
+      setWebsiteKnown({ business_problem: parsed.business_problem, audience: parsed.audience, fallback: parsed.missing_data_fallback })
+      setWebsiteSource({ url: page.url, text: page.text })
       setWebsiteScraped(true)
       setStep(2)
-    } catch { setError('Could not analyse that URL. Try again or enter details manually.') }
-    finally { setWebsiteScraping(false) }
+    } catch (e) {
+      setError(`Could not build an app from that URL: ${e.message}`)
+    } finally {
+      setWebsiteScraping(false)
+    }
   }
 
   async function aiGenerateDetails() {
     if (!form.system_prompt.trim()) { setError('Add a system prompt first so AI knows what to generate.'); return }
     setGenerating(true); setError('')
     try {
-      const { data: { session } } = await supabase.auth.getSession()
-      const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
-        body: JSON.stringify({
-          input: form.system_prompt,
-          system_prompt: 'Given this AI app system prompt, generate a concise app name, a one-sentence description, a single relevant emoji, and 3-4 relevant tags. Return ONLY valid JSON: {"name":"...","description":"...","emoji":"...","tags":"tag1, tag2, tag3"}',
-          ai_provider: 'claude', ai_model: 'claude-haiku-4-5-20251001',
-        }),
-      })
-      const reader = res.body.getReader(); const decoder = new TextDecoder()
-      let buf = '', full = ''
-      while (true) {
-        const { done, value } = await reader.read(); if (done) break
-        buf += decoder.decode(value, { stream: true })
-        const lines = buf.split('\n'); buf = lines.pop()
-        for (const line of lines) { const d = parseSSELine(line); if (d?.token) full += d.token }
-      }
-      const parsed = JSON.parse(full.replace(/^```json?\n?/i, '').replace(/\n?```$/i, '').trim())
+      const parsed = await generateJSON(
+        'Given this AI app system prompt, generate a concise app name, a one-sentence description, a single relevant emoji, and 3-4 relevant tags. Return ONLY valid JSON: {"name":"...","description":"...","emoji":"...","tags":"tag1, tag2, tag3"}',
+        form.system_prompt, { model: 'claude-haiku-5-5' })
       if (parsed.name) set('name', parsed.name)
       if (parsed.description) set('description', parsed.description)
       if (parsed.emoji) set('emoji', parsed.emoji)
-      if (parsed.tags) set('tags', parsed.tags)
-    } catch { setError('Could not generate details. Try again.') }
-    finally { setGenerating(false) }
+      if (parsed.tags) set('tags', Array.isArray(parsed.tags) ? parsed.tags.join(', ') : parsed.tags)
+    } catch (e) {
+      setError(`Could not generate details: ${e.message}`)
+    } finally {
+      setGenerating(false)
+    }
   }
+
   const STEPS = isEdit ? 2 : (isNative || isApi || isWebsite ? 4 : 3)
 
   useEffect(() => {
@@ -472,10 +535,58 @@ Return ONLY valid JSON with these fields:
       .then(({ data }) => { if (data) startTransition(() => setDomains(data)) })
   }, [])
 
+  // Editing: load the saved contract so output fields round-trip (and so we
+  // merge into, rather than overwrite, anything Blueprint Studio added).
+  useEffect(() => {
+    if (!existingApp?.id) return
+    supabase.from('app_blueprints').select('blueprint').eq('app_id', existingApp.id).maybeSingle()
+      .then(({ data }) => {
+        const bp = data?.blueprint || {}
+        const saved = getOutputSchemaFields(bp).map(f => ({ ...f }))
+        startOutputFields.current = JSON.stringify(saved)
+        setExistingBlueprint(bp)
+        setOutputFields(saved)
+      })
+  }, [existingApp?.id])
+
+  async function saveBlueprint(appId) {
+    const inputFields = (isNative || isApi) ? formSchemaToInputFields(formSchema) : []
+    if (!outputFields.length && !inputFields.length && !existingBlueprint) return null
+    let base = existingBlueprint
+    if (!base) {
+      const { data } = await supabase.from('app_blueprints').select('blueprint').eq('app_id', appId).maybeSingle()
+      base = data?.blueprint || {}
+    }
+    const blueprint = { ...base }
+    if (inputFields.length) blueprint.input_schema = { type: 'object', fields: inputFields }
+    if (hasOutputSchema) {
+      if (outputFields.length) {
+        blueprint.output_schema = { type: 'object', fields: outputFields }
+        blueprint.output_contract = { ...(base.output_contract || {}), format: 'json', fields: outputFields }
+      } else {
+        delete blueprint.output_schema
+        if (blueprint.output_contract) blueprint.output_contract = { ...blueprint.output_contract, fields: [] }
+      }
+    }
+    const { error } = await supabase.from('app_blueprints').upsert({
+      app_id: appId, user_id: user.id, blueprint, updated_at: new Date().toISOString(),
+    }, { onConflict: 'app_id' })
+    return error
+  }
+
+  // New apps run on a provider the developer has a key for, unless they pick one.
+  const providerTouched = useRef(false)
+  useEffect(() => {
+    if (isEdit || providerTouched.current || providerById(providers, form.ai_provider).connected) return
+    const { provider, model } = defaultAppProvider(providers)
+    if (provider !== form.ai_provider) setForm(prev => ({ ...prev, ai_provider: provider, ai_model: model }))
+  }, [providers, isEdit, form.ai_provider])
+
   function set(key, val) {
+    if (key === 'ai_provider' || key === 'ai_model') providerTouched.current = true
     setForm(prev => {
       const next = { ...prev, [key]: val }
-      if (key === 'ai_provider') next.ai_model = MODELS[val][0].id
+      if (key === 'ai_provider') next.ai_model = providerById(providers, val).default_model || modelOptions(providers, val)[0]?.id || ''
       return next
     })
   }
@@ -489,6 +600,12 @@ Return ONLY valid JSON with these fields:
       setError('Add at least one input field for a Native App.')
       return
     }
+    if (isStructured && outputFields.length === 0) {
+      setError('Add at least one output field — it defines the JSON every response must match.')
+      return
+    }
+    const fieldsError = hasOutputSchema ? outputFieldsErrors(outputFields) : ''
+    if (fieldsError) { setError(fieldsError); return }
     setSaving(true); setError('')
 
     const tags = form.tags ? form.tags.split(',').map(t => t.trim()).filter(Boolean) : []
@@ -501,15 +618,18 @@ Return ONLY valid JSON with these fields:
       compose_hint: form.compose_hint.trim() || null,
       app_type: appType,
       form_schema: isNative ? formSchema : [],
-      output_type: form.output_type,
+      output_type: isStructured ? 'json' : form.output_type,
       visibility: form.visibility || 'public',
       is_paid: form.is_paid || false,
       price_per_run: form.is_paid ? Number(form.price_per_run) : 0,
       webhook_url: form.webhook_url?.trim() || null,
-      has_memory: form.has_memory || false,
+      has_memory: isChatbot || form.has_memory || false,
+      ...(isChatbot ? { greeting: form.greeting.trim() || null, tone: form.tone || null } : {}),
       custom_model_url: form.custom_model_url?.trim() || null,
       custom_model_name: form.custom_model_name?.trim() || null,
       sample_input: form.sample_input?.trim() || null,
+      billing_mode: form.billing_mode,
+      free_runs_per_user_day: form.billing_mode === 'free' && form.free_runs_per_user_day !== '' ? Math.max(0, Number(form.free_runs_per_user_day)) : null,
     }
 
     if (isEdit) {
@@ -526,22 +646,58 @@ Return ONLY valid JSON with these fields:
       })
       // Non-fatal — the edit itself still proceeds, but flag the gap in version history.
       if (versionErr) toast(`Couldn't snapshot the previous version: ${versionErr.message}`, 'error')
-      const { data, error: err } = await supabase.from('apps').update(payload)
-        .eq('id', existingApp.id).select('*, domains(name, emoji, color, slug)').single()
+      // Save only what changed here, and only if nobody else changed those
+      // same fields since this form opened (a teammate's other edits stay).
+      const changed = Object.fromEntries(Object.entries(payload)
+        .filter(([k, v]) => JSON.stringify(v ?? null) !== JSON.stringify(existingApp[k] ?? null)))
+      if (Object.keys(changed).length) {
+        const { error: saveErr } = await saveAppFields(supabase, existingApp, changed)
+        if (saveErr) { setSaving(false); setError(saveErr.message); return }
+      }
+      const { data: row, error: err } = await supabase.from('apps')
+        .select(`${APP_PUBLIC_SELECT}, domains(name, emoji, color, slug)`).eq('id', existingApp.id).single()
+      if (err) { setSaving(false); setError(err.message); return }
+      const data = await withPrivateField(supabase, row)
+      const bpErr = await saveBlueprint(existingApp.id)
       setSaving(false)
-      if (err) { setError(err.message); return }
+      if (bpErr) toast(`Saved, but the input/output contract wasn't: ${bpErr.message}`, 'error', 8000)
       onUpdated?.(data)
     } else {
       const { data, error: err } = await supabase.from('apps')
-        .insert({ ...payload, is_published: true, created_by: user.id, workflow_order: 999, total_runs: 0 })
-        .select('*, domains(name, emoji, color, slug)').single()
+        .insert({ ...payload, is_published: false, created_by: user.id, workflow_order: 999, total_runs: 0 })
+        .select(`${APP_PUBLIC_SELECT}, domains(name, emoji, color, slug)`).single()
+        .then(res => (res.data ? { ...res, data: { ...res.data, ...pickPrivate(payload) } } : res))
+      if (err) { setSaving(false); setError(err.message); return }
+      // First Design blueprint from what this wizard knows (inputs, output
+      // contract, business problem; audience/fallback from the site generator).
+      const bpErr = await saveStarterBlueprint(data, user.id, {
+        formSchema: (isNative || isApi) ? formSchema : [],
+        outputFields: hasOutputSchema && !outputFieldsErrors(outputFields) ? outputFields : [],
+        known: isWebsite ? websiteKnown : {},
+      })
       setSaving(false)
-      if (err) { setError(err.message); return }
+      if (bpErr) toast(`"${data.name}" saved, but its design blueprint wasn't: ${bpErr.message}`, 'error', 8000)
       if (pendingTools.length > 0) {
-        const { error: toolsErr } = await supabase.from('app_tools').insert(pendingTools.map(t => ({ ...t, app_id: data.id })))
+        // Keys in tool settings become encrypted app secrets first.
+        const { tools: safeTools, problems: keyProblems } = await moveToolKeysToSecrets(data.id, pendingTools)
+        if (keyProblems.length) toast(`"${data.name}" saved, but a tool key wasn't (add it under Secrets): ${keyProblems.join('; ')}`, 'error', 8000)
+        const { error: toolsErr } = await supabase.from('app_tools').insert(safeTools.map(t => ({ ...t, app_id: data.id })))
         // The app itself saved fine — surface this via toast (not setError,
         // which the modal is about to unmount) so it isn't lost silently.
         if (toolsErr) toast(`"${data.name}" saved, but its tools weren't: ${toolsErr.message}`, 'error', 6000)
+      }
+      const source = websitePrefilled?.source_text
+        ? { url: websitePrefilled.source_url, text: websitePrefilled.source_text }
+        : websiteSource
+      if (isWebsite && source?.text) {
+        const { error: kbErr } = await supabase.from('app_knowledge').insert({
+          app_id: data.id,
+          title: source.url ? `Website source: ${source.url}` : 'Website source',
+          content: source.text.slice(0, 20000),
+          source_url: source.url || null,
+          type: 'url',
+        })
+        if (kbErr) toast(`"${data.name}" saved, but website source wasn't attached: ${kbErr.message}`, 'error', 6000)
       }
       onCreated?.(data)
     }
@@ -558,34 +714,30 @@ Return ONLY valid JSON with these fields:
     if (!previewInput.trim() || !form.system_prompt.trim()) return
     setPreviewRunning(true); setPreviewResult('')
     try {
-      const { data: { session } } = await supabase.auth.getSession()
-      const res = await fetch(`${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/run`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
-        body: JSON.stringify({ input: previewInput, system_prompt: form.system_prompt, ai_provider: form.ai_provider, ai_model: form.ai_model }),
-      })
-      const reader = res.body.getReader(); const decoder = new TextDecoder()
-      let buf = '', full = ''
-      while (true) {
-        const { done, value } = await reader.read(); if (done) break
-        buf += decoder.decode(value, { stream: true })
-        const lines = buf.split('\n'); buf = lines.pop()
-        for (const line of lines) {
-          const d = parseSSELine(line)
-          if (d?.token) { full += d.token; setPreviewResult(full) }
-        }
-      }
-    } catch (e) { setPreviewResult(`Error: ${e.message}`) }
-    setPreviewRunning(false)
+      await streamRun({
+        purpose: 'build',
+        input: previewInput,
+        system_prompt: form.system_prompt,
+        ai_provider: form.ai_provider,
+        ai_model: form.ai_model,
+        output_type: isStructured ? 'json' : form.output_type,
+        run_mode: isChatbot ? 'conversation' : undefined,
+      }, { onToken: setPreviewResult })
+    } catch (e) {
+      setPreviewResult(`Error: ${e.message}`)
+    } finally {
+      setPreviewRunning(false)
+    }
   }
+
 
   // For website type steps are offset by 1: 1=URL, 2=Info, 3=Prompt, 4=Tools
   const infoStep   = isWebsite ? 2 : 1
   const promptStep = isWebsite ? 3 : 2
 
   const inputCls = 'w-full bg-[#1F2444] border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-[#6C5CE7] transition-colors'
-  const typeLabel = isNative ? 'Native App' : isApi ? 'API App' : isData ? 'Data App' : isWebsite ? 'From Website' : appType === 'agent' ? 'Agent' : appType === 'iframe' ? 'Iframe App' : 'Prompt App'
-  const typeColor = isNative ? '#00B894' : isApi ? '#0984E3' : isData ? '#E17055' : isWebsite ? '#00B894' : appType === 'agent' ? '#FDCB6E' : appType === 'iframe' ? '#E84393' : '#6C5CE7'
+  const typeLabel = isNative ? 'Form App' : isApi ? 'API App' : isData ? 'Data App' : appType === 'vision' ? 'Vision App' : appType === 'voice' ? 'Voice App' : isWebsite ? 'From Website' : isStructured ? 'Structured Output App' : isChatbot ? 'Chatbot App' : appType === 'batch' ? 'Batch Processor' : appType === 'agent' ? 'Agent' : appType === 'iframe' ? 'Iframe App' : 'Prompt App'
+  const typeColor = isNative ? '#00B894' : isApi || isStructured ? '#0984E3' : isData ? '#E17055' : isWebsite ? '#00B894' : isChatbot ? '#E84393' : appType === 'batch' ? '#6C5CE7' : appType === 'agent' ? '#FDCB6E' : appType === 'iframe' ? '#E84393' : '#6C5CE7'
 
   const stepLabels = isWebsite
     ? (websiteScraped ? ['Website', 'Info', 'AI & Prompt', 'Tools'] : ['Website'])
@@ -593,36 +745,47 @@ Return ONLY valid JSON with these fields:
       ? ['Info', 'AI & Prompt', isApi ? 'Parameters' : 'Form Fields', 'Tools']
       : ['Info', 'AI & Prompt', 'Tools']
 
-  return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
-      <div ref={modalRef} role="dialog" aria-modal="true" aria-label={isEdit ? `Edit ${typeLabel}` : `New ${typeLabel}`}
-        className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-xl flex flex-col max-h-[90vh]">
+  const content = (
+    <>
         {/* Header */}
-        <div className="flex items-center justify-between p-5 border-b border-white/5">
-          <div>
-            <div className="flex items-center gap-2 mb-0.5">
-              <p className="text-white font-medium">{isEdit ? `Edit — ${typeLabel}` : `New ${typeLabel}`}</p>
-              <span className="text-[10px] px-2 py-0.5 rounded-full font-medium" style={{ background: typeColor + '22', color: typeColor }}>
-                {typeLabel}
-              </span>
+        <div className="px-6 pt-6 pb-5 shrink-0 border-b border-white/5">
+          <div className="flex items-start justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl flex items-center justify-center text-xl font-bold shrink-0"
+                style={{ background: typeColor + '22', color: typeColor }}>
+                {isNative ? '⊞' : isApi || isStructured ? '{}' : isData ? '▦' : isWebsite ? '🌐' : isChatbot ? '💬' : appType === 'batch' ? '⊞' : appType === 'agent' ? '◈' : appType === 'iframe' ? '⬡' : '✦'}
+              </div>
+              <div>
+                <p className="text-white font-bold text-xl leading-snug">{isEdit ? `Edit — ${typeLabel}` : `New ${typeLabel}`}</p>
+                <p className="text-slate-400 text-sm mt-0.5">{intro ? 'Overview' : `Step ${step} of ${STEPS} — ${stepLabels[step - 1]}`}</p>
+              </div>
             </div>
-            <p className="text-xs text-slate-400">
-              Step {step} of {STEPS} — {stepLabels[step - 1]}
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            {form.system_prompt.trim() && (
-              <button onClick={() => { setShowPreview(v => { if (!v && form.sample_input.trim()) setPreviewInput(form.sample_input); return !v }); setPreviewResult('') }}
-                className={`text-xs px-3 py-1.5 rounded-lg font-medium transition-colors ${showPreview ? 'bg-green-500/20 text-green-400' : 'bg-[#1F2444] text-slate-400 hover:text-white'}`}>
-                {showPreview ? '✕ Close Test' : '▶ Test'}
+            <div className="flex items-center gap-2 ml-4 shrink-0">
+              {!intro && form.system_prompt.trim() && (
+                <button onClick={() => { setShowPreview(v => { if (!v && form.sample_input.trim()) setPreviewInput(form.sample_input); return !v }); setPreviewResult('') }}
+                  className={`text-xs px-3 py-1.5 rounded-lg font-medium transition-colors ${showPreview ? 'bg-green-500/20 text-green-400' : 'bg-[#1F2444] text-slate-400 hover:text-white'}`}>
+                  {showPreview ? '✕ Test' : '▶ Test'}
+                </button>
+              )}
+              <button aria-label="Close" onClick={closeWithWarning} className="text-slate-500 hover:text-white transition-colors p-1">
+                ✕
               </button>
-            )}
-            <button onClick={onBack && !existingApp && step === 1 ? onBack : onClose} className="text-slate-500 hover:text-white transition-colors text-sm">
-              {onBack && !existingApp && step === 1 ? '← Back' : '✕'}
-            </button>
+            </div>
           </div>
         </div>
 
+        {showTopBack && (
+          <div className="px-6 py-2 border-b border-white/5 bg-[#0F1225]/45">
+            <button onClick={goBack}
+              className="text-xs text-slate-400 hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 px-3 py-1.5 rounded-lg transition-colors">
+              ← Back
+            </button>
+          </div>
+        )}
+
+        {intro ? (
+          <TypeGuideSteps type={appType} onBack={goBack} onContinue={() => setIntro(false)} />
+        ) : (<>
         {/* Inline Preview Panel */}
         {showPreview && (
           <div className="border-b border-white/5 bg-[#0F1225] p-4 space-y-3">
@@ -803,28 +966,85 @@ Return ONLY valid JSON with these fields:
                     The form fields you define in the next step will be combined and sent to the AI automatically. Use <code className="text-[#6C5CE7] bg-[#1F2444] px-1 rounded">{"{{Field Name}}"}</code> to reference specific fields.
                   </p>
                 )}
+              {isChatbot && (
+                <p className="text-[11px] text-slate-500 mb-2">
+                  Define the chatbot persona, boundaries, greeting style, and when it should ask a follow-up question. Memory is enabled by default for this app type.
+                </p>
+              )}
                 <textarea className="w-full bg-[#1F2444] border border-white/10 rounded-xl px-3 py-3 text-sm text-white placeholder-slate-500 resize-none focus:outline-none focus:border-[#6C5CE7] transition-colors leading-relaxed"
                   rows={6} value={form.system_prompt} onChange={e => set('system_prompt', e.target.value)}
-                  placeholder={isNative
+                  placeholder={isChatbot
+                    ? `You are Nova, a warm customer support chatbot for Acme. Greet users briefly, answer from the product context, ask one clarifying question when needed, and hand off when the request needs a human.`
+                    : isNative
                     ? `You are an expert assistant. The user will provide structured information via a form. Use all provided fields to generate a comprehensive, tailored response.`
                     : `You are a helpful assistant. Be specific, accurate, and actionable in your responses.`} />
               </div>
+              {isChatbot && (
+                <>
+                  <div>
+                    <label className="text-xs text-slate-400 block mb-1.5">Greeting message <span className="text-slate-600">(first message users see)</span></label>
+                    <textarea className="w-full bg-[#1F2444] border border-white/10 rounded-xl px-3 py-3 text-sm text-white placeholder-slate-500 resize-none focus:outline-none focus:border-[#6C5CE7] transition-colors leading-relaxed"
+                      rows={2} maxLength={1000} value={form.greeting} onChange={e => set('greeting', e.target.value)}
+                      placeholder="Hi! I'm Nova from Acme. Ask me about orders, returns or our products." />
+                  </div>
+                  <div>
+                    <label className="text-xs text-slate-400 block mb-1.5">Tone</label>
+                    <select className={inputCls} value={form.tone} onChange={e => set('tone', e.target.value)}>
+                      <option value="">Follow the system prompt</option>
+                      <option value="friendly">Friendly</option>
+                      <option value="professional">Professional</option>
+                      <option value="concise">Concise</option>
+                      <option value="playful">Playful</option>
+                      <option value="empathetic">Empathetic</option>
+                    </select>
+                  </div>
+                </>
+              )}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="text-xs text-slate-400 block mb-1.5">AI Provider</label>
                   <select className={inputCls} value={form.ai_provider} onChange={e => set('ai_provider', e.target.value)}>
-                    <option value="claude">🟣 Claude</option>
-                    <option value="openai">🟢 GPT</option>
+                    {providers.map(p => <option key={p.id} value={p.id}>{PROVIDER_STYLE[p.id]?.icon} {PROVIDER_STYLE[p.id]?.name || p.label}</option>)}
                   </select>
                 </div>
                 <div>
                   <label className="text-xs text-slate-400 block mb-1.5">Model</label>
                   <select className={inputCls} value={form.ai_model} onChange={e => set('ai_model', e.target.value)}>
-                    {MODELS[form.ai_provider].map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
+                    {modelOptions(providers, form.ai_provider, form.ai_model).map(m => <option key={m.id} value={m.id}>{m.label}</option>)}
                   </select>
                 </div>
               </div>
-              <div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-slate-400 block mb-1.5">Who pays for runs</label>
+                  <select className={inputCls} value={form.billing_mode} onChange={e => set('billing_mode', e.target.value)}>
+                    <option value="free">Free for users — your key</option>
+                    <option value="byok">Users bring their own key</option>
+                  </select>
+                </div>
+                {form.billing_mode === 'free' && (
+                  <div>
+                    <label className="text-xs text-slate-400 block mb-1.5">Free runs per user per day</label>
+                    <input type="number" min="0" className={inputCls} placeholder="20"
+                      value={form.free_runs_per_user_day} onChange={e => set('free_runs_per_user_day', e.target.value)} />
+                  </div>
+                )}
+              </div>
+              <BillingModeHint mode={form.billing_mode} provider={providerById(providers, form.ai_provider)} freeRuns={form.free_runs_per_user_day} className="-mt-2" />
+              {hasOutputSchema && (
+                <div>
+                  <label className="text-xs text-slate-400 block mb-1">
+                    Output fields {isApi && <span className="text-slate-600">(optional — makes responses validated JSON)</span>}
+                  </label>
+                  <p className="text-[10px] text-slate-500 mb-2 leading-relaxed">
+                    Every response is checked against these fields. If the model gets it wrong, {BRAND} asks it to fix the
+                    response once; if it still fails, the caller gets a clear contract error instead of bad data.
+                  </p>
+                  <OutputSchemaEditor fields={outputFields} onChange={setOutputFields} accent={typeColor} />
+                </div>
+              )}
+
+              {!isStructured && <div>
                 <label className="text-xs text-slate-400 block mb-2">Output format</label>
                 <div className="grid grid-cols-3 gap-2">
                   {[
@@ -844,15 +1064,16 @@ Return ONLY valid JSON with these fields:
                     </button>
                   ))}
                 </div>
-              </div>
+              </div>}
 
               {/* Memory toggle */}
               <div className="flex items-center justify-between bg-[#1F2444] border border-white/10 rounded-xl px-4 py-3">
                 <div>
                   <p className="text-sm text-white font-medium">Conversation Memory</p>
-                  <p className="text-xs text-slate-400 mt-0.5">AI remembers previous messages in the same session</p>
+                  <p className="text-xs text-slate-400 mt-0.5">{isChatbot ? 'Required for chatbot-style back-and-forth conversations' : 'AI remembers previous messages in the same session'}</p>
                 </div>
-                <button type="button" onClick={() => set('has_memory', !form.has_memory)}
+                <button type="button" onClick={() => !isChatbot && set('has_memory', !form.has_memory)}
+                  disabled={isChatbot}
                   className={`relative w-10 h-5 rounded-full transition-colors shrink-0 ${form.has_memory ? 'bg-[#6C5CE7]' : 'bg-[#0F1225]'}`}>
                   <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${form.has_memory ? 'translate-x-5' : 'translate-x-0.5'}`} />
                 </button>
@@ -892,7 +1113,7 @@ Return ONLY valid JSON with these fields:
                   value={form.webhook_url || ''}
                   onChange={e => set('webhook_url', e.target.value)} />
                 {form.webhook_url && (
-                  <p className="text-[10px] text-slate-500 mt-1">Aistrix will POST the result to this URL after every run. Payload includes: input, result, provider, timestamp.</p>
+                  <p className="text-[10px] text-slate-500 mt-1">{BRAND} will POST the result to this URL after every run. Payload includes: input, result, provider, timestamp.</p>
                 )}
               </div>
 
@@ -1021,6 +1242,17 @@ Return ONLY valid JSON with these fields:
             </>
           )}
         </div>
+        </>)}
+    </>
+  )
+  if (presentation === 'inline') return <section ref={modalRef} aria-label={isEdit ? `Edit ${typeLabel}` : `New ${typeLabel}`}
+    className="developer-inline-builder bg-[#171B33] border border-white/10 rounded-xl w-full flex flex-col min-h-[600px] overflow-hidden">{content}</section>
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-4">
+      <div ref={modalRef} role="dialog" aria-modal="true" aria-label={isEdit ? `Edit ${typeLabel}` : `New ${typeLabel}`}
+        className="bg-[#171B33] border border-white/10 rounded-2xl w-full max-w-6xl flex flex-col overflow-hidden"
+        style={{ height: 'min(94vh, 840px)' }}>
+        {content}
       </div>
     </div>
   )

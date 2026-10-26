@@ -58,7 +58,7 @@ export default function AppRecordsViewer({ app, user }) {
               <p className="text-[10px] text-slate-500">{timeAgo(record.created_at)}</p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
-              <button onClick={e => { e.stopPropagation(); deleteRecord(record.id) }}
+              <button aria-label="Delete" onClick={e => { e.stopPropagation(); deleteRecord(record.id) }}
                 className="text-slate-600 hover:text-red-400 text-[10px] transition-colors">🗑</button>
               <span className="text-slate-500 text-[10px]">{expanded === record.id ? '▲' : '▼'}</span>
             </div>

@@ -6,7 +6,7 @@ import { parseSSELine } from '../lib/sse'
 import RunRating from './RunRating'
 import { friendlyErrorMessage } from '../utils/appActions'
 
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
 export default function MultiPageRunner({ app, user, onClose, onRun, inline = false }) {
   const [pageIndex, setPageIndex] = useState(0)
@@ -54,8 +54,13 @@ export default function MultiPageRunner({ app, user, onClose, onRun, inline = fa
           ai_provider: app.ai_provider || 'claude',
           ai_model: app.ai_model || null,
           output_type: current.output_type || 'markdown',
+          page_index: pageIndex,
         }),
       })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}))
+        throw new Error(err.error || err.detail || `Run failed (${res.status})`)
+      }
 
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
@@ -69,6 +74,8 @@ export default function MultiPageRunner({ app, user, onClose, onRun, inline = fa
           const d = parseSSELine(line)
           if (d?.token) { full += d.token; setPageResults(prev => ({ ...prev, [pageIndex]: full })) }
           if (d?.done) finalUsage = d.usage || null
+          if (d?.contract_error) throw new Error(`Output contract failed: ${d.contract_error.join('; ')}`)
+          if (d?.error) throw new Error(d.error)
         }
       }
       setPageUsage(prev => ({ ...prev, [pageIndex]: finalUsage }))

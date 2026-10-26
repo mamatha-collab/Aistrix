@@ -1,5 +1,5 @@
+import { createWorkflowRecord } from '../workflows/workflowApi'
 import { useState } from 'react'
-import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { QUICK_START_TEMPLATES, PACK_COLORS } from './flowConstants'
 
@@ -30,10 +30,7 @@ export function GoalLauncher({ apps, flows, userId, onInstalled, onRunFlow }) {
           || apps.find(a => a.name.toLowerCase().includes(lower) || lower.includes(a.name.toLowerCase()))
         return match ? { app_id: match.id, app_name: match.name, app_emoji: match.emoji } : null
       }).filter(Boolean)
-      const { data, error } = await supabase.from('flows').insert({
-        user_id: userId, name: tpl.name, emoji: tpl.emoji, description: tpl.desc, steps,
-      }).select().single()
-      if (error) throw error
+      const data = await createWorkflowRecord({ id: userId }, { name: tpl.name, emoji: tpl.emoji, description: tpl.desc, steps })
       onInstalled(data)
       toast(`"${tpl.name}" ready — ${steps.length} steps`, 'success')
       setQuery(''); setFocused(false)
@@ -53,7 +50,7 @@ export function GoalLauncher({ apps, flows, userId, onInstalled, onRunFlow }) {
           onFocus={() => setFocused(true)}
           onBlur={() => setTimeout(() => setFocused(false), 150)}
         />
-        {query && <button onClick={() => setQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white text-lg leading-none">✕</button>}
+        {query && <button aria-label="Close" onClick={() => setQuery('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white text-lg leading-none">✕</button>}
       </div>
       {focused && suggestions.length > 0 && (
         <div className="absolute top-full left-0 right-0 mt-1.5 bg-[#121829] border border-white/20 rounded-xl overflow-hidden z-30 shadow-2xl">

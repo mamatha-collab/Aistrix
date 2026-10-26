@@ -1,3 +1,5 @@
+import { isWiredWorkflow, updateWorkflowRecord } from '../workflows/workflowApi'
+import { WorkflowRunPage } from '../workflows/WorkflowRunPanels'
 import { useState, useEffect, useRef } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
@@ -8,7 +10,9 @@ import { duplicateApp } from '../utils/appActions'
 import RunRating from '../components/RunRating'
 import { API_URL, APP_DEFAULT_FIELDS } from './flowConstants'
 import { shortModelName, mergeMemory, streamRun, sendToIntegration, extractFacts } from './flowUtils'
+import { scopeToWorkspace } from '../lib/workspace'
 
+import { BRAND } from '../lib/brand'
 function NativeStepForm({ schema, values, onChange }) {
   const cls = 'w-full bg-[#09101F] border border-white/18 rounded-xl px-3 py-2.5 text-sm text-white placeholder-slate-400 focus:outline-none focus:border-[#6C5CE7] transition-colors'
   return (
@@ -42,7 +46,7 @@ function NativeStepForm({ schema, values, onChange }) {
   )
 }
 
-export default function FlowRunner({ flow, user, onClose, onShowHistory, onRunComplete }) {
+function LegacyFlowRunner({ flow, user, onClose, onShowHistory, onRunComplete }) {
   const [stepIndex, setStepIndex] = useState(0)
   const [inputs, setInputs] = useState({})
   const [formValues, setFormValues] = useState({})
@@ -79,8 +83,9 @@ export default function FlowRunner({ flow, user, onClose, onShowHistory, onRunCo
 
   useEffect(() => {
     if (!current?.app_id || stepAppData[stepIndex]) return
+    // The prompt is private: the server runs the app's own (app_id is sent).
     supabase.from('apps')
-      .select('system_prompt, ai_provider, ai_model, app_type, form_schema')
+      .select('ai_provider, ai_model, app_type, form_schema')
       .eq('id', current.app_id).single()
       .then(({ data }) => { if (data) setStepAppData(p => ({ ...p, [stepIndex]: data })) })
     // eslint-disable-next-line react-hooks/exhaustive-deps -- stepAppData is read as a cache check, not a trigger
@@ -283,7 +288,7 @@ export default function FlowRunner({ flow, user, onClose, onShowHistory, onRunCo
     try {
       const { data: { session } } = await supabase.auth.getSession()
       const appData = currentApp
-        || (await supabase.from('apps').select('system_prompt, ai_provider, ai_model, app_type, form_schema').eq('id', current.app_id).single()).data
+        || (await supabase.from('apps').select('ai_provider, ai_model, app_type, form_schema').eq('id', current.app_id).single()).data
 
       const workspaceProvider = flow.default_provider || 'auto'
       let chosenProvider = appData?.ai_provider || 'claude'
@@ -310,22 +315,21 @@ export default function FlowRunner({ flow, user, onClose, onShowHistory, onRunCo
       if (current.app_id) {
         const { data: history } = await supabase
           .from('run_history')
-          .select('result')
+          .select('output')
           .eq('app_id', current.app_id)
           .eq('user_id', user.id)
           .order('created_at', { ascending: false })
           .limit(3)
-        if (history) priorResponses = history.map(h => h.result).filter(Boolean).reverse()
+        if (history) priorResponses = history.map(h => h.output).filter(Boolean).reverse()
       }
       const historyContext = buildHistoryContext()
       const memoryContext = buildMemoryContext()
 
       let knowledgeContext = ''
       if (flow.use_knowledge_vault) {
-        const { data: kvEntries } = await supabase
+        const { data: kvEntries } = await scopeToWorkspace(supabase
           .from('knowledge_vault')
-          .select('title, content')
-          .eq('user_id', user.id)
+          .select('title, content'), user)
           .limit(12)
         if (kvEntries?.length) {
           knowledgeContext = kvEntries.map(e => `### ${e.title}\n${e.content}`).join('\n\n')
@@ -386,8 +390,8 @@ export default function FlowRunner({ flow, user, onClose, onShowHistory, onRunCo
             const mergedProv = { ...prevProv }
             const now = new Date().toISOString()
             for (const key of Object.keys(facts)) mergedProv[key] = { step_name: current.app_name, step_index: stepIndex, updated_at: now }
-            supabase.from('flows').update({ memory: merged, memory_provenance: mergedProv }).eq('id', flow.id)
-              .then(({ error }) => { if (error) toast(`Learned facts weren't saved: ${error.message}`, 'error') })
+            updateWorkflowRecord(flow.id, { memory: merged, memory_provenance: mergedProv })
+              .catch(error => toast(`Learned facts weren't saved: ${error.message}`, 'error'))
             return mergedProv
           })
           return merged
@@ -436,8 +440,8 @@ export default function FlowRunner({ flow, user, onClose, onShowHistory, onRunCo
       setProvenance(prevProv => {
         const mergedProv = { ...prevProv }
         delete mergedProv[key]
-        supabase.from('flows').update({ memory: merged, memory_provenance: mergedProv }).eq('id', flow.id)
-          .then(({ error }) => { if (error) toast(`Delete wasn't saved: ${error.message}`, 'error') })
+        updateWorkflowRecord(flow.id, { memory: merged, memory_provenance: mergedProv })
+          .catch(error => toast(`Delete wasn't saved: ${error.message}`, 'error'))
         return mergedProv
       })
       return merged
@@ -531,7 +535,7 @@ export default function FlowRunner({ flow, user, onClose, onShowHistory, onRunCo
               {tokenSource === 'user'
                 ? <span className="text-green-400 bg-green-400/10 px-2 py-0.5 rounded-full">🔑 Your API key</span>
                 : tokenSource === 'platform'
-                  ? <span className="text-[#A29BFE] bg-[#6C5CE7]/10 px-2 py-0.5 rounded-full">⚡ Aistrix credits</span>
+                  ? <span className="text-[#A29BFE] bg-[#6C5CE7]/10 px-2 py-0.5 rounded-full">⚡ {BRAND} credits</span>
                   : null
               }
             </div>
@@ -581,14 +585,14 @@ export default function FlowRunner({ flow, user, onClose, onShowHistory, onRunCo
                       <input autoFocus value={editValue} onChange={e => setEditValue(e.target.value)}
                         onKeyDown={e => { if (e.key === 'Enter') saveFactEdit(k); if (e.key === 'Escape') setEditingFact(null) }}
                         className="text-[11px] bg-transparent text-white focus:outline-none w-32" />
-                      <button onClick={() => saveFactEdit(k)} className="text-green-400 text-xs hover:text-green-300">✓</button>
+                      <button aria-label="Confirm" onClick={() => saveFactEdit(k)} className="text-green-400 text-xs hover:text-green-300">✓</button>
                       <button aria-label="Cancel edit" onClick={() => setEditingFact(null)} className="text-slate-400 text-xs hover:text-white">✕</button>
                     </span>
                   ) : (
                     <span key={k} title={prov ? `Learned from ${prov.step_name}${prov.updated_at ? ` · ${new Date(prov.updated_at).toLocaleDateString()}` : ''}` : undefined}
                       className="group/fact flex items-center gap-1 text-[11px] bg-[#1A2038] text-slate-300 pl-2.5 pr-1 py-1 rounded-lg hover:border hover:border-[#6C5CE7]/40">
                       <span className="text-slate-400">{k}:</span> {display}
-                      <button onClick={() => { setEditingFact(k); setEditValue(display) }}
+                      <button aria-label="Edit" onClick={() => { setEditingFact(k); setEditValue(display) }}
                         className="ml-1 text-slate-400 hover:text-white opacity-0 group-hover/fact:opacity-100 transition-opacity px-1">✏️</button>
                       <button aria-label={`Delete fact ${k}`} onClick={() => deleteFact(k)}
                         className="text-slate-400 hover:text-red-400 opacity-0 group-hover/fact:opacity-100 transition-opacity px-1">✕</button>
@@ -692,7 +696,7 @@ export default function FlowRunner({ flow, user, onClose, onShowHistory, onRunCo
               <div className="space-y-3">
                 {(effectiveStepFields || []).map(f => {
                   const suggestions = (f.placeholder || '').includes('e.g.')
-                    ? (f.placeholder || '').replace(/^.*e\.g\.\s*/i, '').split(/\s*[\/,]\s*/).map(s => s.trim()).filter(Boolean)
+                    ? (f.placeholder || '').replace(/^.*e\.g\.\s*/i, '').split(/\s*[/,]\s*/).map(s => s.trim()).filter(Boolean)
                     : []
                   const listId = `dl-${stepIndex}-${f.id}`
                   return (
@@ -799,7 +803,7 @@ export default function FlowRunner({ flow, user, onClose, onShowHistory, onRunCo
         {credits && !credits.unlimited && (
           <div className="px-6 py-2 border-b border-white/18 bg-[#09101F]/40">
             <div className="flex items-center justify-between mb-1">
-              <span className="text-[10px] text-slate-400">⚡ Aistrix credits today</span>
+              <span className="text-[10px] text-slate-400">⚡ {BRAND} credits today</span>
               <span className="text-[10px] text-slate-400">{credits.daily_remaining} / {credits.daily_limit} remaining</span>
             </div>
             <div className="h-1 bg-white/5 rounded-full overflow-hidden">
@@ -829,7 +833,7 @@ export default function FlowRunner({ flow, user, onClose, onShowHistory, onRunCo
                   ✕ Reject
                 </button>
               )}
-              <button onClick={() => { approveStep(); isLast ? setStepIndex(steps.length) : setStepIndex(i => i + 1) }}
+              <button onClick={() => { approveStep(); setStepIndex(isLast ? steps.length : i => i + 1) }}
                 className="flex items-center gap-2 bg-amber-500 hover:bg-amber-400 text-white text-sm px-6 py-2 rounded-xl font-medium transition-colors">
                 ✓ {current.approval_type === 'edit' ? 'Confirm & Continue' : 'Approve & Continue'}
               </button>
@@ -873,4 +877,12 @@ export default function FlowRunner({ flow, user, onClose, onShowHistory, onRunCo
       </div>
     </div>
   )
+}
+
+
+// Wired workflows run as a page in the workspace; older step-by-step
+// workflows keep their guided window.
+export default function FlowRunner(props) {
+  if (!isWiredWorkflow(props.flow)) return <LegacyFlowRunner {...props} />
+  return <WorkflowRunPage key={props.flow.id} flow={props.flow} onBack={props.onClose} />
 }

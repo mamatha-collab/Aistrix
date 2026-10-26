@@ -1,9 +1,11 @@
 import { useState, useEffect, lazy, Suspense } from 'react'
 import { createPortal } from 'react-dom'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from '../navigation'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 import { timeAgo } from '../utils'
+import { isFileApp } from '../lib/fileApps'
+import { workflowsUsingApp } from '../workflows/workflowApi'
 
 // Lazy-loaded — all of these are gated behind a toggle/modal/portal and are
 // never needed for the panel's initial render, so there's no reason for them
@@ -31,7 +33,7 @@ function AnalyticsView({ app, user, onClose }) {
     async function load() {
       const { data: runs } = await supabase
         .from('run_history')
-        .select('created_at, rating, result')
+        .select('created_at, rating_value, output')
         .eq('app_id', app.id)
         .eq('user_id', user.id)
         .order('created_at', { ascending: false })
@@ -49,9 +51,9 @@ function AnalyticsView({ app, user, onClose }) {
         if (key in dayCounts) dayCounts[key]++
       })
 
-      const rated    = runs.filter(r => r.rating !== null && r.rating !== undefined)
-      const thumbsUp = rated.filter(r => r.rating === 1).length
-      const failed   = runs.filter(r => !r.result || r.result.startsWith('Error')).length
+      const rated    = runs.filter(r => r.rating_value !== null && r.rating_value !== undefined)
+      const thumbsUp = rated.filter(r => r.rating_value === 1).length
+      const failed   = runs.filter(r => !r.output || r.output.startsWith('Error')).length
 
       setData({ runs, dayCounts, rated, thumbsUp, failed })
     }
@@ -131,6 +133,9 @@ export default function DetailPanel({ app, user, onClose, onRun, onDeleted }) {
   const [showAnalytics, setShowAnalytics] = useState(false)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  // Workflows with a step that runs this app, found when the delete question opens:
+  // null = checking, 'unchecked' = the lookup failed, otherwise the list.
+  const [dependents, setDependents] = useState(null)
   const [localTotalRuns, setLocalTotalRuns] = useState(null)
   const [editing, setEditing] = useState(false)
   const [showTools, setShowTools] = useState(false)
@@ -213,6 +218,14 @@ export default function DetailPanel({ app, user, onClose, onRun, onDeleted }) {
     })
   }
 
+  useEffect(() => {
+    if (!confirmDelete) return undefined
+    let live = true
+    setDependents(null)
+    workflowsUsingApp(user, app.id).then(rows => { if (live) setDependents(rows) }, () => { if (live) setDependents('unchecked') })
+    return () => { live = false }
+  }, [confirmDelete, app.id, user])
+
   async function handleDelete() {
     setDeleting(true)
     const { error } = await supabase.from('apps').delete().eq('id', app.id)
@@ -232,10 +245,10 @@ export default function DetailPanel({ app, user, onClose, onRun, onDeleted }) {
         ? <AgentRunner    app={currentApp} user={user} onClose={handleRunnerClose} onRun={() => { fetchStats(); setLocalTotalRuns(p => (p ?? currentApp.total_runs ?? 0) + 1); onRun?.(currentApp.id) }} />
         : currentApp.app_type === 'api'
         ? <ApiAppRunner   app={currentApp} user={user} onClose={handleRunnerClose} onRun={() => { fetchStats(); setLocalTotalRuns(p => (p ?? currentApp.total_runs ?? 0) + 1); onRun?.(currentApp.id) }} />
-        : currentApp.app_type === 'data'
+        : isFileApp(currentApp)
         ? <DataAppRunner  app={currentApp} user={user} onClose={handleRunnerClose} onRun={() => { fetchStats(); setLocalTotalRuns(p => (p ?? currentApp.total_runs ?? 0) + 1); onRun?.(currentApp.id) }} />
-        : currentApp.has_memory
-        ? <ConversationThread app={currentApp} user={user} onClose={handleRunnerClose} />
+        : (currentApp.has_memory || currentApp.app_type === 'chatbot')
+        ? <ConversationThread app={currentApp} user={user} onClose={handleRunnerClose} onRun={() => { fetchStats(); setLocalTotalRuns(p => (p ?? currentApp.total_runs ?? 0) + 1); onRun?.(currentApp.id) }} />
         : currentApp.pages?.length > 0
         ? <MultiPageRunner app={currentApp} user={user} onClose={handleRunnerClose} onRun={() => { fetchStats(); setLocalTotalRuns(prev => (prev ?? currentApp.total_runs ?? 0) + 1); onRun?.(currentApp.id) }} />
         : <AppRunner
@@ -367,7 +380,7 @@ export default function DetailPanel({ app, user, onClose, onRun, onDeleted }) {
           ["Favorited", stats ? (stats.favorited ? 'Yes ★' : 'No') : '...'],
           ["Last used", stats ? stats.lastUsed : '...'],
           ["AI provider", currentApp.ai_provider === 'openai' ? '🟢 OpenAI' : '🟣 Claude'],
-          ["Model", currentApp.ai_model || (currentApp.ai_provider === 'openai' ? 'gpt-4o-mini' : 'claude-sonnet-4-6')],
+          ["Model", currentApp.ai_model || (currentApp.ai_provider === 'openai' ? 'gpt-4o-mini' : 'claude-sonnet-5-5')],
         ].map(([k, v]) => (
           <div key={k} className="flex justify-between text-xs py-1.5 border-b border-white/5">
             <span className="text-slate-400">{k}</span>
@@ -408,6 +421,13 @@ export default function DetailPanel({ app, user, onClose, onRun, onDeleted }) {
               This will permanently remove the app and all its tools.<br />
               Run history will be kept. This cannot be undone.
             </p>
+            {currentApp.is_published && <p className="text-amber-300 text-xs mb-4 leading-relaxed">It is live: people using it lose access immediately.</p>}
+            {dependents === null && <p className="text-slate-400 text-xs mb-4">Checking which workflows use it…</p>}
+            {dependents === 'unchecked' && <p className="text-amber-300 text-xs mb-4 leading-relaxed">Couldn't check which workflows use this app. Their steps that run it will fail.</p>}
+            {Array.isArray(dependents) && dependents.length > 0 && <div className="text-left text-xs mb-4">
+              <p className="text-amber-300 leading-relaxed">{dependents.length === 1 ? '1 workflow has a step that runs this app. That step will fail:' : `${dependents.length} workflows have steps that run this app. Those steps will fail:`}</p>
+              <ul className="mt-1 list-disc pl-5 text-slate-300">{dependents.map(flow => <li key={flow.id}>{flow.name}</li>)}</ul>
+            </div>}
             <div className="flex gap-3">
               <button onClick={() => setConfirmDelete(false)}
                 className="flex-1 bg-[#1F2444] hover:bg-[#272C52] text-slate-300 text-sm py-2.5 rounded-xl transition-colors font-medium">

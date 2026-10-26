@@ -1,0 +1,83 @@
+name: CI
+
+# Lint, unit tests and build for the frontend; the backend check suite.
+# Tests never reach real services: provider/Stripe/email keys are blanked by
+# aistrix-backend/tests/checks/_harness.py and Supabase is faked.
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: aistrix-backend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: aistrix-backend/requirements*.txt
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest tests -v
+
+  frontend:
+    name: Frontend lint, tests, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: aistrix-frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: aistrix-frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build:next:test
+
+  build-browser:
+    name: Build desktop and mobile journeys
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: aistrix-frontend
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: aistrix-frontend/package-lock.json
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e:local
+        env:
+          E2E_BROWSER_CHANNEL: chromium
+      - run: npm run build:next:test
+      - run: npm run test:e2e:next
+        env:
+          E2E_BROWSER_CHANNEL: chromium
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: build-browser-failures
+          path: aistrix-frontend/test-results
+          retention-days: 7

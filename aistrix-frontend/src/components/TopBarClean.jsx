@@ -1,149 +1,109 @@
+import { BUSINESS_NAV } from '../lib/entities'
 import { useState, useRef, useEffect } from 'react'
-import { Box, Clock, KeyRound, LayoutGrid, Menu, Search, Sparkles, Workflow, X } from 'lucide-react'
+import { CirclePlay, KeyRound, LogOut, Menu, Moon, Search, Settings, Sun, X } from 'lucide-react'
 import NotificationsPanel from './NotificationsPanel'
+import WorkspaceSwitcher from './WorkspaceSwitcher'
+import ConfirmDialog from './ConfirmDialog'
+import SafeCard from './SafeCard'
+import { DeveloperRowSection, useShellFramed } from './DeveloperShell'
+import { applyTheme } from '../utils/theme'
+import { signOutOnPurpose } from '../lib/session'
+import { supabase } from '../supabase'
+import '../marketplace.css'
 
-const VIEW_META = {
-  apps:        { title: 'AI Apps',        subtitle: 'Build and run AI-powered apps', icon: LayoutGrid, label: 'AI APPS', buildView: true },
-  flows:       { title: 'AI Workflows',   subtitle: 'Ready-to-run workflows - install and run in seconds', icon: Workflow, label: 'AI WORKFLOWS', buildView: true },
-  overview:    { title: 'Overview',        subtitle: 'Aistrix designs, runs, and improves AI workflows from your business goal.' },
-  analytics:   { title: 'Analytics',       subtitle: 'Usage trends and performance' },
-  reports:     { title: 'Reports',         subtitle: 'Scheduled and on-demand reports' },
-  events:      { title: 'Events',          subtitle: 'Scheduled and triggered runs' },
-  goals:       { title: 'Goals',           subtitle: 'Track progress toward targets' },
-  alerts:      { title: 'Alerts',          subtitle: 'Notifications and thresholds' },
-  profiles:    { title: 'Profiles',        subtitle: 'User and team profiles' },
-  integrations:{ title: 'Integrations',    subtitle: 'Connect external services' },
-  settings:    { title: 'Settings',        subtitle: 'Account and preferences' },
-  developer:   { title: 'Developer',       subtitle: 'API keys and developer tools' },
-  data_sources:{ title: 'Data Sources',    subtitle: 'Manage your data connections' },
-  admin:       { title: 'Admin',           subtitle: 'Platform administration' },
-  moderator:   { title: 'Moderator',       subtitle: 'Content moderation tools' },
-  marketplace: { title: 'Marketplace',     subtitle: 'Discover AI apps built on Aistrix' },
-}
+const TITLES = { ...Object.fromEntries(BUSINESS_NAV.flatMap(group => group.items).map(item => [item.view, item.label])), events:'Schedules', goals:'Goals', admin:'Administration', moderator:'Moderation' }
 
-export default function TopBarClean({ onShowHistory, onShowSettings, onToggleSidebar, onShowCreate, onShowWorkspace, search, onSearch, searchRef, user, onNavChange, activeView }) {
-  const [buildOpen, setBuildOpen] = useState(false)
-  const buildRef = useRef(null)
+export default function TopBarClean({ onShowHistory, onShowSettings, onToggleSidebar, search='', onSearch, searchRef, user, onNavChange, activeView, marketDetail = false,
+  workspaces=[], activeWorkspace, onSwitchWorkspace, onCreateWorkspace, onManageWorkspace }) {
+  const framed = useShellFramed()
+  const [accountOpen,setAccountOpen]=useState(false)
+  const [confirmSignOut,setConfirmSignOut]=useState(false)
+  const accountRef=useRef(null)
+  useEffect(()=>{
+    const outside=event=>{if(!accountRef.current?.contains(event.target))setAccountOpen(false)}
+    const escape=event=>{if(event.key==='Escape')setAccountOpen(false)}
+    document.addEventListener('pointerdown',outside); document.addEventListener('keydown',escape)
+    return()=>{document.removeEventListener('pointerdown',outside);document.removeEventListener('keydown',escape)}
+  },[])
+  function navigate(view){setAccountOpen(false);onNavChange?.(view)}
+  function toggleTheme(){const next=document.documentElement.dataset.theme==='light'?'dark':'light';localStorage.setItem('aistrix_theme',next);applyTheme(next);setAccountOpen(false)}
+  const searchable=['apps','flows'].includes(activeView)
+  const initial=(user?.user_metadata?.display_name||user?.email||'?')[0].toUpperCase()
+  const signOutDialog=confirmSignOut&&<ConfirmDialog title="Sign out?" subtitle={user?.email} confirmLabel="Sign out" danger onCancel={()=>setConfirmSignOut(false)} onConfirm={()=>signOutOnPurpose(supabase)}>Finish or save any work before signing out.</ConfirmDialog>
 
-  useEffect(() => {
-    if (!buildOpen) return
-    const handler = e => { if (!buildRef.current?.contains(e.target)) setBuildOpen(false) }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [buildOpen])
-
-  const meta = VIEW_META[activeView] || VIEW_META.apps
-  const HeaderIcon = meta.icon || Sparkles
-
-  return (
-    <header className="app-topbar relative min-h-[72px] bg-[#121829] border-b border-white/18 flex items-center px-3 sm:px-4 md:px-6 py-3 gap-3 shrink-0">
-      <button
-        onClick={onToggleSidebar}
-        className="md:hidden text-slate-400 hover:text-white shrink-0 w-9 h-9 flex items-center justify-center -ml-1"
-        aria-label="Toggle menu"
-      >
-        <Menu size={20} strokeWidth={2} />
-      </button>
-
-      <div className="header-title flex-1 min-w-0 hidden sm:flex items-center gap-3">
-        <div className="header-title-icon w-11 h-11 rounded-xl flex items-center justify-center shrink-0">
-          <HeaderIcon size={22} />
-        </div>
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span className={meta.buildView ? 'header-build-title' : 'header-kicker hidden lg:inline-flex'}>{meta.label || 'Aistrix'}</span>
-            {!meta.buildView && <h1 className="header-title-text truncate">{meta.title}</h1>}
+  // Desktop: the same frame as Developer (top row, second row, left pane).
+  if (framed) {
+    const menuItem='w-full flex items-center gap-2 px-3 py-2.5 text-left text-sm text-slate-300 hover:bg-white/5 hover:text-white transition-colors'
+    return <>
+      <div className="sticky top-0 z-30 pointer-events-none">
+        <DeveloperRowSection side="header">
+          <div className="pointer-events-auto hidden md:flex h-[71px] items-center justify-end gap-4">
+            <span className="mr-auto text-sm font-semibold text-white">{activeView === 'marketplace' ? 'Market' : TITLES[activeView] || 'Workspace'}</span>
+            <div className="flex items-center gap-1">
+              {user&&<SafeCard name="Notifications" quiet><NotificationsPanel user={user} onNavChange={onNavChange}/></SafeCard>}
+            </div>
+            <div ref={accountRef} className="relative shrink-0">
+              <button onClick={()=>setAccountOpen(v=>!v)} aria-label="Account menu" aria-haspopup="menu" aria-expanded={accountOpen}
+                className="w-9 h-9 rounded-full bg-[#6C5CE7]/15 text-[#A29BFE] text-sm font-semibold flex items-center justify-center hover:bg-[#6C5CE7]/25 transition-colors"
+                style={{ background: user?.user_metadata?.avatar_color || undefined }}>{initial}</button>
+              {accountOpen&&(
+                <div role="menu" className="absolute right-0 top-full mt-2 w-56 rounded-2xl bg-[#111827] border border-white/10 shadow-2xl z-50">
+                  <div className="px-3 py-3 border-b border-white/5">
+                    <p className="text-white text-sm font-semibold truncate">{user?.user_metadata?.display_name||user?.email?.split('@')[0]||'Account'}</p>
+                    <p className="text-slate-500 text-[11px] truncate">{user?.email}</p>
+                  </div>
+                  <button role="menuitem" className={menuItem} onClick={()=>navigate('settings')}><Settings size={15}/>Account settings</button>
+                  <button role="menuitem" className={menuItem} onClick={()=>navigate('profiles')}>Profiles</button>
+                  <button role="menuitem" className={menuItem} onClick={()=>{setAccountOpen(false);onShowSettings?.()}}><KeyRound size={15}/>Personal AI keys</button>
+                  <button role="menuitem" className={menuItem} onClick={toggleTheme}><Sun size={15}/>Change theme</button>
+                  <div className="px-3 py-2 border-t border-white/5"><WorkspaceSwitcher workspaces={workspaces} active={activeWorkspace} onSwitch={onSwitchWorkspace} onCreate={onCreateWorkspace} onManage={onManageWorkspace}/></div>
+                  <button role="menuitem" className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-sm text-red-300 hover:bg-red-500/10 hover:text-red-200 transition-colors" onClick={()=>{setAccountOpen(false);setConfirmSignOut(true)}}><LogOut size={15}/>Sign out</button>
+                </div>
+              )}
+            </div>
           </div>
-          <p className="text-xs text-slate-300 truncate mt-0.5">{meta.subtitle}</p>
+        </DeveloperRowSection>
+        <DeveloperRowSection side="content">
+          {(activeView !== 'marketplace' || marketDetail) && <div className="market-context-toolbar">
+            {marketDetail ? <button onClick={()=>onNavChange?.('marketplace')} className="text-sm text-violet-300">← Back to Market</button> : searchable ? <div className="market-search-field"><Search size={16} aria-hidden="true" />
+              <input type="search" value={search} onChange={event=>onSearch?.(event.target.value)} ref={searchRef} aria-label={activeView==='flows'?'Search workflows':'Search apps'} placeholder={activeView==='flows'?'Search workflows…':'Search your apps…'} />
+              {search && <button onClick={()=>onSearch?.('')} aria-label="Clear search"><X size={14}/></button>}
+            </div> : <span className="text-sm text-slate-300">{TITLES[activeView] || 'Workspace'}</span>}
+          </div>}
+        </DeveloperRowSection>
+      </div>
+      {signOutDialog}
+    </>
+  }
+
+  return <header className="business-topbar shrink-0" aria-label="Business header">
+    <div className="business-header-main">
+      <button onClick={onToggleSidebar} className="business-icon-button md:hidden" aria-label="Toggle menu"><Menu size={20}/></button>
+      <span className={`business-page-context ${activeView==='marketplace'?'':'hidden sm:block'}`}>{activeView==='marketplace'?'Market':TITLES[activeView]||'Workspace'}</span>
+      {searchable && <div className="business-search"><Search size={16} aria-hidden="true"/><input type="search" value={search} onChange={event=>onSearch?.(event.target.value)} ref={searchRef} aria-label={activeView==='flows'?'Search workflows':'Search apps'} placeholder={activeView==='flows'?'Search your workflows…':'Find an app for your next task…'}/>{search&&<button onClick={()=>onSearch?.('')} aria-label="Clear search"><X size={15}/></button>}</div>}
+      <div className="business-header-actions">
+        <button onClick={onShowHistory} className="business-header-action" aria-label="Run history"><CirclePlay size={17}/><span className="hidden lg:inline">Runs</span></button>
+        {user&&<SafeCard name="Notifications" quiet><NotificationsPanel user={user} onNavChange={onNavChange}/></SafeCard>}
+        <div ref={accountRef} className="relative">
+          <button className="business-avatar" aria-label="Account menu" aria-expanded={accountOpen} aria-haspopup="menu" onClick={()=>setAccountOpen(value=>!value)}>{initial}</button>
+          {accountOpen&&<div role="menu" className="business-account-menu">
+            <p className="truncate px-3 py-3 text-xs text-slate-400 border-b border-white/10">{user?.email}</p>
+            <button role="menuitem" onClick={()=>navigate('settings')}><Settings size={16}/>Account settings</button>
+            <button role="menuitem" onClick={()=>navigate('profiles')}>Profiles</button>
+            <button role="menuitem" onClick={()=>{setAccountOpen(false);onShowSettings?.()}}><KeyRound size={16}/>Personal AI keys</button>
+            <button role="menuitem" onClick={toggleTheme}><Sun size={16}/><Moon size={16}/>Change theme</button>
+            <button role="menuitem" onClick={()=>navigate('developer')}>Open Developer workspace</button>
+            <button role="menuitem" onClick={()=>{setAccountOpen(false);setConfirmSignOut(true)}}><LogOut size={16}/>Sign out</button>
+          </div>}
         </div>
       </div>
-
-      <div className="header-actions flex items-center justify-end gap-2 flex-1 sm:flex-none min-w-0">
-        <div className="app-field flex items-center gap-2 bg-[#1A2038] border border-white/18 rounded-lg px-2.5 sm:px-3 h-9 text-sm text-slate-300 min-w-0 w-full sm:w-48 lg:w-56 transition-colors">
-          <Search size={15} className="shrink-0 text-slate-400" />
-          <input
-            type="text"
-            value={search}
-            onChange={e => onSearch(e.target.value)}
-            placeholder="Search apps, workflows, history…"
-            aria-label="Global search"
-            ref={searchRef}
-            className="flex-1 min-w-0 w-full bg-transparent text-sm text-white placeholder-slate-500 focus:outline-none"
-          />
-          {search && (
-            <button onClick={() => onSearch('')} aria-label="Clear search" className="text-slate-400 hover:text-white shrink-0">
-              <X size={14} />
-            </button>
-          )}
-        </div>
-
-        {user && <NotificationsPanel user={user} onNavChange={onNavChange} />}
-        <button
-          onClick={onShowHistory}
-          aria-label="Run history"
-          className="app-chrome-button flex items-center justify-center gap-1 bg-[#1A2038] hover:bg-[#222840] text-slate-200 text-sm h-9 w-9 md:w-[86px] rounded-lg border border-transparent transition-colors shrink-0"
-        >
-          <Clock size={15} /> <span className="hidden md:inline">History</span>
-        </button>
-        <button
-          onClick={onShowSettings}
-          aria-label="API key settings"
-          className="app-chrome-button flex items-center justify-center gap-1 bg-[#1A2038] hover:bg-[#222840] text-slate-200 text-sm h-9 w-9 md:w-[70px] rounded-lg border border-transparent transition-colors shrink-0"
-        >
-          <KeyRound size={15} /> <span className="hidden md:inline">Keys</span>
-        </button>
-        {activeView === 'apps' || activeView === 'flows' ? (
-          <button
-            onClick={activeView === 'apps'
-              ? onShowCreate
-              : () => window.dispatchEvent(new CustomEvent('aistrix:new-workflow'))}
-            className="header-build-button flex items-center justify-center gap-1.5 text-sm font-semibold h-9 w-11 md:w-40 rounded-lg transition-all shrink-0"
-          >
-            <Sparkles size={16} /> <span className="hidden md:inline">{activeView === 'apps' ? 'Build AI App' : 'Build AI Workflow'}</span>
-          </button>
-        ) : (
-          <div ref={buildRef} className="relative shrink-0">
-            <button
-              onClick={() => setBuildOpen(v => !v)}
-              aria-label="Aistrix BUILD - open build menu"
-              aria-haspopup="true"
-              aria-expanded={buildOpen}
-              className="flex items-center gap-1.5 text-white text-xs font-semibold px-3 py-1.5 rounded-lg border border-[#6C5CE7] bg-[#6C5CE7]/15 hover:bg-[#6C5CE7]/25 transition-all"
-            >
-              <Sparkles size={14} /> <span className="hidden md:inline">Aistrix <span className="font-bold tracking-widest uppercase">BUILD</span></span>
-            </button>
-            {buildOpen && (
-              <div className="app-build-menu absolute right-0 top-full mt-2 w-52 bg-[#1A2038] border border-white/20 rounded-xl shadow-xl overflow-hidden z-50">
-                <button
-                  onClick={() => { setBuildOpen(false); onShowCreate() }}
-                  className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-white/5 transition-colors group"
-                >
-                  <span className="w-8 h-8 rounded-lg bg-[#A29BFE]/15 flex items-center justify-center shrink-0">
-                    <Box size={16} className="text-[#A29BFE]" />
-                  </span>
-                  <div>
-                    <p className="text-white text-sm font-semibold leading-tight">AI App</p>
-                    <p className="text-slate-300 text-[10px]">Build a standalone app</p>
-                  </div>
-                </button>
-                <div className="border-t border-white/10" />
-                <button
-                  onClick={() => { setBuildOpen(false); onShowWorkspace?.() }}
-                  className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-white/5 transition-colors group"
-                >
-                  <span className="w-8 h-8 rounded-lg bg-[#6C5CE7]/15 flex items-center justify-center shrink-0">
-                    <Workflow size={16} className="text-[#A29BFE]" />
-                  </span>
-                  <div>
-                    <p className="text-white text-sm font-semibold leading-tight">AI Workflow</p>
-                    <p className="text-slate-300 text-[10px]">Chain apps into a workflow</p>
-                  </div>
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-    </header>
-  )
+    </div>
+    {activeView !== 'marketplace' && <div className="business-header-secondary">
+      <nav aria-label="Business shortcuts" className="business-shortcuts">
+        {[['marketplace','Marketplace'],['apps','My apps'],['flows','Workflows']].map(([view,label])=><button key={view} onClick={()=>onNavChange?.(view)} aria-current={activeView===view?'page':undefined}>{label}</button>)}
+      </nav>
+      <SafeCard name="Workspace switcher" quiet><WorkspaceSwitcher workspaces={workspaces} active={activeWorkspace} onSwitch={onSwitchWorkspace} onCreate={onCreateWorkspace} onManage={onManageWorkspace}/></SafeCard>
+    </div>}
+    {signOutDialog}
+  </header>
 }

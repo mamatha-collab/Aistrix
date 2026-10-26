@@ -1,7 +1,9 @@
+import { createWorkflow } from '../workflows/workflowApi'
 import { useState } from 'react'
 import { supabase } from '../supabase'
 import { useToast } from '../hooks/useToast'
 
+import { BRAND } from '../lib/brand'
 const GOALS = [
   { id: 'career',    emoji: '💼', label: 'Career Growth',       desc: 'Find jobs, write resumes, prep for interviews', packName: 'Career Success Pack',    domain: 'career' },
   { id: 'marketing', emoji: '📈', label: 'Marketing & Content', desc: 'Create content, campaigns, SEO, social media',  packName: 'Marketing Power Pack',   domain: 'marketing' },
@@ -30,12 +32,8 @@ export default function OnboardingWizard({ user, onDismiss, onNavChange }) {
       const { data: flow } = await supabase.from('flows')
         .select('*').eq('name', goal.packName).eq('is_published', true).maybeSingle()
       if (flow) {
-        const { error } = await supabase.from('flows').insert({
-          user_id: user.id, name: flow.name, emoji: flow.emoji,
-          description: flow.description, steps: flow.steps,
-        })
-        if (error) toast(`Couldn't install ${goal.packName}: ${error.message}`, 'error')
-        else toast(`${goal.packName} installed to your AI Workflows!`, 'success')
+        await createWorkflow(user, flow.name, { ...flow, kind: flow.kind || 'business' })
+        toast(`${goal.packName} installed to your AI Workflows!`, 'success')
       }
     } catch (e) { toast(e.message, 'error') }
     setInstalling(false)
@@ -79,7 +77,7 @@ export default function OnboardingWizard({ user, onDismiss, onNavChange }) {
       onNavChange('apps')
     }
     onDismiss()
-    toast('Welcome to Aistrix! 🎉', 'success', 4000)
+    toast(`Welcome to ${BRAND}! 🎉`, 'success', 4000)
   }
 
   const STEPS = goal?.packName ? 5 : 2
@@ -108,7 +106,7 @@ export default function OnboardingWizard({ user, onDismiss, onNavChange }) {
             <div className="space-y-5">
               <div className="text-center">
                 <div className="w-14 h-14 rounded-2xl bg-[#6C5CE7] flex items-center justify-center text-white font-bold text-2xl mx-auto mb-4">A</div>
-                <h2 className="text-white text-xl font-bold mb-1">Welcome to Aistrix</h2>
+                <h2 className="text-white text-xl font-bold mb-1">Welcome to {BRAND}</h2>
                 <p className="text-slate-400 text-sm">What do you want to accomplish? We'll set everything up for you.</p>
               </div>
 
@@ -257,7 +255,7 @@ export default function OnboardingWizard({ user, onDismiss, onNavChange }) {
 
               <button onClick={finish}
                 className="w-full bg-gradient-to-r from-[#6C5CE7] to-[#E84393] text-white py-3.5 rounded-xl font-bold text-base transition-opacity hover:opacity-90">
-                Start using Aistrix →
+                Start using {BRAND} →
               </button>
             </div>
           )}

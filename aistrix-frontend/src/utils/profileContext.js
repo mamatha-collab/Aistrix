@@ -1,6 +1,6 @@
 // Pure helpers for turning a career/business profile row into plain-text
-// context injected into AI runs. Pulled out of pages/ProfilesPage.jsx: that
-// file is lazy-loaded (`lazy(() => import('./pages/ProfilesPage'))` in
+// context injected into AI runs. Pulled out of screens/ProfilesPage.jsx: that
+// file is lazy-loaded (`lazy(() => import('./screens/ProfilesPage'))` in
 // App.jsx) so it ships as its own chunk, but AppRunner.jsx — which is in the
 // main bundle — statically imported these two functions from it. That static
 // import forced Rollup/Vite to pull the entire ProfilesPage module (and

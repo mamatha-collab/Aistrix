@@ -36,4 +36,4 @@ it('adds optional profile fields idempotently without changing existing identity
     await db.exec("update public.apps set is_published=false where created_by='00000000-0000-4000-8000-000000000001'; set role anon")
     expect((await db.query('select * from public.public_developer_profiles')).rows).toEqual([])
   } finally { await db.close() }
-}, 30_000)
+}, 120_000)

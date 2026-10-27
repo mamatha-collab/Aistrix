@@ -369,7 +369,7 @@ class Engine:
             return {}
         if not self.services.secrets:
             return {}
-        return await self.services.secrets(run["owner_id"], names)
+        return await self.services.secrets(run["owner_id"], run["resource_key"], names)
 
     # ── Persistence ───────────────────────────────────────────────────────────
 

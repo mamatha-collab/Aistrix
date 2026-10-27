@@ -57,8 +57,8 @@ class Services:
     run_local_code: Optional[Callable[[str, Any, int], Awaitable[Any]]] = None
     # (method, url, headers, json body or None, allowed hosts, timeout) -> HttpResponse
     http: Optional[Callable[..., Awaitable[HttpResponse]]] = None
-    # (owner id, secret names) -> {name: value}
-    secrets: Optional[Callable[[Optional[str], list], Awaitable[dict]]] = None
+    # (owner id, resource key, secret names) -> {name: value}
+    secrets: Optional[Callable[[Optional[str], str, list], Awaitable[dict]]] = None
     sleep: Optional[Callable[[float], Awaitable[None]]] = None
 
     def __post_init__(self):

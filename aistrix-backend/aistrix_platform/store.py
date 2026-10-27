@@ -106,6 +106,13 @@ class MemoryStore:
     async def events(self, run_id: str, after: int = 0) -> list[dict]:
         return [copy.deepcopy(e) for e in self._events.get(run_id, []) if e["seq"] > after]
 
+    async def resumable_runs(self, limit: int = 20) -> list[str]:
+        """Runs that are queued or running but have no live lease: their worker
+        stopped. The supervisor resumes them."""
+        now = self.clock()
+        return [rid for rid, r in self.runs.items() if r["status"] in ("queued", "running")
+                and self.leases.get(rid, (None, 0.0))[1] <= now][:limit]
+
     async def list_runs(self, *, owner_id: str, resource: Optional[str] = None, limit: int = 50) -> list[dict]:
         rows = [r for r in self.runs.values() if r.get("owner_id") == owner_id
                 and (resource is None or r.get("resource_key") == resource)]

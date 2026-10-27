@@ -100,7 +100,8 @@ def engine(model, erp, *, store=None, clock=None, worker="w1", sleeps=None):
     async def settle(rid, actual, outcome):
         reservations.append(("settle", rid, actual, outcome))
 
-    async def secrets(owner, names):
+    async def secrets(owner, resource_key, names):
+        assert resource_key == "Application/acme/invoice-extractor"
         return {"ERP_API_KEY": "erp-secret-123"} if "ERP_API_KEY" in names else {}
 
     async def sleep(seconds):

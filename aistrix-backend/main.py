@@ -109,6 +109,8 @@ async def lifespan(_app):
     telemetry_worker = asyncio.create_task(_telemetry_supervisor())
     scheduler = asyncio.create_task(_scheduler_loop())
     developer_jobs = asyncio.create_task(_developer_jobs_supervisor())
+    # Resumes platform runs whose worker stopped (aistrix_platform.api).
+    platform_runs = asyncio.create_task(_platform_supervisor())
     try:
         report_production_config()
     except Exception as e:                  # a report, never a reason not to start
@@ -116,9 +118,10 @@ async def lifespan(_app):
     try:
         yield
     finally:
-        for task in (supervisor, telemetry_worker, scheduler, developer_jobs, *_FLOW_TASKS):
+        for task in (supervisor, telemetry_worker, scheduler, developer_jobs, platform_runs, *_FLOW_TASKS):
             task.cancel()
-        await asyncio.gather(supervisor, telemetry_worker, scheduler, developer_jobs, *_FLOW_TASKS, return_exceptions=True)
+        await asyncio.gather(supervisor, telemetry_worker, scheduler, developer_jobs, platform_runs, *_FLOW_TASKS,
+                             return_exceptions=True)
 
 
 app = FastAPI(title=f"{BRAND_NAME} API", version="1.0.0", lifespan=lifespan)
@@ -9243,3 +9246,8 @@ def root():
 import sys as _sys
 import code_apps as _code_apps
 _code_apps.register_routes(app, _sys.modules[__name__])
+
+# Platform v1 (/v1/platform): resource specs, releases, environments, evals
+# and AEX pipeline runs. It uses this module's providers, keys and storage.
+from aistrix_platform import api as _platform_api
+_platform_supervisor = _platform_api.register_routes(app, _sys.modules[__name__])

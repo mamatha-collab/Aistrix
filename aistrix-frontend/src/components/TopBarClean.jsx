@@ -14,7 +14,7 @@ import '../marketplace.css'
 const TITLES = { ...Object.fromEntries(BUSINESS_NAV.flatMap(group => group.items).map(item => [item.view, item.label])), events:'Schedules', goals:'Goals', admin:'Administration', moderator:'Moderation' }
 
 export default function TopBarClean({ onShowHistory, onShowSettings, onToggleSidebar, search='', onSearch, searchRef, user, onNavChange, activeView, marketDetail = false,
-  workspaces=[], activeWorkspace, onSwitchWorkspace, onCreateWorkspace, onManageWorkspace }) {
+  workspaces=[], activeWorkspace, onSwitchWorkspace, onCreateWorkspace, onManageWorkspace, onSignIn, sessionLoading = false }) {
   const framed = useShellFramed()
   const [accountOpen,setAccountOpen]=useState(false)
   const [confirmSignOut,setConfirmSignOut]=useState(false)
@@ -29,7 +29,7 @@ export default function TopBarClean({ onShowHistory, onShowSettings, onToggleSid
   function toggleTheme(){const next=document.documentElement.dataset.theme==='light'?'dark':'light';localStorage.setItem('aistrix_theme',next);applyTheme(next);setAccountOpen(false)}
   const searchable=['apps','flows'].includes(activeView)
   const initial=(user?.user_metadata?.display_name||user?.email||'?')[0].toUpperCase()
-  const signOutDialog=confirmSignOut&&<ConfirmDialog title="Sign out?" subtitle={user?.email} confirmLabel="Sign out" danger onCancel={()=>setConfirmSignOut(false)} onConfirm={()=>signOutOnPurpose(supabase)}>Finish or save any work before signing out.</ConfirmDialog>
+  const signOutDialog=confirmSignOut&&<ConfirmDialog title="Sign out?" subtitle={user?.email} confirmLabel="Sign out" danger onCancel={()=>setConfirmSignOut(false)} onConfirm={async()=>{await signOutOnPurpose(supabase);setConfirmSignOut(false)}}>Finish or save any work before signing out.</ConfirmDialog>
 
   // Desktop: the same frame as Developer (top row, second row, left pane).
   if (framed) {
@@ -42,7 +42,7 @@ export default function TopBarClean({ onShowHistory, onShowSettings, onToggleSid
             <div className="flex items-center gap-1">
               {user&&<SafeCard name="Notifications" quiet><NotificationsPanel user={user} onNavChange={onNavChange}/></SafeCard>}
             </div>
-            <div ref={accountRef} className="relative shrink-0">
+            {!user ? (sessionLoading ? <span role="status" className="text-xs text-slate-400">Loading account…</span> : <button onClick={onSignIn} className="business-primary">Sign in</button>) : <div ref={accountRef} className="relative shrink-0">
               <button onClick={()=>setAccountOpen(v=>!v)} aria-label="Account menu" aria-haspopup="menu" aria-expanded={accountOpen}
                 className="w-9 h-9 rounded-full bg-[#6C5CE7]/15 text-[#A29BFE] text-sm font-semibold flex items-center justify-center hover:bg-[#6C5CE7]/25 transition-colors"
                 style={{ background: user?.user_metadata?.avatar_color || undefined }}>{initial}</button>
@@ -60,7 +60,7 @@ export default function TopBarClean({ onShowHistory, onShowSettings, onToggleSid
                   <button role="menuitem" className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-sm text-red-300 hover:bg-red-500/10 hover:text-red-200 transition-colors" onClick={()=>{setAccountOpen(false);setConfirmSignOut(true)}}><LogOut size={15}/>Sign out</button>
                 </div>
               )}
-            </div>
+            </div>}
           </div>
         </DeveloperRowSection>
         <DeveloperRowSection side="content">
@@ -82,9 +82,9 @@ export default function TopBarClean({ onShowHistory, onShowSettings, onToggleSid
       <span className={`business-page-context ${activeView==='marketplace'?'':'hidden sm:block'}`}>{activeView==='marketplace'?'Market':TITLES[activeView]||'Workspace'}</span>
       {searchable && <div className="business-search"><Search size={16} aria-hidden="true"/><input type="search" value={search} onChange={event=>onSearch?.(event.target.value)} ref={searchRef} aria-label={activeView==='flows'?'Search workflows':'Search apps'} placeholder={activeView==='flows'?'Search your workflows…':'Find an app for your next task…'}/>{search&&<button onClick={()=>onSearch?.('')} aria-label="Clear search"><X size={15}/></button>}</div>}
       <div className="business-header-actions">
-        <button onClick={onShowHistory} className="business-header-action" aria-label="Run history"><CirclePlay size={17}/><span className="hidden lg:inline">Runs</span></button>
+        {user && <button onClick={onShowHistory} className="business-header-action" aria-label="Run history"><CirclePlay size={17}/><span className="hidden lg:inline">Runs</span></button>}
         {user&&<SafeCard name="Notifications" quiet><NotificationsPanel user={user} onNavChange={onNavChange}/></SafeCard>}
-        <div ref={accountRef} className="relative">
+        {!user ? (sessionLoading ? <span role="status" className="text-xs text-slate-400">Loading account…</span> : <button onClick={onSignIn} className="business-primary">Sign in</button>) : <div ref={accountRef} className="relative">
           <button className="business-avatar" aria-label="Account menu" aria-expanded={accountOpen} aria-haspopup="menu" onClick={()=>setAccountOpen(value=>!value)}>{initial}</button>
           {accountOpen&&<div role="menu" className="business-account-menu">
             <p className="truncate px-3 py-3 text-xs text-slate-400 border-b border-white/10">{user?.email}</p>
@@ -95,7 +95,7 @@ export default function TopBarClean({ onShowHistory, onShowSettings, onToggleSid
             <button role="menuitem" onClick={()=>navigate('developer')}>Open Developer workspace</button>
             <button role="menuitem" onClick={()=>{setAccountOpen(false);setConfirmSignOut(true)}}><LogOut size={16}/>Sign out</button>
           </div>}
-        </div>
+        </div>}
       </div>
     </div>
     {activeView !== 'marketplace' && <div className="business-header-secondary">

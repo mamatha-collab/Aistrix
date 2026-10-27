@@ -21,6 +21,11 @@ ok("stored keys are encrypted", sealed.startswith("gAAAA") and "secret" not in s
 ok("encrypted keys open", main._open_key(sealed) == "sk-ant-secret-1234")
 ok("legacy plaintext keys still work", main._open_key("sk-legacy-9999") == "sk-legacy-9999")
 ok("tampered ciphertext → no key", main._open_key("gAAAAnot-a-real-token") is None)
+encryption = main._fernet
+main._fernet = None
+ok("encrypted keys are never returned as provider credentials without encryption configuration", main._open_key(sealed) is None)
+main._fernet = encryption
+ok("restoring encryption configuration restores access to the saved key", main._open_key(sealed) == "sk-ant-secret-1234")
 
 # ── model choice ────────────────────────────────────────────────────────────
 ok("platform key: unknown model → provider default", main.validate_model("openai", "gpt-6-astra") == "gpt-4o-mini")

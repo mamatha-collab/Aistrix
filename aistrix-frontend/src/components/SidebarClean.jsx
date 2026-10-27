@@ -16,7 +16,7 @@ import { BRAND } from '../lib/brand'
 
 const DEVELOPER_NAV = []
 
-export default function SidebarClean({ user, userRole, onClose, activeView, onNavChange, mode, onModeChange, onSelectApp, onOpenFlow, paneRefreshKey }) {
+export default function SidebarClean({ user, userRole, onClose, activeView, onNavChange, onHome, mode, onModeChange, onSelectApp, onOpenFlow, paneRefreshKey }) {
 
   const navGroups = mode === 'developer' ? DEVELOPER_NAV : BUSINESS_NAV
   const isDeveloperMode = mode === 'developer'
@@ -80,7 +80,8 @@ export default function SidebarClean({ user, userRole, onClose, activeView, onNa
 
       {!isDeveloperMode && !framed && (
         <button
-          onClick={() => onNavChange?.('marketplace')}
+          aria-label="Aistrix Business home"
+          onClick={() => onHome ? onHome() : onNavChange?.('overview')}
           className="business-sidebar-brand flex items-center gap-1 hover:opacity-80 transition-opacity w-full text-left"
         >
           <div className="flex items-center gap-1">
@@ -98,7 +99,8 @@ export default function SidebarClean({ user, userRole, onClose, activeView, onNa
         : 'business-mode-switch'}>
         {isDeveloperMode ? (
         <button
-          onClick={() => onNavChange?.('developer')}
+          aria-label="Aistrix Developer home"
+          onClick={() => onHome ? onHome() : onNavChange?.('developer')}
           className="flex items-center gap-1 min-w-0 w-full text-left hover:opacity-85 transition-opacity"
         >
           <img src="/aistrix-logo.svg" alt={rail ? BRAND : ''} className="w-7 h-7 shrink-0" />

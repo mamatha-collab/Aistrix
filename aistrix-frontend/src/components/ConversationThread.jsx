@@ -24,7 +24,7 @@ export default function ConversationThread({ app, user, threadId: initialThreadI
   const [loading, setLoading] = useState(false)
   const [streaming, setStreaming] = useState('')
   const [showThreads, setShowThreads] = useState(false)
-  const bottomRef = useRef(null)
+  const messagesRef = useRef(null)
   const toast = useToast()
 
   useEffect(() => {
@@ -39,7 +39,12 @@ export default function ConversationThread({ app, user, threadId: initialThreadI
     try { sessionStorage.setItem(visitorKey(app.id), JSON.stringify(messages.map(({ id, role, content }) => ({ id, role, content })))) } catch { /* storage blocked — keep it in memory */ }
   }, [visitor, app.id, messages])
 
-  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: 'smooth' }) }, [messages, streaming])
+  useEffect(() => {
+    const container = messagesRef.current
+    // Keep conversation updates inside the chat. scrollIntoView also moves
+    // the Marketplace page's ancestors, even when an empty chat first mounts.
+    container?.scrollTo({ top: messages.length || streaming ? container.scrollHeight : 0, behavior: messages.length || streaming ? 'smooth' : 'instant' })
+  }, [messages, streaming])
 
   async function loadThreads() {
     const { data } = await supabase.from('conversation_threads')
@@ -124,7 +129,7 @@ export default function ConversationThread({ app, user, threadId: initialThreadI
 
     try {
       const { text: full, usage: finalUsage } = await streamRun({
-        app_id: app.id,
+        app_id: app.id, preview_version: app.preview_version, preview_live_version: app.preview_live_version, preview_draft_hash: app.preview_draft_hash,
         input: buildConversationInput(app.greeting, history, userMsg),
         system_prompt: app.system_prompt || 'You are a helpful assistant.',
         run_mode: 'conversation',
@@ -186,7 +191,7 @@ export default function ConversationThread({ app, user, threadId: initialThreadI
       )}
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-3">
+      <div ref={messagesRef} className="flex-1 min-h-0 overflow-y-auto p-3 space-y-3">
         {messages.length === 0 && !streaming && app.greeting && (
           <div className="flex justify-start">
             <div className="max-w-[85%] rounded-2xl px-4 py-2.5 text-sm bg-[#1F2444] text-slate-200 rounded-bl-sm">
@@ -241,7 +246,6 @@ export default function ConversationThread({ app, user, threadId: initialThreadI
             </div>
           </div>
         )}
-        <div ref={bottomRef} />
       </div>
 
       {/* Input */}

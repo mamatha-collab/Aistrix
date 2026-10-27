@@ -1,17 +1,12 @@
-import { useState, useEffect } from 'react'
+import { useCallback, useSyncExternalStore } from 'react'
 
 export function useMediaQuery(query) {
-  const [matches, setMatches] = useState(() =>
-    typeof window !== 'undefined' ? window.matchMedia(query).matches : false
-  )
-
-  useEffect(() => {
+  const subscribe = useCallback(notify => {
     const mql = window.matchMedia(query)
-    const onChange = () => setMatches(mql.matches)
-    onChange()
-    mql.addEventListener('change', onChange)
-    return () => mql.removeEventListener('change', onChange)
+    mql.addEventListener('change', notify)
+    return () => mql.removeEventListener('change', notify)
   }, [query])
-
-  return matches
+  const snapshot = useCallback(() => window.matchMedia(query).matches, [query])
+  // Hydration starts with the same responsive tree that the server rendered.
+  return useSyncExternalStore(subscribe, snapshot, () => false)
 }

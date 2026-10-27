@@ -43,6 +43,7 @@ function StepCard({ number, icon, title, chip, chipKind, subtitle, selected, iss
       <p className="mt-2 truncate text-sm font-semibold text-white">{title}</p>
       <div className="mt-1"><Chip kind={chipKind}>{chip}</Chip></div>
       {subtitle && <p className="mt-1.5 line-clamp-2 text-[11px] leading-snug text-slate-400">{subtitle}</p>}
+      {issues.filter(issue => issue.server).map((issue, index) => <span key={index} className="mt-2 block text-[11px] text-red-300">{issue.text}</span>)}
     </button>
   )
 }
@@ -67,7 +68,7 @@ function Connector({ onAddApp, onAddApproval, last }) {
   )
 }
 
-export function WorkflowCanvas({ flow, apps, schemas, selected, onSelect, onChange }) {
+export function WorkflowCanvas({ flow, apps, schemas, selected, onSelect, onChange, serverProblems = [] }) {
   const appById = new Map(apps.map(a => [a.id, a]))
   const insertAt = (i, step) => {
     const steps = [...flow.steps]
@@ -85,7 +86,7 @@ export function WorkflowCanvas({ flow, apps, schemas, selected, onSelect, onChan
           selected={selected === 'trigger'} onClick={() => onSelect('trigger')} />
         {flow.steps.map((step, i) => {
           const app = appById.get(step.app_id)
-          const issues = stepIssues(flow, i, schemas)
+          const issues = [...stepIssues(flow, i, schemas), ...serverProblems.filter(problem => problem.step === i).map(problem => ({ ...problem, server: true }))]
           return (
             <Fragment key={step.id}>
               <div className="flex h-[132px] items-center">
@@ -94,10 +95,10 @@ export function WorkflowCanvas({ flow, apps, schemas, selected, onSelect, onChan
               {isApproval(step) ? (
                 <StepCard number={i + 2} icon={<UserCheck size={18} />} title={step.app_name || 'Review & approve'} chip="Approval" chipKind="approval"
                   subtitle={step.approval_type === 'edit' ? 'A person reviews and can edit before it continues' : 'A person approves before it continues'}
-                  branch={conditionLabel(step.run_if)} selected={selected === i} onClick={() => onSelect(i)} />
+                  issues={issues} branch={conditionLabel(step.run_if)} selected={selected === i} onClick={() => onSelect(i)} />
               ) : isApiCall(step) ? (
                 <StepCard number={i + 2} icon="🔗" title={step.app_name || 'API call'} chip={`${step.api_method || 'GET'} request`} chipKind="api"
-                  subtitle={step.api_url} branch={conditionLabel(step.run_if)} selected={selected === i} onClick={() => onSelect(i)} />
+                  subtitle={step.api_url} issues={issues} branch={conditionLabel(step.run_if)} selected={selected === i} onClick={() => onSelect(i)} />
               ) : (
                 <StepCard number={i + 2} icon={app?.emoji || step.app_emoji || '✨'} title={app?.name || step.app_name || 'Choose an app'}
                   chip={step.app_id ? versionLabel(step) : 'Not set up'} chipKind={step.version === 'draft' || !step.app_id ? 'draft' : 'published'}
@@ -294,7 +295,7 @@ function AppStepSettings({ flow, index, apps, schemas, onChange, onSelect }) {
       <label className="block text-[11px] font-semibold text-slate-400">App
         <select className={`${field} mt-1`} value={step.app_id || ''} onChange={e => chooseApp(e.target.value)}>
           <option value="">Choose an app…</option>
-          {apps.map(a => <option key={a.id} value={a.id}>{a.emoji ? `${a.emoji} ` : ''}{a.name}{a.is_published ? '' : ' (not published)'}</option>)}
+          {apps.map(a => <option key={a.id} value={a.id} disabled={a.app_type === 'code_job'}>{a.emoji ? `${a.emoji} ` : ''}{a.name}{a.app_type === 'code_job' ? ' (code job integration pending)' : a.is_published ? '' : ' (not published)'}</option>)}
         </select>
       </label>
       {step.app_id && (
@@ -385,7 +386,7 @@ function AppStepSettings({ flow, index, apps, schemas, onChange, onSelect }) {
   )
 }
 
-export function StepSettings({ flow, selected, apps, schemas, onChange, onSelect }) {
+export function StepSettings({ flow, selected, apps, schemas, onChange, onSelect, serverProblems = [] }) {
   const step = selected === 'trigger' ? null : flow.steps[selected]
   const title = selected === 'trigger' ? 'Trigger' : isApproval(step) ? 'Approval' : step?.app_name || 'Step'
   return (
@@ -396,6 +397,7 @@ export function StepSettings({ flow, selected, apps, schemas, onChange, onSelect
         </span>
         <h3 className="min-w-0 truncate text-sm font-semibold text-white">{title}</h3>
       </div>
+      {serverProblems.filter(problem => selected === 'trigger' ? problem.step == null : problem.step === selected).map((problem, index) => <p key={index} role="alert" className="rounded-lg border border-red-500/20 bg-red-500/10 p-2 text-xs text-red-200">{problem.text}</p>)}
       {selected === 'trigger' ? <TriggerSettings flow={flow} onChange={onChange} />
         : !step ? null
         : isApproval(step) ? <ApprovalSettings flow={flow} index={selected} schemas={schemas} onChange={onChange} onSelect={onSelect} />

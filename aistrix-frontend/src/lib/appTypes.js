@@ -1,5 +1,11 @@
 export const APP_TYPES = [
   {
+    id: 'code_job', icon: '</>', label: 'Code Application',
+    desc: 'Build and privately deploy your own Python job with JSON inputs, outputs and execution logs.',
+    color: '#0984E3', bestFor: 'Calculation engines, custom processors, validation and optimization.',
+    status: 'worker',
+  },
+  {
     id: 'ai_builder',
     icon: '✦',
     label: 'Build with AI',

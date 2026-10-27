@@ -7,6 +7,7 @@ import React, { useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import DevStudioPage from '../../src/screens/DevStudioPage'
 import CreateAppModal from '../../src/components/CreateAppModal'
+import CreateCodeApp from '../../src/components/CreateCodeApp'
 import AIAppBuilder from '../../src/components/AIAppBuilder'
 import AppTypeSelector from '../../src/components/AppTypeSelector'
 import Auth from '../../src/components/Auth'
@@ -36,11 +37,12 @@ function Fixture() {
   const user = { id: 'fixture-user', email: 'fixture@example.invalid' }
   const closeInline = () => { setChoosing(false); setInlineType(null) }
   const createdInline = app => { closeInline(); setCreatedApp(app) }
+  const ManualCreator = inlineType === 'code_job' ? CreateCodeApp : CreateAppModal
   const inlineContent = inline && choosing ? <>
     <AppTypeSelector presentation="inline" navigationGuardRef={navigationGuardRef} onLeave={closeInline} hidden={!!inlineType} onClose={closeInline} onSelect={setInlineType} />
     {inlineType && (inlineType === 'ai_builder'
       ? <AIAppBuilder presentation="inline" navigationGuardRef={navigationGuardRef} onLeave={closeInline} user={user} onClose={() => setInlineType(null)} onBack={() => setInlineType(null)} onCreated={createdInline} />
-      : <CreateAppModal presentation="inline" navigationGuardRef={navigationGuardRef} onLeave={closeInline} user={user} initialType={inlineType} onClose={() => setInlineType(null)} onBack={() => setInlineType(null)} onCreated={createdInline} />)}
+      : <ManualCreator presentation="inline" navigationGuardRef={navigationGuardRef} onLeave={closeInline} user={user} initialType={inlineType} onClose={() => setInlineType(null)} onBack={() => setInlineType(null)} onCreated={createdInline} />)}
   </> : null
   if (new URLSearchParams(location.search).get('scenario')?.startsWith('market-customer')) return <MemoryNavigation initialPath="/marketplace">{({ pathname }) =>
     pathname === '/marketplace' ? <MarketplacePage />

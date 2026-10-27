@@ -38,10 +38,11 @@ describe('shared workflow records', () => {
     expect(state.calls).toContainEqual(['user_id', 'u'])
   })
   it('cloning retains execution format, trigger and description without copying secrets or ownership', async () => {
-    const row = await createWorkflow({ id: 'new-owner' }, 'Copy', { kind: 'developer', description: 'Invoice', steps: [], trigger: { fields: [{ field: 'invoice' }] }, webhook_token: 'secret', user_id: 'old-owner' })
+    const row = await createWorkflow({ id: 'new-owner' }, 'Copy', { kind: 'developer', privacy: 'private_only', description: 'Invoice', steps: [], trigger: { fields: [{ field: 'invoice' }] }, webhook_token: 'secret', user_id: 'old-owner' })
     expect(row.user_id).toBe('new-owner')
     expect(row.trigger.fields[0].field).toBe('invoice')
     expect(row.description).toBe('Invoice')
+    expect(row.privacy).toBe('private_only')
     expect(state.writes[0]).not.toHaveProperty('webhook_token')
     expect((await createWorkflowRecord({ id: 'u' }, { name: 'Legacy' })).kind).toBe('business')
   })
@@ -70,7 +71,7 @@ describe('saving a workflow someone else changed', () => {
     const saved = await saveWorkflow(open)
     expect(saved.revision).toBe(4)
     expect(state.calls).toContainEqual(['revision', 3])
-    expect(state.writes[0]).toEqual({ name: 'Invoices', steps: open.steps, trigger: open.trigger })
+    expect(state.writes[0]).toEqual({ name: 'Invoices', steps: open.steps, trigger: open.trigger, privacy: 'standard' })
   })
   it('a stale save changes nothing and hands back the other version', async () => {
     state.rows = [{ ...open, name: 'Their name', revision: 5 }]

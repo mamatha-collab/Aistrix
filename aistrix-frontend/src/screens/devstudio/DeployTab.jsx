@@ -10,6 +10,7 @@ import { PROMOTE_FIELDS, TOOL_FIELDS, reviewState, sameReviewValue } from '../..
 import { downloadReport, deployReport } from '../../lib/reports'
 import { PROVIDER_STYLE, providerById, useProviderStatus } from '../../lib/providers'
 import PublishedVersions from '../../components/PublishedVersions'
+import CustomerPreview from './CustomerPreview'
 import ConfirmDialog from '../../components/ConfirmDialog'
 import SafeCard from '../../components/SafeCard'
 import { getTrigger, createTrigger, deleteTrigger, getWebhookSecret, sendTestWebhook, getAppStats, getLivePreview } from '../../lib/deploy'
@@ -845,6 +846,7 @@ function AppDeployCard({ app: initialApp, onUpdate, onFixInDesign, onMovePhase, 
       {/* 5 · What users will see */}
       <SafeCard name="What users will see"><LivePreviewCard appId={app.id} hasChanges={hasChanges} liveUrl={liveUrl}
         isPublished={app.is_published} liveVersion={app.live_version} promotedAt={app.promoted_at} /></SafeCard>
+      <SafeCard name="Customer preview"><CustomerPreview appId={app.id} user={user} /></SafeCard>
 
       {/* Share */}
       <DeployCard icon="🔗" title="Share" subtitle={live ? 'Send people straight to the app.' : 'The link works once the app is published.'}>{() => (<>

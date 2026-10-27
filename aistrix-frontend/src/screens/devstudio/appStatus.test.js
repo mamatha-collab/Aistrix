@@ -3,9 +3,14 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 vi.mock('../../supabase', () => ({ supabase: { auth: {} } }))
-const { appStatus, AppNavigator } = await import('./shared.jsx')
+const { appStatus, AppNavigator, workflowStatus } = await import('./shared.jsx')
 
 describe('one status per app in the app list', () => {
+  it('distinguishes scheduled workflows from drafts and reports enabled triggers', () => {
+    expect(workflowStatus({ flow_schedules: [{ enabled: true }] })).toMatchObject({ label: 'Scheduled', live: true })
+    expect(workflowStatus({ flow_schedules: [{ enabled: false }] }).label).toBe('Draft')
+    expect(workflowStatus({ webhook_token: 't', flow_schedules: [{ enabled: true }] }).title).toContain('webhook and schedule')
+  })
   it('names each state plainly', () => {
     expect(appStatus({ is_published: true, live_version: 3 }).label).toBe('Live v3')
     expect(appStatus({ is_published: true, live_version: 3, has_draft_changes: true })).toMatchObject({ label: 'Live v3', edits: true })
@@ -30,7 +35,7 @@ describe('one status per app in the app list', () => {
     expect(html).toContain('Live v1: users run this release. Listed on the Marketplace.')
     expect(html).toContain('Not published yet') // Ready, in the Publishing group
     expect(html.match(/aria-label="Not published yet/g)).toHaveLength(1) // Idea (still designing) has no badge
-    expect(html).toContain('Publishing')
+    expect(html).toContain('Deploy')
     expect(html).not.toContain('App pipeline')            // removed: it repeated the list and tabs
     expect(html).toContain('title="Edited · AI app"')     // the app type moved to the hover text
   })

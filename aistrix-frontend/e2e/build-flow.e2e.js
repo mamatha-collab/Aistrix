@@ -17,7 +17,7 @@ async function expectNoCrash(page) {
 
 async function signIn(page) {
   await page.addInitScript(() => localStorage.setItem('aistrix_mode', 'developer'))
-  await page.goto('/')
+  await page.goto('/login?next=/developer')
   await page.getByPlaceholder('you@example.com').fill(EMAIL)
   await page.locator('input[type="password"]').fill(PASSWORD)
   await page.getByRole('button', { name: 'Sign in', exact: true }).click()

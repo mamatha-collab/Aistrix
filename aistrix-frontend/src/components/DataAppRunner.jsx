@@ -233,7 +233,7 @@ export default function DataAppRunner({ app, user, onClose, onRun, inline = fals
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...(session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}) },
       body: JSON.stringify({
-        app_id: app.id, input: inputText,
+        app_id: app.id, input: inputText, preview_version: app.preview_version, preview_live_version: app.preview_live_version, preview_draft_hash: app.preview_draft_hash,
         system_prompt: app.system_prompt,
         ai_provider: app.ai_provider || 'claude',
         ai_model: app.ai_model || null,

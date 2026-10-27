@@ -33,9 +33,22 @@ describe('Manage API safeguards', () => {
     fetch.mockResolvedValue(new Response(JSON.stringify({ detail: 'Permission revoked' }), { status: 403 }))
     await expect(manageRequest('/apps/a/secrets/TOKEN', { method: 'DELETE' })).rejects.toThrow('Permission revoked')
   })
+  it('preserves the server repeat-action challenge without treating every conflict as permission to retry', async () => {
+    fetch.mockResolvedValue(new Response(JSON.stringify({ code: 'confirm_repeat', error: 'Check the destination first', step: 1 }), { status: 409 }))
+    const error = await manageRequest('/v1/flows/f/runs/r/continue', { method: 'POST', body: '{}' }).catch(error => error)
+    expect(error).toMatchObject({ status: 409, code: 'confirm_repeat', step: 1, message: 'Check the destination first' })
+    fetch.mockResolvedValue(new Response(JSON.stringify({ detail: 'Someone else continued this run' }), { status: 409 }))
+    const conflict = await manageRequest('/v1/flows/f/runs/r/continue', { method: 'POST', body: '{}' }).catch(error => error)
+    expect(conflict.code).toBeUndefined()
+  })
   it('accepts successful no-content deletion', async () => {
     fetch.mockResolvedValue(new Response(null, { status: 204 }))
     await expect(manageRequest('/apps/a/secrets/TOKEN', { method: 'DELETE' })).resolves.toEqual({})
+  })
+  it('supports archive uploads while retaining the authenticated session header', async () => {
+    fetch.mockResolvedValue(new Response('{}'))
+    await manageRequest('/v1/apps/a/code/source', { method:'PUT', body:new Blob(['fixture']), headers:{ 'Content-Type':'application/zip', Authorization:'Bearer untrusted' } })
+    expect(fetch.mock.calls[0][1].headers).toEqual({ 'Content-Type':'application/zip', Authorization:'Bearer fixture-token' })
   })
   it('rejects HTML or truncated responses without exposing their contents', async () => {
     fetch.mockResolvedValue(new Response('<html>unexpected gateway output</html>'))

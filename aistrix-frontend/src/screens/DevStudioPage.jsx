@@ -16,7 +16,7 @@ import ErrorBoundary from '../components/ErrorBoundary'
 import ConfirmDialog from '../components/ConfirmDialog'
 import { scopeToWorkspace } from '../lib/workspace'
 import NotificationsPanel from '../components/NotificationsPanel'
-import { ArrowLeft, ChartNoAxesColumn, ChevronDown, CircleHelp, CirclePlay, ClipboardCheck, Database, History, KeyRound, LockKeyhole, LogOut, Moon, PenLine, Plus, Search, Send, Settings, Sun, TrendingUp, X } from 'lucide-react'
+import { ArrowLeft, ChartNoAxesColumn, CircleHelp, CirclePlay, ClipboardCheck, Database, History, KeyRound, LockKeyhole, LogOut, Moon, PenLine, Plus, Search, Send, Settings, Sun, TrendingUp, X } from 'lucide-react'
 import { applyTheme } from '../utils/theme'
 import { AppEmojiWithType, AppNavigator, DEV_PHASES, EMPTY_BP, HelpPanel, MoveBackModal, WelcomeScreen, calcReadiness, getDevPhase, migrateBlueprint, normalizeDevPhase } from './devstudio/shared'
 
@@ -35,6 +35,7 @@ const SellTab = lazy(() => import('./devstudio/OperateTabs').then(m => ({ defaul
 const WorkflowsTab = lazy(() => import('./devstudio/WorkflowsTab').then(m => ({ default: m.WorkflowsTab })))
 const VersionTab = lazy(() => import('./devstudio/OperateTabs').then(m => ({ default: m.VersionTab })))
 const TestTab = lazy(() => import('./devstudio/TestTab').then(m => ({ default: m.TestTab })))
+const CodeApplicationStudio = lazy(() => import('./devstudio/CodeApplicationStudio'))
 
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
@@ -88,6 +89,8 @@ export default function DevStudioPage({
   createdApp,
   onCreatedAppConsumed,
   navigationGuardRef: sharedNavigationGuardRef,
+  homeNavigationRef,
+  onCloseCreation,
 }) {
   const isPhone = useMediaQuery('(max-width: 767px)')
   const localNavigationGuardRef = useRef(null)
@@ -144,18 +147,15 @@ export default function DevStudioPage({
   const [showHelp, setShowHelp] = useState(false)
   const [accountOpen, setAccountOpen] = useState(false)
   const accountMenuRef = useRef(null)
-  const workspaceMenuRef = useRef(null)
   useEffect(() => {
     const outside = event => {
       if (!accountMenuRef.current?.contains(event.target)) setAccountOpen(false)
-      if (workspaceMenuRef.current && !workspaceMenuRef.current.contains(event.target)) workspaceMenuRef.current.open = false
     }
     const escape = event => {
-      if (event.key !== 'Escape' || (!accountOpen && !workspaceMenuRef.current?.open)) return
+      if (event.key !== 'Escape' || !accountOpen) return
       event.preventDefault()
       event.stopPropagation()
       if (accountOpen) { setAccountOpen(false); accountMenuRef.current?.querySelector('button')?.focus() }
-      if (workspaceMenuRef.current?.open) { workspaceMenuRef.current.open = false; workspaceMenuRef.current.querySelector('summary')?.focus() }
     }
     document.addEventListener('pointerdown', outside, true)
     document.addEventListener('keydown', escape, true)
@@ -201,6 +201,21 @@ export default function DevStudioPage({
   const [workflows, setWorkflows] = useState(null)
   const [workflowsError, setWorkflowsError] = useState('')
   const [activeWorkflowId, setActiveWorkflowId] = useState(null)
+  useEffect(() => {
+    if (!homeNavigationRef) return
+    const home = () => guarded(() => {
+      onCloseCreation?.()
+      setSettingsOpen(false)
+      setAccountOpen(false)
+      setShowHelp(false)
+      setTabState('design')
+      setActiveAppIdState(null)
+      setActiveWorkflowId(null)
+      onSearch?.('')
+    })
+    homeNavigationRef.current = home
+    return () => { if (homeNavigationRef.current === home) homeNavigationRef.current = null }
+  })
   const [createWorkflowSignal, setCreateWorkflowSignal] = useState(0)
   useEffect(() => {
     let live = true
@@ -509,9 +524,10 @@ export default function DevStudioPage({
                   <SafeCard name="Notifications" quiet><NotificationsPanel user={user} onNavChange={onNavChange} /></SafeCard>
                   <button
                     onClick={() => openSettings('keys')}
+                    aria-current={!creationContent && settingsOpen === 'keys' ? 'page' : undefined}
                     aria-label={noKeys ? 'Keys — no AI key added yet' : undefined}
                     title={noKeys ? 'No AI key added — add one to build apps' : undefined}
-                    className="relative inline-flex items-center gap-2 h-9 px-3 rounded-lg text-sm text-slate-200 hover:text-white hover:bg-white/5 transition-colors whitespace-nowrap"
+                    className={`relative inline-flex items-center gap-2 h-9 px-3 rounded-lg text-sm transition-colors whitespace-nowrap ${!creationContent && settingsOpen === 'keys' ? 'bg-[#6C5CE7]/25 text-[#A29BFE]' : 'text-slate-200 hover:text-white hover:bg-white/5'}`}
                   >
                     <KeyRound size={16} strokeWidth={1.75} aria-hidden="true" /> Keys
                     {noKeys && <span className="absolute top-0.5 right-0.5 w-4 h-4 rounded-full bg-amber-500 text-[#0F1225] text-[10px] font-bold flex items-center justify-center" aria-hidden="true">!</span>}
@@ -573,7 +589,7 @@ export default function DevStudioPage({
             </DeveloperRowSection>
         <DeveloperRowSection side="content">
             <div className="pointer-events-auto bg-[#1A2038] grid grid-cols-1 md:overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-              <div className="hidden md:flex min-w-0 pl-0 pr-4 py-3 items-center gap-3 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              <div className="hidden md:flex min-w-0 px-4 py-3 items-center gap-3 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                 {/* Phones: one group fills the width and the next one peeks in;
                     swipe to the next group (snaps). md+: all three side by side. */}
                 <div ref={ribbonRef}
@@ -584,7 +600,7 @@ export default function DevStudioPage({
                       <p className="px-0.5 pb-1.5 text-[10px] text-slate-400 uppercase font-semibold tracking-wider leading-none truncate">{group.label}</p>
                       <div className="developer-lifecycle-box flex min-w-0 h-[48px] rounded-lg border border-white/10 bg-[#111827] overflow-hidden divide-x divide-white/10">
                         {LIFECYCLE_TABS.filter(t => t.group === group.id).map(t => {
-                          const active = tab === t.id
+                          const active = !pageContent && tab === t.id
                           return (
                             <button key={t.id} onClick={() => openTab(t.id)}
                               title={`${t.label}: ${t.desc}`}
@@ -612,25 +628,23 @@ export default function DevStudioPage({
             </div>
         </DeveloperRowSection>
         <DeveloperRowSection side="stats">
-              <details ref={workspaceMenuRef} className="developer-workspace-summary hidden xl:block relative px-3 pt-[29px]">
-                <summary className="cursor-pointer list-none inline-flex items-center justify-between gap-2 w-full h-10 px-3 rounded-lg border border-white/10 bg-[#111827] text-xs font-medium text-slate-200 hover:bg-white/5">
-                  Workspace <ChevronDown size={14} strokeWidth={1.75} aria-hidden="true" className="text-slate-400" />
-                </summary>
-                <div className="absolute right-3 top-full z-40 w-72 rounded-2xl bg-[#111827] border border-white/8 p-2 grid grid-cols-3 gap-2 shadow-lg">
-                  <div className="rounded-xl bg-[#0E1424] border border-white/5 px-2 py-2">
+              <section aria-label="Workspace statistics" className="developer-workspace-summary hidden xl:block px-3 py-3">
+                <h2 className="pb-1.5 text-[10px] text-slate-400 uppercase font-semibold tracking-wider leading-none">Workspace</h2>
+                <div className="grid grid-cols-3 gap-1.5 h-[48px]">
+                  <div className="min-w-0 rounded-lg bg-[#111827] border border-white/10 px-2 py-1.5">
                     <p className="text-[9px] text-slate-500 uppercase font-bold tracking-wider leading-none">Apps</p>
-                    <p className="text-white text-lg font-bold mt-1 leading-none">{apps.length}</p>
+                    <p className="text-white text-sm font-bold mt-1 leading-none truncate" title={String(apps.length)}>{apps.length}</p>
                   </div>
-                  <div className="rounded-xl bg-[#0E1424] border border-white/5 px-2 py-2">
+                  <div className="min-w-0 rounded-lg bg-[#111827] border border-white/10 px-2 py-1.5">
                     <p className="text-[9px] text-slate-500 uppercase font-bold tracking-wider leading-none">Runs</p>
-                    <p className="text-white text-lg font-bold mt-1 leading-none">{totalStats.runs}</p>
+                    <p className="text-white text-sm font-bold mt-1 leading-none truncate" title={String(totalStats.runs)}>{totalStats.runs}</p>
                   </div>
-                  <div className="rounded-xl bg-[#0E1424] border border-white/5 px-2 py-2">
+                  <div className="min-w-0 rounded-lg bg-[#111827] border border-white/10 px-2 py-1.5">
                     <p className="text-[9px] text-slate-500 uppercase font-bold tracking-wider leading-none">Useful</p>
-                    <p className="text-white text-lg font-bold mt-1 leading-none">{totalStats.satisfaction ?? '—'}{totalStats.satisfaction != null ? '%' : ''}</p>
+                    <p className="text-white text-sm font-bold mt-1 leading-none">{totalStats.satisfaction ?? '—'}{totalStats.satisfaction != null ? '%' : ''}</p>
                   </div>
                 </div>
-              </details>
+              </section>
 
         </DeveloperRowSection>
       </div>
@@ -639,13 +653,13 @@ export default function DevStudioPage({
       {pageContent && <div className="flex-1 min-h-0 overflow-y-auto p-4 lg:p-6" data-testid={creationContent ? 'developer-creation' : 'developer-settings'}>{pageContent}</div>}
       {/* ── Body: content + right panes ── */}
       {/* First-time welcome screen (scrolls on its own; the top bar above doesn't) */}
-      {!pageContent && !loading && !loadError && apps.length === 0 && (
+      {!pageContent && !loading && !loadError && apps.length === 0 && tab !== 'workflows' && (
         <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 pt-4 sm:pt-6">
           <WelcomeScreen onCreateApp={onOpenCreate} />
         </div>
       )}
 
-      {(loading || apps.length > 0 || pageContent) && (
+      {(loading || apps.length > 0 || pageContent || tab === 'workflows') && (
         <div className={pageContent ? 'contents' : 'flex flex-1 min-h-0 overflow-hidden'}>
 
           {/* Main content */}
@@ -659,9 +673,11 @@ export default function DevStudioPage({
                 </button>
                 <ErrorBoundary compact title={`${DEV_PHASES[tab]?.label || 'Dev Studio'} section could not load`} resetKey={`${tab}:${phaseScopedActiveAppId}`}>
                   <Suspense fallback={TAB_LOADING}>
-                  {tab === 'design' && <DesignTab   navigationGuardRef={navigationGuardRef} apps={activePhaseApps} allApps={apps} loading={loading} onOpenCreate={onOpenCreate} user={user} onAppUpdated={updateAppInState} onGoToTest={appId => { moveAppPhase(appId, 'test'); setDeployFixReason('') }} selectedAppId={phaseScopedActiveAppId} onSelectApp={setActiveAppId} deployFixReason={deployFixReason} phaseByAppId={phaseByAppId} />}
-                  {tab === 'test'   && <TestTab     apps={activePhaseApps} allApps={apps} user={user} selectedAppId={phaseScopedActiveAppId} phaseByAppId={phaseByAppId} onMovePhase={moveAppPhase} onOpenKeys={openKeys} />}
-                  {tab === 'deploy' && <DeployTab   apps={activePhaseApps} user={user} onAppUpdated={updateAppInState} onFixInDesign={returnToDesignForPublishFix} onMonitor={appId => navigateOperations('monitor', appId)} selectedAppId={phaseScopedActiveAppId} onSelectApp={setActiveAppId} onMovePhase={moveAppPhase} onOpenKeys={openKeys} />}
+                  {activeApp?.app_type === 'code_job' ? <CodeApplicationStudio key={activeApp.id} app={activeApp} user={user} onDeleted={id => { setApps(rows => rows.filter(row => row.id !== id)); setActiveAppIdState(null) }} navigationGuardRef={navigationGuardRef} /> : <>
+                    {tab === 'design' && <DesignTab   navigationGuardRef={navigationGuardRef} apps={activePhaseApps} allApps={apps} loading={loading} onOpenCreate={onOpenCreate} user={user} onAppUpdated={updateAppInState} onGoToTest={appId => { moveAppPhase(appId, 'test'); setDeployFixReason('') }} selectedAppId={phaseScopedActiveAppId} onSelectApp={setActiveAppId} deployFixReason={deployFixReason} phaseByAppId={phaseByAppId} onDeleted={id => { setApps(rows => rows.filter(row => row.id !== id)); setActiveAppIdState(null) }} />}
+                    {tab === 'test'   && <TestTab     apps={activePhaseApps} allApps={apps} user={user} selectedAppId={phaseScopedActiveAppId} phaseByAppId={phaseByAppId} onMovePhase={moveAppPhase} onOpenKeys={openKeys} />}
+                    {tab === 'deploy' && <DeployTab   apps={activePhaseApps} user={user} onAppUpdated={updateAppInState} onFixInDesign={returnToDesignForPublishFix} onMonitor={appId => navigateOperations('monitor', appId)} selectedAppId={phaseScopedActiveAppId} onSelectApp={setActiveAppId} onMovePhase={moveAppPhase} onOpenKeys={openKeys} />}
+                  </>}
                   </Suspense>
                 </ErrorBoundary>
               </>) : (
@@ -769,7 +785,7 @@ export default function DevStudioPage({
             <ErrorBoundary compact title={`${LIFECYCLE_TABS.find(t => t.id === tab)?.label || "This"} section couldn't load`} resetKey={`${tab}:${activeAppId}`}>
             <Suspense fallback={TAB_LOADING}>
             {tab === 'workflows' && <WorkflowsTab apps={apps} user={user} workflows={workflows} setWorkflows={setWorkflows}
-              loadError={workflowsError} activeId={activeWorkflowId} onActiveChange={setActiveWorkflowId} createSignal={createWorkflowSignal}
+              loadError={workflowsError} activeId={activeWorkflowId} onActiveChange={setActiveWorkflowId} createSignal={createWorkflowSignal} onAppsChanged={load}
               navigationGuardRef={navigationGuardRef} />}
             {tab === 'sell'     && <SellTab     apps={apps} user={user} onAppUpdated={updateAppInState} />}
             {tab === 'monitor'  && <MonitorPanel apps={apps} selectedAppId={monitorAppId} onSelectApp={id => { setActiveAppId(id); setMonitorAppId(id) }} onNavigate={navigateOperations} />}

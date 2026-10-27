@@ -13,7 +13,7 @@ export const normalizeWorkflow = row => ({ ...row, trigger: row.trigger || DEFAU
 // Both modes operate on the same records. kind describes a saved execution
 // format, not ownership by a UI mode; legacy memory flows remain compatible.
 export async function listWorkflows(user, { kind } = {}) {
-  let query = scopeToWorkspace(supabase.from('flows').select(COLUMNS), user)
+  let query = scopeToWorkspace(supabase.from('flows').select('*, flow_schedules(enabled)'), user)
   if (kind) query = query.eq('kind', kind)
   const { data, error } = await query.order('created_at', { ascending: false })
   if (error) throw new Error(friendly(error))
@@ -44,6 +44,7 @@ export async function createWorkflowRecord(user, fields) {
 export const createWorkflow = (user, name, from = null) => createWorkflowRecord(user, {
   name, kind: from?.kind || 'developer', emoji: from?.emoji || '🔀', description: from?.description || '',
   steps: from?.steps || [], trigger: from?.trigger || DEFAULT_TRIGGER,
+  privacy: from?.privacy || 'standard',
 })
 
 export async function updateWorkflowRecord(id, fields) {
@@ -66,7 +67,7 @@ export class WorkflowConflict extends Error {
 // Saves what the editor edits. Rows that carry a revision (database update
 // 20261025040000) only save if nobody changed them since they were opened.
 export async function saveWorkflow(flow) {
-  let query = supabase.from('flows').update({ name: flow.name.trim(), steps: flow.steps, trigger: flow.trigger }).eq('id', flow.id)
+  let query = supabase.from('flows').update({ name: flow.name.trim(), steps: flow.steps, trigger: flow.trigger, privacy: flow.privacy || 'standard' }).eq('id', flow.id)
   if (typeof flow.revision === 'number') query = query.eq('revision', flow.revision)
   const { data, error } = await query.select(COLUMNS)
   check(error)
@@ -108,7 +109,15 @@ export const startRun = (flowId, input, { live = false } = {}) =>
 
 export const getRun = (flowId, runId) => manageRequest(`/v1/flows/${flowId}/runs/${runId}`)
 
-export const listRuns = flowId => manageRequest(`/v1/flows/${flowId}/runs?limit=30`).then(r => r.runs || [])
+export const listRuns = (flowId, { needsReview = false } = {}) => manageRequest(`/v1/flows/${flowId}/runs?limit=30${needsReview ? '&needs_review=true' : ''}`).then(r => r.runs || [])
+
+export const validateWorkflow = flowId => manageRequest(`/v1/flows/${flowId}/validate`, { method: 'POST' })
+export const continueRun = (flowId, runId, confirmRepeat = false) => manageRequest(`/v1/flows/${flowId}/runs/${runId}/continue`, {
+  method: 'POST', body: JSON.stringify({ confirm_repeat: confirmRepeat }),
+})
+export const reviewRun = (flowId, runId, note) => manageRequest(`/v1/flows/${flowId}/runs/${runId}/review`, {
+  method: 'POST', body: JSON.stringify({ note }),
+})
 
 export const cancelRun = (flowId, runId) => manageRequest(`/v1/flows/${flowId}/runs/${runId}/cancel`, { method: 'POST' })
 

@@ -648,4 +648,12 @@ SB.db["flow_runs"].append({"id": legacy, "flow_id": stuck["id"], "user_id": OWNE
 ok("runs from before definitions were kept can't be continued",
    c.post(f"/v1/flows/{stuck['id']}/runs/{legacy}/continue", json={"wait": True}, headers=H).status_code == 409)
 
+public = main._public_flow_run({"id": "r", "status": "failed", "steps": [], "definition": {"steps": [
+    {"id": "s", "app_name": "Original CRM step", "step_type": "api_call", "api_headers": {"Authorization": "secret"}, "api_body": "private payload"}]}})
+ok("run presentation preserves original step labels without execution secrets",
+   public["display_steps"] == [{"id": "s", "app_name": "Original CRM step", "step_type": "api_call"}]
+   and "secret" not in json.dumps(public) and "private payload" not in json.dumps(public) and public["can_continue"])
+ok("old or rejected runs aren't offered continuation",
+   not main._public_flow_run({"status": "failed", "steps": []})["can_continue"]
+   and not main._public_flow_run({"status": "failed", "definition": {"steps": []}, "steps": [{"status": "rejected"}]})["can_continue"])
 finish()

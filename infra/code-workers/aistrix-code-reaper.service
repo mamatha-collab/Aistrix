@@ -1,0 +1,11 @@
+[Unit]
+Description=Remove expired Aistrix job containers independently of workers
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/aistrix/aistrix-backend
+EnvironmentFile=%h/.config/aistrix/code-worker.env
+ExecStart=/opt/aistrix/venv/bin/python code_worker.py --kind run --reap
+TimeoutStartSec=60
+NoNewPrivileges=true
+UMask=0077

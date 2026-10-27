@@ -1,0 +1,11 @@
+[Unit]
+Description=Enforce Aistrix job deadlines after worker failure
+
+[Timer]
+OnStartupSec=10
+OnUnitActiveSec=10
+AccuracySec=1
+Unit=aistrix-code-reaper.service
+
+[Install]
+WantedBy=timers.target

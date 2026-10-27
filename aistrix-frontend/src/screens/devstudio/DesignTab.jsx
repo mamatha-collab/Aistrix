@@ -8,11 +8,15 @@ import { supabase } from '../../supabase'
 import { useToast } from '../../hooks/useToast'
 import ToolsEditor from '../../components/ToolsEditor'
 import BillingModeHint from '../../components/BillingModeHint'
+import BuildChecklist from './BuildChecklist'
+import ExecutionContract from './ExecutionContract'
+import CustomerPreview from './CustomerPreview'
+import AppLifecycleActions from './AppLifecycleActions'
 import { getRelease } from '../../lib/release'
 import { PROVIDER_STYLE, modelOptions, providerById, useProviders } from '../../lib/providers'
 import ConfirmDialog from '../../components/ConfirmDialog'
 import SafeCard from '../../components/SafeCard'
-import { ALL_FIELD_TYPES, AppEmojiWithType, getAppTypeLabel, COMMON_SECRET_TEMPLATES, DEV_PHASES, EMPTY_BP, MODEL_HINTS, PromptStudio, RUNTIME_TYPES, appOutputTypeFor, calcReadiness, estimateMonthlyCost, getDevPhase, getInputSchemaFields, getOutputSchemaFields, inputsToSchema, invalidInputFields, isMissingBlueprintTable, migrateBlueprint, mismatchLabel, moduleIds, normalizeDeployment, outputContractMismatch, outputRulesSatisfied, readinessChecks, validInputFields } from './shared'
+import { ALL_FIELD_TYPES, AppEmojiWithType, COMMON_SECRET_TEMPLATES, DEV_PHASES, EMPTY_BP, MODEL_HINTS, PromptStudio, RUNTIME_TYPES, appOutputTypeFor, calcReadiness, estimateMonthlyCost, getDevPhase, getInputSchemaFields, getOutputSchemaFields, inputsToSchema, invalidInputFields, isMissingBlueprintTable, migrateBlueprint, moduleIds, normalizeDeployment, outputContractMismatch, readinessChecks } from './shared'
 
 
 import { BRAND } from '../../lib/brand'
@@ -476,145 +480,6 @@ function buildAistrixManifest(app, bp) {
 // serverProblems: the server's publish check on the last saved version
 // (null while loading). Shown under the bar so Design never says "ready"
 // when publishing would be blocked.
-function ReadinessBar({ app, bp, serverProblems }) {
-  const checks = readinessChecks(app, bp)
-  const score  = calcReadiness(app, bp)
-  const color = score >= 100 ? '#00B894' : score >= 60 ? '#FDCB6E' : '#E84393'
-  const deployBlocked = Array.isArray(serverProblems) && serverProblems.length > 0
-  const label = score >= 100 ? (deployBlocked ? 'Ready for Test' : 'Ready for Test and Deploy') : score >= 60 ? 'Almost there' : 'Incomplete'
-  return (
-    <div className="space-y-1.5">
-      <div className="flex items-center justify-between">
-        <span className="text-xs font-semibold text-white">Design Readiness</span>
-        <span className="text-xs font-bold" style={{ color }}>{score}/100 — {label}</span>
-      </div>
-      <div className="h-2 bg-[#0E1424] rounded-full overflow-hidden">
-        <div className="h-full rounded-full transition-all duration-500" style={{ width: `${score}%`, background: color }} />
-      </div>
-      <div className="flex flex-wrap gap-x-4 gap-y-1 pt-1">
-        {checks.map(({ key, label, ok }) => (
-          <div key={key} className="flex items-center gap-1">
-            <span className={`text-xs ${ok ? 'text-emerald-400' : 'text-red-400'}`}>{ok ? '✓' : '○'}</span>
-            <span className={`text-xs ${ok ? 'text-slate-400' : 'text-slate-500'}`}>{label}</span>
-          </div>
-        ))}
-      </div>
-      {serverProblems && (
-        <p className={`text-[11px] pt-1 ${serverProblems.length ? 'text-amber-300/90' : 'text-emerald-400/90'}`}>
-          {serverProblems.length
-            ? `Deploy will still block this saved version: ${serverProblems.length} to fix - ${serverProblems.join(' · ')}`
-            : score >= 100
-              ? 'Deploy uses the same saved-version checks: all design checks pass'
-              : "Deploy's checks found nothing blocking in the saved version, but the design above is still incomplete."}
-        </p>
-      )}
-    </div>
-  )
-}
-
-function BuildFlowGuide({ app, bp, isDirty, serverProblems }) {
-  const score = calcReadiness(app, bp)
-  const steps = [
-    { label: 'Choose type', desc: getAppTypeLabel(app) || 'AI app', ok: true },
-    { label: 'Configure blueprint', desc: `${validInputFields(bp).length} input fields · ${getOutputSchemaFields(bp).length} output fields`, ok: score >= 60 },
-    { label: 'Save design', desc: isDirty ? 'Unsaved changes' : 'Saved version is current', ok: !isDirty },
-    { label: 'Test', desc: 'Generate validation tests next', ok: score >= 100 && !isDirty },
-  ]
-  return (
-    <div className="bg-[#171B33] border border-white/5 rounded-2xl p-4 space-y-3">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-xs font-bold text-white uppercase tracking-wider">Build flow</p>
-          <p className="text-[11px] text-slate-400 mt-1">One path for every app: choose type, configure the blueprint, save it, then test the same draft.</p>
-        </div>
-        <span className={`text-[10px] font-bold px-2.5 py-1 rounded-full border ${serverProblems?.length || score < 100 ? 'text-amber-300 bg-amber-500/10 border-amber-500/20' : 'text-emerald-300 bg-emerald-500/10 border-emerald-500/20'}`}>
-          {serverProblems?.length ? 'Deploy checks pending' : score < 100 ? 'Design incomplete' : 'Deploy-aligned'}
-        </span>
-      </div>
-      <div className="grid md:grid-cols-4 gap-2">
-        {steps.map((s, i) => (
-          <div key={s.label} className={`rounded-xl border px-3 py-2 ${s.ok ? 'bg-emerald-500/5 border-emerald-500/15' : 'bg-[#0E1424] border-white/5'}`}>
-            <div className="flex items-center gap-2">
-              <span className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${s.ok ? 'bg-emerald-500/15 text-emerald-300' : 'bg-white/6 text-slate-500'}`}>{i + 1}</span>
-              <p className="text-xs font-semibold text-slate-200">{s.label}</p>
-            </div>
-            <p className="text-[10px] text-slate-500 mt-1 leading-relaxed">{s.desc}</p>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-// Design → Test handoff card
-function DesignTestHandoff({ app, bp, isDirty, saving, onSave, onGoToTest, serverProblems }) {
-  const oc = bp?.output_contract || {}
-  const validInputs = validInputFields(bp)
-  const invalidInputs = invalidInputFields(bp)
-  const hasFormatRules = outputRulesSatisfied(app, oc)
-  const mismatch = outputContractMismatch(app, bp)
-
-  const items = [
-    {
-      ok: validInputs.length > 0 && invalidInputs.length === 0,
-      label: invalidInputs.length > 0
-        ? `${invalidInputs.length} input field${invalidInputs.length !== 1 ? 's' : ''} need key + label`
-        : `${validInputs.length} valid input field${validInputs.length !== 1 ? 's' : ''} defined`,
-    },
-    {
-      ok: hasFormatRules && !mismatch,
-      label: mismatch
-        ? mismatchLabel(mismatch)
-        : oc.format ? `Output contract: ${oc.format}${hasFormatRules ? ' ✓' : ' — rules missing'}` : 'No output format chosen',
-    },
-    { ok: !!app?.system_prompt?.trim(),label: app?.system_prompt?.trim() ? 'System prompt written' : 'System prompt missing' },
-    { ok: bp?.ai_behavior?.fallback_behavior?.trim(), label: bp?.ai_behavior?.fallback_behavior?.trim() ? 'Fallback behavior set' : 'No fallback behavior defined' },
-  ]
-  const ready = items.filter(i => i.ok).length
-  const total = items.length
-  const allGood = ready === total
-
-  return (
-    <div className={`border rounded-2xl p-5 space-y-3 ${allGood ? 'bg-emerald-500/5 border-emerald-500/20' : 'bg-[#171B33] border-white/5'}`}>
-      <div className="flex items-center justify-between">
-        <p className="text-xs font-bold text-white uppercase tracking-wider">Design → Test readiness</p>
-        <span className={`text-xs font-bold ${allGood ? 'text-emerald-400' : 'text-slate-500'}`}>{ready}/{total} ready</span>
-      </div>
-      <div className="space-y-1.5">
-        {items.map((item, i) => (
-          <div key={i} className="flex items-start gap-2">
-            <span className={`text-sm shrink-0 mt-px ${item.ok ? 'text-emerald-400' : 'text-red-400'}`}>{item.ok ? '✓' : '○'}</span>
-            <span className={`text-xs min-w-0 break-words ${item.ok ? 'text-slate-300' : 'text-slate-500'}`}>{item.label}</span>
-          </div>
-        ))}
-      </div>
-      {allGood && serverProblems?.length > 0 && (
-        <p className="text-[11px] text-amber-300/90 leading-relaxed">
-          You can test now. Before publishing, also fix: {serverProblems.join(' · ')}
-        </p>
-      )}
-      {allGood && (
-        <div className="flex items-center justify-between gap-3 pt-1">
-          <p className="text-[11px] text-emerald-400">
-            {isDirty ? 'All checks passed — save before generating tests.' : 'All checks passed — generate blueprint tests next.'}
-          </p>
-          {isDirty ? (
-            <button onClick={onSave} disabled={saving}
-              className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/25 transition-colors disabled:opacity-40">
-              {saving ? 'Saving…' : 'Save before testing'}
-            </button>
-          ) : (
-            <button onClick={onGoToTest}
-              className="text-xs font-semibold px-3 py-1.5 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/25 transition-colors">
-              Generate tests →
-            </button>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
 function ProductionModulePlanner({ app, bp, setBp }) {
   const selectedIds = moduleIds(bp.production_modules || [])
   const selected = new Set(selectedIds)
@@ -1186,7 +1051,7 @@ create policy "Developers can delete own app blueprints"
     )
   );`
 
-function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTest, navigationGuardRef }) {
+function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTest, navigationGuardRef, onDeleted }) {
   const toast   = useToast()
   const [bp, setBp]           = useState(null)   // null = loading
   const [savedBp, setSavedBp] = useState(null)
@@ -1580,15 +1445,10 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
       </div>
 
       {/* Readiness */}
-      <SafeCard name="Build flow">{() => (
-        <BuildFlowGuide app={app} bp={bp} isDirty={isDirty} serverProblems={serverProblems} />
-      )}</SafeCard>
-
-      <SafeCard name="Readiness">{() => (
-      <div className="bg-[#171B33] border border-white/5 rounded-2xl p-5">
-        <ReadinessBar app={app} bp={bp} serverProblems={serverProblems} />
-      </div>
-      )}</SafeCard>
+      <SafeCard name="Build checklist"><BuildChecklist app={app} bp={bp} isDirty={isDirty} saving={saving} onSave={() => save(bp)} onGoToTest={() => onGoToTest?.(app.id)} serverProblems={serverProblems} /></SafeCard>
+      <SafeCard name="Execution permissions"><ExecutionContract app={app} bp={bp} onChange={setBp} /></SafeCard>
+      <SafeCard name="Customer preview"><CustomerPreview appId={app.id} user={user} dirty={isDirty} /></SafeCard>
+      <AppLifecycleActions app={app} user={user} onDeleted={onDeleted} disabled={isDirty || saving} />
 
       {(mismatch || invalidInputs.length > 0) && (
         <div className="bg-amber-500/8 border border-amber-500/20 rounded-2xl p-4 space-y-2">
@@ -2008,17 +1868,6 @@ function BlueprintEditor({ app, user, onAppUpdated, onOpenPromptStudio, onGoToTe
       )}</SafeCard>
 
       {/* Design → Test handoff */}
-      <SafeCard name="Test handoff">
-      <DesignTestHandoff
-        app={app}
-        bp={bp}
-        isDirty={isDirty}
-        saving={saving}
-        onSave={() => save(bp)}
-        onGoToTest={() => onGoToTest?.(app.id)}
-        serverProblems={serverProblems}
-      />
-      </SafeCard>
 
       {/* App planning — collapsed by default */}
       <SafeCard name="App planning">{() => (
@@ -2190,7 +2039,7 @@ function SchemaExportPanel({ inputFields, outputFields }) {
 
 // ─── Tab: Design ──────────────────────────────────────────────────────────────
 
-export function DesignTab({ apps, allApps = apps, loading, onOpenCreate, user, onAppUpdated, onGoToTest, selectedAppId, onSelectApp, deployFixReason, phaseByAppId = {}, navigationGuardRef }) {
+export function DesignTab({ apps, allApps = apps, loading, onOpenCreate, user, onAppUpdated, onGoToTest, selectedAppId, onSelectApp, deployFixReason, phaseByAppId = {}, navigationGuardRef, onDeleted }) {
   const blueprintGuardRef = useRef(null)
   const promptGuardRef = useRef(null)
 
@@ -2288,6 +2137,7 @@ export function DesignTab({ apps, allApps = apps, loading, onOpenCreate, user, o
               field?.focus({ preventScroll: true })
             }}
             onGoToTest={onGoToTest}
+            onDeleted={onDeleted}
           />
         ) : (
           <div className="bg-[#171B33] border border-white/5 rounded-2xl p-10 text-center">

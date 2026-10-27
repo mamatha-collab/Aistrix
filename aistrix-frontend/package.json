@@ -22,6 +22,7 @@
     "test": "vitest run",
     "preview": "next start",
     "test:e2e": "playwright test",
+    "verify:hosted": "node scripts/verify-hosted.mjs",
     "test:e2e:local": "playwright test --config playwright.local.config.js"
   },
   "dependencies": {

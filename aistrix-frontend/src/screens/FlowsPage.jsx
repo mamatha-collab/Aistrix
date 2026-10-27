@@ -203,7 +203,7 @@ export default function FlowsPage({ user, onShowHistory, search = '', openFlowId
       )}
       {mode && isWiredWorkflow(editingFlow) && (
         <div role="dialog" aria-modal="true" aria-label="Edit workflow" className="fixed inset-0 z-50 overflow-auto bg-[#0E1424] p-6">
-          <button onClick={() => { if (!editorGuard.current || editorGuard.current()) { setMode(null); setEditingFlow(null) } }} className="mb-4 text-sm text-slate-300">Close workflow editor</button>
+          <button onClick={() => { const close = () => { setMode(null); setEditingFlow(null) }; if (!editorGuard.current || editorGuard.current(close)) close() }} className="mb-4 text-sm text-slate-300">Close workflow editor</button>
           <WorkflowsTab apps={apps} user={user} navigationGuardRef={editorGuard} workflows={flows.filter(isWiredWorkflow)}
             setWorkflows={update => setFlows(current => {
               const wired = typeof update === 'function' ? update(current.filter(isWiredWorkflow)) : update

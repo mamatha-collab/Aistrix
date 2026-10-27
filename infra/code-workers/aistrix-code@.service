@@ -1,0 +1,20 @@
+# User unit. Install on separate build and run hosts, never on the API host.
+[Unit]
+Description=Aistrix code %i worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/aistrix/aistrix-backend
+EnvironmentFile=%h/.config/aistrix/code-worker.env
+ExecStart=/opt/aistrix/venv/bin/python -u code_worker.py --kind %i
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=20
+KillMode=control-group
+NoNewPrivileges=true
+UMask=0077
+
+[Install]
+WantedBy=default.target

@@ -92,7 +92,12 @@ export function MarketplacePage({ user, initialListings = null }) {
       </DeveloperRowPortal>
       <div className="market-catalog-scroll flex-1 overflow-y-auto">
       <div className="w-full max-w-[1600px] mx-auto px-4 md:px-6 py-5 space-y-4">
-        <div className="flex items-center gap-3"><h1 className="text-xl font-semibold tracking-tight">Market</h1>{listings!==null&&!loadError&&<p className="text-xs text-slate-400">{matching.length} {matching.length===1?'app':'apps'} available</p>}</div>
+        <div className="market-catalog-heading">
+          <div><h1 className="text-xl font-semibold tracking-tight">Market</h1>
+            <p className="market-catalog-description">Discover apps for your work. Save them to your workspace and run them when you need them.</p>
+          </div>
+          {listings!==null&&!loadError&&<p className="market-catalog-count">{matching.length} {matching.length===1?'app':'apps'} available</p>}
+        </div>
         {loadError && <div role="alert" className="text-sm text-red-400">{loadError} <button onClick={load} className="underline">Retry Marketplace</button></div>}
 
         {saveError && <p role="alert" className="text-center text-sm text-red-400">{saveError}</p>}

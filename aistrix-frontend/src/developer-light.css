@@ -3,7 +3,6 @@
 .developer-app-navigator .group\/app > button { font-size: 12px; }
 .developer-app-navigator .group\/app > button > .truncate { padding-right: 0; font-size: 12px; }
 .developer-app-navigator .group\/app:hover > button > .truncate { padding-right: 2.5rem; }
-.developer-workspace-summary[open] > div { margin-top: -12px; }
 .developer-app-navigator { display: flex; flex-direction: column; }
 .developer-app-navigator > details { order: 2; }
 .developer-prompt-input { min-height: clamp(240px, 32vh, 380px); }

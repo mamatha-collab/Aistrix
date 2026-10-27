@@ -21,7 +21,7 @@ export function useDeveloperSidebar() {
 // The desktop frame shared by Developer and Business: top row (brand,
 // search, actions), second row (mode switch, section ribbon, workspace) and
 // the left pane. Each mode fills the slots with its own content.
-export default function DeveloperShell({ active, badge = 'Developer', children, ...props }) {
+export default function DeveloperShell({ active, badge = 'Developer', onHome, children, ...props }) {
   const desktop = useMediaQuery('(min-width: 768px)')
   const [left, setLeft] = useState(null)
   const [content, setContent] = useState(null)
@@ -43,14 +43,14 @@ export default function DeveloperShell({ active, badge = 'Developer', children, 
     <div {...props} className={`${props.className || ''}${active ? ' developer-workspace' : ''}`} style={{ ...props.style, position: 'relative', paddingTop: shared ? 72 + navHeight : undefined }}>
       {shared && <>
         <header className="absolute inset-x-0 top-0 z-40 h-[72px] flex items-center gap-4 px-4 bg-[#111827] border-b border-white/5" aria-label={`${badge} header`} data-frame-header>
-          <div className="flex items-center gap-1 shrink-0 text-white">
+          <button type="button" aria-label={`Aistrix ${badge} home`} onClick={onHome} className="flex items-center gap-1 shrink-0 text-white hover:opacity-80 transition-opacity">
             <img src="/aistrix-logo.svg" alt="" className="w-7 h-7" />
             <span className="font-bold text-lg"><AistrixWordmark /></span>
             <span className="ml-1 px-1.5 py-0.5 rounded-full bg-[#00D4AA]/10 border border-[#00D4AA]/20 text-[#00D4AA] text-[8px] font-bold uppercase">{badge}</span>
-          </div>
+          </button>
           <div ref={setHeader} className="flex-1 min-w-0 flex justify-end" />
         </header>
-        <div data-frame-nav style={{ height: navHeight }} className={`absolute inset-x-0 top-[72px] z-30 grid ${collapsed ? `grid-cols-[56px_minmax(0,1fr)] ${business ? '' : 'xl:grid-cols-[56px_minmax(0,1fr)_150px]'}` : `grid-cols-[224px_minmax(0,1fr)] ${business ? '' : 'xl:grid-cols-[224px_minmax(0,1fr)_150px]'}`} bg-[#1A2038] border-b border-white/5`} aria-label={`${badge} navigation`}>
+        <div data-frame-nav style={{ height: navHeight }} className={`absolute inset-x-0 top-[72px] z-30 grid ${collapsed ? `grid-cols-[56px_minmax(0,1fr)] ${business ? '' : 'xl:grid-cols-[56px_minmax(0,1fr)_210px]'}` : `grid-cols-[224px_minmax(0,1fr)] ${business ? '' : 'xl:grid-cols-[224px_minmax(0,1fr)_210px]'}`} bg-[#1A2038] border-b border-white/5`} aria-label={`${badge} navigation`}>
           <div ref={setLeft} data-section="mode" className={`min-w-0 flex items-center ${collapsed ? 'px-1.5' : 'px-3'} border-r border-white/5`} />
           <div ref={setContent} data-section="lifecycle" className="min-w-0 overflow-hidden" />
           {!business && <div ref={setStats} data-section="stats" className="hidden xl:block min-w-0 border-l border-white/5" />}

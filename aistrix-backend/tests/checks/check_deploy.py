@@ -48,6 +48,7 @@ class Q:
     def delete(self): self.op = "delete"; return self
     def eq(self, k, v): self.filters.append(lambda r, k=k, v=v: r.get(k) == v); return self
     def neq(self, k, v): self.filters.append(lambda r, k=k, v=v: r.get(k) != v); return self
+    def contains(self, k, v): self.filters.append(lambda r, k=k, v=v: all(any(all(item.get(a) == b for a, b in wanted.items()) for item in r.get(k, [])) for wanted in v)); return self
     def gte(self, k, v): return self
     @property
     def not_(self): return self
@@ -58,6 +59,10 @@ class Q:
 
     def execute(self):
         if self.name == "apps":
+            if self.op == "delete":
+                saved = dict(APP)
+                if all(f(APP) for f in self.filters): APP.clear(); return NS(data=[saved])
+                return NS(data=[])
             if self.op == "update":
                 APP.update(self.payload)
             return NS(data=[APP], count=1)
@@ -197,7 +202,53 @@ r = c.post("/run", json={"app_id": "app-1", "input": "hi"}, headers=user)
 ok("…with a clear message", r.status_code == 429 and r.json().get("code") == "app_quota")
 ok("the developer's own runs don't count against it", c.post("/run", json={"app_id": "app-1", "input": "hi", "system_prompt": "DRAFT PROMPT"}, headers=owner).status_code == 200)
 
+real_service = main._service_client
+for scenario in ("unavailable", "database error", "invalid response"):
+    def broken_rpc(*args):
+        raise ConnectionError("quota database unavailable")
+    main._service_client = lambda: (None if scenario == "unavailable" else NS(
+        table=lambda t: Q(t), rpc=broken_rpc if scenario == "database error" else lambda *a: NS(execute=lambda: NS(data="true"))))
+    try:
+        asyncio.run(main.claim_app_daily_run("app-1", 2))
+        ok(f"daily quota {scenario}: lookup fails closed", False)
+    except HTTPException as exc:
+        ok(f"daily quota {scenario}: lookup fails closed", exc.status_code == 503)
+    before = len(SEEN)
+    r = c.post("/run", json={"app_id": "app-1", "input": "hi"}, headers=user)
+    ok(f"daily quota {scenario}: returns 503 before any provider call", r.status_code == 503 and len(SEEN) == before)
+main._service_client = real_service
+
 # ── Run log and stats ────────────────────────────────────────────────────────
+reset_app()
+draft_preview = c.get('/v1/apps/app-1/preview?version=draft', headers=owner).json()
+ok('customer preview identifies its saved draft without exposing prompts or secrets', draft_preview['app']['preview_version'] == 'draft'
+   and 'system_prompt' not in draft_preview['app'] and 'webhook_url' not in draft_preview['app'])
+SEEN.clear()
+r = c.post('/run', json={'app_id': 'app-1', 'input': 'hi', 'system_prompt': 'FORGED', 'preview_version': 'draft', 'preview_draft_hash': draft_preview['app']['preview_draft_hash']}, headers=owner)
+ok('draft preview ignores client prompt overrides and runs the saved draft', r.status_code == 200 and 'DRAFT PROMPT' in SEEN[-1]['system'])
+SEEN.clear()
+r = c.post('/run', json={'app_id': 'app-1', 'input': 'hi', 'system_prompt': 'FORGED', 'preview_version': 'live', 'preview_live_version': 1}, headers=owner)
+ok('published preview runs the production snapshot even for its editor', r.status_code == 200 and 'LIVE PROMPT' in SEEN[-1]['system'])
+before = len(SEEN)
+ok('a changed published preview is refused before any provider call', c.post('/run', json={'app_id': 'app-1', 'input': 'hi', 'preview_version': 'live', 'preview_live_version': 2}, headers=owner).status_code == 409 and len(SEEN) == before)
+APP['system_prompt'] = 'CHANGED DRAFT'
+ok('a changed draft preview is refused before any provider call', c.post('/run', json={'app_id': 'app-1', 'input': 'hi', 'preview_version': 'draft', 'preview_draft_hash': draft_preview['app']['preview_draft_hash']}, headers=owner).status_code == 409 and len(SEEN) == before)
+ok('other users cannot request editor previews', c.get('/v1/apps/app-1/preview', headers=user).status_code == 404 and c.post('/run', json={'app_id': 'app-1', 'input': 'hi', 'preview_version': 'draft'}, headers=user).status_code == 403)
+reset_app(prod_snapshot=None, live_version=None)
+ok('missing published versions never fall back to a draft preview', c.get('/v1/apps/app-1/preview?version=live', headers=owner).status_code == 409)
+
+reset_app()
+ok('a live app cannot be deleted', c.request('DELETE', '/v1/apps/app-1', json={'confirm_name': 'Pitch'}, headers=owner).status_code == 409)
+reset_app(is_published=False)
+ok('delete requires the current app name', c.request('DELETE', '/v1/apps/app-1', json={'confirm_name': 'Old name'}, headers=owner).status_code == 409)
+TABLES['flows'] = [{'id': 'dependent', 'steps': [{'app_id': 'app-1'}]}]
+ok('a workflow dependency blocks deletion', c.request('DELETE', '/v1/apps/app-1', json={'confirm_name': 'Pitch'}, headers=owner).status_code == 409)
+TABLES['flows'] = []; TABLES['app_entitlements'] = [{'id': 'active', 'app_id': 'app-1', 'status': 'active'}]
+ok('active customer access blocks deletion', c.request('DELETE', '/v1/apps/app-1', json={'confirm_name': 'Pitch'}, headers=owner).status_code == 409)
+TABLES['app_entitlements'] = []
+ok('only an authorized owner can delete the offline app', c.request('DELETE', '/v1/apps/app-1', json={'confirm_name': 'Pitch'}, headers=user).status_code == 404)
+ok('an offline app with no dependencies can be deleted', c.request('DELETE', '/v1/apps/app-1', json={'confirm_name': 'Pitch'}, headers=owner).status_code == 200 and not APP)
+
 reset_app()
 TABLES["app_runs"].clear()
 c.post("/run", json={"app_id": "app-1", "input": "hi"}, headers=user)
@@ -236,6 +287,17 @@ deadline = time.time() + 3
 while len(TABLES['app_runs']) == logged and time.time() < deadline: time.sleep(0.05)
 ok('…and its outcome is still sent directly to the run log', len(TABLES['app_runs']) == logged + 1)
 main._telemetry_outbox = real_outbox
+
+# Code applications must never silently fall through to prompt execution.
+reset_app(app_type='code_job')
+before = len(SEEN)
+r = c.post('/run', json={'app_id':'app-1','input':'hi'}, headers=owner)
+ok('code jobs refuse the AI execution endpoint before calling a provider', r.status_code == 409 and len(SEEN) == before)
+ok('code jobs refuse prompt publication', c.post('/v1/apps/app-1/promote',headers=owner).status_code == 409)
+ok('code jobs do not advertise prompt workflow schemas', c.get('/v1/apps/app-1/schema?version=draft',headers=owner).status_code == 409)
+preflight = c.options('/v1/apps/app-1/code/runs',headers={'Origin':main.ALLOWED_ORIGINS[0], 'Access-Control-Request-Method':'POST', 'Access-Control-Request-Headers':'authorization,content-type,x-code-build-id'})
+ok('code version pins are allowed by browser CORS preflight', preflight.status_code == 200)
+reset_app()
 
 # ── Signed webhooks ──────────────────────────────────────────────────────────
 secret = c.get("/v1/apps/app-1/webhook/secret", headers=owner).json()["secret"]

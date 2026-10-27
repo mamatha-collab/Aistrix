@@ -78,7 +78,7 @@ export const DEV_PHASES = {
   deploy: {
     label: 'Deploy', icon: '🚀',
     color: 'text-emerald-300', bg: 'bg-emerald-500/10', border: 'border-emerald-500/25',
-    help: 'App is live. Monitor usage, evaluate quality, and publish updates via the Version tab.',
+    help: 'Review release checks, preview the customer experience and publish. Live status is shown separately.',
   },
 }
 
@@ -151,9 +151,13 @@ export function AppStatusBadge({ app, listed = false, showDraft = true }) {
   )
 }
 
-const workflowStatus = f => (f.webhook_token
-  ? { live: true, title: 'Live: its webhook link is on.' }
-  : { live: false, title: 'Draft: not released yet.' })
+export const workflowStatus = flow => {
+  const schedules = Array.isArray(flow.flow_schedules) ? flow.flow_schedules : flow.flow_schedules ? [flow.flow_schedules] : []
+  const scheduled = schedules.some(schedule => schedule.enabled)
+  if (flow.webhook_token) return { live: true, label: 'Live', title: scheduled ? 'Live: webhook and schedule are enabled.' : 'Live: its webhook link is on.' }
+  if (scheduled) return { live: true, label: 'Scheduled', title: 'Scheduled: automatic runs are enabled.' }
+  return { live: false, label: 'Draft', title: 'Draft: no webhook or enabled schedule.' }
+}
 
 export function AppNavigator({ apps, phaseByAppId, listedIds, activeAppId, activeTab, onSelectApp, onSwitchTab, onMovePhase, onCreateApp, onOpenApp, compact = false, collapsed = false, onToggleCollapsed,
   workflows = null, activeWorkflowId = null, onOpenWorkflow, onCreateWorkflow }) {
@@ -165,7 +169,7 @@ export function AppNavigator({ apps, phaseByAppId, listedIds, activeAppId, activ
 
   const PREV = { test: 'design', deploy: 'test' }
   const NEXT = { design: 'test', test: 'deploy' }
-  const SECTION_LABEL = { design: 'Still Designing', test: 'Testing', deploy: 'Publishing' }
+  const SECTION_LABEL = { design: 'Design', test: 'Test', deploy: 'Deploy' }
   const open = (a, phase) => { if (onOpenApp) onOpenApp(a.id, phase); else { onSelectApp(a.id); onSwitchTab(phase) } }
   const toggle = onToggleCollapsed && (
     <button onClick={onToggleCollapsed} aria-label={collapsed ? 'Expand the app list' : 'Collapse the app list'}

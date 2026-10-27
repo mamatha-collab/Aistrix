@@ -288,6 +288,7 @@ window.fetch = async (input, init = {}) => {
   // scenario=…nokey: the developer has no OpenAI key saved.
   if (path === '/v1/providers') return response({ providers: [{ id: 'openai', label: 'OpenAI', connected: !scenario.includes('nokey'), default_model: 'gpt-4o', models: [{ id: 'gpt-4o', label: 'GPT-4o' }] }] })
   if (path === '/v1/usage') return response({ daily: { used: 0, limit: 100 }, has_keys: true })
+  if (path === '/v1/spend') return response({ key: { period: 'month', limit_usd: null, used_usd: 0, since: '2026-10-01T00:00:00Z' }, workspace: null })
   // Developer plan and the account's data (same shapes as the server).
   if (path === '/v1/developer/plan') {
     const limits = { draft_apps: 5, published_apps: 3, tests_per_day: 20, concurrent_tests: 1, analytics: 'basic' }

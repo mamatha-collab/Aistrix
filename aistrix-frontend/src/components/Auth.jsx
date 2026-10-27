@@ -124,7 +124,7 @@ export default function Auth({ developer = false, callbackUrl }) {
   const canUseDemo = isDev && DEMO_EMAIL && DEMO_PASSWORD
 
   return (
-    <div className={`min-h-screen w-full bg-[#0F1225] ${developer ? 'flex flex-col' : 'flex items-center justify-center p-4 sm:p-6'}`}>
+    <div className={`min-h-screen w-full bg-[#0F1225] ${developer ? 'flex flex-col' : 'flex flex-col items-center justify-center p-4 sm:p-6'}`}>
       {developer && (
         <header className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 bg-[#111827] px-4 sm:px-6 py-4">
           <div className="flex items-center gap-1">
@@ -146,7 +146,7 @@ export default function Auth({ developer = false, callbackUrl }) {
           </nav>
         </header>
       )}
-      <div className={developer ? 'flex flex-1 items-center justify-center p-4 sm:p-6' : 'contents'}>
+      <div className={developer ? 'flex flex-1 flex-col items-center justify-center p-4 sm:p-6' : 'contents'}>
       <div className="bg-[#171B33] border border-white/10 rounded-2xl p-5 sm:p-8 w-full max-w-sm">
         <div className="flex items-center gap-2 mb-8">
           <img src="/aistrix-logo.svg" alt="" className="w-8 h-8 shrink-0" />
@@ -298,6 +298,7 @@ export default function Auth({ developer = false, callbackUrl }) {
           )}
         </p>
       </div>
+        <p className="mt-5 text-center text-xs"><a href="/marketplace" className="text-slate-400 hover:text-[#A29BFE]">← Browse Marketplace</a></p>
       </div>
     </div>
   )

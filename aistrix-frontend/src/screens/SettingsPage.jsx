@@ -5,6 +5,7 @@ import SafeCard from '../components/SafeCard'
 import { applyTheme } from '../utils/theme'
 import { PROVIDER_STYLE, removeProviderKey, saveProviderKey, useProviders } from '../lib/providers'
 import { AccountData, DeveloperEmailAlerts, DeveloperPlan } from '../components/AccountSettings'
+import SpendingControls from '../components/SpendingControls'
 
 import { BRAND } from '../lib/brand'
 const AVATAR_COLORS = ['#6C5CE7','#E84393','#00B894','#0984E3','#FDCB6E','#E17055','#74B9FF','#A29BFE','#55EFC4','#FD79A8']
@@ -277,6 +278,9 @@ export default function SettingsPage({ user, developer = false, focus = null, em
       </Section>
 
       {/* Notifications */}
+      <Section title="Spending controls" description="Set daily or monthly budgets for your AI keys and active workspace.">
+        <SpendingControls />
+      </Section>
       <Section title="Notifications" description="Get notified when long-running apps finish.">
         <div className="flex items-center justify-between">
           <div>

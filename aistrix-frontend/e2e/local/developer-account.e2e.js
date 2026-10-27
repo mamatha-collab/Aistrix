@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 
-test('account and workspace menus dismiss outside and with Escape', async ({ page }, testInfo) => {
+test('account menu dismisses outside and with Escape while workspace totals stay visible', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === 'mobile', 'The phone account menu has its own outside backdrop.')
   await page.goto('/e2e/fixtures/?scenario=shared-row')
   const account = page.getByRole('button', { name: 'Account menu', exact: true })
@@ -10,20 +10,15 @@ test('account and workspace menus dismiss outside and with Escape', async ({ pag
   await expect(account).toHaveAttribute('aria-expanded', 'true')
   await page.locator('.developer-content').click({ position: { x: 20, y: 250 } })
   await expect(account).toHaveAttribute('aria-expanded', 'false')
-  const workspace = page.locator('.developer-workspace-summary')
-  await workspace.locator('summary').click()
-  await expect(workspace).toHaveAttribute('open', '')
+  const workspace = page.getByRole('region', { name: 'Workspace statistics' })
+  await expect(workspace).toBeVisible()
+  for (const label of ['Apps', 'Runs', 'Useful']) await expect(workspace.getByText(label, { exact: true })).toBeVisible()
+  await expect(workspace.locator('summary')).toHaveCount(0)
   await account.click()
-  await expect(workspace).not.toHaveAttribute('open', '')
   await expect(account).toHaveAttribute('aria-expanded', 'true')
   await page.keyboard.press('Escape')
   await expect(account).toHaveAttribute('aria-expanded', 'false')
-  await workspace.locator('summary').click()
-  await page.locator('.developer-content').click({ position: { x: 20, y: 250 } })
-  await expect(workspace).not.toHaveAttribute('open', '')
-  await workspace.locator('summary').click()
-  await page.keyboard.press('Escape')
-  await expect(workspace).not.toHaveAttribute('open', '')
+  await expect(workspace).toBeVisible()
   await expect(page.locator('aside').getByRole('button', { name: 'Settings', exact: true })).toHaveCount(0)
 })
 
@@ -173,9 +168,19 @@ test('Keys opens Settings at API Keys; phones have one Settings item', async ({ 
     await expect(page.getByText('API Keys', { exact: true })).toBeVisible()
     return
   }
-  await page.getByRole('button', { name: /^Keys/ }).filter({ visible: true }).click()
+  const secrets = page.locator('button[title="Secrets: Env vars"]').filter({ visible: true })
+  await secrets.click()
+  await expect(secrets).toHaveAttribute('aria-current', 'step')
+  const keysButton = page.getByRole('button', { name: /^Keys/ }).filter({ visible: true })
+  await keysButton.click()
   const keys = page.getByTestId('developer-settings').locator('#settings-api-keys')
   await expect(keys).toBeInViewport()
+  await expect(keysButton).toHaveAttribute('aria-current', 'page')
+  await expect(page.locator('.developer-lifecycle-group [aria-current="step"]')).toHaveCount(0)
+  await secrets.click()
+  await expect(secrets).toHaveAttribute('aria-current', 'step')
+  await expect(keysButton).not.toHaveAttribute('aria-current', 'page')
+  await expect(page.getByTestId('developer-settings')).toHaveCount(0)
 })
 
 test('Settings shows the developer plan and the account data controls', async ({ page }, testInfo) => {

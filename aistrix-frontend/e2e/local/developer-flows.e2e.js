@@ -71,8 +71,8 @@ test('an expired payout setup link explains how to continue', async ({ page }) =
 test('design readiness never says every check passes while the design is incomplete', async ({ page }) => {
   await open(page)
   await page.getByRole('button').filter({ has: page.getByText('Fixture Assistant', { exact: true }) }).first().click()
-  await expect(page.getByText(/Design Readiness/)).toBeVisible()
-  await expect(page.getByText('Design incomplete', { exact: true })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Build checklist' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Build checklist' }).getByRole('button', { name: /Go to Test|Save and go to Test/ })).toBeDisabled()
   await expect(page.getByText('all design checks pass')).toHaveCount(0)
-  await expect(page.getByText('the design above is still incomplete', { exact: false })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Build checklist' }).getByText(/^Next:/)).toBeVisible()
 })

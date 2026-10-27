@@ -38,6 +38,7 @@ const AppTypeSelector        = lazy(() => import('./components/AppTypeSelector')
 const AIAppBuilder           = lazy(() => import('./components/AIAppBuilder'))
 const WorkspaceRecommendations = lazy(() => import('./components/WorkspaceRecommendations'))
 const CreateAppModal           = lazy(() => import('./components/CreateAppModal'))
+const CreateCodeApp            = lazy(() => import('./components/CreateCodeApp'))
 const WorkspaceSettingsModal   = lazy(() => import('./components/WorkspaceSettingsModal'))
 
 // Legal pages must stay reachable without signing in.
@@ -133,6 +134,7 @@ export default function App({ routeContent }) {
   })
   const searchInputRef = useRef(null)
   const buildNavigationGuardRef = useRef(null)
+  const developerHomeRef = useRef(null)
   const isDesktopNav = useMediaQuery('(min-width: 768px)')
   const navigate = useNavigate()
   const location = useLocation()
@@ -352,6 +354,7 @@ export default function App({ routeContent }) {
   }
 
   // Lookup table for non-apps views — avoids a wall of conditionals
+  const AppCreationForm = selectedAppType === 'code_job' ? CreateCodeApp : CreateAppModal
   const creationFlow = showTypeSelector ? (
             <ErrorBoundary variant={activeView === 'developer' ? 'card' : 'overlay'} title="The app builder couldn't load" onClose={closeBuildFlow}>
             <Suspense fallback={null}>
@@ -360,6 +363,7 @@ export default function App({ routeContent }) {
                 hidden={showAIBuilder || showCreate}
                 onClose={closeBuildFlow}
                 onSelect={async type => {
+                  if (type === 'code_job') { openBuilder(type); return }
                   // Building needs the developer's own AI key: ask for one
                   // first (continues into this type once it's saved). If the
                   // key status can't be loaded, don't block building.
@@ -388,7 +392,7 @@ export default function App({ routeContent }) {
                 />
               )}
               {showCreate && (
-                <CreateAppModal
+                <AppCreationForm
                   presentation={activeView === 'developer' ? 'inline' : 'modal'} navigationGuardRef={buildNavigationGuardRef} onLeave={closeBuildFlow}
                   user={session.user}
                   initialType={selectedAppType}
@@ -415,7 +419,7 @@ export default function App({ routeContent }) {
     onSelectApp: app => { setSelectedApp(app); navigateToView('apps') },
     onRunEvent: event => { setSelectedApp({ id: event.app_id, name: event.app_name, emoji: event.app_emoji }); navigateToView('apps') },
     developerProps: {
-      creationContent: creationFlow, navigationGuardRef: buildNavigationGuardRef,
+      creationContent: creationFlow, navigationGuardRef: buildNavigationGuardRef, homeNavigationRef: developerHomeRef, onCloseCreation: closeBuildFlow,
       onOpenCreate: () => setShowTypeSelector(true), onShowSettings: () => setShowSettings(true),
       onShowProfile: () => setShowProfile(true), noKeys, onNavChange: changeView,
       search, onSearch: setSearch, searchRef: searchInputRef, createdApp,
@@ -429,7 +433,7 @@ export default function App({ routeContent }) {
   return (
         // Keyed by workspace: switching remounts the shell so every page
         // reloads its data for the newly active workspace.
-        <DeveloperShell active badge={activeView === 'developer' ? 'Developer' : 'Business'} key={workspaces.active?.id || 'no-workspace'} className={`app-shell flex h-dvh overflow-hidden bg-[#09101F] ${activeView !== 'developer' ? 'business-workspace' : ''}`}>
+        <DeveloperShell active badge={activeView === 'developer' ? 'Developer' : 'Business'} onHome={() => activeView === 'developer' ? developerHomeRef.current?.() : changeView('overview')} key={workspaces.active?.id || 'no-workspace'} className={`app-shell flex h-dvh overflow-hidden bg-[#09101F] ${activeView !== 'developer' ? 'business-workspace' : ''}`}>
 
           {showMobileSidebar && (
             <div className="fixed inset-0 bg-black/50 z-30 md:hidden" onClick={() => setShowMobileSidebar(false)} />
@@ -451,6 +455,7 @@ export default function App({ routeContent }) {
                 onShowHistory={() => changeView('history')}
                 activeView={activeView}
                 onNavChange={changeView}
+                onHome={() => activeView === 'developer' ? developerHomeRef.current?.() : changeView('overview')}
                 mode={mode}
                 onModeChange={function switchMode(next) {
                   // Leaving Dev Studio with unsaved Design edits: finish the

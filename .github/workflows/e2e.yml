@@ -2,7 +2,7 @@ name: E2E (Build flow)
 
 # Browser test of Design → Test → Deploy against a running site (staging).
 # Run it by hand from the Actions tab. It needs repository secrets for a
-# dedicated test account: E2E_BASE_URL, E2E_EMAIL, E2E_PASSWORD and
+# dedicated test account: E2E_BASE_URL, E2E_API_URL, E2E_EMAIL, E2E_PASSWORD and
 # (optionally) E2E_APP_NAME — an app of that account that is in Deploy.
 on:
   workflow_dispatch:
@@ -27,16 +27,19 @@ jobs:
       - name: Require the staging test account
         env:
           E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+          E2E_API_URL: ${{ secrets.E2E_API_URL }}
           E2E_EMAIL: ${{ secrets.E2E_EMAIL }}
           E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
         run: |
-          test -n "$E2E_BASE_URL" && test -n "$E2E_EMAIL" && test -n "$E2E_PASSWORD" || {
-            echo "Configure E2E_BASE_URL, E2E_EMAIL and E2E_PASSWORD before running staging verification."
+          test -n "$E2E_BASE_URL" && test -n "$E2E_API_URL" && test -n "$E2E_EMAIL" && test -n "$E2E_PASSWORD" || {
+            echo "Configure E2E_BASE_URL, E2E_API_URL, E2E_EMAIL and E2E_PASSWORD before running staging verification."
             exit 1
           }
-      - run: npm run test:e2e
+      - run: npm run verify:hosted
         env:
+          E2E_ENVIRONMENT: staging
           E2E_BASE_URL: ${{ secrets.E2E_BASE_URL }}
+          E2E_API_URL: ${{ secrets.E2E_API_URL }}
           E2E_EMAIL: ${{ secrets.E2E_EMAIL }}
           E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
           E2E_APP_NAME: ${{ secrets.E2E_APP_NAME }}

@@ -61,7 +61,7 @@ export default function ApiAppRunner({ app, user, onClose, onRun, inline = false
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${session?.access_token}` },
         body: JSON.stringify({
-          app_id: app.id, input: paramString,
+          app_id: app.id, input: paramString, preview_version: app.preview_version, preview_live_version: app.preview_live_version, preview_draft_hash: app.preview_draft_hash,
           system_prompt: app.system_prompt,
           ai_provider: app.ai_provider || 'claude',
           ai_model: app.ai_model || null,

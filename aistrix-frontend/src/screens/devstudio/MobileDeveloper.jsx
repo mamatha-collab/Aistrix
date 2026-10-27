@@ -99,7 +99,7 @@ export default function MobileDeveloper({ user, apps, phaseByAppId, loading, err
 
   return <div className="developer-content flex-1 min-w-0 min-h-0 flex flex-col bg-[#09101F]" data-testid="mobile-developer">
     <header className="shrink-0 h-16 px-4 flex items-center justify-between gap-3 border-b border-white/8 bg-[#111827]">
-      <div className="flex items-center gap-1.5 min-w-0"><img src="/aistrix-logo.svg" alt="" className="h-7 w-7" /><span className="font-bold text-white text-lg"><AistrixWordmark /></span></div>
+      <button type="button" aria-label="Aistrix Developer home" onClick={() => { setAccountOpen(false); setSearch(''); setFilter(''); navigate('monitor') }} className="flex items-center gap-1.5 min-w-0 hover:opacity-80"><img src="/aistrix-logo.svg" alt="" className="h-7 w-7" /><span className="font-bold text-white text-lg"><AistrixWordmark /></span></button>
       <div className="relative">
         <button className="h-11 w-11 rounded-xl bg-white/5 border border-white/8 text-white font-semibold text-sm" aria-label="Account menu" aria-expanded={accountOpen} aria-haspopup="menu" onClick={() => setAccountOpen(v => !v)}>
           {(user.user_metadata?.display_name || user.email || '?')[0].toUpperCase()}

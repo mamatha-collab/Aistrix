@@ -1,0 +1,6 @@
+{
+  "products": [
+    { "sku": "COFFEE-1", "daily_demand": 12, "lead_days": 5, "safety_stock": 10, "stock": 35 },
+    { "sku": "TEA-2", "daily_demand": 4, "lead_days": 3, "stock": 20 }
+  ]
+}

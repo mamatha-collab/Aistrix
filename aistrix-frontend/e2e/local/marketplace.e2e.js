@@ -118,6 +118,27 @@ test('customers can search all pages, filter and open the shared app runtime', a
   await expect(page.getByRole('heading', { name:'Your recent runs' })).toBeVisible()
 })
 
+test('customer chat apps open at the top without scrolling the page to the conversation', async ({ page }) => {
+  await page.goto('/e2e/fixtures/?scenario=market-customer')
+  await expect(page.getByRole('button', { name: 'Listed app 1', exact: true })).toBeVisible()
+  await page.evaluate(() => {
+    Object.assign(window.buildFixture.tables.apps[0], { app_type: 'chatbot', has_memory: true, greeting: 'Welcome to this chat.' })
+    window.buildFixture.tables.marketplace_listings[0].description = Array.from({ length: 30 }, (_, i) => `App information ${i + 1}`).join('\n')
+  })
+  await page.getByRole('button', { name: 'Listed app 1', exact: true }).click()
+  await expect(page.getByPlaceholder('Message...')).toBeAttached()
+  // Let mount effects and their first scrolling frame run without focusing
+  // or scrolling any controls on the app's behalf.
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+  await expect(page.getByRole('heading', { name: 'Listed app 1', exact: true })).toBeInViewport()
+  const positions = await page.getByRole('heading', { name: 'Listed app 1', exact: true }).evaluate(heading => {
+    const positions = []
+    for (let parent = heading.parentElement; parent; parent = parent.parentElement) positions.push(parent.scrollTop)
+    return positions
+  })
+  expect(positions.every(top => top === 0)).toBe(true)
+})
+
 test('customer read outages show an error and recover without pretending the catalog is empty', async ({ page }) => {
   await page.goto('/e2e/fixtures/?scenario=market-customer')
   await expect(page.getByRole('button', { name:'Listed app 1', exact:true })).toBeVisible()

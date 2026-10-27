@@ -1,9 +1,14 @@
 # Launch checklist: hosting Aistrix for 100 paying developers
 
-October 20, 2026. Ready ≈ 60% → **≈ 70%** after today's work (±10). The product
-is close to done; what remains is mostly hosting, third-party accounts,
-legal text and decisions. Stripe and other providers are deliberately
-integrated last, after functionality is complete.
+Updated October 25, 2026. The app has not been hosted. Local implementation
+and checks do not establish launch readiness. See
+[Developer Build experience](architecture/developer-build-experience-2026-10-25.md)
+for the current implementation and hosted acceptance requirements.
+
+The new private Python Code Application build/hosting path has a separate
+[worker setup and acceptance runbook](architecture/code-app-hosting-2026-10-26.md).
+Its migration and isolated worker infrastructure still need to be configured;
+local browser fixtures do not establish that containers can build or run.
 
 Status: ✅ done in code · 🟡 code ready, needs a setting or account · ⬜ not started · ❓ needs a decision
 
@@ -12,9 +17,9 @@ Status: ✅ done in code · 🟡 code ready, needs a setting or account · ⬜ n
 | | Item | Notes |
 |---|---|---|
 | 🟡 | Backend container | `aistrix-backend/Dockerfile` (+ `.dockerignore`, never ships `.env`). Mount a volume at `/data`. Not yet built here (no Docker on this machine). |
-| ⬜ | Pick hosts | Backend: any container host. Frontend: any static host (`npm run build` → `dist/`, with every path falling back to `index.html`). |
-| ⬜ | Domain + HTTPS | Then set `FRONTEND_URL`, `ALLOWED_ORIGINS`, `VITE_API_URL`, `GITHUB_REDIRECT_URI`, Supabase Auth site URL and redirect URLs. |
-| 🟡 | Production database | `supabase db push` to production: migrations through `20261020040000` (see build-readiness.md for order: database before backend). |
+| ⬜ | Pick hosts | Backend needs a Python container host and durable `/data` storage. Frontend needs a Next.js Node runtime or a compatible managed Next.js host; it is no longer a static `dist/` deployment. Build with `npm run build` (production), then `npm start`. |
+| ⬜ | Domain + HTTPS | Then set `FRONTEND_URL`, `ALLOWED_ORIGINS`, `NEXT_PUBLIC_API_URL`, public Supabase settings, `GITHUB_REDIRECT_URI`, Supabase Auth site URL and redirect URLs. Public build settings are baked into the Next.js build; keep server secrets out of them. |
+| 🟡 | Production database | Review migration history against the target project and apply missing migrations before deploying dependent code. The repository now includes migrations beyond `20261020040000`; do not use that old cutoff as the production target. No production migration has been applied by this implementation task. |
 | ⬜ | Supabase Auth email (SMTP) | Without a custom SMTP provider Supabase sends about 2 auth emails an hour: sign-up confirmations and password resets would stop after the first few. Set SMTP in Supabase → Auth (e.g. the same Resend account) and raise the rate limit. |
 | ✅ | Scheduled flows without an outside cron | Built-in scheduler (`SCHEDULER_INTERVAL_SECONDS`, default 60). Each due schedule is claimed before running, so several servers or the old `/cron/*` endpoints never run it twice, and a failing run waits for its next slot instead of retrying (and spending) every minute. |
 | ✅ | Several servers | GitHub connect links are signed and one-time across servers (`server_once`); payouts, batch jobs, schedules and notifications are claimed in the database. Visitor limits now use shared Postgres buckets (migration `20261020030000`); the failure-alert counter remains per server. |

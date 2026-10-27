@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "runtime": "python",
+  "mode": "job",
+  "entrypoint": "main:run",
+  "timeout_seconds": 30,
+  "memory_mb": 256,
+  "network": "none"
+}

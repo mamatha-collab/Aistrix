@@ -210,7 +210,7 @@ app.add_middleware(
     allow_origins=ALLOWED_ORIGINS,
     # Narrowed from ["*"]/["*"] — only the methods/headers this API actually uses.
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Cron-Secret", "X-Schedule-Secret", "X-Workspace-Id"],
+    allow_headers=["Authorization", "Content-Type", "X-Cron-Secret", "X-Schedule-Secret", "X-Workspace-Id", "X-Code-Build-ID"],
 )
 
 SUPABASE_URL              = os.getenv("SUPABASE_URL")
@@ -260,10 +260,13 @@ def _decrypt(token: str) -> str:
 def _open_key(stored: Optional[str]) -> Optional[str]:
     """A saved provider key. Keys are Fernet-encrypted by /v1/provider-keys;
     rows saved before that are plaintext and returned as-is (and re-encrypted
-    on their next read by fetch_user_api_key_by_id)."""
+    on their next read by fetch_user_api_key_by_id). Encrypted values are
+    unusable when their decryption configuration is unavailable."""
     if not stored:
         return None
-    if stored.startswith("gAAAA") and _fernet:
+    if stored.startswith("gAAAA"):
+        if not _fernet:
+            return None
         try:
             return _fernet.decrypt(stored.encode()).decode()
         except InvalidToken:
@@ -854,13 +857,15 @@ async def claim_app_daily_run(app_id: str, limit: int) -> bool:
     """Counts an end-user run against the app's daily quota; False once it's used up."""
     sb = _service_client()
     if not sb:
-        return True
+        raise HTTPException(status_code=503, detail="Unable to verify this app's daily run limit. Try again shortly.")
     try:
         res = await db(sb.rpc("claim_app_daily_run", {"p_app_id": app_id, "p_limit": limit}))
-        return bool(res.data)
+        if type(res.data) is not bool:
+            raise ValueError("Invalid daily quota response")
+        return res.data
     except Exception as e:
-        print(f"app quota check failed: {e}")   # migration not applied yet: don't block runs
-        return True
+        print(f"app quota check failed: {type(e).__name__}")
+        raise HTTPException(status_code=503, detail="Unable to verify this app's daily run limit. Try again shortly.") from e
 
 
 async def _log_app_run(app_id: str, user_id: Optional[str], source: str, usage: Optional[dict], *,
@@ -1711,6 +1716,9 @@ class RunImage(BaseModel):
 
 class RunRequest(BaseModel):
     app_id: Optional[str] = None
+    preview_version: Optional[str] = Field(default=None, pattern="^(draft|live)$")
+    preview_live_version: Optional[int] = Field(default=None, ge=1)
+    preview_draft_hash: Optional[str] = Field(default=None, pattern="^[0-9a-f]{20}$")
     input: str
     system_prompt: Optional[str] = None
     ai_provider: Optional[str] = "claude"
@@ -2011,15 +2019,25 @@ async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller",
     if req.app_id and SUPABASE_SERVICE_ROLE_KEY and not app_row:
         return JSONResponse(status_code=404, content={"error": "App not found"})
     is_editor = await can_edit_app(app_row, caller) if app_row else False
+    if app_row and app_row.get('app_type') == 'code_job':
+        return JSONResponse(status_code=409, content={'error': 'Use this code application\'s /code/runs endpoint. Code jobs do not run through an AI provider.'})
+    if req.preview_version and (not app_row or not is_editor or caller.via_key):
+        return JSONResponse(status_code=403, content={"error": "Only signed-in app editors can preview saved versions."})
+    if req.preview_version == "live" and not isinstance(app_row.get("prod_snapshot"), dict):
+        return JSONResponse(status_code=409, content={"error": "This app has no published version to preview yet."})
+    if req.preview_version == "live" and req.preview_live_version is not None and req.preview_live_version != app_row.get("live_version"):
+        return JSONResponse(status_code=409, content={"error": "The published release changed. Reload the preview before running it."})
+    if req.preview_version == "draft" and req.preview_draft_hash and req.preview_draft_hash != state_hash(await app_draft_state(app_row)):
+        return JSONResponse(status_code=409, content={"error": "The saved draft changed. Reload the preview before running it."})
     # End users run the app's production version (set by promoting); editors
     # run the draft. Apps never promoted run as they are.
-    prod = app_row.get("prod_snapshot") if (app_row and (not is_editor or caller.live) and isinstance(app_row.get("prod_snapshot"), dict)) else None
+    prod = app_row.get("prod_snapshot") if (app_row and (not is_editor or caller.live or req.preview_version == "live") and isinstance(app_row.get("prod_snapshot"), dict)) else None
     if app_row and release:
         prod = release[1]
     if prod:
         app_row = {**app_row, **{k: prod[k] for k in DRAFT_FIELDS if k in prod}}
 
-    if app_row and not is_editor:
+    if app_row and (not is_editor or req.preview_version):
         if not app_row.get("is_published") and not (await can_view_app(app_row, caller)):
             return JSONResponse(status_code=404, content={"error": "App not found or not published"})
         if app_row.get("visibility") == "private" and not caller_id:
@@ -4548,9 +4566,16 @@ async def _post_flow_integration(flow: dict, steps: list, results: list) -> None
 
 
 def _public_flow_run(run: dict) -> dict:
-    plan = (run.get("definition") or {}).get("_plan") if isinstance(run.get("definition"), dict) else None
+    definition = run.get("definition") if isinstance(run.get("definition"), dict) else None
+    plan = (definition or {}).get("_plan")
+    # Only presentation metadata from the immutable definition is public;
+    # prompts, API bodies, headers and other execution settings stay private.
+    display_steps = [{k: step[k] for k in ("id", "app_name", "app_emoji", "step_type", "approval_type", "version") if k in step}
+                     for step in ((definition or {}).get("steps") or []) if isinstance(step, dict)]
+    records = run.get("steps") or []
     return {**{k: v for k, v in run.items() if k not in ("lease_token", "lease_expires_at", "definition")},
-            "plan_id": (plan or {}).get("id")}
+            "plan_id": (plan or {}).get("id"), "display_steps": display_steps if definition else None,
+            "can_continue": bool(definition and run.get("status") == "failed" and not (records and records[-1].get("status") == "rejected"))}
 
 
 async def _heartbeat_flow_run(run: dict) -> None:
@@ -6993,7 +7018,7 @@ async def list_flow_runs(flow_id: str, request: Request, limit: int = 20, needs_
     editor = await can_edit_flow(flow, caller)
     columns = "id, trigger, status, current_step, error, started_at, finished_at, user_id"
     try:
-        query = _service_client().table("flow_runs").select(columns + (", needs_review" if needs_review else "")).eq("flow_id", flow_id)
+        query = _service_client().table("flow_runs").select(columns + ", needs_review").eq("flow_id", flow_id)
         if needs_review:
             query = query.eq("needs_review", True)
         if not editor:
@@ -7217,6 +7242,8 @@ async def app_schema(app_id: str, request: Request, version: str = "live"):
     """Input and output fields of one version of an app ("draft", "live" or
     a release number), for wiring workflow steps."""
     _, app_row = await _editable_app(app_id, request)
+    if app_row.get('app_type') == 'code_job':
+        raise HTTPException(409, 'Code-job workflow integration is not enabled yet. Use the Code Application workspace.')
     if version == "draft":
         snapshot = await app_draft_state(app_row)
         blueprint, output_type = snapshot["blueprint"], app_row.get("output_type")
@@ -8006,6 +8033,61 @@ async def _save_published_version(sb, app_row: dict, state: dict, tests: dict, u
         raise HTTPException(status_code=503, detail="Could not save the release version. The live app was not changed. Try publishing again.") from e
 
 
+@app.get("/v1/apps/{app_id}/preview")
+async def customer_preview(app_id: str, request: Request, version: str = "draft"):
+    """Editor-only presentation of an explicitly selected saved version.
+    Runs use preview_version, which reloads that version server-side."""
+    caller, row = await _editable_app(app_id, request)
+    if caller.via_key:
+        raise HTTPException(status_code=403, detail="Sign in to preview saved versions; API keys can't.")
+    if version not in ("draft", "live"):
+        raise HTTPException(status_code=422, detail="Choose draft or live")
+    snapshot = await app_draft_state(row) if version == "draft" else row.get("prod_snapshot")
+    if not isinstance(snapshot, dict):
+        raise HTTPException(status_code=409, detail="This app has no published version to preview yet.")
+    view = {**row, **{key: snapshot[key] for key in DRAFT_FIELDS if key in snapshot}}
+    fields = ("id", "name", "emoji", "color", "description", "app_type", "greeting", "input_placeholder",
+              "form_schema", "output_type", "has_memory", "sample_input", "ai_provider", "ai_model", "tone")
+    return {"app": {**{key: view.get(key) for key in fields}, "preview_version": version,
+                    **({"preview_live_version": row.get("live_version")} if version == "live" else {"preview_draft_hash": state_hash(snapshot)})},
+            "version": version, "live_version": row.get("live_version"), "is_published": bool(row.get("is_published"))}
+
+
+class DeleteAppRequest(BaseModel):
+    confirm_name: str = Field(min_length=1, max_length=500)
+
+
+@app.delete("/v1/apps/{app_id}")
+async def delete_developer_app(app_id: str, body: DeleteAppRequest, request: Request):
+    caller, row = await _editable_app(app_id, request)
+    if caller.via_key:
+        raise HTTPException(status_code=403, detail="Sign in to delete an app; API keys can't.")
+    if row.get("created_by") != caller.user_id:
+        raise HTTPException(status_code=403, detail="Only the app owner can delete it.")
+    if row.get("name") != body.confirm_name:
+        raise HTTPException(status_code=409, detail="The app name changed. Reload and confirm its current name.")
+    if row.get("is_published") or row.get("status") == "pending":
+        raise HTTPException(status_code=409, detail="Take this app offline in Deploy before deleting it.")
+    sb = _service_client()
+    try:
+        dependent = await db(sb.table("flows").select("id").contains("steps", [{"app_id": app_id}]).limit(1))
+        entitlement = await db(sb.table("app_entitlements").select("id").eq("app_id", app_id).eq("status", "active").limit(1))
+        code_jobs = await db(sb.table('code_tasks').select('id').eq('app_id', app_id).in_('status', ['queued', 'running']).limit(1)) if row.get('app_type') == 'code_job' else None
+    except Exception as error:
+        raise HTTPException(status_code=503, detail="Could not verify dependencies and active access. Nothing was deleted.") from error
+    if dependent.data:
+        raise HTTPException(status_code=409, detail="Remove this app from its workflows before deleting it.")
+    if code_jobs and code_jobs.data:
+        raise HTTPException(status_code=409, detail='Cancel or finish active code jobs before deleting this app.')
+    if entitlement.data:
+        raise HTTPException(status_code=409, detail="This app still has active customer access. Resolve it before deleting the app.")
+    deleted = await db(sb.table("apps").delete().eq("id", app_id).eq("created_by", caller.user_id)
+                       .eq("is_published", False).eq("name", body.confirm_name))
+    if not deleted.data:
+        raise HTTPException(status_code=409, detail="The app changed or was already deleted. Reload your apps.")
+    return {"ok": True}
+
+
 @app.get("/v1/apps/{app_id}/live-preview")
 async def live_preview(app_id: str, request: Request):
     """What end users see (Deploy → What users will see): the live version,
@@ -8613,6 +8695,8 @@ async def promote_app(app_id: str, request: Request):
     """Make the current draft the live version and publish the app. Requires
     the publish checks and passing tests for this exact draft."""
     caller, app_row = await _editable_app(app_id, request)
+    if app_row.get('app_type') == 'code_job':
+        raise HTTPException(409, 'Deploy a successful code build in the Code Application workspace. Marketplace publication is not enabled for code jobs yet.')
     checks = await _publish_checks(app_id, caller.user_jwt) + await _missing_secret_checks(app_id)
     tests = await app_test_status(app_row, caller.user_id)
     problems = _test_problems(tests)
@@ -9152,3 +9236,10 @@ def health_details(request: Request):
 @app.get("/")
 def root():
     return {"message": f"{BRAND_NAME} API", "version": "1.0.0", "docs": "/docs"}
+
+
+# Registered after the host helpers are defined. This module only queues work;
+# customer source is built and executed by a separate code_worker process.
+import sys as _sys
+import code_apps as _code_apps
+_code_apps.register_routes(app, _sys.modules[__name__])

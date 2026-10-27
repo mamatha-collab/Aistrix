@@ -6,6 +6,7 @@ import '../type-picker.css'
 
 
 const STATUS_META = {
+  worker:  { label: 'Worker setup required', cls: 'bg-sky-500/12 text-sky-300 border-sky-500/25' },
   ready:   { label: 'Ready',       cls: 'bg-emerald-500/12 text-emerald-300 border-emerald-500/25' },
   preview: { label: 'Prompt-ready',cls: 'bg-amber-500/12 text-amber-300 border-amber-500/25' },
   soon:    { label: 'Coming soon', cls: 'bg-slate-500/10 text-slate-400 border-white/10' },
@@ -31,7 +32,7 @@ const TYPE_GROUPS = [
     short: 'Developer',
     label: 'Developer Apps',
     desc: 'Package AI capabilities as APIs, embeddable widgets, or developer-focused code assistants.',
-    typeIds: ['api', 'iframe', 'code'],
+    typeIds: ['code_job', 'api', 'iframe', 'code'],
   },
   {
     id: 'media_file',
@@ -94,6 +95,7 @@ function suggestType(input) {
 
 // Explanations shown next to suggestions in plain English
 const TYPE_REASON = {
+  code_job:    'Run your own Python logic in an isolated job; hosting requires configured workers.',
   prompt:      'Best for text generation and reply drafting.',
   data:        'Best for processing files, CSVs, and documents.',
   website:     'We\'ll read the URL and generate the app for you.',

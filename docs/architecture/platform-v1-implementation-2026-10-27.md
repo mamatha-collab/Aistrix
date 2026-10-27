@@ -48,10 +48,31 @@ Recorded on this machine, 2026-10-27:
 - Full backend suite (`pytest tests`, every existing check script plus the new ones): 122 passed in 304 s.
 - The frontend was not changed, so its tests weren't rerun.
 
+### Staging, 2026-10-27
+
+`npx supabase db push` on the linked staging project (`qhfxnpsvdolaftaljvdp`) applied
+`20261026010000_code_app_jobs.sql` and `20261027010000_platform_v1.sql`. Production
+was not touched.
+
+`venv/Scripts/python scripts/verify_platform_staging.py --email <staging user>` runs
+in-process on `.env.staging` as that user, with their own saved Claude key:
+**15 passed, 0 failed**, on two runs.
+
+- Release and eval suite stored with the content hash; an `UPDATE` on `platform_releases` is refused by the trigger.
+- Production refused the release before evals ran.
+- Eval suite on real Claude Haiku: 2 of 2 cases passed, $0.00009, 7.5 s. Production was promoted after that.
+- A production run succeeded ($0.00004). The ERP write went to the owner's test destination: one row in `test_deliveries`, without the secret header. 10 run events stored in order.
+- A large invoice waited for approval and finished once approved.
+- A run with no worker appeared in the resume sweep and finished when resumed.
+- A staging rollback returned the previous release.
+
+Records from these runs live under the `verify` namespace on staging.
+
 ## Not done or not verified
 
-- The migration has not been applied to staging or production Supabase, and its SQL has not been executed anywhere: there is no local Postgres. The Supabase store is tested against a fake query builder only.
-- No real model, ERP or code-worker call has been made. Hosted `code.python` needs `CODE_APPS_ENABLED=1` and running workers.
+- Production Supabase has neither migration.
+- The HTTP layer on staging (JWT or API-key auth, SSE through a deployed server) was exercised only in the local check script; the staging script calls the engine in-process.
+- No real outside ERP or code-worker call has been made. Hosted `code.python` needs `CODE_APPS_ENABLED=1` and running workers.
 - No Studio UI for platform resources; that waits for your design.
 - Not built yet: Workflow kind on AEX and the legacy adapters (phase 2), TypeScript SDK, agents, knowledge bases, MCP hosting, app hosting, model operations.
 - Concurrency, load, tenant isolation on hosted infrastructure and backup/restore are untested.

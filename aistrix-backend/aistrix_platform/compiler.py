@@ -239,7 +239,9 @@ def compile_workload(doc: dict, workload: Optional[str] = None, *, target: str =
         if n["use"] == "http":
             cfg = n["config"]
             authority = cfg["url"].split("//", 1)[1].split("/", 1)[0].split("?", 1)[0]
-            if "{{" in authority:
+            if cfg["url"].startswith(node_types.TEST_DESTINATION):
+                pass                    # captured by Aistrix for the run's owner; nothing leaves the platform
+            elif "{{" in authority:
                 problems.append(Problem(f"{p}.url", "The host part of the URL must be written out, not filled in at run time"))
             else:
                 host = urlsplit(cfg["url"]).hostname or ""

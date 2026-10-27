@@ -27,6 +27,7 @@ import outbound
 from . import compiler, spec
 from .errors import NodeError
 from .gateway import CallContext, ModelGateway
+from .node_types import TEST_DESTINATION
 from .nodes import HttpResponse, Services
 from .orchestrator import Engine
 from .store import MemoryStore
@@ -96,7 +97,12 @@ def local_services(spec_dir: Path) -> Services:
         except ValueError:
             raise NodeError(f"{entry}'s last line isn't JSON")
 
-    async def http(method, url, headers, body, allowed_hosts, timeout):
+    async def http(method, url, headers, body, allowed_hosts, timeout, owner_id=None):
+        if url.startswith(TEST_DESTINATION):
+            # Locally a test destination just prints what would be delivered.
+            name = url[len(TEST_DESTINATION):]
+            print(f"\n[test destination {name}] {method} {json.dumps(body, ensure_ascii=False)[:2000]}", file=sys.stderr)
+            return HttpResponse(200, {"received": True, "destination": name, "local": True})
         kwargs = {"json": body} if body is not None else {}
         resp = await outbound.fetch_safely(method, url, timeout=min(timeout, 60), max_redirects=0 if method != "GET" else 3,
                                            allowed_hosts=allowed_hosts, headers=headers, **kwargs)

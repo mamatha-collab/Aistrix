@@ -95,7 +95,17 @@ def build(host):
         from .nodes import _plain_text
         return _plain_text(name, mime, data)
 
-    async def http(method, url, headers, body, allowed_hosts, timeout):
+    async def http(method, url, headers, body, allowed_hosts, timeout, owner_id=None):
+        if url.startswith(node_types.TEST_DESTINATION):
+            # The owner's private test destination, handled in-process like
+            # workflow API steps: the body is captured, headers are not kept.
+            if not owner_id:
+                raise NodeError("Test destinations need a signed-in owner")
+            name = url[len(node_types.TEST_DESTINATION):]
+            status, payload = await host.handle_test_destination(
+                method, owner_id, host.test_destination_token(owner_id), name,
+                body=json.dumps(body if body is not None else {}).encode("utf-8"), content_type="application/json")
+            return HttpResponse(status, payload)
         kwargs = {"json": body} if body is not None else {}
         resp = await outbound.fetch_safely(method, url, timeout=min(timeout, 60), max_redirects=0 if method != "GET" else 3,
                                            allowed_hosts=allowed_hosts, headers=headers, **kwargs)

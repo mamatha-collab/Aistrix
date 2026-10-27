@@ -219,6 +219,20 @@ def test_outbound_hosts_and_idempotency():
     assert not problems and plan["nodes"]["post"]["sideEffect"] is False
 
 
+def test_test_destinations_need_no_outbound_host_but_keep_idempotency():
+    doc = example()
+    _wl(doc)["nodes"][3]["url"] = "aistrix-test://destinations/erp"
+    doc["policies"]["outboundHosts"] = []
+    plan, problems = compiler.compile_workload(doc)
+    assert not problems, messages(problems)
+    assert plan["nodes"]["post"]["sideEffect"] is True
+    del _wl(doc)["nodes"][3]["idempotencyKey"]
+    assert "idempotencyKey" in compile_problems(doc)
+    doc = example()
+    _wl(doc)["nodes"][3]["url"] = "aistrix-test://destinations/Bad_Name"
+    assert "nodes[3].url" in compile_problems(doc)
+
+
 def test_wildcard_hosts_match_subdomains_only():
     assert compiler.host_matches("api.example.com", ["*.example.com"])
     assert not compiler.host_matches("example.com", ["*.example.com"])

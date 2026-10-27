@@ -55,7 +55,7 @@ class FakeErp:
         self.fail_with = list(fail_with)
         self.crash_after_send = crash_after_send
 
-    async def __call__(self, method, url, headers, body, allowed_hosts, timeout):
+    async def __call__(self, method, url, headers, body, allowed_hosts, timeout, owner_id=None):
         self.requests.append({"method": method, "url": url, "headers": dict(headers), "body": body, "hosts": allowed_hosts})
         key = headers.get("Idempotency-Key")
         if key not in self.writes:

@@ -67,7 +67,10 @@ CATALOG: dict[str, NodeType] = {t.use: t for t in [
         summary="Call an outside API. Writes need an idempotency key.",
         config_schema={"type": "object", "required": ["method", "url"], "additionalProperties": False,
                        "properties": {"method": {"enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
-                                      "url": {"type": "string", "pattern": r"^https://", "maxLength": 2000},
+                                      # https://, or the owner's private test destination,
+                                      # which captures the request instead of sending it.
+                                      "url": {"type": "string", "maxLength": 2000,
+                                              "pattern": r"^(https://|aistrix-test://destinations/[a-z0-9][a-z0-9-]{0,39}$)"},
                                       "headers": {"type": "object", "maxProperties": 20,
                                                   "additionalProperties": {"type": "string", "maxLength": 2000}},
                                       "body": {},
@@ -93,6 +96,7 @@ CATALOG: dict[str, NodeType] = {t.use: t for t in [
 ]}
 
 WRITE_METHODS = ("POST", "PUT", "PATCH", "DELETE")
+TEST_DESTINATION = "aistrix-test://destinations/"
 
 
 def get(use: str) -> Optional[NodeType]:

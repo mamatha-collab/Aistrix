@@ -55,7 +55,8 @@ class Services:
     run_code_app: Optional[Callable[[str, Optional[str], Any, int], Awaitable[Any]]] = None
     # (entry path, input object, timeout seconds) -> result object; local runner only
     run_local_code: Optional[Callable[[str, Any, int], Awaitable[Any]]] = None
-    # (method, url, headers, json body or None, allowed hosts, timeout) -> HttpResponse
+    # (method, url, headers, json body or None, allowed hosts, timeout, owner_id=) -> HttpResponse.
+    # aistrix-test://destinations/<name> URLs go to the owner's test destination.
     http: Optional[Callable[..., Awaitable[HttpResponse]]] = None
     # (owner id, resource key, secret names) -> {name: value}
     secrets: Optional[Callable[[Optional[str], str, list], Awaitable[dict]]] = None
@@ -197,7 +198,8 @@ async def http(ctx: NodeContext) -> NodeOutcome:
         body = cfg["body"] if "body" in cfg else ctx.value
     write = method != "GET"
     try:
-        resp = await ctx.services.http(method, cfg["url"], headers, body, ctx.run["plan"]["policies"]["outboundHosts"], ctx.timeout)
+        resp = await ctx.services.http(method, cfg["url"], headers, body, ctx.run["plan"]["policies"]["outboundHosts"],
+                                       ctx.timeout, owner_id=ctx.run.get("owner_id"))
     except NodeError:
         raise
     except ValueError as e:

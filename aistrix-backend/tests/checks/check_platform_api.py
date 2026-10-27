@@ -292,6 +292,21 @@ detail = c.get("/v1/platform/resources/Application/acme/invoice-extractor", head
 ok("the resource view shows releases and environments",
    {x["version"] for x in detail["releases"]} == {"1.0.0", "1.1.0"} and detail["environments"]["production"]["version"] == "1.0.0")
 
+# ── test destinations capture the write inside Aistrix ──────────────────────
+captured_spec = APP_YAML.replace("version: 1.0.0", "version: 1.3.0").replace(
+    "https://api.example-erp.com/v1/invoices", "aistrix-test://destinations/erp").replace(
+    "tests: [EvalSuite/acme/invoice-regression@1.0.0]", "")
+r = c.post("/v1/platform/releases", json={"spec": captured_spec}, headers=H)
+ok("a release can post to a test destination", r.status_code == 201, r.text)
+ANSWERS[:] = [SMALL]
+ERP.clear()
+r = c.post("/v1/platform/apps/acme/invoice-extractor/runs", json={"input": invoice(iid="inv-td"), "version": "1.3.0", "wait": True}, headers=H)
+deliveries = SB.db.get("test_deliveries", [])
+ok("the write is captured for the owner, not sent out", r.json()["run"]["status"] == "succeeded" and ERP == []
+   and len(deliveries) == 1 and deliveries[0]["user_id"] == OWNER and deliveries[0]["destination"] == "erp"
+   and json.loads(deliveries[0]["body"])["invoice_id"] == "inv-td", r.text)
+ok("captured deliveries don't keep the secret header", "erp-live-secret" not in json.dumps(deliveries))
+
 # ── the SDK and CLI use the same API ────────────────────────────────────────
 from typer.testing import CliRunner
 

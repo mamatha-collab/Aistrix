@@ -4627,6 +4627,9 @@ async def run_flow(flow: dict, *, caller: "ApiCaller", trigger: str, seed_input:
 async def _execute_flow(flow: dict, *, caller: "ApiCaller", trigger: str, run: dict) -> dict:
     """Run a workflow from its first step, or continue `run` (paused at an
     approval step) from its current_step. Returns the run record."""
+    if _platform_workflows.enabled():
+        # Phase 2: the same steps, driven by the AEX orchestrator (AEX_WORKFLOWS=on).
+        return await _platform_workflows.execute_flow(_sys.modules[__name__], flow, caller=caller, trigger=trigger, run=run)
     steps = flow.get("steps") or []
     memory = dict(flow.get("memory") or {})
     provenance = dict(flow.get("memory_provenance") or {})
@@ -9250,4 +9253,5 @@ _code_apps.register_routes(app, _sys.modules[__name__])
 # Platform v1 (/v1/platform): resource specs, releases, environments, evals
 # and AEX pipeline runs. It uses this module's providers, keys and storage.
 from aistrix_platform import api as _platform_api
+from aistrix_platform import workflow_adapter as _platform_workflows
 _platform_supervisor = _platform_api.register_routes(app, _sys.modules[__name__])

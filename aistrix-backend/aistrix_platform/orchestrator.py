@@ -50,13 +50,17 @@ def backoff(attempt: int) -> float:
 class Engine:
     def __init__(self, store: Store, gateway: ModelGateway, services: Optional[Services] = None, *,
                  worker_id: Optional[str] = None, lease_seconds: float = 60.0,
-                 clock: Callable[[], float] = time.time):
+                 clock: Callable[[], float] = time.time, backoff: Callable[[int], float] = backoff,
+                 runtimes: Optional[dict] = None):
+        """runtimes: extra node runtimes by `use` (adapters register theirs here)."""
         self.store = store
         self.gateway = gateway
         self.services = services or Services()
         self.worker_id = worker_id or f"aex-{uuid.uuid4().hex[:12]}"
         self.lease_seconds = lease_seconds
         self.clock = clock
+        self.backoff = backoff
+        self.runtimes = {**RUNTIMES, **(runtimes or {})}
         self._sleep = self.services.sleep or asyncio.sleep
 
     # ── Starting and controlling runs ─────────────────────────────────────────
@@ -280,7 +284,7 @@ class Engine:
             ctx = NodeContext(run=run, node_id=nid, node=node, config=config, value=value, gateway=self.gateway,
                               services=self.services, call=call, idempotency_key=key, timeout=node["timeoutSeconds"])
             try:
-                outcome = await asyncio.wait_for(RUNTIMES[node["use"]](ctx), timeout=node["timeoutSeconds"])
+                outcome = await asyncio.wait_for(self.runtimes[node["use"]](ctx), timeout=node["timeoutSeconds"])
             except asyncio.TimeoutError:
                 error = NodeError(f"Timed out after {node['timeoutSeconds']}s", transient=True, uncertain=node["sideEffect"])
             except NodeError as e:
@@ -289,18 +293,35 @@ class Engine:
                 error = NodeError(f"Failed unexpectedly ({type(e).__name__})", uncertain=node["sideEffect"])
             else:
                 run["cost_usd"] = round(run["cost_usd"] + (outcome.cost_usd or 0.0), 6)
+                if outcome.skipped is not None:
+                    step.update(status="skipped", reason=outcome.skipped, finishedAt=_iso(self.clock()))
+                    await self._save(run)
+                    await self._event(run, "node.skipped", nid, sink=on_event)
+                    return None
+                if outcome.wait:
+                    step.update(status="waiting_approval", pending=_clip(outcome.output), detail=outcome.detail)
+                    run["status"] = "waiting_approval"
+                    await self._save(run)
+                    await self._event(run, "run.waiting", nid, sink=on_event)
+                    return run
                 step.update(status="succeeded", output=_clip(outcome.output), detail=outcome.detail,
                             cost_usd=outcome.cost_usd, finishedAt=_iso(self.clock()))
                 await self._save(run)
                 await self._event(run, "node.finished", nid, {"cost_usd": outcome.cost_usd}, sink=on_event)
                 return None
             step["error"] = error.message
-            if error.transient and repeat_safe and step["attempts"] < attempts_allowed:
+            if error.detail:
+                step["detail"] = error.detail
+            safe = repeat_safe if error.repeat_safe is None else error.repeat_safe
+            if error.transient and safe and step["attempts"] < attempts_allowed:
                 await self._save(run)
                 await self._event(run, "node.retrying", nid, {"error": error.message}, sink=on_event)
-                await self._sleep(backoff(step["attempts"]))
+                fresh = await self._load(run["id"])
+                if fresh["cancel_requested"]:
+                    return await self._finish(fresh, "cancelled", None, on_event)
+                await self._sleep(self.backoff(step["attempts"]))
                 continue
-            if error.uncertain and not repeat_safe:
+            if error.uncertain and not safe:
                 step["status"] = "uncertain"
                 return await self._finish(run, "needs_review", f"Step {nid} {error.message}. It may have reached the "
                                           "outside service, so it wasn't repeated.", on_event)

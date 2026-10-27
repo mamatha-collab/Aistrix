@@ -88,6 +88,8 @@ class NodeOutcome:
     output: Any
     cost_usd: float = 0.0
     detail: dict = field(default_factory=dict)
+    skipped: Optional[str] = None     # the node decided not to run, and why
+    wait: bool = False                # pause the run for a person's approval; output is what they review
 
 
 def _as_prompt_value(value: Any) -> str:

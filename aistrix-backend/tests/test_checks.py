@@ -12,11 +12,16 @@ from pathlib import Path
 import pytest
 
 CHECKS = sorted((Path(__file__).parent / "checks").glob("check_*.py"))
+# Phase 2 parity: the workflow suites run again with workflows on the AEX
+# orchestrator. Every assertion must hold on both engines.
+AEX_PARITY = [p for p in CHECKS if p.stem in ("check_flows", "check_reference_workflows", "check_launch")]
+RUNS = [(p, {}) for p in CHECKS] + [(p, {"AEX_WORKFLOWS": "on"}) for p in AEX_PARITY]
 
 
-@pytest.mark.parametrize("script", CHECKS, ids=[p.stem for p in CHECKS])
-def test_check_script(script: Path):
-    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1"}
+@pytest.mark.parametrize("script, extra_env", RUNS,
+                         ids=[p.stem + ("[aex]" if env else "") for p, env in RUNS])
+def test_check_script(script: Path, extra_env: dict):
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1", "AEX_WORKFLOWS": "off", **extra_env}
     proc = subprocess.run([sys.executable, str(script)], cwd=script.parent, env=env,
                           capture_output=True, text=True, encoding="utf-8", timeout=300)
     lines = proc.stdout.splitlines()

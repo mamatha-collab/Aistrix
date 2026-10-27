@@ -398,3 +398,60 @@ def test_provider_failures_are_classified():
     # (settled as uncertain), not released.
     reserved = e.reservations[0][2]
     assert ("settle", "r1", reserved, "uncertain") in e.reservations
+
+
+def _custom_plan(n=2):
+    order = [f"n{i}" for i in range(n)]
+    nodes = {nid: {"use": "custom.step", "config": {"i": i}, "when": None, "retry": 3, "timeoutSeconds": 30,
+                   "sources": [{"from": "input", "node": None, "path": []}], "sideEffect": False, "ancestors": []}
+             for i, nid in enumerate(order)}
+    return {"planId": "p", "resource": "Workflow/flows/x@1", "workload": "steps", "input": {}, "output": {},
+            "order": order, "nodes": nodes, "outputSource": {"from": "input", "node": None, "path": []},
+            "policies": {"secrets": [], "outboundHosts": [], "providers": None, "budgetUsd": None}}
+
+
+def test_adapter_runtimes_can_skip_wait_and_decide_repeat_safety():
+    from aistrix_platform.errors import NodeError
+    from aistrix_platform.nodes import NodeOutcome
+    calls, waits = [], []
+
+    async def step(ctx):
+        i = ctx.node["config"]["i"]
+        calls.append(i)
+        if i == 0 and calls.count(0) == 1:
+            raise NodeError("busy", transient=True, repeat_safe=True, detail={"sent": True})
+        if i == 0:
+            return NodeOutcome(None, skipped="not today")
+        return NodeOutcome("please check", wait=True)
+
+    store = MemoryStore()
+    e = Engine(store, None, runtimes={"custom.step": step}, backoff=lambda a: 7.0)
+    async def sleep(s):
+        waits.append(s)
+    e._sleep = sleep
+
+    async def go():
+        r = await e.start(_custom_plan(), "seed", owner_id="u1")
+        return await e.execute(r["id"])
+
+    r = run(go())
+    assert r["steps"]["n0"]["status"] == "skipped" and r["steps"]["n0"]["reason"] == "not today"
+    assert r["status"] == "waiting_approval" and r["steps"]["n1"]["pending"] == "please check"
+    assert calls == [0, 0, 1] and waits == [7.0]
+
+
+def test_an_unsafe_attempt_is_not_retried_even_when_transient():
+    from aistrix_platform.errors import NodeError
+
+    async def step(ctx):
+        raise NodeError("reset", transient=True, uncertain=True, repeat_safe=False, detail={"sent": True})
+
+    e = Engine(MemoryStore(), None, runtimes={"custom.step": step})
+
+    async def go():
+        r = await e.start(_custom_plan(1), "seed", owner_id="u1")
+        return await e.execute(r["id"])
+
+    r = run(go())
+    assert r["status"] == "needs_review" and r["steps"]["n0"]["attempts"] == 1
+    assert r["steps"]["n0"]["detail"] == {"sent": True}

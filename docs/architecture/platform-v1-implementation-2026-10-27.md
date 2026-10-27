@@ -68,6 +68,25 @@ in-process on `.env.staging` as that user, with their own saved Claude key:
 
 Records from these runs live under the `verify` namespace on staging.
 
+## Phase 2: existing app types and workflows on AEX (behind flags)
+
+Both flags default to off; production behaviour is unchanged until they're set.
+
+| Flag | Values | What moves |
+| --- | --- | --- |
+| `AEX_WORKFLOWS` | `off` (default), `on` | `main._execute_flow` hands the step loop to the AEX orchestrator (`aistrix_platform/workflow_adapter.py`). Each step is a `workflow.step` node calling the existing `run_flow_step`; `FlowRunStore` reads and writes `flow_runs` in the legacy shape, so the approve, continue, review and cancel endpoints, leases, recovery and the UI are untouched. |
+| `AEX_APP_TYPES` | empty (default), `all`, or a list such as `prompt,native` | `main.execute_run` runs listed app types as an AEX run with one `legacy.app` node (`aistrix_platform/app_adapter.py`). The legacy pipeline streams through unchanged; refusals pass through; finished runs are recorded in `platform_runs` best-effort. |
+
+The orchestrator gained what the adapters needed: nodes can skip themselves or pause for approval, errors can say whether an attempt is safe to repeat, and backoff and node runtimes are pluggable.
+
+Parity evidence:
+
+- `pytest tests` runs every check script twice: flags off, and `[aex]` with `AEX_WORKFLOWS=on` and `AEX_APP_TYPES=all`. Every existing assertion (outputs, errors, run logs, spending, access, approvals, retries, disconnects) must hold on both engines. `AISTRIX_SKIP_AEX_PARITY=1` skips the second pass.
+- `check_platform_app_parity.py`: 16 app types × run, provider failure, access refusal and (for JSON types) contract failure, legacy vs AEX: status, body, provider requests and written rows identical; every streamed run recorded once with its outcome. Report: [app-type-parity-report.md](app-type-parity-report.md).
+- Found and fixed on the way: the adapter first read the legacy stream ahead of the caller, so a caller that disconnected early was logged as a success instead of "cancelled". It now advances the legacy stream only when the caller reads (lockstep), which `check_deploy` verifies.
+
+Still legacy in phase 2: the step logic itself (`run_flow_step`, `_execute_run_legacy`). Moving app types to native nodes (llm.chat, llm.structured) is the next step per type, each with its own parity report.
+
 ## Not done or not verified
 
 - Production Supabase has neither migration.

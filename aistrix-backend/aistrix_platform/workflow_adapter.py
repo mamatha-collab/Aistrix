@@ -48,7 +48,8 @@ def plan_for(flow: dict, host) -> dict:
             "sideEffect": False, "ancestors": [],
         }
     return {"planVersion": 1, "planId": ((flow.get("_plan") or {}).get("id") or "legacy"), "target": "hosted",
-            "resource": f"Workflow/flows/{flow.get('id')}@1", "workload": "steps", "input": {}, "output": {},
+            "resource": f"Workflow/legacy-flows/flow-{str(flow.get('id')).lower()}@1", "workload": "steps",
+            "input": {}, "output": {},
             "order": order, "nodes": nodes, "outputSource": {"from": "input", "node": None, "path": []},
             "policies": {"secrets": [], "outboundHosts": [], "providers": None, "budgetUsd": None},
             "surfaces": {"granted": [], "refused": []}}

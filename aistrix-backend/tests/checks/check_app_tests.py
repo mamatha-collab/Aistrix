@@ -47,8 +47,9 @@ async def fake_stream(system, user_input, model, api_key=None, usage_holder=None
 main.stream_claude = fake_stream
 
 CASES = []         # app_test_cases (the developer's saved tests)
+PLATFORM_RUNS = [] # platform_runs (AEX app-run records, AEX_APP_TYPES)
 class _T:
-    def __init__(self, table="app_test_runs"): self.q = {}; self.rows = CASES if table == "app_test_cases" else ROWS
+    def __init__(self, table="app_test_runs"): self.q = {}; self.rows = CASES if table == "app_test_cases" else PLATFORM_RUNS if table == "platform_runs" else ROWS
     def insert(self, row): self.rows.append({**row, "created_at": f"t{len(self.rows):04d}"}); return self
     def select(self, *a, **k): return self
     def eq(self, k, v): self.q[k] = v; return self

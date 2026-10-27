@@ -12,16 +12,20 @@ from pathlib import Path
 import pytest
 
 CHECKS = sorted((Path(__file__).parent / "checks").glob("check_*.py"))
-# Phase 2 parity: the workflow suites run again with workflows on the AEX
-# orchestrator. Every assertion must hold on both engines.
-AEX_PARITY = [p for p in CHECKS if p.stem in ("check_flows", "check_reference_workflows", "check_launch")]
-RUNS = [(p, {}) for p in CHECKS] + [(p, {"AEX_WORKFLOWS": "on"}) for p in AEX_PARITY]
+# Phase 2 parity: every suite runs again with app types and workflows on the
+# AEX orchestrator. Each assertion must hold on both engines. Set
+# AISTRIX_SKIP_AEX_PARITY=1 to run only the default (flags off) pass.
+AEX_ON = {"AEX_WORKFLOWS": "on", "AEX_APP_TYPES": "all"}
+RUNS = [(p, {}) for p in CHECKS]
+if os.getenv("AISTRIX_SKIP_AEX_PARITY") != "1":
+    RUNS += [(p, AEX_ON) for p in CHECKS]
 
 
 @pytest.mark.parametrize("script, extra_env", RUNS,
                          ids=[p.stem + ("[aex]" if env else "") for p, env in RUNS])
 def test_check_script(script: Path, extra_env: dict):
-    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1", "AEX_WORKFLOWS": "off", **extra_env}
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUNBUFFERED": "1", "AEX_WORKFLOWS": "off",
+           "AEX_APP_TYPES": "", **extra_env}
     proc = subprocess.run([sys.executable, str(script)], cwd=script.parent, env=env,
                           capture_output=True, text=True, encoding="utf-8", timeout=300)
     lines = proc.stdout.splitlines()

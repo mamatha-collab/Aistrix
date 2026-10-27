@@ -2004,8 +2004,23 @@ async def run_app(req: RunRequest, request: Request):
     return await execute_run(req, request, caller=caller)
 
 
-async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller", on_complete=None, track: bool = True,
-                      release: Optional[tuple[int, dict]] = None, private_only: bool = False):
+async def execute_run(req: RunRequest, request: Request, *, caller: "ApiCaller", **kwargs):
+    """Every app run goes through here. App types listed in AEX_APP_TYPES run
+    on the AEX orchestrator (phase 2); everything else, and the run itself,
+    is _execute_run_legacy unchanged."""
+    if os.getenv("AEX_APP_TYPES", "").strip():
+        app_type = "prompt"
+        if req.app_id:
+            row = await load_app_row(req.app_id)
+            app_type = (row or {}).get("app_type") or "prompt"
+        if _platform_apps.enabled_for(app_type):
+            return await _platform_apps.execute_run(_sys.modules[__name__], _execute_run_legacy, req, request,
+                                                    caller=caller, **kwargs)
+    return await _execute_run_legacy(req, request, caller=caller, **kwargs)
+
+
+async def _execute_run_legacy(req: RunRequest, request: Request, *, caller: "ApiCaller", on_complete=None, track: bool = True,
+                              release: Optional[tuple[int, dict]] = None, private_only: bool = False):
     """Shared run pipeline for /run (browser) and /v1/apps/{id}/run (API).
 
     `caller` is already authenticated and carries the active workspace. For
@@ -9254,4 +9269,5 @@ _code_apps.register_routes(app, _sys.modules[__name__])
 # and AEX pipeline runs. It uses this module's providers, keys and storage.
 from aistrix_platform import api as _platform_api
 from aistrix_platform import workflow_adapter as _platform_workflows
+from aistrix_platform import app_adapter as _platform_apps
 _platform_supervisor = _platform_api.register_routes(app, _sys.modules[__name__])

@@ -1,0 +1,69 @@
+# An Aistrix Application with one pipeline workload: read an invoice,
+# extract its fields with a model, send unusual ones for human review, then
+# post the result to an ERP. Validate and run it locally with:
+#   aistrix spec validate examples/invoice-pipeline/aistrix.yaml
+#   aistrix spec plan examples/invoice-pipeline/aistrix.yaml
+apiVersion: aistrix.ai/v1alpha1
+kind: Application
+metadata:
+  name: invoice-extractor
+  namespace: acme
+  version: 1.0.0
+  description: Extracts invoice fields and posts them to the ERP.
+spec:
+  workloads:
+    - name: extract
+      type: pipeline
+      input:
+        type: object
+        required: [invoice_id, file]
+        properties:
+          invoice_id: { type: string, minLength: 1 }
+          file: { $ref: "aistrix://types/file" }
+      output:
+        type: object
+        required: [vendor, total, currency, needs_review]
+        properties:
+          vendor: { type: string }
+          total: { type: number }
+          currency: { type: string }
+          needs_review: { type: boolean }
+      nodes:
+        - id: read
+          use: parse.document
+        - id: fields
+          use: llm.structured
+          model: policy:fast
+          schema: $output
+          prompt: |
+            Extract the vendor, total and currency from this invoice. Set
+            needs_review to true when the total is over 10000 or anything is unclear.
+
+            {{read}}
+        - id: review
+          use: human.approve
+          when: fields.needs_review
+          message: Check this invoice before it is posted.
+        - id: post
+          use: http
+          method: POST
+          url: https://api.example-erp.com/v1/invoices
+          headers:
+            Authorization: "Bearer {{secrets.ERP_API_KEY}}"
+          body:
+            invoice_id: "{{input.invoice_id}}"
+            fields: "{{review}}"
+          idempotencyKey: "invoice-{{input.invoice_id}}"
+          retry: { attempts: 3 }
+      edges:
+        - [input.file, read]
+        - [read, fields]
+        - [fields, review]
+        - [review, post]
+        - [fields, output]
+policies:
+  secrets: [ERP_API_KEY]
+  outboundHosts: [api.example-erp.com]
+  budget: { perRunUsd: 0.05 }
+surfaces: [rest, sdk, hosted-ui]
+tests: [EvalSuite/acme/invoice-regression@1.0.0]

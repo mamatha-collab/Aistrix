@@ -2,3 +2,7 @@
 
 # Tests: pytest tests/  (from aistrix-backend/)
 pytest==9.1.1
+
+# The SDK's CLI, exercised against this backend in check_platform_api.py.
+typer==0.19.2
+rich==14.1.0

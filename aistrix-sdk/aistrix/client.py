@@ -66,7 +66,8 @@ def _error_from_response(resp: httpx.Response) -> AistrixError:
     except ValueError:
         body = {"error": resp.text or resp.reason_phrase}
     detail = body.get("detail", body.get("error"))
-    errors = body.get("errors") or []
+    # Platform endpoints list spec and input problems with their paths.
+    errors = body.get("errors") or [f"{p.get('path') or '(root)'}: {p.get('message')}" for p in body.get("problems") or []]
     if isinstance(detail, dict):
         errors = detail.get("errors") or errors
         detail = detail.get("message")
@@ -305,3 +306,109 @@ class AistrixClient:
     def usage(self) -> dict:
         """Remaining platform runs this hour/day and which provider keys you've added."""
         return self._request("GET", "/v1/usage").json()
+
+    # ── Platform resources (specs, releases, environments, evals, runs) ───────
+
+    @staticmethod
+    def _spec_body(spec: Union[str, Path, dict]) -> dict:
+        if isinstance(spec, dict):
+            return {"spec": spec}
+        if isinstance(spec, str) and "\n" in spec:
+            return {"spec": spec}                     # spec text, not a file name
+        path = Path(spec)
+        if path.suffix.lower() not in (".yaml", ".yml", ".json"):
+            raise AistrixError(f"Spec files end in .yaml, .yml or .json: {path}")
+        if not path.is_file():
+            raise AistrixError(f"No spec file at {path}")
+        return {"spec": path.read_text(encoding="utf-8"), **({"format": "json"} if path.suffix.lower() == ".json" else {})}
+
+    def nodes(self) -> dict:
+        """The node catalog and which resource kinds this platform runs."""
+        return self._request("GET", "/v1/platform/nodes").json()
+
+    def validate_spec(self, spec: Union[str, Path, dict]) -> dict:
+        """{valid, problems, ref, contentHash} for a spec file, text or object."""
+        return self._request("POST", "/v1/platform/specs/validate", json=self._spec_body(spec)).json()
+
+    def plan_spec(self, spec: Union[str, Path, dict], *, workload: Optional[str] = None) -> dict:
+        """Compiled plans per workload, or the problems that stop compiling."""
+        body = {**self._spec_body(spec), **({"workload": workload} if workload else {})}
+        return self._request("POST", "/v1/platform/specs/plan", json=body).json()
+
+    def release(self, spec: Union[str, Path, dict], *, promote: Optional[str] = None) -> dict:
+        """Release a spec at its metadata.version; optionally promote it (dev, staging, production)."""
+        body = {**self._spec_body(spec), **({"promote": promote} if promote else {})}
+        return self._request("POST", "/v1/platform/releases", json=body).json()
+
+    def resource(self, key: str) -> dict:
+        """A resource with its releases and environments. key: Kind/namespace/name."""
+        return self._request("GET", f"/v1/platform/resources/{key}").json()
+
+    def resources(self) -> list[dict]:
+        return self._request("GET", "/v1/platform/resources").json()["resources"]
+
+    def promote(self, key: str, version: str, stage: str) -> dict:
+        return self._request("POST", f"/v1/platform/resources/{key}/environments/{stage}/promote",
+                             json={"version": version}).json()["environment"]
+
+    def rollback(self, key: str, stage: str) -> dict:
+        return self._request("POST", f"/v1/platform/resources/{key}/environments/{stage}/rollback").json()["environment"]
+
+    def set_secret(self, key: str, name: str, value: str) -> dict:
+        return self._request("PUT", f"/v1/platform/resources/{key}/secrets/{name}", json={"value": value}).json()["secret"]
+
+    def list_secrets(self, key: str) -> list[dict]:
+        return self._request("GET", f"/v1/platform/resources/{key}/secrets").json()["secrets"]
+
+    def delete_secret(self, key: str, name: str) -> None:
+        self._request("DELETE", f"/v1/platform/resources/{key}/secrets/{name}")
+
+    def run_eval(self, suite_ref: str) -> dict:
+        """Run a released eval suite (EvalSuite/ns/name@version) against its target release."""
+        return self._request("POST", "/v1/platform/evals", json={"suite": suite_ref}).json()["result"]
+
+    def invoke(self, app: str, input: Any, *, workload: Optional[str] = None, environment: Optional[str] = None,
+               version: Optional[str] = None, wait: bool = True) -> dict:
+        """Run an Application (namespace/name). Returns the run record."""
+        body = {"input": input, "wait": wait, **({"workload": workload} if workload else {}),
+                **({"environment": environment} if environment else {}), **({"version": version} if version else {})}
+        resp = self._request("POST", f"/v1/platform/apps/{app}/runs", json=body,
+                             headers={"X-Aistrix-Client": "sdk"})
+        return resp.json()["run"]
+
+    def invoke_stream(self, app: str, input: Any, *, workload: Optional[str] = None,
+                      environment: Optional[str] = None, version: Optional[str] = None) -> Iterator[dict]:
+        """Run an Application and yield its events as they happen (node.token, node.finished, run.state, ...)."""
+        body = {"input": input, **({"workload": workload} if workload else {}),
+                **({"environment": environment} if environment else {}), **({"version": version} if version else {})}
+        try:
+            with self._http.stream("POST", f"/v1/platform/apps/{app}/runs", json=body,
+                                   headers={"Accept": "text/event-stream", "X-Aistrix-Client": "sdk"}) as resp:
+                if resp.status_code >= 400:
+                    resp.read()
+                    raise _error_from_response(resp)
+                for line in resp.iter_lines():
+                    if line.startswith("data: "):
+                        yield json.loads(line[6:])
+        except httpx.HTTPError as e:
+            raise APIError(f"Stream failed: {e}") from e
+
+    def get_run(self, run_id: str) -> dict:
+        return self._request("GET", f"/v1/platform/runs/{run_id}").json()["run"]
+
+    def list_runs(self, resource: Optional[str] = None, limit: int = 50) -> list[dict]:
+        params = {"limit": limit, **({"resource": resource} if resource else {})}
+        return self._request("GET", "/v1/platform/runs", params=params).json()["runs"]
+
+    def run_events(self, run_id: str, after: int = 0) -> list[dict]:
+        return self._request("GET", f"/v1/platform/runs/{run_id}/events", params={"after": after}).json()["events"]
+
+    def approve(self, run_id: str, node: str, *, approved: bool = True, note: str = "", wait: bool = False) -> dict:
+        return self._request("POST", f"/v1/platform/runs/{run_id}/approvals/{node}",
+                             json={"approved": approved, "note": note, "wait": wait}).json()["run"]
+
+    def cancel_run(self, run_id: str) -> dict:
+        return self._request("POST", f"/v1/platform/runs/{run_id}/cancel").json()["run"]
+
+    def resume_run(self, run_id: str) -> dict:
+        return self._request("POST", f"/v1/platform/runs/{run_id}/resume").json()["run"]

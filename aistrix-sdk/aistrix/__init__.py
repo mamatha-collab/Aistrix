@@ -16,4 +16,4 @@ __all__ = [
     "AistrixError", "APIError", "AuthenticationError", "ContractError",
     "NotFoundError", "PaymentRequiredError", "RateLimitError",
 ]
-__version__ = "0.2.0"
+__version__ = "0.3.0"

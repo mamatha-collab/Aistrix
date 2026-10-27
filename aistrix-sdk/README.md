@@ -82,6 +82,35 @@ aistrix batch-retry BATCH_ID
 aistrix usage
 ```
 
+## Platform resources (0.3)
+
+Define an Application as a spec (YAML or JSON, `apiVersion: aistrix.ai/v1alpha1`),
+release it, test it with an eval suite, promote it and run it. See
+`examples/invoice-pipeline/` in the Aistrix repository.
+
+```bash
+aistrix nodes                                         # pipeline node types
+aistrix spec validate aistrix.yaml                    # schema problems, with paths
+aistrix spec plan aistrix.yaml                        # node order, outside effects, surfaces
+aistrix release aistrix.yaml --promote staging        # immutable release at metadata.version
+aistrix release eval-suite.yaml
+aistrix secrets set Application/acme/invoice-extractor ERP_API_KEY
+aistrix eval EvalSuite/acme/invoice-regression@1.0.0  # production needs this to pass
+aistrix promote Application/acme/invoice-extractor 1.0.0 --env production
+aistrix invoke acme/invoice-extractor -i input.json --stream
+aistrix runs approve RUN_ID review                    # or --reject
+aistrix rollback Application/acme/invoice-extractor --env production
+```
+
+From Python:
+
+```python
+client.release("aistrix.yaml", promote="staging")
+run = client.invoke("acme/invoice-extractor", {"invoice_id": "7", "file": {...}}, environment="staging")
+for event in client.invoke_stream("acme/invoice-extractor", payload):
+    print(event["type"])
+```
+
 ## Upgrading from 0.1
 
 `run()` now returns a `RunResult` instead of yielding tokens; use `stream()` for

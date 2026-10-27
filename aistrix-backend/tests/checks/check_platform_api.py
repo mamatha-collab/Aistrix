@@ -3,10 +3,12 @@ secrets, eval gate, promotion, runs (wait, stream, approvals), rollback,
 ownership and key scope. Supabase, the model and the ERP are fakes; the
 SupabaseStore code paths are the real ones."""
 import asyncio
+import atexit
 import base64
-import copy
 import itertools
 import json
+import shutil
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -289,5 +291,56 @@ ok("rolling back past the first release is refused", r.status_code == 409)
 detail = c.get("/v1/platform/resources/Application/acme/invoice-extractor", headers=H).json()
 ok("the resource view shows releases and environments",
    {x["version"] for x in detail["releases"]} == {"1.0.0", "1.1.0"} and detail["environments"]["production"]["version"] == "1.0.0")
+
+# ── the SDK and CLI use the same API ────────────────────────────────────────
+from typer.testing import CliRunner
+
+from aistrix import AistrixClient, ContractError
+from aistrix import cli as aistrix_cli
+
+sdk = AistrixClient(api_key="jwt-owner", api_url="http://testserver")
+sdk._http = TestClient(main.app, headers=H)
+ok("the SDK validates a spec file", sdk.validate_spec(EXAMPLES / "aistrix.yaml")["valid"])
+ANSWERS[:] = [SMALL]
+ERP.clear()
+record = sdk.invoke("acme/invoice-extractor", invoice(iid="inv-5"))
+ok("the SDK runs the production release", record["status"] == "succeeded" and record["trigger"] == "sdk" and len(ERP) == 1)
+try:
+    sdk.invoke("acme/invoice-extractor", {"invoice_id": "x"})
+    refused = None
+except ContractError as e:
+    refused = e
+ok("SDK errors carry the problem paths", refused is not None and any(x.startswith("input") for x in refused.errors), refused)
+ANSWERS[:] = [SMALL]
+streamed = list(sdk.invoke_stream("acme/invoice-extractor", invoice(iid="inv-6")))
+ok("the SDK streams run events", streamed[-1]["type"] == "run.state" and streamed[-1]["data"]["status"] == "succeeded")
+
+aistrix_cli._client = lambda: sdk
+runner = CliRunner()
+res = runner.invoke(aistrix_cli.app, ["spec", "validate", str(EXAMPLES / "aistrix.yaml")])
+ok("aistrix spec validate", res.exit_code == 0 and "Application/acme/invoice-extractor@1.0.0" in res.output, res.output)
+res = runner.invoke(aistrix_cli.app, ["spec", "plan", str(EXAMPLES / "aistrix.yaml")])
+ok("aistrix spec plan shows order and outside effects", res.exit_code == 0 and "post: http" in res.output and "outside effect" in res.output, res.output)
+TMP = Path(tempfile.mkdtemp(prefix="aistrix-platform-check-"))
+atexit.register(shutil.rmtree, TMP, ignore_errors=True)
+broken = TMP / "broken.yaml"
+broken.write_text(APP_YAML.replace("[api.example-erp.com]", "[nope.example.com]"), encoding="utf-8")
+res = runner.invoke(aistrix_cli.app, ["spec", "plan", str(broken)])
+ok("aistrix spec plan fails with the problem", res.exit_code == 1 and "outboundHosts" in res.output, res.output)
+v12 = TMP / "v12.yaml"
+v12.write_text(APP_YAML.replace("version: 1.0.0", "version: 1.2.0").replace("tests: [EvalSuite/acme/invoice-regression@1.0.0]", ""), encoding="utf-8")
+res = runner.invoke(aistrix_cli.app, ["release", str(v12), "--promote", "staging"])
+ok("aistrix release --promote", res.exit_code == 0 and "Released Application/acme/invoice-extractor@1.2.0" in res.output, res.output)
+ANSWERS[:] = [SMALL, LARGE]
+res = runner.invoke(aistrix_cli.app, ["eval", "EvalSuite/acme/invoice-regression@1.0.0"])
+ok("aistrix eval prints each case", res.exit_code == 0 and "100% passed" in res.output, res.output)
+ANSWERS[:] = [LARGE]
+res = runner.invoke(aistrix_cli.app, ["invoke", "acme/invoice-extractor", "--input", json.dumps(invoice("Bolt 54,000 GBP", "inv-7"))])
+ok("aistrix invoke shows a waiting approval", res.exit_code == 0 and "waiting_approval" in res.output and "aistrix runs approve" in res.output, res.output)
+waiting_id = res.output.split("Run ", 1)[1].split()[0]
+res = runner.invoke(aistrix_cli.app, ["runs", "approve", waiting_id, "review"])
+ok("aistrix runs approve finishes it", res.exit_code == 0 and "succeeded" in res.output, res.output)
+res = runner.invoke(aistrix_cli.app, ["rollback", "Application/acme/invoice-extractor", "--env", "staging"])
+ok("aistrix rollback", res.exit_code == 0 and "staging → 1.0.0" in res.output, res.output)
 
 finish()

@@ -1,0 +1,35 @@
+# Regression tests for the invoice pipeline. Eval runs call the real model
+# but never the ERP: the post step is replaced by the mock below.
+apiVersion: aistrix.ai/v1alpha1
+kind: EvalSuite
+metadata:
+  name: invoice-regression
+  namespace: acme
+  version: 1.0.0
+spec:
+  target:
+    ref: Application/acme/invoice-extractor@1.0.0
+    workload: extract
+  requiredPassRate: 1.0
+  approvals: approve
+  mocks:
+    post: { status: 201, body: { id: eval } }
+  checks:
+    - { type: not_empty, path: vendor }
+    - { type: not_empty, path: currency }
+  cases:
+    - name: small invoice
+      input:
+        invoice_id: eval-1
+        file: { name: small.txt, mime: text/plain, content_base64: "SW52b2ljZSBmcm9tIEFDTUUgR21iSC4gVG90YWw6IDEyMC4wMCBFVVIu" }
+      expect:
+        - { type: equals, path: vendor, value: ACME GmbH }
+        - { type: number_close, path: total, value: 120, tolerance: 0.01 }
+        - { type: equals, path: needs_review, value: false }
+    - name: large invoice needs review
+      input:
+        invoice_id: eval-2
+        file: { name: large.txt, mime: text/plain, content_base64: "SW52b2ljZSBmcm9tIEJvbHQgTHRkLiBUb3RhbDogNTQsMDAwLjAwIEdCUC4=" }
+      expect:
+        - { type: equals, path: needs_review, value: true }
+        - { type: number_close, path: total, value: 54000, tolerance: 0.01 }

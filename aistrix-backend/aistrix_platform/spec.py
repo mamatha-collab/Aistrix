@@ -184,6 +184,11 @@ KIND_SCHEMAS = {
                        "properties": {"ref": _REF_STRING, "workload": {"type": "string", "pattern": NAME}}},
             "requiredPassRate": {"type": "number", "minimum": 0, "maximum": 1},
             "dataset": _REF_STRING,
+            # Eval runs never reach outside services: every step with an
+            # outside effect must be given a stand-in output here.
+            "mocks": {"type": "object", "maxProperties": 50,
+                      "propertyNames": {"pattern": r"^[a-z][a-z0-9_]{0,40}$"}},
+            "approvals": {"enum": ["approve", "reject"]},
             "checks": {"type": "array", "maxItems": 20, "items": _CHECK},
             "cases": {
                 "type": "array", "maxItems": 200,

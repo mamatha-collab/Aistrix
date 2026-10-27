@@ -40,6 +40,8 @@ class Store(Protocol):
     async def list_releases(self, resource_key: str, owner_id: str) -> list[dict]: ...
     async def get_environment(self, resource_key: str, stage: str, owner_id: str) -> Optional[dict]: ...
     async def set_environment(self, row: dict, expected_release: Optional[str]) -> dict: ...
+    async def put_eval_result(self, row: dict) -> dict: ...
+    async def eval_results(self, release_id: str) -> list[dict]: ...
 
 
 class MemoryStore:
@@ -53,6 +55,7 @@ class MemoryStore:
         self.resources: dict[tuple, dict] = {}
         self.releases: dict[str, dict] = {}
         self.environments: dict[tuple, dict] = {}
+        self.evals: list[dict] = []
         self._lock = asyncio.Lock()
 
     async def create_run(self, run: dict) -> None:
@@ -155,3 +158,11 @@ class MemoryStore:
                 raise Conflict("The environment changed since it was read")
             self.environments[key] = copy.deepcopy(row)
             return copy.deepcopy(row)
+
+    async def put_eval_result(self, row: dict) -> dict:
+        self.evals.append(copy.deepcopy(row))
+        return copy.deepcopy(row)
+
+    async def eval_results(self, release_id: str) -> list[dict]:
+        rows = [copy.deepcopy(r) for r in self.evals if r["release_id"] == release_id]
+        return sorted(rows, key=lambda r: r["created_at"], reverse=True)

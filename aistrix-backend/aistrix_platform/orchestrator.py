@@ -63,10 +63,16 @@ class Engine:
 
     async def start(self, plan: dict, input_value: Any, *, owner_id: Optional[str], workspace_id: Optional[str] = None,
                     release_id: Optional[str] = None, environment: Optional[str] = None, trigger: str = "api",
-                    run_id: Optional[str] = None) -> dict:
+                    run_id: Optional[str] = None, mocks: Optional[dict] = None,
+                    auto_approval: Optional[str] = None) -> dict:
+        """mocks: {node id: output} for steps that must not really run (evals).
+        auto_approval: "approve" or "reject" decides approvals without a person."""
         problems = spec.validate_value(plan["input"], input_value, "input")
         if problems:
             raise InputError(problems)
+        unknown = sorted(set(mocks or {}) - set(plan["order"]))
+        if unknown:
+            raise ValueError(f"Mocks name steps that don't exist: {', '.join(unknown)}")
         now = self.clock()
         run = {
             "id": run_id or str(uuid.uuid4()),
@@ -87,6 +93,8 @@ class Engine:
             "cost_usd": 0.0,
             "budget_usd": plan["policies"]["budgetUsd"],
             "cancel_requested": False,
+            "mocks": mocks or {},
+            "auto_approval": auto_approval,
             "steps": {nid: {"status": "pending", "attempts": 0} for nid in plan["order"]},
             "created_at": _iso(now),
             "updated_at": _iso(now),
@@ -184,6 +192,11 @@ class Engine:
                 await self._save(run)
                 await self._event(run, "node.skipped", nid, sink=on_event)
                 continue
+            if nid in (run.get("mocks") or {}):
+                step.update(status="succeeded", output=run["mocks"][nid], detail={"mocked": True})
+                await self._save(run)
+                await self._event(run, "node.finished", nid, {"mocked": True}, sink=on_event)
+                continue
             if step["status"] == "dispatched" and not step.get("idempotencyKey"):
                 # It may have reached the outside service; never guess.
                 step["status"] = "uncertain"
@@ -209,6 +222,9 @@ class Engine:
             await self._save(run)
             await self._event(run, "node.finished", nid, {"approval": "not_needed"}, sink=on_event)
             return None
+        if run.get("auto_approval") and step["status"] not in ("approved", "rejected"):
+            step.update(status="approved" if run["auto_approval"] == "approve" else "rejected",
+                        decidedBy=None, note=f"Decided automatically ({run['auto_approval']})")
         if step["status"] == "approved":
             step.update(status="succeeded", output=value, approved=True)
             await self._save(run)

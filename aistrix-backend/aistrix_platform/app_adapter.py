@@ -76,6 +76,20 @@ def _summarise(chunks: list) -> tuple[dict, Optional[dict]]:
     return {"output": "".join(parts), **final}, error
 
 
+def _final(chunk) -> bool:
+    """Whether a chunk carries the run's last event (done, error, contract error)."""
+    text = chunk.decode() if isinstance(chunk, bytes) else str(chunk)
+    for raw in text.split("\n"):
+        if raw.startswith("data: "):
+            try:
+                ev = json.loads(raw[6:])
+            except ValueError:
+                continue
+            if ev.get("done") or "error" in ev or "contract_error" in ev:
+                return True
+    return False
+
+
 async def _record(host, run: dict) -> None:
     sb = host._service_client()
     if not sb:
@@ -122,6 +136,11 @@ async def execute_run(host, legacy, req, request, *, caller, **kwargs):
                     break
                 seen.append(chunk)
                 await queue.put(chunk)
+                if _final(chunk):
+                    # "done" or an error is the run's last event; API callers stop
+                    # reading there (side effects already ran before it), so the
+                    # run is finished here rather than when the stream is drained.
+                    break
         finally:
             closer = getattr(response.body_iterator, "aclose", None)
             if closer:

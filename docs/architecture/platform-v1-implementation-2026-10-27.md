@@ -85,6 +85,29 @@ Parity evidence:
 - `check_platform_app_parity.py`: 16 app types × run, provider failure, access refusal and (for JSON types) contract failure, legacy vs AEX: status, body, provider requests and written rows identical; every streamed run recorded once with its outcome. Report: [app-type-parity-report.md](app-type-parity-report.md).
 - Found and fixed on the way: the adapter first read the legacy stream ahead of the caller, so a caller that disconnected early was logged as a success instead of "cancelled". It now advances the legacy stream only when the caller reads (lockstep), which `check_deploy` verifies.
 
+### Phase 2 on staging, 2026-10-27
+
+`venv/Scripts/python scripts/verify_aex_flags_staging.py --email <staging user>` runs the backend in-process on
+`.env.staging` with `AEX_WORKFLOWS=on` and `AEX_APP_TYPES=all`, through the real HTTP endpoints, as that user with
+their saved Claude key. Sign-in is replaced by a local test token, and the key is read by user id instead of under
+the user's session; everything after that is the real path. Only apps without tools or webhooks and workflows
+without API steps were run. **15 passed, 0 failed.**
+
+| What ran | Path | Result |
+| --- | --- | --- |
+| Support Reply Drafter (prompt) | `/v1/apps/{id}/run`, `stream: false` | 200, drafted reply; recorded `succeeded` |
+| Invoice Extractor (structured) | same | 200, JSON with vendor, number, date, total 144.00 GBP; recorded |
+| Sales CSV Analyst (data) | same | 200, correct regional analysis; recorded |
+| Lead Qualifier (form) | `/run`, streamed | 200, 77 chunks; recorded |
+| Bella - Bakery Helper (chatbot) | `/run`, streamed | 200, 20 chunks; recorded |
+| Support Reply Drafter, flags off | `/v1/apps/{id}/run` | 200 on the legacy path, no `platform_runs` record |
+| QA Workflow Check | `/v1/flows/{id}/runs`, then approve | waited at approval; approving ran Lead Qualifier; `flow_runs` kept the legacy shape |
+
+Found by this run and fixed: on the API path (`stream: false`) callers stop reading at the "done" event, and the
+adapter recorded those runs as "cancelled". It now treats done or error as the end of the run; a new case in
+`check_platform_app_parity.py` fails without the fix. The run-log comparison in this script compared empty logs
+(the owner's own runs aren't logged on either path), so it proves nothing; the local suites cover run logs.
+
 Still legacy in phase 2: the step logic itself (`run_flow_step`, `_execute_run_legacy`). Moving app types to native nodes (llm.chat, llm.structured) is the next step per type, each with its own parity report.
 
 ## Not done or not verified

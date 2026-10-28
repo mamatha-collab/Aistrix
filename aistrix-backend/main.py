@@ -2445,8 +2445,17 @@ async def _execute_run_legacy(req: RunRequest, request: Request, *, caller: "Api
 
             # ── Standard streaming ──
             else:
-                async for token in stream_fn(system, req.input, model, user_api_key, temperature=temp, usage_holder=usage,
-                                             **({"images": req.images} if req.images else {})):
+                if _platform_native.eligible(app_row=app_row, provider=provider, system=system, temperature=temp,
+                                             tools=tools, contract_fields=contract_fields, custom=custom,
+                                             images=req.images, private_only=private_only):
+                    # Phase 2 (AEX_NATIVE_TYPES): the same call, made by an AEX llm.chat node.
+                    tokens = _platform_native.stream(_sys.modules[__name__], app_row=app_row, system=system,
+                                                     user_input=req.input, provider=provider, model=model,
+                                                     api_key=user_api_key, temperature=temp, usage=usage, caller=caller)
+                else:
+                    tokens = stream_fn(system, req.input, model, user_api_key, temperature=temp, usage_holder=usage,
+                                       **({"images": req.images} if req.images else {}))
+                async for token in tokens:
                     collected.append(token)
                     yield _sse({"token": token})
                 stop = usage.pop("_stop", None)
@@ -9270,4 +9279,5 @@ _code_apps.register_routes(app, _sys.modules[__name__])
 from aistrix_platform import api as _platform_api
 from aistrix_platform import workflow_adapter as _platform_workflows
 from aistrix_platform import app_adapter as _platform_apps
+from aistrix_platform import native_prompt as _platform_native
 _platform_supervisor = _platform_api.register_routes(app, _sys.modules[__name__])

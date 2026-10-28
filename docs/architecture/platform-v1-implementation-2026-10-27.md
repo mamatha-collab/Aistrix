@@ -108,6 +108,25 @@ adapter recorded those runs as "cancelled". It now treats done or error as the e
 `check_platform_app_parity.py` fails without the fix. The run-log comparison in this script compared empty logs
 (the owner's own runs aren't logged on either path), so it proves nothing; the local suites cover run logs.
 
+### First native app type: prompt (AEX_NATIVE_TYPES=prompt)
+
+For a qualifying prompt app, the model call in `_execute_run_legacy`'s standard streaming branch is made by AEX itself (`aistrix_platform/native_prompt.py`):
+
+1. The app's configuration becomes an Application spec with one `llm.chat` node.
+2. The platform compiler compiles it.
+3. The orchestrator runs it, through the model gateway.
+
+The gateway's provider adapter makes the call with exactly the legacy arguments, writes usage and stop reasons into the legacy usage dict, and re-raises the provider's own exception, so legacy error handling answers as before. Tokens flow in lockstep with the caller. Access, limits, key choice, the spend reservation, knowledge and logging stay in the legacy pipeline.
+
+Qualifying: `app_type` prompt, no tools, no output contract, no images, not custom or private, provider Claude, OpenAI or Gemini, temperature at most 1, system prompt within 20,000 characters. Anything else keeps the legacy call. `AEX_NATIVE_TYPES` combines with `AEX_APP_TYPES`: with both on, a run has an outer `legacy.app` record and an inner native `chat` record.
+
+Parity: `check_platform_native_prompt.py`, 14 cases, legacy vs native, with status, body, provider call, written rows (run log included) and a native run record per eligible case. Report: [native-prompt-parity-report.md](native-prompt-parity-report.md). Changing the system prompt by one space makes 10 checks fail. In 23 runs of the check, one run had a single failure that didn't recur and wasn't captured.
+
+Found while building it:
+- The app parity check had run as the app owner, whose runs aren't logged, so it never compared the run log. It now runs as an end user and requires the log on the legacy side.
+- That revealed a real adapter bug: a contract failure was logged as "cancelled", because the legacy pipeline sends `contract_error` before logging. Fixed.
+- The comparison itself was flaky, because the test client ran each request on a throwaway event loop that dropped background log deliveries. Both checks now use one persistent client and match rows to each run by app id.
+
 Still legacy in phase 2: the step logic itself (`run_flow_step`, `_execute_run_legacy`). Moving app types to native nodes (llm.chat, llm.structured) is the next step per type, each with its own parity report.
 
 ## Not done or not verified

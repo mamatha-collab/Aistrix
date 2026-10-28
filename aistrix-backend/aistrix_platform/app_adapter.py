@@ -77,7 +77,11 @@ def _summarise(chunks: list) -> tuple[dict, Optional[dict]]:
 
 
 def _final(chunk) -> bool:
-    """Whether a chunk carries the run's last event (done, error, contract error)."""
+    """Whether a chunk carries the run's last event, after which the legacy
+    pipeline has nothing left to do: "done" (side effects run before it) and
+    errors (their outcome is logged before they're sent). A contract error is
+    sent before its outcome is logged, so it doesn't end the run here; the
+    stream keeps going in lockstep until the pipeline finishes."""
     text = chunk.decode() if isinstance(chunk, bytes) else str(chunk)
     for raw in text.split("\n"):
         if raw.startswith("data: "):
@@ -85,7 +89,7 @@ def _final(chunk) -> bool:
                 ev = json.loads(raw[6:])
             except ValueError:
                 continue
-            if ev.get("done") or "error" in ev or "contract_error" in ev:
+            if ev.get("done") or "error" in ev:
                 return True
     return False
 

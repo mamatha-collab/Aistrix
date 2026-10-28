@@ -39,11 +39,30 @@ class Q:
     def maybe_single(self): self.one = True; return self
     def single(self): self.one = True; return self
     def insert(self, rows): self.op, self.payload = "insert", rows; return self
-    def upsert(self, rows, **k): self.op, self.payload = "insert", rows; return self
+    def upsert(self, rows, on_conflict=None, ignore_duplicates=False, **k):
+        # Like Postgres: a row whose conflict key already exists is skipped
+        # (ignore_duplicates) or updated, never stored twice. Run logs rely on
+        # this when the telemetry outbox replays a delivery.
+        self.op, self.payload, self.conflict, self.ignore = "upsert", rows, on_conflict, ignore_duplicates
+        return self
     def update(self, patch): self.op, self.payload = "update", patch; return self
     def delete(self): self.op = "delete"; return self
     def execute(self):
         rows = self.db.setdefault(self.t, [])
+        if self.op == "upsert":
+            keys = [k for k in (self.conflict or "").split(",") if k]
+            out = []
+            for r in (self.payload if isinstance(self.payload, list) else [self.payload]):
+                existing = next((x for x in rows if keys and all(x.get(k) == r.get(k) for k in keys)), None)
+                if existing is not None:
+                    if not self.ignore:
+                        existing.update(json.loads(json.dumps(r)))
+                        out.append(dict(existing))
+                    continue
+                r = {"id": str(uuid.uuid4()), "created_at": datetime.now(timezone.utc).isoformat(), **json.loads(json.dumps(r))}
+                rows.append(r)
+                out.append(dict(r))
+            return Res(data=out, count=None)
         if self.op == "insert":
             out = []
             for r in (self.payload if isinstance(self.payload, list) else [self.payload]):

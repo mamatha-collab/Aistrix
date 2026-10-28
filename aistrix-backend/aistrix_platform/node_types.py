@@ -48,7 +48,15 @@ CATALOG: dict[str, NodeType] = {t.use: t for t in [
         config_schema={"type": "object", "required": ["model", "prompt", "schema"], "additionalProperties": False,
                        "properties": {"model": _MODEL, "prompt": _PROMPT, "system": _PROMPT,
                                       "schema": {"oneOf": [{"type": "object"}, {"const": "$output"}]},
-                                      "maxTokens": {"type": "integer", "minimum": 16, "maximum": 4096}}},
+                                      "maxTokens": {"type": "integer", "minimum": 16, "maximum": 4096},
+                                      "temperature": {"type": "number", "minimum": 0, "maximum": 1},
+                                      # false: the system prompt already says how to answer
+                                      # (its own output contract); nothing is appended.
+                                      "instructions": {"type": "boolean"},
+                                      # The second attempt's prompt: {input}, {previous} (the
+                                      # rejected answer, cut to repairMaxChars) and {errors}.
+                                      "repair": {"type": "string", "minLength": 1, "maxLength": 4000},
+                                      "repairMaxChars": {"type": "integer", "minimum": 100, "maximum": 50000}}},
         accepts=frozenset({TEXT, OBJECT, LIST, NUMBER, BOOLEAN}), output=OBJECT, model_call=True,
     ),
     NodeType(

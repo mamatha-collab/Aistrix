@@ -138,6 +138,26 @@ Found while building it:
 - That revealed a real adapter bug: a contract failure was logged as "cancelled", because the legacy pipeline sends `contract_error` before logging. Fixed.
 - The comparison itself was flaky, because the test client ran each request on a throwaway event loop that dropped background log deliveries. Both checks now use one persistent client and match rows to each run by app id.
 
+### Second native type: output contracts (AEX_NATIVE_TYPES includes `structured`)
+
+Any app type whose run has an output contract (the legacy structured-output branch) can run on an `llm.structured` node (`native_prompt.structured`). The node gained optional settings that keep its default behaviour unchanged:
+
+- `instructions: false` uses the given system prompt as is; the legacy one already carries its `<output_contract>` block.
+- `repair` and `repairMaxChars` set the second attempt's prompt.
+- `temperature` sets the sampling temperature.
+- A `structured_check` service plugs in a checker. The legacy `_strip_json_fences`, `_parse_json_output` and `_validate_schema_value` are used, so error wording is identical.
+
+The node runs both attempts itself and reports "repairing_output" through a new `on_status` call-context hook. The provider adapter makes each attempt exactly as the legacy loop did: its own usage dict, refusal checked before usage is added. `main` turns the node's events into the legacy messages and outcomes.
+
+Qualifying: as for prompt apps, but with an output contract; temperature is the legacy `min(temp, 0.3)`.
+
+Parity: `check_platform_native_structured.py`, 21 cases. Report: [native-structured-parity-report.md](native-structured-parity-report.md). Adding one space to the repair prompt makes exactly the 10 repair cases fail.
+
+Found by the check and fixed:
+
+- The legacy loop sends "repairing_output" after the last failed attempt too, before the contract error; the native path now does the same.
+- Lockstep was one step loose: after the repair event the node started the second attempt before the caller read on. A caller who left there still caused a second provider call. The node now waits until the caller asks for the next event.
+
 Still legacy in phase 2: the step logic itself (`run_flow_step`, `_execute_run_legacy`). Moving app types to native nodes (llm.chat, llm.structured) is the next step per type, each with its own parity report.
 
 ## Not done or not verified

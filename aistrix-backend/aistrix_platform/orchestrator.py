@@ -279,8 +279,12 @@ class Engine:
                 if on_event:
                     await on_event({"type": "node.token", "node": nid, "data": {"text": text}, "run": run["id"]})
 
+            async def status(data: dict, _nid=nid):
+                if on_event:
+                    await on_event({"type": "node.status", "node": _nid, "data": data, "run": run["id"]})
+
             call = CallContext(owner_id=run["owner_id"], workspace_id=run["workspace_id"], resource=run["resource"],
-                               budget_remaining=remaining, on_token=token)
+                               budget_remaining=remaining, on_token=token, on_status=status)
             ctx = NodeContext(run=run, node_id=nid, node=node, config=config, value=value, gateway=self.gateway,
                               services=self.services, call=call, idempotency_key=key, timeout=node["timeoutSeconds"])
             try:

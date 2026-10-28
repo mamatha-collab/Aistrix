@@ -37,6 +37,7 @@ class CallContext:
     resource: str
     budget_remaining: Optional[float]           # None: no run budget
     on_token: Optional[Callable[[str], Awaitable[None]]] = None
+    on_status: Optional[Callable[[dict], Awaitable[None]]] = None   # progress a node reports (e.g. repairing output)
 
 
 @dataclass

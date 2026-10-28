@@ -58,6 +58,9 @@ class Services:
     # (method, url, headers, json body or None, allowed hosts, timeout, owner_id=) -> HttpResponse.
     # aistrix-test://destinations/<name> URLs go to the owner's test destination.
     http: Optional[Callable[..., Awaitable[HttpResponse]]] = None
+    # (model text, schema) -> (parsed value, problems, cleaned text): replaces
+    # llm.structured's own JSON Schema check (adapters keep legacy messages).
+    structured_check: Optional[Callable[[str, dict], tuple]] = None
     # (owner id, resource key, secret names) -> {name: value}
     secrets: Optional[Callable[[Optional[str], str, list], Awaitable[dict]]] = None
     sleep: Optional[Callable[[float], Awaitable[None]]] = None
@@ -133,39 +136,52 @@ async def llm_chat(ctx: NodeContext) -> NodeOutcome:
 _FENCE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.S)
 
 
-def _parse_json(text: str) -> Any:
+def _check_json(text: str, schema: dict) -> tuple[Any, list[str], str]:
+    """llm.structured's own check: (parsed, problems, cleaned text)."""
     m = _FENCE.match(text)
-    return json.loads(m.group(1) if m else text)
+    cleaned = m.group(1) if m else text
+    try:
+        data = json.loads(cleaned)
+    except ValueError:
+        return None, ["The answer wasn't valid JSON."], cleaned
+    return data, [f"{p.path or '(root)'}: {p.message}" for p in spec.validate_value(schema, data)[:5]], cleaned
 
 
 async def llm_structured(ctx: NodeContext) -> NodeOutcome:
     schema = ctx.config["schema"]
-    system = (ctx.config.get("system") or "You extract structured data.") + "\n\n" + STRUCTURED_SYSTEM.format(
-        schema=json.dumps(schema, ensure_ascii=False))
-    prompt = _prompt(ctx)
+    system = ctx.config.get("system") or "You extract structured data."
+    if ctx.config.get("instructions", True):
+        system += "\n\n" + STRUCTURED_SYSTEM.format(schema=json.dumps(schema, ensure_ascii=False))
+    first = _prompt(ctx)
+    prompt = first
     providers = ctx.run["plan"]["policies"]["providers"]
     max_tokens = ctx.config.get("maxTokens") or 1024
+    check = ctx.services.structured_check or _check_json
     total = 0.0
     detail: dict = {}
     for attempt in (1, 2):
         result = await ctx.gateway.invoke(ctx.call, model_ref=ctx.config["model"], providers=providers, system=system,
-                                          prompt=prompt, max_tokens=max_tokens, temperature=0.0)
+                                          prompt=prompt, max_tokens=max_tokens, temperature=ctx.config.get("temperature", 0.0))
         total += result.cost_usd or 0.0
         if ctx.call.budget_remaining is not None:
             ctx.call.budget_remaining -= result.cost_usd or 0.0
         detail = {"provider": result.provider, "model": result.model, "usage": result.usage, "attempts": attempt}
-        try:
-            data = _parse_json(result.text)
-        except ValueError:
-            problem = "The answer wasn't valid JSON."
-        else:
-            problems = spec.validate_value(schema, data)
-            if not problems:
-                return NodeOutcome(data, cost_usd=total, detail=detail)
-            problem = "; ".join(f"{p.path or '(root)'}: {p.message}" for p in problems[:5])
+        data, problems, cleaned = check(result.text, schema)
+        if not problems:
+            return NodeOutcome(data, cost_usd=total, detail={**detail, "text": cleaned})
+        if attempt == 2:
+            break
         # One repair attempt, telling the model what was wrong.
-        prompt = f"{_prompt(ctx)}\n\nYour previous answer was rejected: {problem}\nAnswer again with valid JSON only."
-    raise NodeError(f"The model's answer didn't match the schema after 2 tries: {problem}", code="schema_mismatch")
+        if ctx.call.on_status:
+            await ctx.call.on_status({"status": "repairing_output", "errors": problems})
+        template = ctx.config.get("repair")
+        if template:
+            prompt = template.format(input=first, previous=cleaned[:ctx.config.get("repairMaxChars") or 6000],
+                                     errors="; ".join(problems))
+        else:
+            prompt = f"{first}\n\nYour previous answer was rejected: {'; '.join(problems)}\nAnswer again with valid JSON only."
+    raise NodeError(f"The model's answer didn't match the schema after 2 tries: {'; '.join(problems)}",
+                    code="schema_mismatch", detail={**detail, "errors": problems})
 
 
 def _code_input(ctx: NodeContext) -> Any:

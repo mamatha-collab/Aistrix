@@ -2410,6 +2410,32 @@ async def _execute_run_legacy(req: RunRequest, request: Request, *, caller: "Api
                         await outcome(False, "contract")
                         return
 
+            # ── Structured output on AEX (AEX_NATIVE_TYPES includes "structured"):
+            # the same attempts, repair and checks, made by an llm.structured node ──
+            elif contract_fields and _platform_native.structured_eligible(
+                    app_row=app_row, provider=provider, system=system, temperature=min(temp, 0.3), tools=tools,
+                    contract_fields=contract_fields, custom=custom, images=req.images, private_only=private_only):
+                text = None
+                async for kind, data in _platform_native.structured(
+                        _sys.modules[__name__], app_row=app_row, system=system, user_input=req.input, provider=provider,
+                        model=model, api_key=user_api_key, temperature=min(temp, 0.3), usage=usage, caller=caller,
+                        fields=contract_fields):
+                    if kind == "status":
+                        yield _sse({"status": "repairing_output", "errors": data})
+                    elif kind == "refusal":
+                        await outcome(False, "refusal")
+                        yield _sse({"kind": "refusal", "error": REFUSAL_MESSAGE})
+                        return
+                    elif kind == "contract_error":
+                        yield _sse({"contract_error": data})
+                        await outcome(False, "contract")
+                        return
+                    else:
+                        text = data
+                collected.append(text)
+                for i in range(0, len(text), 200):
+                    yield _sse({"token": text[i:i + 200]})
+
             # ── Structured output: buffer, validate, one self-repair retry ──
             elif contract_fields:
                 attempt_input = req.input

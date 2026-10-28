@@ -153,6 +153,20 @@ Qualifying: as for prompt apps, but with an output contract; temperature is the 
 
 Parity: `check_platform_native_structured.py`, 21 cases. Report: [native-structured-parity-report.md](native-structured-parity-report.md). Adding one space to the repair prompt makes exactly the 10 repair cases fail.
 
+On staging, 2026-10-28: `venv/Scripts/python scripts/verify_native_prompt_staging.py --email <staging user> --kind structured` ran the user's only app with an output contract, Invoice Extractor (claude-haiku-5-5), with only `AEX_NATIVE_TYPES=structured` on. **11 passed, 0 failed.**
+
+| Input | Extracted (checked against the app's own fields) |
+| --- | --- |
+| UK invoice, GBP | Northwind Supplies Ltd, 2026-0457, 2026-10-20, 144.00 GBP |
+| German invoice, EUR | Brauhaus Becker GmbH, RE-88213, 2026-10-14, 1487.50 EUR |
+| Statement with discount and an already-paid balance, USD | BOLT LOGISTICS LTD, BL/2026/3301, 2026-10-02, 2451.47 USD |
+
+- Each run was one native `llm.structured` run, succeeded on the app's model.
+- The public API (`stream: false`) also ran native and succeeded.
+- With the flag off, the same app ran the legacy loop with no native record, and the caller saw the same event kinds and final metadata.
+- Every answer was valid on the first try, so the repair path wasn't exercised against the real model; the local parity check covers it.
+- The script's prompt mode was rerun after the change: 8 passed.
+
 Found by the check and fixed:
 
 - The legacy loop sends "repairing_output" after the last failed attempt too, before the contract error; the native path now does the same.

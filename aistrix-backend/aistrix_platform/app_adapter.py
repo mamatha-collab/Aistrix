@@ -99,7 +99,7 @@ async def _record(host, run: dict) -> None:
     if not sb:
         return
     row = {"id": run["id"], "owner_id": run.get("owner_id"), "workspace_id": run.get("workspace_id"),
-           "resource_key": run["resource_key"], "workload": "run", "release_id": None, "environment": None,
+           "resource_key": run["resource_key"], "workload": run.get("workload") or "run", "release_id": None, "environment": None,
            "trigger": run["trigger"], "status": run["status"], "record": {k: v for k, v in run.items() if k != "plan"},
            "version": run.get("version") or 1, "created_at": run["created_at"], "updated_at": run["updated_at"]}
     try:

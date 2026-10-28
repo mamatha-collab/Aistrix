@@ -86,7 +86,9 @@ c.__enter__()
 
 
 def native_record(app_id):
-    return [r for r in rows_for(app_id, "platform_runs") if (r.get("record") or {}).get("workload") == "chat"]
+    # By the stored column (what queries filter on), and the record must agree.
+    return [r for r in rows_for(app_id, "platform_runs")
+            if r.get("workload") == "chat" and (r.get("record") or {}).get("workload") == "chat"]
 
 
 def once(template: dict, body: dict, native: bool, *, path: str = "/run", logs: bool = True) -> dict:

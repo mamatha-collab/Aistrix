@@ -122,6 +122,17 @@ Qualifying: `app_type` prompt, no tools, no output contract, no images, not cust
 
 Parity: `check_platform_native_prompt.py`, 14 cases, legacy vs native, with status, body, provider call, written rows (run log included) and a native run record per eligible case. Report: [native-prompt-parity-report.md](native-prompt-parity-report.md). Changing the system prompt by one space makes 10 checks fail. In 23 runs of the check, one run had a single failure that didn't recur and wasn't captured.
 
+On staging, 2026-10-28: `venv/Scripts/python scripts/verify_native_prompt_staging.py --email <staging user>` ran three real prompt apps with only `AEX_NATIVE_TYPES=prompt` on, with the user's own Claude key. Setup is the same as the phase 2 staging check (in-process endpoints, local sign-in stand-in). **8 passed, 0 failed.**
+
+| App | Model | Result |
+| --- | --- | --- |
+| Support Reply Drafter | claude-haiku-5-5 | Streamed reply. One native run, `llm.chat` succeeded on that model. Public API (`stream: false`) also native and succeeded. |
+| Meeting Notes Summarizer | claude-sonnet-5-5 | Streamed summary; native run succeeded on that model |
+| QA Build Verification | claude-haiku-4-5-20251001 | Streamed QA summary; native run succeeded on that model |
+| Support Reply Drafter, flag off | claude-haiku-5-5 | Legacy call, no native record. Same event kinds and same final provider/model metadata as native. |
+
+Found by this run and fixed: AEX run records always stored `workload = "run"` in the database column. Native runs said "chat" only inside the record, so they couldn't be told apart by query. The native parity check now checks the column too.
+
 Found while building it:
 - The app parity check had run as the app owner, whose runs aren't logged, so it never compared the run log. It now runs as an end user and requires the log on the legacy side.
 - That revealed a real adapter bug: a contract failure was logged as "cancelled", because the legacy pipeline sends `contract_error` before logging. Fixed.

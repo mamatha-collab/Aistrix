@@ -129,17 +129,28 @@ class Registry:
         env = await self.store.get_environment(resource_key, stage, owner_id)
         return await self.store.get_release(env["release_id"]) if env else None
 
-    async def _check_gate(self, release: dict) -> None:
+    async def gate_report(self, release: dict) -> dict:
+        """Read-only report using the same latest-result rule as promotion."""
         tests = release["spec"].get("tests") or []
-        if not tests:
-            return
-        results = await self.store.eval_results(release["id"])
-        failing = []
+        results = await self.store.eval_results(release["id"]) if tests else []
+        checks = []
         for ref in tests:
             latest = next((r for r in results if r["suite"] == ref), None)
+            checks.append({"suite": ref, "status": "missing" if not latest else "passed" if latest["passed"] else "failed",
+                           "result_id": latest["id"] if latest else None,
+                           "pass_rate": latest["pass_rate"] if latest else None,
+                           "required": latest["required"] if latest else None})
+        return {"release_id": release["id"], "eligible": all(c["status"] == "passed" for c in checks), "checks": checks}
+
+    async def _check_gate(self, release: dict) -> None:
+        report = await self.gate_report(release)
+        failing = []
+        for check in report["checks"]:
+            ref = check["suite"]
+            latest = check if check["status"] != "missing" else None
             if not latest:
                 failing.append(f"{ref} hasn't been run on this release")
-            elif not latest["passed"]:
+            elif check["status"] == "failed":
                 failing.append(f"{ref} failed ({latest['pass_rate']:.0%} passed, {latest['required']:.0%} needed)")
         if failing:
             raise GateRefused("Production needs passing evals: " + "; ".join(failing))

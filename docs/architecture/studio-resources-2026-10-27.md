@@ -1,0 +1,15 @@
+# Studio resource inspection
+
+## Developer workspace entry point
+
+The Developer landing page now starts with a capability chooser matching the architecture catalog, with an AI Apps entry for existing application types: AI Apps, Models, Agents, Nodes, Tools, MCP, Workflows, Knowledge, Data, Prompts, Evaluations, Interfaces, and Operations. Selecting a capability reveals its available tasks and implementation limits. Actions open existing Studio tools, resource inspection, provider settings, or connected workspace pages. Nodes reads the real built-in catalog from `/v1/platform/nodes`; managed MCP hosting is marked planned. Application editing remains available through the application Studio shortcut. The logo and Workspace navigation return to the chooser on desktop and mobile; Studio tools and the app creation flow have a visible Back to types action on desktop and mobile, using the existing unsaved-change guard. AI Apps lists the shared application type catalog and opens the existing type picker.
+
+Verification for the chooser: production webpack build passed; lint passed with repository warnings; six desktop/mobile browser tests passed covering all thirteen choices, node catalog, MCP availability, workflow navigation, return home, and platform resource inspection. Desktop and mobile screenshots were inspected. Browser fixtures verify UI behavior rather than deployed backend capability.
+
+The architecture revision calls for a minimal Studio view of the same releases and runs exposed through the Platform API and CLI. The Developer workspace now includes Resources on desktop and mobile, independently of legacy app creation.
+
+The view uses authenticated `/v1/platform` endpoints to list resources, inspect immutable release IDs and content hashes, show environment version pointers, read evaluation results, and inspect recent runs, step state, model cost, budget, errors, and recorded events. Refresh reloads server state. Resource selection changes discard the previous resource's run and evaluation selection. Failed requests show errors with a Refresh action.
+
+This increment provides inspection, not a full browser IDE. Release authoring, promotion, rollback, invocation, and approvals continue through the existing API, CLI, and SDK. Capabilities absent from the backend are not advertised as implemented. The existing application and marketplace routes remain available for compatibility.
+
+Verification: `npm test -- --maxWorkers=1 --reporter=dot` with TEMP and TMP pointing to the workspace cache: 45 test files, 390 tests passed. `npm run lint` passed with existing repository warnings. The production build with webpack passed outside the sandbox using local fixture service settings. `npx playwright test --config playwright.next.config.js --grep 'platform resources'`: desktop and mobile passed (2 tests); screenshots were inspected. The desktop navigation was widened after inspection to accommodate the fourth Manage item. Browser tests use synthetic data and do not prove deployed platform acceptance.

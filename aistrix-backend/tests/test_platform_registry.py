@@ -153,3 +153,26 @@ def test_a_failing_case_fails_the_suite_and_blocks_production():
 ])
 def test_checks(rule, output, ok):
     assert (evals.check(output, rule) is None) == ok
+
+
+def test_gate_report_uses_latest_result_for_exact_suite_and_target_release():
+    e, reg = setup()
+
+    async def go():
+        app = await reg.release(load("aistrix.yaml"), owner_id=OWNER, workspace_id=None, by=OWNER)
+        ref = app["spec"]["tests"][0]
+        assert (await reg.gate_report(app))["checks"][0]["status"] == "missing"
+        for key, passed, stamp in [("older", True, "2026-01-01"), ("latest", False, "2026-01-02")]:
+            await e.store.put_eval_result({"id": key, "release_id": app["id"], "suite": ref, "passed": passed,
+                                           "pass_rate": 1.0 if passed else 0.5, "required": 1.0, "created_at": stamp})
+        report = await reg.gate_report(app)
+        assert not report["eligible"] and report["checks"][0]["result_id"] == "latest"
+        with pytest.raises(GateRefused):
+            await reg._check_gate(app)
+        # Passing another suite or another release cannot satisfy this gate.
+        await e.store.put_eval_result({"id": "unrelated", "release_id": app["id"], "suite": ref + "1", "passed": True,
+                                       "pass_rate": 1.0, "required": 1.0, "created_at": "2026-01-03"})
+        assert not (await reg.gate_report(app))["eligible"]
+        app["spec"]["tests"] = []
+        assert await reg.gate_report(app) == {"release_id": app["id"], "eligible": True, "checks": []}
+    run(go())

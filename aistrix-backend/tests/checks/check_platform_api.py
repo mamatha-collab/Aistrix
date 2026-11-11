@@ -186,6 +186,13 @@ ok("plan explains compile problems", r.json()["plans"] == {} and "outboundHosts"
 r = c.post("/v1/platform/releases", json={"spec": APP_YAML}, headers=H)
 ok("an app is released", r.status_code == 201 and r.json()["release"]["workloads"] == ["extract"], r.text)
 app_release = r.json()["release"]
+r = c.get(f"/v1/platform/releases/{app_release['id']}", headers=H)
+ok("Studio reads the pinned spec and missing evaluation requirements", r.status_code == 200
+   and r.json()["spec"]["kind"] == "Application" and not r.json()["gate"]["eligible"]
+   and r.json()["gate"]["checks"][0]["status"] == "missing"
+   and r.json()["evaluation"]["workloads"][0]["external_steps"] == ["post"], r.text)
+ok("another owner cannot read a release spec or evaluation gate", c.get(f"/v1/platform/releases/{app_release['id']}", headers=H2).status_code == 404)
+ok("release detail needs authentication", c.get(f"/v1/platform/releases/{app_release['id']}").status_code == 401)
 r2 = c.post("/v1/platform/releases", json={"spec": APP_YAML}, headers=H)
 ok("releasing the same content again returns the same release", r2.status_code == 201 and r2.json()["release"]["id"] == app_release["id"])
 r = c.post("/v1/platform/releases", json={"spec": APP_YAML.replace("Extracts invoice fields", "Changed")}, headers=H)
@@ -223,6 +230,8 @@ ok("eval runs didn't call the ERP", ERP == [])
 ok("eval runs use the developer's own key", all(p["key"] == "sk-ant-developer-own" for p in PROMPTS))
 r = c.get(f"/v1/platform/releases/{app_release['id']}/evals", headers=H)
 ok("eval results are listed per release", r.json()["results"][0]["passed"] is True)
+r = c.get(f"/v1/platform/releases/{app_release['id']}", headers=H)
+ok("Studio reports the same passing gate used by promotion", r.json()["gate"]["eligible"] and r.json()["gate"]["checks"][0]["status"] == "passed", r.text)
 r = c.post(f"{base}/production/promote", json={"version": "1.0.0"}, headers=H)
 ok("then production accepts it", r.status_code == 200 and r.json()["environment"]["release_id"] == app_release["id"], r.text)
 

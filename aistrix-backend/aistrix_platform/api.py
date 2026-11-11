@@ -425,6 +425,19 @@ def register_routes(app, host):
             raise HTTPException(404, "Release not found")
         return {"results": await registry.store.eval_results(release_id)}
 
+    @app.get(PREFIX + "/releases/{release_id}")
+    @errors
+    async def platform_release_detail(release_id: str, request: Request):
+        caller = await caller_of(request)
+        _, registry = parts()
+        release = await registry.store.get_release(release_id)
+        if not release or release["owner_id"] != caller.user_id:
+            raise HTTPException(404, "Release not found")
+        return {"release": public_release(release), "spec": release["spec"],
+                "evaluation": {"workloads": [{"name": name, "external_steps": [nid for nid, node in plan["nodes"].items() if node["sideEffect"]]}
+                                               for name, plan in (release.get("plans") or {}).items()]},
+                "gate": await registry.gate_report(release) if release["kind"] == "Application" else None}
+
     # ── Runs ──────────────────────────────────────────────────────────────────
 
     @app.post(PREFIX + "/apps/{namespace}/{name}/runs")

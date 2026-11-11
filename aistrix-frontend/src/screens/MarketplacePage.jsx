@@ -24,6 +24,7 @@ const CATEGORY_ICONS = {
 }
 
 // ─── Marketplace listing grid ─────────────────────────────────────────────────
+/** @param {{ user?: import('@supabase/supabase-js').User | null, initialListings?: import('../lib/publicCatalog').PublicListing[] | null }} props */
 export function MarketplacePage({ user, initialListings = null }) {
   const [savedIds, setSavedIds] = useState(new Set())
   const [savingId, setSavingId] = useState(null)
@@ -171,6 +172,7 @@ function ListingCard({ listing: l, index = 0, onClick, saved, saving, onSave }) 
 }
 
 // ─── Single app detail + launch ───────────────────────────────────────────────
+/** @param {{ appId?: string, initialListing?: import('../lib/publicCatalog').PublicListing | null }} props */
 export function MarketplaceAppPage({ appId, initialListing = null }) {
   const params = useParams()
   const id = appId || params.id

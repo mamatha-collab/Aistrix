@@ -48,6 +48,10 @@ describe('keys', () => {
     expect(fetch.mock.calls[0][0]).toMatch(/\/v1\/provider-keys\/claude$/)
     expect(fetch.mock.calls[0][1].method).toBe('DELETE')
   })
+  it('rejects malformed catalog connection state instead of trusting network types', async () => {
+    vi.stubGlobal('fetch', async () => json(200, { providers: [{ id: 'claude', connected: 'yes', models: [] }] }))
+    await expect(loadProviders({ refresh: true })).rejects.toThrow('provider catalog is invalid')
+  })
 })
 
 const list = (...connected) => [

@@ -1,8 +1,9 @@
 import { expect, test } from '@playwright/test'
+import { gotoStudio } from './studio.js'
 
 test.beforeEach(({ isMobile }) => test.skip(!!isMobile, 'Regression authoring belongs on desktop/tablet.'))
 const flow = page => page.getByRole('region', { name: 'Operate and Grow workflow' })
-const open = async page => { await page.goto('/e2e/fixtures/?scenario=operations'); await page.locator('button[title="Evaluate: Quality"]').filter({ visible: true }).click() }
+const open = async page => { await gotoStudio(page, '/e2e/fixtures/?scenario=operations'); await page.locator('button[title="Evaluate: Quality"]').filter({ visible: true }).click() }
 
 test('triage notes persist, failures retain edits and Improve has one context card', async ({ page }) => {
   const errors = []
@@ -33,7 +34,7 @@ test('triage notes persist, failures retain edits and Improve has one context ca
 })
 
 test('the full queue is paginated and shared empty evidence differs from private evidence', async ({ page }) => {
-  await page.goto('/e2e/fixtures/?scenario=operations')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=operations')
   await page.evaluate(() => {
     const sample = window.buildFixture.feedback[0]
     window.buildFixture.feedback = Array.from({ length: 205 }, (_, i) => ({ ...sample, id: `report-${i}`, run_id: `run-${i}`, comment: `Report ${i}`, shared_input: i === 0 ? '' : null, shared_output: null }))
@@ -71,7 +72,7 @@ test('a saved regression survives a failed feedback link and retry without dupli
 })
 
 test('quality outages stay unknown and recover without a false readiness claim', async ({ page }) => {
-  await page.goto('/e2e/fixtures/?scenario=operations')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=operations')
   await page.evaluate(() => {
     window.buildFixture.failures['/v1/apps/app-1/monitor'] = 'Ratings unavailable'
     window.buildFixture.failures['/v1/apps/app-1/tests/status'] = 'Test results unavailable'
@@ -92,7 +93,7 @@ test('quality outages stay unknown and recover without a false readiness claim',
 })
 
 test('linked regression edits are preserved and a missing linked test blocks duplicates', async ({ page }) => {
-  await page.goto('/e2e/fixtures/?scenario=operations')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=operations')
   await page.evaluate(() => {
     window.buildFixture.feedback[0].test_case_id = 'existing-edited-case'
     window.buildFixture.tables.app_test_cases.push({ id: 'existing-edited-case', app_id: 'app-1', user_id: 'fixture-user', name: 'Developer edited regression', input: 'Edited input', rules: [{ type: 'must-not-contain', value: 'Edited assertion' }] })
@@ -111,7 +112,7 @@ test('linked regression edits are preserved and a missing linked test blocks dup
 })
 
 test('both Monitor and Eval disclose delayed telemetry until recovery', async ({ page }) => {
-  await page.goto('/e2e/fixtures/?scenario=monitor')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=monitor')
   await page.evaluate(() => { window.buildFixture.telemetryHealth = { status: 'delayed', pending: 3, failed: 1, recovery_path_configured: true } })
   await page.locator('button[title="Monitor: Usage"]').filter({ visible: true }).click()
   await expect(page.getByText(/3 run outcomes awaiting delivery/)).toBeVisible()

@@ -1,8 +1,9 @@
 import { test, expect } from '@playwright/test'
+import { gotoStudio } from './studio.js'
 test.beforeEach(({ isMobile }) => { test.skip(!!isMobile, 'Prompt editing is a desktop workflow.') })
 const improve = page => page.locator('button[title="Improve: Iterate"]').filter({ visible: true }).click()
 test('candidate saves with a change reference and preserves the published prompt', async ({ page }) => {
-  await page.goto('/e2e/fixtures/?scenario=operations')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=operations')
   await improve(page)
   const prompt = page.getByLabel('Candidate system prompt')
   await expect(prompt).toHaveValue('Answer the task in markdown with a Summary section.')
@@ -21,7 +22,7 @@ test('candidate saves with a change reference and preserves the published prompt
   await expect(prompt).toHaveValue(saved.system_prompt)
 })
 test('switching apps asks first, clears the unrelated candidate and offers it back on return', async ({ page }) => {
-  await page.goto('/e2e/fixtures/?scenario=operations')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=operations')
   await improve(page)
   await page.getByLabel('Candidate system prompt').fill('Unsaved candidate for invoice app')
   let asked = ''
@@ -36,7 +37,7 @@ test('switching apps asks first, clears the unrelated candidate and offers it ba
 })
 
 test('an unsaved candidate survives a reload, and leaving asks first', async ({ page }) => {
-  await page.goto('/e2e/fixtures/?scenario=operations')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=operations')
   await improve(page)
   await page.getByLabel('Candidate system prompt').fill('Recover me after a crash.')
   await expect(page.getByText('Unsaved changes')).toBeVisible()
@@ -55,7 +56,7 @@ test('an unsaved candidate survives a reload, and leaving asks first', async ({ 
 })
 
 test("a teammate's newer prompt is never overwritten silently", async ({ page }) => {
-  await page.goto('/e2e/fixtures/?scenario=operations')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=operations')
   await improve(page)
   await page.getByLabel('Candidate system prompt').fill('My candidate.')
   await page.evaluate(() => { window.buildFixture.tables.apps[0].system_prompt = "Teammate's newer prompt." })
@@ -67,7 +68,7 @@ test("a teammate's newer prompt is never overwritten silently", async ({ page })
 })
 
 test('the saved improvement links the customer feedback selected in Eval', async ({ page }) => {
-  await page.goto('/e2e/fixtures/?scenario=operations')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=operations')
   await page.locator('button[title="Evaluate: Quality"]').filter({ visible: true }).click()
   await page.getByLabel('Feedback list').getByRole('button').first().click()
   await improve(page)
@@ -81,7 +82,7 @@ test('the saved improvement links the customer feedback selected in Eval', async
 })
 
 test('both versions answering the same input are saved to the comparison history', async ({ page }) => {
-  await page.goto('/e2e/fixtures/?scenario=operations')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=operations')
   await improve(page)
   await page.getByLabel('Candidate system prompt').fill('Ask for the missing invoice number.')
   await page.getByPlaceholder('Enter a test input to run against both versions…').fill('Check this invoice')
@@ -102,7 +103,7 @@ test('both versions answering the same input are saved to the comparison history
 })
 
 test('comparison uses the candidate and clears obsolete results when its input changes', async ({ page }) => {
-  await page.goto('/e2e/fixtures/?scenario=operations')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=operations')
   await improve(page)
   await page.getByLabel('Candidate system prompt').fill('Ask for the missing invoice number.')
   const input = page.getByPlaceholder('Enter a test input to run against both versions…')

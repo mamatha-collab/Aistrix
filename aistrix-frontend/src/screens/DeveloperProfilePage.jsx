@@ -18,6 +18,7 @@ const CATEGORY_ICONS = {
 }
 
 // ─── Public developer profile ─────────────────────────────────────────────────
+/** @param {{ initialProfile?: import('../lib/publicCatalog').PublicProfile | null, initialListings?: import('../lib/publicCatalog').PublicListing[] | null }} props */
 export default function DeveloperProfilePage({ initialProfile = null, initialListings = null }) {
   const { userId } = useParams()
   const navigate   = useNavigate()

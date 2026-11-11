@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { gotoStudio, openCreate } from './studio.js'
 
 test.beforeEach(({ isMobile }) => {
   test.skip(!!isMobile, 'Phones use the monitoring workspace; Build and regression authoring are tested on desktop.')
@@ -13,7 +14,7 @@ async function open(page, query = '') {
     const url = new URL(route.request().url())
     return url.hostname === '127.0.0.1' || url.protocol === 'data:' ? route.continue() : route.abort()
   })
-  await page.goto(`/e2e/fixtures/${query}`)
+  await gotoStudio(page, `/e2e/fixtures/${query}`)
   if (query.includes('live')) await stage(page, 'Deploy')
   await pickApp(page)
   if (query.includes('live')) await expect(page.getByText('Launch', { exact: true })).toBeVisible()
@@ -121,7 +122,7 @@ test('Design to Test to Publish records a live version', async ({ page }, testIn
 
 test('creates an app through the real creation form and opens its design', async ({ page }) => {
   await open(page)
-  await page.getByRole('button', { name: '+ App', exact: true }).click()
+  await openCreate(page, 'Prompt App')
   await page.getByPlaceholder('e.g. Market Research Assistant', { exact: true }).fill('New Browser App')
   await page.getByPlaceholder('What does this app do?', { exact: true }).fill('Summarizes business tasks.')
   await page.getByRole('dialog').getByRole('button', { name: 'Next →', exact: true }).click()

@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { gotoStudio } from './studio.js'
 
 test.beforeEach(({ isMobile }) => {
   test.skip(!!isMobile, 'Phones use the monitoring workspace (covered in mobile-developer).')
@@ -7,7 +8,7 @@ test.beforeEach(({ isMobile }) => {
 const tab = (page, title) => page.locator(`button[title="${title}"]`).filter({ visible: true }).click()
 
 test('Monitor opens on All apps while Eval retains the relevant app', async ({ page }) => {
-  await page.goto('/e2e/fixtures/?scenario=monitor')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=monitor')
   await tab(page, 'Evaluate: Quality')
   await page.getByLabel('App to operate').selectOption('app-2')
   await tab(page, 'Monitor: Usage')
@@ -25,7 +26,7 @@ test('Monitor opens on All apps while Eval retains the relevant app', async ({ p
 })
 
 test('Monitor shows production health from the server with alerts, per-app detail and versions', async ({ page }) => {
-  await page.goto('/e2e/fixtures/?scenario=monitor')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=monitor')
   await tab(page, 'Monitor: Usage')
   const attention = page.getByRole('region', { name: 'Needs attention' })
   await expect(attention).toContainText('Fixture Assistant: 40% of runs failed in the last 24 hours')
@@ -46,7 +47,7 @@ test('Monitor shows production health from the server with alerts, per-app detai
 })
 
 test('Monitor errors are shown with a retry, never as zero traffic', async ({ page }) => {
-  await page.goto('/e2e/fixtures/?scenario=monitor')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=monitor')
   await page.evaluate(() => { window.buildFixture.failures['/v1/monitor'] = 'Monitoring is temporarily unavailable' })
   await tab(page, 'Monitor: Usage')
   await expect(page.getByRole('alert')).toContainText('Monitoring is temporarily unavailable')
@@ -58,7 +59,7 @@ test('Monitor errors are shown with a retry, never as zero traffic', async ({ pa
 
 test('automatic refresh pauses when hidden and failed refresh retains marked-stale data', async ({ page }) => {
   await page.clock.install()
-  await page.goto('/e2e/fixtures/?scenario=monitor')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=monitor')
   await tab(page, 'Monitor: Usage')
   await expect(page.getByText(/Updated /)).toBeVisible()
   const requests = () => page.evaluate(() => window.buildFixture.requests.filter(r => r.path === '/v1/monitor').length)
@@ -78,7 +79,7 @@ test('automatic refresh pauses when hidden and failed refresh retains marked-sta
 })
 
 test('new scope never displays the previous period and alerts lead to app diagnostics', async ({ page }, testInfo) => {
-  await page.goto('/e2e/fixtures/?scenario=monitor')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=monitor')
   await tab(page, 'Monitor: Usage')
   await page.getByRole('button', { name: 'Inspect app →' }).click()
   await expect(page.getByLabel('App to monitor')).toHaveValue('app-1')
@@ -91,7 +92,7 @@ test('new scope never displays the previous period and alerts lead to app diagno
 })
 
 test('Free developers see Basic analytics, with the rest labelled as Verified-only', async ({ page }) => {
-  await page.goto('/e2e/fixtures/?scenario=monitor')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=monitor')
   await page.evaluate(() => { window.buildFixture.analytics = 'basic' })
   await tab(page, 'Monitor: Usage')
   await page.getByLabel('App to monitor').selectOption('app-1')

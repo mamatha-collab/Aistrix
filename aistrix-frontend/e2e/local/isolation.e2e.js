@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { gotoStudio } from './studio.js'
 
 // Each part fails on its own: a crash in one card, widget or Settings section
 // leaves the rest of the screen (and the rest of Dev Studio) working.
@@ -12,7 +13,7 @@ const tab = (page, title) => page.locator(`button[title="${title}"]`).filter({ v
 
 test('a broken Revenue card leaves payouts, the other tabs and the header working', async ({ page }) => {
   await crash(page, 'Revenue')
-  await page.goto('/e2e/fixtures/?scenario=operations')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=operations')
   await tab(page, 'Revenue: Profit')
   await expect(page.getByRole('alert').filter({ hasText: "Revenue couldn't load" })).toBeVisible()
   await expect(page.getByText('The rest of this page still works.').first()).toBeVisible()
@@ -24,7 +25,7 @@ test('a broken Revenue card leaves payouts, the other tabs and the header workin
 
 test('a broken header widget disappears without taking the header with it', async ({ page }) => {
   await crash(page, 'Notifications')
-  await page.goto('/e2e/fixtures/?scenario=operations')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=operations')
   await expect(page.getByRole('searchbox', { name: 'Search apps, prompts, runs and pages' })).toBeVisible()
   await expect(page.getByRole('button', { name: /^Keys/ }).first()).toBeVisible()
   await expect(page.getByRole('button', { name: /^Notifications/ })).toHaveCount(0)    // the broken widget is hidden
@@ -35,7 +36,7 @@ test('a broken header widget disappears without taking the header with it', asyn
 
 test('one broken Settings section leaves the others usable', async ({ page }) => {
   await crash(page, 'Developer plan')
-  await page.goto('/e2e/fixtures/?scenario=shared-row')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=shared-row')
   await page.getByRole('button', { name: 'Account menu', exact: true }).click()
   await page.getByRole('menu').getByRole('button', { name: 'Settings', exact: true }).click()
   const settings = page.getByTestId('developer-settings')
@@ -46,7 +47,7 @@ test('one broken Settings section leaves the others usable', async ({ page }) =>
 
 test('a broken Market card leaves pricing and the rest of Market working', async ({ page }) => {
   await crash(page, 'Developer profile')
-  await page.goto('/e2e/fixtures/?scenario=operations')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=operations')
   await tab(page, 'Marketplace: List')
   await expect(page.getByRole('alert').filter({ hasText: "Developer profile couldn't load" })).toBeVisible()
   await expect(page.getByText('Pricing editor', { exact: false }).first()).toBeVisible()

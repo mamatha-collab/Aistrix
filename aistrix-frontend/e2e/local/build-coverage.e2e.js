@@ -3,6 +3,7 @@
 // provider or cloud writes).
 import fs from 'node:fs'
 import { expect, test } from '@playwright/test'
+import { gotoStudio } from './studio.js'
 
 test.beforeEach(({ isMobile }) => {
   test.skip(!!isMobile, 'Phones use the monitoring workspace; Build and regression authoring are tested on desktop.')
@@ -17,8 +18,9 @@ async function open(page, query = '') {
     const url = new URL(route.request().url())
     return url.hostname === '127.0.0.1' || url.protocol === 'data:' ? route.continue() : route.abort()
   })
-  await page.goto(`/e2e/fixtures/${query}`)
-  if (query.includes('ai-builder')) return
+  // The AI builder opens over the chooser; saving it moves Studio to the app.
+  if (query.includes('ai-builder')) return page.goto(`/e2e/fixtures/${query}`)
+  await gotoStudio(page, `/e2e/fixtures/${query}`)
   if (query.includes('live')) await stage(page, 'Deploy')
   await pickApp(page)
   if (query.includes('live')) await expect(page.getByText('Launch', { exact: true })).toBeVisible()
@@ -144,7 +146,7 @@ test('reloading never flashes an app in the wrong step', async ({ page }) => {
     return url.hostname === '127.0.0.1' || url.protocol === 'data:' ? route.continue() : route.abort()
   })
   // Steps (app_blueprints) arrive after the apps, as on a real network.
-  await page.goto('/e2e/fixtures/?phase2=test&slow=app_blueprints')
+  await gotoStudio(page, '/e2e/fixtures/?phase2=test&slow=app_blueprints')
   await expect(page.getByText('Fixture Assistant', { exact: true }).first()).toBeVisible()
   await page.waitForTimeout(800)
   expect(await page.evaluate(() => window.__wrongStep)).toBe(false)

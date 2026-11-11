@@ -1,10 +1,10 @@
 import { StrictMode, useEffect, useState } from 'react'
-import App from './App.jsx'
-import { initializeBrowser } from './lib/browserRuntime.js'
-import { ToastProvider } from './components/Toast.jsx'
-import ErrorBoundary from './components/ErrorBoundary.jsx'
-import CookieConsent from './components/CookieConsent.jsx'
-import SafeCard from './components/SafeCard.jsx'
+import App from './App'
+import { initializeBrowser } from './lib/browserRuntime'
+import { ToastProvider } from './components/Toast'
+import ErrorBoundary from './components/ErrorBoundary'
+import CookieConsent from './components/CookieConsent'
+import SafeCard from './components/SafeCard'
 import { browserSessionReady } from './supabase'
 
 // Initialization is browser-guarded; the server renders the session placeholder.

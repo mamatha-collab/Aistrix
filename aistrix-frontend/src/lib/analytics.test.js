@@ -76,7 +76,7 @@ describe('the cookie notice', () => {
     const analytics = await load()
     const { renderToStaticMarkup } = await import('react-dom/server')
     const { createElement } = await import('react')
-    const { default: CookieConsent, CookieConsentDialog } = await import('../components/CookieConsent.jsx')
+    const { default: CookieConsent, CookieConsentDialog } = await import('../components/CookieConsent')
     // The initial server/client tree is deliberately identical; browser storage
     // is consulted only after hydration by CookieConsent's effect.
     expect(renderToStaticMarkup(createElement(CookieConsent))).toBe('')

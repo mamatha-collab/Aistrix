@@ -4,9 +4,9 @@ import { renderToStaticMarkup } from 'react-dom/server'
 
 vi.mock('../supabase', () => ({ supabase: { auth: {} } }))
 vi.mock('../hooks/useToast', () => ({ useToast: () => () => {} }))
-const { default: DataAppRunner } = await import('./DataAppRunner.jsx')
-const { buildTemplateCases } = await import('../lib/testTemplates.js')
-const { isFileApp } = await import('../lib/fileApps.js')
+const { default: DataAppRunner } = await import('./DataAppRunner')
+const { buildTemplateCases } = await import('../lib/testTemplates')
+const { isFileApp } = await import('../lib/fileApps')
 
 const render = app_type => renderToStaticMarkup(createElement(DataAppRunner, { app: { id: 'a1', name: 'App', app_type }, user: { id: 'u1' }, inline: true }))
 

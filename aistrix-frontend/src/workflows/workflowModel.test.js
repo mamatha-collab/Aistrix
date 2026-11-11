@@ -7,8 +7,8 @@ import {
 } from './workflowModel'
 
 vi.mock('../supabase', () => ({ supabase: { auth: {} } }))
-const { WorkflowCanvas, StepSettings } = await import('./WorkflowDesigner.jsx')
-const { ProgressRing } = await import('./WorkflowRunPanels.jsx')
+const { WorkflowCanvas, StepSettings } = await import('./WorkflowDesigner')
+const { ProgressRing } = await import('./WorkflowRunPanels')
 
 const scorer = { id: 'scorer', name: 'Qualify lead', emoji: '📊', is_published: true, live_version: 2 }
 const writer = { id: 'writer', name: 'Draft reply', emoji: '✉️', is_published: false }
@@ -134,7 +134,7 @@ describe('branches and AI fill', () => {
 
 describe('schedule times', () => {
   it('lists UTC hours in local time and keeps weekly days right across midnight', async () => {
-    const { localTimeLabel, toUtcDay, toLocalDay } = await import('./WorkflowRunPanels.jsx')
+    const { localTimeLabel, toUtcDay, toLocalDay } = await import('./WorkflowRunPanels')
     expect(localTimeLabel(3, 330)).toBe('08:30')          // India: UTC 03:00 = 08:30
     expect(localTimeLabel(23, 330)).toBe('04:30')         // …next day
     expect(toUtcDay(1, 23, 330)).toBe(0)                  // Monday 04:30 local = Sunday 23:00 UTC

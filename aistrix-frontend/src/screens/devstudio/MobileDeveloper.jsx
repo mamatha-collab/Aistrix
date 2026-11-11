@@ -1,3 +1,4 @@
+import WorkspaceBreadcrumb from '../../components/WorkspaceBreadcrumb'
 import { ENTITIES } from '../../lib/entities'
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { Activity, ChevronLeft, MessageSquare, RefreshCw, Settings2 } from 'lucide-react'
@@ -35,7 +36,7 @@ function FeedbackCard({ item }) {
   </details>
 }
 
-export default function MobileDeveloper({ user, apps, phaseByAppId, loading, error, onRefresh, onAppUpdated, onSignOut, onToggleTheme, onOpenStudio }) {
+export default function MobileDeveloper({ user, apps, phaseByAppId, loading, error, onRefresh, onAppUpdated, onSignOut, onToggleTheme, onOpenStudio, selectedCapability, onSelectCapability }) {
   const [view, setView] = useState('home')
   const [selectedId, setSelectedId] = useState(null)
   const [filter, setFilter] = useState('')
@@ -117,13 +118,14 @@ export default function MobileDeveloper({ user, apps, phaseByAppId, loading, err
       </div>
     </header>
 
-    <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-5 space-y-5" key={`${view}:${selectedId || ''}`}>
-      <div className="flex items-center justify-between gap-3">
+    {view === 'home' && <div className="shrink-0 border-b border-white/8 bg-[#111827] px-4 py-2"><WorkspaceBreadcrumb capability={selectedCapability} onHome={() => { onSelectCapability?.(null); navigate('home') }} /></div>}
+    <div data-developer-scroll className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-5 space-y-5" key={`${view}:${selectedId || ''}`}>
+      {view !== 'home' && <div className="flex items-center justify-between gap-3">
         <h1 className="text-xl text-white font-semibold">{selected && view === 'apps' ? 'App details' : view === 'monitor' ? 'Monitor' : view === 'apps' ? 'Apps' : view === 'manage' ? 'Manage' : view === 'settings' ? 'Settings' : view === 'resources' ? 'Resources' : view === 'home' ? 'Developer workspace' : 'Feedback'}</h1>
         {!['home', 'resources', 'manage'].includes(view) && <button className={`${action} !p-2.5 border border-white/8`} aria-label="Refresh app activity" disabled={loading || (view !== 'monitor' && overview.loading)} onClick={refreshAll}><RefreshCw size={18} className={loading || (view !== 'monitor' && overview.loading) ? 'animate-spin' : ''} /></button>}
-      </div>
+      </div>}
       {error && !['home', 'resources', 'manage'].includes(view) && <div role="alert" className="rounded-xl border border-amber-400/20 bg-amber-400/5 p-3 text-sm text-amber-200">{error}<button className="block underline min-h-11" onClick={refreshAll}>Try again</button></div>}
-      {view === 'home' ? <ErrorBoundary compact title='Workspace could not load'><Suspense fallback={<p role='status'>Loading workspace…</p>}><DeveloperWorkspace onOpen={target => ['resources', 'monitor', 'keys'].includes(target) ? navigate(target === 'keys' ? 'settings' : target) : onOpenStudio?.(target)} /></Suspense></ErrorBoundary> : view === 'resources' ? <ErrorBoundary compact title='Resources could not load'><Suspense fallback={<p role='status'>Loading resources…</p>}><ResourcesTab key={user.id} /></Suspense></ErrorBoundary> : view === 'settings' ? <ErrorBoundary compact title="Settings could not load"><Suspense fallback={<p role="status" className="text-sm text-slate-400">Loading Settings…</p>}><SettingsPage user={user} developer embedded /></Suspense></ErrorBoundary> : view === 'manage' ? <ErrorBoundary compact title="Manage could not load"><Suspense fallback={<p role="status" className="text-sm text-slate-400">Loading Manage…</p>}><MobileManage apps={apps} user={user} onAppUpdated={onAppUpdated} /></Suspense></ErrorBoundary> : loading && !hasLoaded ? <div role="status" className="space-y-3"><p className="text-sm text-slate-400">Loading app activity…</p>{[0, 1, 2].map(i => <div key={i} className="h-20 rounded-2xl bg-white/5 animate-pulse" />)}</div> : !apps.length && !error ? <div className={`${card} space-y-2`}><h2 className="text-white font-semibold">No apps yet</h2><p className="text-sm text-slate-400 leading-relaxed">Create your first app on a computer or tablet. Check its activity and feedback here.</p></div> : <>
+      {view === 'home' ? <ErrorBoundary compact title='Workspace could not load'><Suspense fallback={<p role='status'>Loading workspace…</p>}><DeveloperWorkspace user={user} apps={apps} selectedCapability={selectedCapability} onSelectCapability={onSelectCapability} onOpen={target => ['resources', 'monitor', 'keys'].includes(target) ? navigate(target === 'keys' ? 'settings' : target) : onOpenStudio?.(target)} /></Suspense></ErrorBoundary> : view === 'resources' ? <ErrorBoundary compact title='Resources could not load'><Suspense fallback={<p role='status'>Loading resources…</p>}><ResourcesTab key={user.id} /></Suspense></ErrorBoundary> : view === 'settings' ? <ErrorBoundary compact title="Settings could not load"><Suspense fallback={<p role="status" className="text-sm text-slate-400">Loading Settings…</p>}><SettingsPage user={user} developer embedded /></Suspense></ErrorBoundary> : view === 'manage' ? <ErrorBoundary compact title="Manage could not load"><Suspense fallback={<p role="status" className="text-sm text-slate-400">Loading Manage…</p>}><MobileManage apps={apps} user={user} onAppUpdated={onAppUpdated} /></Suspense></ErrorBoundary> : loading && !hasLoaded ? <div role="status" className="space-y-3"><p className="text-sm text-slate-400">Loading app activity…</p>{[0, 1, 2].map(i => <div key={i} className="h-20 rounded-2xl bg-white/5 animate-pulse" />)}</div> : !apps.length && !error ? <div className={`${card} space-y-2`}><h2 className="text-white font-semibold">No apps yet</h2><p className="text-sm text-slate-400 leading-relaxed">Create your first app on a computer or tablet. Check its activity and feedback here.</p></div> : <>
         {view === 'monitor' && <ErrorBoundary compact title="Monitor could not load"><Suspense fallback={<p role="status" className="text-sm text-slate-400">Loading Monitor…</p>}>
           <MonitorPanel apps={apps} compact refreshKey={overviewKey} onNavigate={(stage, id) => {
             if (stage === 'evaluate') { setFilter(id); navigate('feedback') }

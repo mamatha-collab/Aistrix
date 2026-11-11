@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { gotoStudio } from './studio.js'
 
 test.beforeEach(({ isMobile }) => {
   test.skip(!!isMobile, 'Phones use the monitoring workspace; Build and regression authoring are tested on desktop.')
@@ -8,7 +9,7 @@ const workflow = page => page.getByRole('region', { name: 'Operate and Grow work
 const tab = (page, title) => page.locator(`button[title="${title}"]`).filter({ visible: true }).click()
 
 test('feedback flows into a regression and draft without changing the live app', async ({ page }, testInfo) => {
-  await page.goto('/e2e/fixtures/?scenario=operations')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=operations')
   await tab(page, 'Evaluate: Quality')
   const flow = workflow(page)
   const list = flow.getByLabel('Feedback list')
@@ -69,7 +70,7 @@ test('feedback flows into a regression and draft without changing the live app',
 })
 
 test('app selection and feedback errors do not mix apps', async ({ page }) => {
-  await page.goto('/e2e/fixtures/?scenario=operations')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=operations')
   await tab(page, 'Evaluate: Quality')
   await workflow(page).getByLabel('App to operate').selectOption('app-2')
   await expect(workflow(page).getByLabel('Selected feedback').getByText('The translation ignored the glossary.', { exact: true })).toBeVisible()

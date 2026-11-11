@@ -105,10 +105,10 @@ test('evaluation authoring, failed and passing runs, comparison, and immutable s
   await expect(page.getByRole('region', { name: 'Evaluation Studio', exact: true }).getByRole('status')).toContainText('@1.0.1')
   await page.getByLabel('Suite name', { exact: true }).fill('Unsaved suite')
   page.once('dialog', dialog => dialog.dismiss())
-  await page.getByRole('button', { name: 'Back to types', exact: true }).click()
+  await page.getByRole('button', { name: 'Back to workspace', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Evaluations', exact: true })).toBeVisible()
   page.once('dialog', dialog => dialog.accept())
-  await page.getByRole('button', { name: 'Back to types', exact: true }).click()
+  await page.getByRole('button', { name: 'Back to workspace', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'What do you want to build?' })).toBeVisible()
 })
 

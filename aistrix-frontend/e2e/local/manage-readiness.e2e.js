@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { gotoStudio } from './studio.js'
 
 async function openSection(page, isMobile, name) {
   if (isMobile) {
@@ -10,7 +11,7 @@ async function openSection(page, isMobile, name) {
 }
 
 test('secret deletion requires confirmation and failure never reports success', async ({ page, isMobile }) => {
-  await page.goto('/e2e/fixtures/?scenario=operations')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=operations')
   await page.evaluate(() => { window.buildFixture.secretsByApp = { 'app-1': [{ key: 'SERVICE_TOKEN', updated_at: new Date().toISOString() }] } })
   await openSection(page, isMobile, 'secrets')
   await page.getByRole('button', { name: 'Remove SERVICE_TOKEN', exact: true }).click()
@@ -32,7 +33,7 @@ test('secret deletion requires confirmation and failure never reports success', 
 })
 
 test('secrets a tool needs but the app lacks are flagged and can be added from the warning', async ({ page, isMobile }) => {
-  await page.goto('/e2e/fixtures/?scenario=operations')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=operations')
   await page.evaluate(() => {
     window.buildFixture.secretsByApp = { 'app-1': [{ key: 'SERVICE_TOKEN', updated_at: new Date().toISOString() }] }
     window.buildFixture.secretsNeeded = { 'app-1': [{ key: 'SERVICE_TOKEN', used_by: ['Lookup'] }, { key: 'CRM_KEY', used_by: ['CRM sync'] }] }
@@ -52,7 +53,7 @@ test('secrets a tool needs but the app lacks are flagged and can be added from t
 })
 
 test('desktop and mobile use the same recorded earnings and error states', async ({ page, isMobile }, testInfo) => {
-  await page.goto('/e2e/fixtures/?scenario=operations')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=operations')
   await page.evaluate(() => {
     window.buildFixture.earnings = { total_gross: 250, total_dev_share: 200, total_pending: 60, platform_fee_pct: 20, by_app: [], recent: [] }
   })
@@ -74,7 +75,7 @@ test('desktop and mobile use the same recorded earnings and error states', async
 
 test('revenue: period, refunds, owed payouts and CSV for accounting', async ({ page, isMobile }) => {
   test.skip(isMobile, 'Covered on desktop; the phone uses the same component.')
-  await page.goto('/e2e/fixtures/?scenario=operations')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=operations')
   await page.evaluate(() => {
     window.buildFixture.earnings = { total_gross: 230, total_dev_share: 184, total_pending: 40, owed_count: 2, total_refunded: 20, disputed_count: 1,
       platform_fee_pct: 20, by_app: [], recent: [{ app_id: 'app-1', plan: 'pay_per_run', dev_share: 20, refunded_amount: 20, payout_status: 'refunded', created_at: '2026-10-19T10:00:00Z' }] }
@@ -99,7 +100,7 @@ test('revenue: period, refunds, owed payouts and CSV for accounting', async ({ p
 
 test('payout verification errors remain visible instead of implying a disconnected account', async ({ page, isMobile }) => {
   test.skip(isMobile, 'Payout onboarding remains in the desktop workspace.')
-  await page.goto('/e2e/fixtures/?scenario=operations')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=operations')
   await page.evaluate(() => { window.buildFixture.failures['/stripe/connect/status'] = 'Payout verification unavailable' })
   await openSection(page, isMobile, 'revenue')
   const panel = page.getByRole('region', { name: 'Payout account' })
@@ -112,7 +113,7 @@ test('payout verification errors remain visible instead of implying a disconnect
 
 test('revenue says when payouts remain or totals are incomplete', async ({ page, isMobile }) => {
   test.skip(isMobile, 'Covered on desktop; the phone uses the same component.')
-  await page.goto('/e2e/fixtures/?scenario=operations')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=operations')
   await page.evaluate(() => {
     window.buildFixture.earnings = { total_gross: 5000, total_dev_share: 4000, total_pending: 900, owed_count: 1200, platform_fee_pct: 20,
       purchase_count: 200000, truncated: true, by_app: [], recent: [] }

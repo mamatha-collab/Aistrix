@@ -3,7 +3,7 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 vi.mock('../../supabase', () => ({ supabase: { auth: {} } }))
-const { appStatus, AppNavigator, workflowStatus } = await import('./shared.jsx')
+const { appStatus, AppNavigator, workflowStatus } = await import('./shared')
 
 describe('one status per app in the app list', () => {
   it('distinguishes scheduled workflows from drafts and reports enabled triggers', () => {

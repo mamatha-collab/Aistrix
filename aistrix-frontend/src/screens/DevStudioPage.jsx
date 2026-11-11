@@ -1,3 +1,4 @@
+import WorkspaceBreadcrumb from '../components/WorkspaceBreadcrumb'
 import { ENTITIES } from '../lib/entities'
 import { persistBlueprintPhase } from '../lib/blueprintStorage'
 import { signOutOnPurpose } from '../lib/session'
@@ -59,6 +60,7 @@ const LIFECYCLE_TABS = [
   { id: 'secrets',  label: 'Secrets',     Icon: LockKeyhole,       desc: 'Env vars',  group: 'manage' },
 ]
 
+const APP_LIFECYCLE_TABS = LIFECYCLE_TABS.filter(item => !['resources', 'evaluations', 'workflows'].includes(item.id))
 const LIFECYCLE_GROUPS = [
   { id: 'build',  label: 'Build' },
   { id: 'grow',   label: 'Operate & Grow' },
@@ -77,15 +79,14 @@ const VIEW_KEY = 'aistrix:developer-view'
 function savedView() {
   try {
     const saved = JSON.parse(sessionStorage.getItem(VIEW_KEY) || '{}')
-    return { tab: LIFECYCLE_TABS.some(t => t.id === saved.tab) ? saved.tab : 'design', appId: typeof saved.appId === 'string' ? saved.appId : null }
-  } catch { return { tab: 'design', appId: null } }
+    return { tab: LIFECYCLE_TABS.some(t => t.id === saved.tab) ? saved.tab : 'home', appId: typeof saved.appId === 'string' ? saved.appId : null }
+  } catch { return { tab: 'home', appId: null } }
 }
 
 export default function DevStudioPage({
   user,
   onOpenCreate: requestCreate,
   creationContent = null,
-  onShowSettings,
   noKeys = false,
   onNavChange,
   search = '',
@@ -98,11 +99,23 @@ export default function DevStudioPage({
   onCloseCreation,
 }) {
   const isPhone = useMediaQuery('(max-width: 767px)')
-  const [phoneStudio, setPhoneStudio] = useState(false)
+  // A new visit starts at the capability chooser; a reload in the same tab
+  // returns to the step that was open (sessionStorage, per tab).
+  const [initialTab] = useState(() => savedView().tab)
+  const [phoneStudio, setPhoneStudio] = useState(initialTab !== 'home')
   const localNavigationGuardRef = useRef(null)
   const navigationGuardRef = sharedNavigationGuardRef || localNavigationGuardRef
-  // Start at the capability chooser; keep the last app available in Studio.
-  const [tab, setTabState] = useState('home')
+  const [tab, setTabState] = useState(initialTab)
+  const [workspaceChoice, setWorkspaceChoice] = useState(null)
+  const previousCreation = useRef(false)
+  useEffect(() => {
+    if (creationContent) { setTabState('design'); setPhoneStudio(true) }
+    if (previousCreation.current && !creationContent && !createdApp && tab === 'design') {
+      setTabState('home')
+      setPhoneStudio(false)
+    }
+    previousCreation.current = !!creationContent
+  }, [creationContent, createdApp, tab])
   const [monitorAppId, setMonitorAppId] = useState(null)
   // Runs a navigation now, or — when the Design editor has unsaved edits —
   // after the developer chooses to discard or save them (its dialog).
@@ -115,8 +128,31 @@ export default function DevStudioPage({
   const [settingsOpen, setSettingsOpen] = useState(false)
   function openSettings(focus = 'top') { guarded(() => setSettingsOpen(focus)) }
   // "Add key" buttons in Test and Deploy: the shell's key dialog when it has one, else the Keys page.
-  const openKeys = onShowSettings || (() => openSettings('keys'))
-  function onOpenCreate(type) { guarded(() => { setPhoneStudio(true); setSettingsOpen(false); setTabState('design'); requestCreate?.(typeof type === 'string' ? type : undefined) }) }
+  const openKeys = () => openWorkspaceChoice('models')
+  function onOpenCreate(type) {
+    guarded(() => {
+      setSettingsOpen(false)
+      if (typeof type !== 'string') {
+        onCloseCreation?.()
+        setWorkspaceChoice('ai-apps'); setTabState('home'); setPhoneStudio(false)
+        return
+      }
+      requestCreate?.(type)
+    })
+  }
+  function openWorkspaceChoice(choice = null) {
+    guarded(() => { onCloseCreation?.(); setSettingsOpen(false); setWorkspaceChoice(choice); setTabState('home'); setPhoneStudio(false) })
+  }
+  function openCapability(target) {
+    if (target.startsWith('app:')) {
+      const app = apps.find(item => item.id === target.slice(4))
+      if (app) guarded(() => { setPhoneStudio(true); setActiveAppIdState(app.id); setTabState(getDevPhase(app, phaseByAppId)) })
+    }
+    else if (target.startsWith('create:')) onOpenCreate(target.slice(7))
+    else if (target === 'create-code') onOpenCreate('code_job')
+    else if (target === 'keys') openKeys()
+    else { setPhoneStudio(true); openTab(target) }
+  }
   function setTab(next) {
     if (next === tab && !pageContent) return true
     return guarded(() => { setSettingsOpen(false); setTabState(next) })
@@ -214,6 +250,7 @@ export default function DevStudioPage({
       setAccountOpen(false)
       setShowHelp(false)
       setTabState('home')
+      setWorkspaceChoice(null)
       setPhoneStudio(false)
       setActiveAppIdState(null)
       setActiveWorkflowId(null)
@@ -461,13 +498,13 @@ export default function DevStudioPage({
   ) : null)
 
   if (isPhone && !phoneStudio) return <MobileDeveloper user={user} apps={apps} phaseByAppId={phaseByAppId} loading={loading}
-    onOpenStudio={target => target === 'create-code' ? onOpenCreate('code_job') : target === 'create' ? onOpenCreate() : guarded(() => { setPhoneStudio(true); setTabState(target) })}
+    selectedCapability={workspaceChoice} onSelectCapability={setWorkspaceChoice} onOpenStudio={openCapability}
     error={loadError || feedbackError} onRefresh={load} onAppUpdated={updateAppInState}
     onSignOut={signOut} onToggleTheme={toggleTheme} />
 
   return (
     <div className="developer-content flex-1 min-w-0 flex flex-col overflow-hidden">
-      {(tab !== 'home' || pageContent) && <button className="shrink-0 flex items-center gap-2 min-h-12 px-4 sm:px-6 text-left text-sm text-violet-300 hover:bg-violet-500/10 border-b border-white/10" onClick={returnToTypes}><ArrowLeft size={16} aria-hidden="true" />Back to types</button>}
+      {(tab !== 'home' || pageContent) && <button className="shrink-0 flex items-center gap-2 min-h-12 px-4 sm:px-6 text-left text-sm text-violet-300 hover:bg-violet-500/10 border-b border-white/10" onClick={returnToTypes}><ArrowLeft size={16} aria-hidden="true" />Back to workspace</button>}
       {moveBack && <MoveBackModal app={moveBack.app} phase={moveBack.phase} initialNote={moveBack.initialNote} onCancel={() => setMoveBack(null)} onConfirm={confirmMoveBack} />}
       {confirmSignOut && (
         <ConfirmDialog title={`Sign out of ${BRAND}?`} subtitle={user?.email}
@@ -536,7 +573,7 @@ export default function DevStudioPage({
                 <div className="flex items-center gap-1">
                   <SafeCard name="Notifications" quiet><NotificationsPanel user={user} onNavChange={onNavChange} /></SafeCard>
                   <button
-                    onClick={() => openSettings('keys')}
+                    onClick={openKeys}
                     aria-current={!creationContent && settingsOpen === 'keys' ? 'page' : undefined}
                     aria-label={noKeys ? 'Keys — no AI key added yet' : undefined}
                     title={noKeys ? 'No AI key added — add one to build apps' : undefined}
@@ -554,9 +591,9 @@ export default function DevStudioPage({
                     <CircleHelp size={17} strokeWidth={1.75} aria-hidden="true" />
                   </button>
                 </div>
-                <button onClick={onOpenCreate} aria-label="+ App"
+                <button onClick={() => openWorkspaceChoice()} aria-label="Create a resource"
                   className="inline-flex items-center gap-1.5 h-9 px-4 rounded-lg bg-[#6C5CE7] hover:bg-[#7C6CFF] text-white text-sm font-semibold transition-colors whitespace-nowrap">
-                  <Plus size={16} strokeWidth={2} aria-hidden="true" /> App
+                  <Plus size={16} strokeWidth={2} aria-hidden="true" /> Create
                 </button>
                 <div ref={accountMenuRef} className="relative shrink-0">
                   <button
@@ -601,19 +638,19 @@ export default function DevStudioPage({
             </div>
             </DeveloperRowSection>
         <DeveloperRowSection side="content">
-            {tab === 'home' ? <div className="pointer-events-auto h-full flex items-center px-6"><div><p className="text-white font-semibold">Developer workspace</p><p className="text-sm text-slate-400 mt-1">Build · Connect · Test · Deploy · Operate</p></div></div> : <>
+            {(['home', 'resources', 'evaluations', 'workflows'].includes(tab) || pageContent) ? <div className="pointer-events-auto h-full flex items-center px-6"><div><WorkspaceBreadcrumb capability={tab === 'home' && !pageContent ? workspaceChoice : null} label={pageContent ? (creationContent ? 'Create' : 'Settings') : tab === 'home' ? null : LIFECYCLE_TABS.find(t => t.id === tab)?.label} onHome={returnToTypes} /><p className="text-sm text-slate-400 mt-1">Build · Connect · Test · Deploy · Operate</p></div></div> : <>
             <div className="pointer-events-auto bg-[#1A2038] grid grid-cols-1 md:overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               <div className="hidden md:flex min-w-0 px-4 py-3 items-center gap-3 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                 {/* Phones: one group fills the width and the next one peeks in;
                     swipe to the next group (snaps). md+: all three side by side. */}
                 <div ref={ribbonRef}
-                  className="w-full min-w-[1120px] flex md:grid md:grid-cols-[4fr_5fr_4fr] gap-4 h-full overflow-x-auto md:overflow-visible snap-x snap-mandatory md:snap-none [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                  className="w-full min-w-[920px] flex md:grid md:grid-cols-[3fr_5fr_3fr] gap-4 h-full overflow-x-auto md:overflow-visible snap-x snap-mandatory md:snap-none [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                   {LIFECYCLE_GROUPS.map(group => (
                     <div key={group.id} data-group={group.id}
-                      className={`developer-lifecycle-group ${LIFECYCLE_TABS.filter(t => t.group === group.id).length > 3 ? 'w-[94%]' : 'w-[85%]'} shrink-0 snap-start md:w-auto md:shrink min-w-0`}>
+                      className={`developer-lifecycle-group ${APP_LIFECYCLE_TABS.filter(t => t.group === group.id).length > 3 ? 'w-[94%]' : 'w-[85%]'} shrink-0 snap-start md:w-auto md:shrink min-w-0`}>
                       <p className="px-0.5 pb-1.5 text-[10px] text-slate-400 uppercase font-semibold tracking-wider leading-none truncate">{group.label}</p>
                       <div className="developer-lifecycle-box flex min-w-0 h-[48px] rounded-lg border border-white/10 bg-[#111827] overflow-hidden divide-x divide-white/10">
-                        {LIFECYCLE_TABS.filter(t => t.group === group.id).map(t => {
+                        {APP_LIFECYCLE_TABS.filter(t => t.group === group.id).map(t => {
                           const active = !pageContent && tab === t.id
                           return (
                             <button key={t.id} onClick={() => openTab(t.id)}
@@ -678,7 +715,7 @@ export default function DevStudioPage({
         <div className={pageContent ? 'contents' : 'flex flex-1 min-h-0 overflow-hidden'}>
 
           {/* Main content */}
-          {!pageContent && <div className="flex-1 min-w-0 overflow-y-auto px-4 sm:px-5 lg:px-6 py-4 md:py-6 space-y-5">
+          {!pageContent && <div data-developer-scroll className="flex-1 min-w-0 overflow-y-auto px-4 sm:px-5 lg:px-6 py-4 md:py-6 space-y-5">
             {/* Tab content */}
             {['design','test','deploy'].includes(tab) ? (
               phaseScopedActiveAppId ? (<>
@@ -802,7 +839,7 @@ export default function DevStudioPage({
             {tab === 'workflows' && <WorkflowsTab apps={apps} user={user} workflows={workflows} setWorkflows={setWorkflows}
               loadError={workflowsError} activeId={activeWorkflowId} onActiveChange={setActiveWorkflowId} createSignal={createWorkflowSignal} onAppsChanged={load}
               navigationGuardRef={navigationGuardRef} />}
-            {tab === 'home' && <DeveloperWorkspace onOpen={target => target === 'create-code' ? onOpenCreate('code_job') : target === 'create' ? onOpenCreate() : target === 'keys' ? openKeys() : openTab(target)} />}
+            {tab === 'home' && <DeveloperWorkspace user={user} apps={apps} selectedCapability={workspaceChoice} onSelectCapability={setWorkspaceChoice} onOpen={openCapability} />}
             {tab === 'resources' && <ResourcesTab key={user.id} />}
             {tab === 'evaluations' && <EvaluationsStudio key={user.id} navigationGuardRef={navigationGuardRef} />}
             {tab === 'sell'     && <SellTab     apps={apps} user={user} onAppUpdated={updateAppInState} />}
@@ -826,7 +863,8 @@ export default function DevStudioPage({
                 </div>
               )}
               <ErrorBoundary variant="card" title="The app list couldn't load" resetKey={tab}>
-              {tab === 'home' ? <nav aria-label="Developer workspace shortcuts" className="p-3 space-y-2">{[['Workspace', 'home'], ['AI Apps', 'design'], ['Resources', 'resources'], ['Evaluations', 'evaluations'], ['Workflows', 'workflows'], ['Operations', 'monitor']].map(([label, target]) => <button key={target} onClick={() => openTab(target)} aria-current={tab === target ? 'page' : undefined} className="w-full min-h-11 text-left px-3 rounded-lg text-sm text-slate-300 hover:bg-white/5">{label}</button>)}</nav> : <AppNavigator
+              <nav aria-label="Developer workspace shortcuts" className="p-3 space-y-2 border-b border-white/10">{[['Workspace', 'home'], ['AI Apps', 'ai-apps'], ['Models & Providers', 'models'], ['Agents', 'agents'], ['Workflows', 'workflows'], ['Code & Tools', 'nodes'], ['Knowledge & Data', 'knowledge'], ['Evaluations', 'evaluations'], ['Operations', 'operations'], ['Resources', 'resources']].map(([label, target]) => <button key={target} onClick={() => target === 'home' ? returnToTypes() : target === 'resources' ? openTab(target) : openWorkspaceChoice(target)} aria-current={!pageContent && (target === 'home' ? tab === 'home' && !workspaceChoice : target === 'resources' ? tab === 'resources' : tab === 'home' && workspaceChoice === target) ? 'page' : undefined} className="w-full min-h-11 text-left px-3 rounded-lg text-sm text-slate-300 hover:bg-white/5 aria-[current=page]:bg-violet-500/15 aria-[current=page]:text-violet-200">{label}</button>)}</nav>
+              {!['home', 'resources', 'evaluations'].includes(tab) && !pageContent && <AppNavigator
                 apps={visibleApps}
                 phaseByAppId={phaseByAppId}
                 listedIds={listedIds}

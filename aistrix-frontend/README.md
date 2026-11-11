@@ -107,3 +107,9 @@ through the persistent shell; see
 
 The completed local source migration and remaining launch gates are recorded in
 [Next.js migration completion](../docs/architecture/nextjs-completion-2026-10-24.md).
+
+## Type checking
+
+Run `npm run typecheck` to enforce the TypeScript migration boundary, generate Next route types and check TypeScript source with strict settings. New runtime modules in `src` must use `.ts` or `.tsx`. Existing JavaScript is listed in `config/legacy-javascript.json`; remove an entry when converting its module.
+
+See [the migration scope and remaining work](../docs/architecture/typescript-migration-2026-11-10.md). The large legacy editors remain JavaScript during the incremental migration.

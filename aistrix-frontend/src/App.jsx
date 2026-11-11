@@ -188,10 +188,19 @@ export default function App({ routeContent }) {
 
   function openBuilder(type) {
     startTransition(() => {
+      setShowTypeSelector(true)
       setSelectedAppType(type)
       if (type === 'ai_builder') setShowAIBuilder(true)
       else setShowCreate(true)
     })
+  }
+
+  async function selectAppType(type) {
+    if (type !== 'code_job') {
+      const providers = await loadProviders().catch(() => null)
+      if (providers && !providers.some(p => p.connected)) { setKeyGateType(type); return }
+    }
+    openBuilder(type)
   }
 
   // Picking a type opens one popup (guide first, then the build steps) over
@@ -358,27 +367,19 @@ export default function App({ routeContent }) {
   const creationFlow = showTypeSelector ? (
             <ErrorBoundary variant={activeView === 'developer' ? 'card' : 'overlay'} title="The app builder couldn't load" onClose={closeBuildFlow}>
             <Suspense fallback={null}>
-              <AppTypeSelector
+              {activeView !== 'developer' && <AppTypeSelector
                 presentation={activeView === 'developer' ? 'inline' : 'modal'} navigationGuardRef={buildNavigationGuardRef} onLeave={closeBuildFlow}
                 hidden={showAIBuilder || showCreate}
                 onClose={closeBuildFlow}
-                onSelect={async type => {
-                  if (type === 'code_job') { openBuilder(type); return }
-                  // Building needs the developer's own AI key: ask for one
-                  // first (continues into this type once it's saved). If the
-                  // key status can't be loaded, don't block building.
-                  const providers = await loadProviders().catch(() => null)
-                  if (providers && !providers.some(p => p.connected)) { setKeyGateType(type); return }
-                  openBuilder(type)
-                }}
-              />
+                onSelect={selectAppType}
+              />}
               {showAIBuilder && (
                 <AIAppBuilder
                   presentation={activeView === 'developer' ? 'inline' : 'modal'} navigationGuardRef={buildNavigationGuardRef} onLeave={closeBuildFlow}
                   user={session.user}
                   withGuide
-                  onClose={() => setShowAIBuilder(false)}
-                  onBack={() => setShowAIBuilder(false)}
+                  onClose={activeView === 'developer' ? closeBuildFlow : () => setShowAIBuilder(false)}
+                  onBack={activeView === 'developer' ? closeBuildFlow : () => setShowAIBuilder(false)}
                   onCreated={newApp => {
                     closeBuildFlow()
                     track(EVENTS.BUILD_APP_CREATED, { app_id: newApp.id, app_type: newApp.app_type, via: 'build_with_ai' })
@@ -397,8 +398,8 @@ export default function App({ routeContent }) {
                   user={session.user}
                   initialType={selectedAppType}
                   withGuide
-                  onClose={() => setShowCreate(false)}
-                  onBack={() => setShowCreate(false)}
+                  onClose={activeView === 'developer' ? closeBuildFlow : () => setShowCreate(false)}
+                  onBack={activeView === 'developer' ? closeBuildFlow : () => setShowCreate(false)}
                   onCreated={newApp => {
                     closeBuildFlow()
                     track(EVENTS.BUILD_APP_CREATED, { app_id: newApp.id, app_type: newApp.app_type, via: selectedAppType })
@@ -420,7 +421,7 @@ export default function App({ routeContent }) {
     onRunEvent: event => { setSelectedApp({ id: event.app_id, name: event.app_name, emoji: event.app_emoji }); navigateToView('apps') },
     developerProps: {
       creationContent: creationFlow, navigationGuardRef: buildNavigationGuardRef, homeNavigationRef: developerHomeRef, onCloseCreation: closeBuildFlow,
-      onOpenCreate: type => { setShowTypeSelector(true); if (type === 'code_job') openBuilder(type) }, onShowSettings: () => setShowSettings(true),
+      onOpenCreate: type => { if (typeof type === 'string') selectAppType(type) }, onShowSettings: () => setShowSettings(true),
       onShowProfile: () => setShowProfile(true), noKeys, onNavChange: changeView,
       search, onSearch: setSearch, searchRef: searchInputRef, createdApp,
       onCreatedAppConsumed: () => setCreatedApp(null),

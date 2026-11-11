@@ -1,8 +1,9 @@
 import { test, expect } from '@playwright/test'
+import { enterStudio, gotoStudio } from './studio.js'
 
 test('account menu dismisses outside and with Escape while workspace totals stay visible', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === 'mobile', 'The phone account menu has its own outside backdrop.')
-  await page.goto('/e2e/fixtures/?scenario=shared-row')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=shared-row')
   const account = page.getByRole('button', { name: 'Account menu', exact: true })
   await account.click()
   await expect(account).toHaveAttribute('aria-expanded', 'true')
@@ -23,14 +24,14 @@ test('account menu dismisses outside and with Escape while workspace totals stay
 })
 
 test('purple light mode keeps all grouped Developer steps available', async ({ page }, testInfo) => {
-  await page.goto('/e2e/fixtures/?scenario=shared-row')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=shared-row')
   await page.evaluate(async () => {
-    const { applyTheme } = await import('/src/utils/theme.js')
+    const { applyTheme } = await import('/src/utils/theme.ts')
     applyTheme('light')
   })
   if (testInfo.project.name === 'mobile') {
     const nav = page.getByRole('navigation', { name: 'Developer mobile navigation' })
-    await expect(nav.getByRole('button')).toHaveCount(4)
+    await expect(nav.getByRole('button')).toHaveCount(6)   // Workspace, Resources, Monitor, My apps, Feedback, Manage
     await nav.getByRole('button', { name: 'Manage', exact: true }).click()
     await expect(page.getByRole('heading', { name: 'Revenue', exact: true })).toBeVisible()
     await page.screenshot({ path: testInfo.outputPath('developer-purple-mobile.png') })
@@ -38,14 +39,14 @@ test('purple light mode keeps all grouped Developer steps available', async ({ p
   }
   const row = page.locator('[aria-label="Developer navigation"]')
   await expect(row.locator('[data-group]')).toHaveCount(3)
-  await expect(row.locator('[data-group] button')).toHaveCount(11)   // Build: Design, Test, Deploy, Workflows
+  await expect(row.locator('[data-group] button')).toHaveCount(10)   // Build: Design, Test, Deploy (Workflows is its own capability)
   const design = row.getByRole('button', { name: 'Design Blueprint' })
   await expect(design).toHaveAttribute('aria-current', 'step')
   await expect(design).toHaveCSS('background-color', 'rgb(238, 232, 248)')
   const header = page.getByRole('banner', { name: 'Developer header' })
   await expect(header).toHaveCSS('background-color', 'rgb(255, 255, 255)')
   await expect(header.getByRole('button', { name: 'Runs', exact: true })).toHaveCount(0)   // business run history isn't in Developer
-  await expect(header.getByRole('button', { name: '+ App', exact: true })).toHaveCSS('color', 'rgb(255, 255, 255)')
+  await expect(header.getByRole('button', { name: 'Create a resource', exact: true })).toHaveCSS('color', 'rgb(255, 255, 255)')
   await row.locator('button[title="Revenue: Profit"]').click()
   await expect(page.getByRole('heading', { name: 'Revenue', exact: true })).toBeVisible()
   await design.click()
@@ -68,6 +69,7 @@ test('Developer second row spans sidebar and workspace', async ({ page }, testIn
   expect(await header.boundingBox()).toEqual(initialHeader)
   expect(await row.boundingBox()).toEqual(initialRow)
   await expect(row.locator(':scope > [data-section]')).toHaveCount(3)
+  await enterStudio(page)
   await expect(row.locator('button[title="Revenue: Profit"]').filter({ visible: true })).toBeVisible()
   await row.locator('button[title="Revenue: Profit"]').filter({ visible: true }).click()
   await row.locator('button[title="Design: Blueprint"]').filter({ visible: true }).click()
@@ -94,7 +96,8 @@ test('signed-out Developer offers sign in and sign up', async ({ page }) => {
 })
 
 test('empty Developer welcome keeps account controls available', async ({ page }, testInfo) => {
-  await page.goto('/e2e/fixtures/?scenario=empty')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=empty')
+  if (testInfo.project.name === 'mobile') await page.getByRole('navigation', { name: 'Developer mobile navigation' }).getByRole('button', { name: 'Monitor', exact: true }).click()
   await expect(page.getByText(testInfo.project.name === 'mobile' ? 'No apps yet' : 'Welcome to Aistrix Dev Studio', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Account menu', exact: true }).filter({ visible: true }).click()
   const menu = page.getByRole('menu').filter({ visible: true })
@@ -103,9 +106,9 @@ test('empty Developer welcome keeps account controls available', async ({ page }
   await expect(menu.getByRole('button', { name: 'Settings', exact: true })).toBeVisible()
 })
 
-test('one Settings page opens inside the Developer workspace and tabs leave it', async ({ page }, testInfo) => {
+test('one Settings page opens inside the Developer workspace and Back to workspace leaves it', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === 'mobile', 'The phone account menu keeps its own short list.')
-  await page.goto('/e2e/fixtures/?scenario=shared-row')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=shared-row')
   await page.getByRole('button', { name: 'Account menu', exact: true }).click()
   const menu = page.getByRole('menu')
   await expect(menu.getByRole('button', { name: 'User settings' })).toHaveCount(0)
@@ -116,15 +119,15 @@ test('one Settings page opens inside the Developer workspace and tabs leave it',
   for (const section of ['Profile', 'Appearance', 'Notifications', 'API Keys']) await expect(settings.getByText(section, { exact: true })).toBeVisible()
   for (const section of ['Usage limits', 'AI Memory']) await expect(settings.getByText(section, { exact: true })).toHaveCount(0)
   await expect(page.getByRole('button', { name: 'Developer', exact: true })).toBeVisible()      // still the Developer workspace
-  await page.locator('button[title="Monitor: Usage"]').filter({ visible: true }).click()
+  await page.getByRole('button', { name: 'Back to workspace' }).click()
   await expect(page.getByTestId('developer-settings')).toHaveCount(0)
-  await expect(page.getByLabel('App to monitor')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'What do you want to build?' })).toBeVisible()
 })
 
 test('search filters the app list and says when nothing matches', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === 'mobile', 'Phones have no app search.')
   await page.setViewportSize({ width: 1280, height: 800 })
-  await page.goto('/e2e/fixtures/?scenario=shared-row')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=shared-row')
   const box = page.getByRole('searchbox', { name: /Search apps/ })
   await expect(box).toHaveAttribute('placeholder', 'Search apps, prompts, runs…')
   const list = page.locator('.developer-app-list')
@@ -156,8 +159,8 @@ test('search filters the app list and says when nothing matches', async ({ page 
   await expect(results.getByRole('option', { name: /Open the guide/ })).toBeVisible()
 })
 
-test('Keys opens Settings at API Keys; phones have one Settings item', async ({ page }, testInfo) => {
-  await page.goto('/e2e/fixtures/?scenario=shared-row')
+test('Keys opens Models & Providers; phones have one Settings item', async ({ page }, testInfo) => {
+  await gotoStudio(page, '/e2e/fixtures/?scenario=shared-row')
   if (testInfo.project.name === 'mobile') {
     await page.getByRole('button', { name: 'Account menu', exact: true }).filter({ visible: true }).click()
     const menu = page.getByRole('menu').filter({ visible: true })
@@ -171,21 +174,17 @@ test('Keys opens Settings at API Keys; phones have one Settings item', async ({ 
   const secrets = page.locator('button[title="Secrets: Env vars"]').filter({ visible: true })
   await secrets.click()
   await expect(secrets).toHaveAttribute('aria-current', 'step')
-  const keysButton = page.getByRole('button', { name: /^Keys/ }).filter({ visible: true })
-  await keysButton.click()
-  const keys = page.getByTestId('developer-settings').locator('#settings-api-keys')
-  await expect(keys).toBeInViewport()
-  await expect(keysButton).toHaveAttribute('aria-current', 'page')
+  // Keys leaves the app steps for the Models & Providers capability.
+  await page.getByRole('button', { name: /^Keys/ }).filter({ visible: true }).click()
+  await expect(page.getByRole('heading', { level: 1, name: 'Models & Providers' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Available models' })).toBeVisible()
   await expect(page.locator('.developer-lifecycle-group [aria-current="step"]')).toHaveCount(0)
-  await secrets.click()
-  await expect(secrets).toHaveAttribute('aria-current', 'step')
-  await expect(keysButton).not.toHaveAttribute('aria-current', 'page')
   await expect(page.getByTestId('developer-settings')).toHaveCount(0)
 })
 
 test('Settings shows the developer plan and the account data controls', async ({ page }, testInfo) => {
   test.skip(testInfo.project.name === 'mobile', 'The phone account menu keeps its own short list.')
-  await page.goto('/e2e/fixtures/?scenario=shared-row')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=shared-row')
   await page.getByRole('button', { name: 'Account menu', exact: true }).click()
   await page.getByRole('menu').getByRole('button', { name: 'Settings', exact: true }).click()
   const settings = page.getByTestId('developer-settings')

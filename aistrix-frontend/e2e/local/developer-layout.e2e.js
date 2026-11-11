@@ -1,10 +1,11 @@
 import { test, expect } from '@playwright/test'
+import { gotoStudio } from './studio.js'
 
 test.beforeEach(({ isMobile }) => { test.skip(!!isMobile, 'Phone keeps its monitoring workspace.') })
 
 async function open(page) {
-  await page.goto('/e2e/fixtures/?scenario=shared-row')
-  await page.evaluate(async () => { const { applyTheme } = await import('/src/utils/theme.js'); applyTheme('light') })
+  await gotoStudio(page, '/e2e/fixtures/?scenario=shared-row')
+  await page.evaluate(async () => { const { applyTheme } = await import('/src/utils/theme.ts'); applyTheme('light') })
   await page.locator('.developer-app-list').getByRole('button').filter({ has: page.getByText('Fixture Assistant', { exact: true }) }).click()
   await expect(page.getByLabel('System prompt', { exact: true })).toBeVisible()
 }

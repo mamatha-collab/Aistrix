@@ -15,7 +15,7 @@ function files(directory) {
 
 describe('Next.js migration boundaries', () => {
   it('keeps the legacy router outside every production entry import graph', () => {
-    const pending = [...files(resolve(source, 'app')).filter(path => /\.[jm]sx?$/.test(path)), resolve(source, 'proxy.js')]
+    const pending = [...files(resolve(source, 'app')).filter(path => /\.[jtm]sx?$/.test(path)), resolve(source, 'proxy.ts')]
     const visited = new Set()
     const prohibited = []
     while (pending.length) {
@@ -28,8 +28,8 @@ describe('Next.js migration boundaries', () => {
         if (specifier === 'react-router-dom' || specifier.includes('legacy-navigation')) prohibited.push({ path, specifier })
         if (!specifier.startsWith('.')) continue
         const base = resolve(dirname(path), specifier)
-        const target = [base, `${base}.js`, `${base}.jsx`, `${base}.mjs`].find(candidate => existsSync(candidate) && statSync(candidate).isFile())
-        if (target && ['.js', '.jsx', '.mjs'].includes(extname(target))) pending.push(target)
+        const target = [base, `${base}.js`, `${base}.jsx`, `${base}.mjs`, `${base}.ts`, `${base}.tsx`].find(candidate => existsSync(candidate) && statSync(candidate).isFile())
+        if (target && ['.js', '.jsx', '.mjs', '.ts', '.tsx'].includes(extname(target))) pending.push(target)
       }
     }
     expect(visited.size).toBeGreaterThan(50)
@@ -39,7 +39,7 @@ describe('Next.js migration boundaries', () => {
   it('has no React Router or Vite application entry left after the rollback build was archived', () => {
     const root = resolve(source, '..')
     const self = fileURLToPath(import.meta.url)
-    const sources = [...files(source), ...files(resolve(root, 'e2e'))].filter(path => /\.[jm]sx?$/.test(path) && path !== self)
+    const sources = [...files(source), ...files(resolve(root, 'e2e'))].filter(path => /\.[jtm]sx?$/.test(path) && path !== self)
     const routerImports = sources.filter(path => /['"]react-router(-dom)?['"]|legacy-navigation/.test(readFileSync(path, 'utf8')))
     expect(routerImports).toEqual([])
     const manifest = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'))
@@ -49,7 +49,7 @@ describe('Next.js migration boundaries', () => {
 
   it('gives every workspace screen an explicit standard App Router page', () => {
     for (const path of Object.keys(WORKSPACE_ROUTES)) {
-      expect(existsSync(resolve(source, 'app/(workspace)', path.slice(1), 'page.jsx')), path).toBe(true)
+      expect(existsSync(resolve(source, 'app/(workspace)', path.slice(1), 'page.tsx')), path).toBe(true)
     }
     expect(files(resolve(source, 'app')).some(path => path.includes('...path'))).toBe(false)
     expect(files(resolve(source, 'pages')).filter(path => /\.[jt]sx?$/.test(path))).toEqual([])

@@ -19,4 +19,8 @@ describe('server-to-browser catalog projection', () => {
   it('omits private developer fields', () => {
     expect(publicProfile({ user_id: 'dev', display_name: 'Name', stripe_account_id: 'PRIVATE' })).toEqual({ user_id: 'dev', display_name: 'Name' })
   })
+  it('rejects malformed public presentation fields at the serialization boundary', () => {
+    expect(publicListing({ ...row, title: { private: 'not display text' } })).toBeNull()
+    expect(publicProfile({ user_id: 'dev', display_name: ['not display text'] })).toBeNull()
+  })
 })

@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { gotoStudio } from './studio.js'
 
 test.beforeEach(({ isMobile }) => {
   test.skip(!!isMobile, 'Phones use the monitoring workspace; Build and release steps are tested on desktop.')
@@ -9,7 +10,7 @@ async function open(page, query = '') {
     const url = new URL(route.request().url())
     return url.hostname === '127.0.0.1' || url.protocol === 'data:' ? route.continue() : route.abort()
   })
-  await page.goto(`/e2e/fixtures/${query}`)
+  await gotoStudio(page, `/e2e/fixtures/${query}`)
 }
 
 async function openLiveDeploy(page) {

@@ -2,6 +2,18 @@
 
 ## Developer workspace entry point
 
+### Page arrangement revision — November 10, 2026
+
+The later [workspace capability review](workspace-information-architecture.md) consolidates the catalog into eight working areas, gives Agent creation one home, separates AI-assisted setup from app formats, embeds real provider controls in Models, and lists unbuilt capabilities as planned. It supersedes the thirteen-entry navigation arrangement described in the historical notes below.
+
+Developer Workspace is the main landing page. Selecting a capability opens its own detail page rather than leaving the full capability grid above its content. All capabilities returns to the landing chooser. Workspace navigation remains available alongside app-specific navigation on desktop; mobile retains the workspace entry point and the same capability selection.
+
+AI Apps contains actionable application-type cards. Selecting a type opens that type's builder directly, including the existing provider-key gate where required. The old second "Create an AI app" picker is no longer inserted in the Developer flow. Cancelling or backing out returns to the selected capability; creating an app still opens its correct lifecycle stage. Unsaved-edit navigation protection is retained.
+
+The global Create action opens the workspace capability chooser. App-specific New AI App actions open AI Apps, and the persistent AI Apps shortcut leads to that type-selection page. Resources, Evaluations and Workflows use workspace page headings; pipeline Resources/Evaluations and Workflows are removed from the app lifecycle ribbon. App Design/Test/Deploy and app operations remain subordinate app tools. The return action is named Back to workspace.
+
+Verification for this revision: production webpack build passed; 268 frontend unit tests passed; targeted lint passed with the existing DevStudioPage dependency warning. The complete 52-test desktop/mobile browser suite passed before the final capability-detail refinement; all 14 affected workspace, direct-builder, Studio, resource and evaluation browser checks passed again against the final build. Desktop and mobile screenshots were inspected. Browser services are synthetic, and this UI revision does not deploy backend changes.
+
 The Developer landing page now starts with a capability chooser matching the architecture catalog, with an AI Apps entry for existing application types: AI Apps, Models, Agents, Nodes, Tools, MCP, Workflows, Knowledge, Data, Prompts, Evaluations, Interfaces, and Operations. Selecting a capability reveals its available tasks and implementation limits. Actions open existing Studio tools, resource inspection, provider settings, or connected workspace pages. Nodes reads the real built-in catalog from `/v1/platform/nodes`; managed MCP hosting is marked planned. Application editing remains available through the application Studio shortcut. The logo and Workspace navigation return to the chooser on desktop and mobile; Studio tools and the app creation flow have a visible Back to types action on desktop and mobile, using the existing unsaved-change guard. AI Apps lists the shared application type catalog and opens the existing type picker.
 
 Verification for the chooser: production webpack build passed; lint passed with repository warnings; six desktop/mobile browser tests passed covering all thirteen choices, node catalog, MCP availability, workflow navigation, return home, and platform resource inspection. Desktop and mobile screenshots were inspected. Browser fixtures verify UI behavior rather than deployed backend capability.

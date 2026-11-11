@@ -26,6 +26,7 @@ const Listing = lazy(() => import('../screens/MarketplacePage').then(m => ({ def
 const DeveloperProfile = lazy(() => import('../screens/DeveloperProfilePage'))
 
 // Next pages and the rollback renderer share screen components, not routers.
+/** @param {import('./WorkspaceRouteContext').WorkspaceContext & { screen: string }} props */
 export default function WorkspaceScreens({ screen, user, userRole, changeView, onSelectApp, onRunEvent, developerProps, pathname }) {
   switch (screen) {
     case 'overview': return <Overview user={user} onSelectApp={onSelectApp} />

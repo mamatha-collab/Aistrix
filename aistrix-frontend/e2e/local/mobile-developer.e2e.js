@@ -1,12 +1,16 @@
 import { test, expect } from '@playwright/test'
+import { gotoStudio } from './studio.js'
 
 test.beforeEach(({ isMobile }) => { test.skip(!isMobile, 'Phone-specific monitoring layout.') })
 const nav = page => page.getByRole('navigation', { name: 'Developer mobile navigation' })
+// Phones open on the Workspace chooser; Monitor is one of the six destinations.
+const openMonitor = page => nav(page).getByRole('button', { name: 'Monitor', exact: true }).click()
 
-test('phone opens a clean monitoring workspace with four destinations', async ({ page }, testInfo) => {
+test('phone opens a clean workspace with six destinations and a monitoring view', async ({ page }, testInfo) => {
   await page.goto('/e2e/fixtures/?scenario=operations')
+  await expect(nav(page).getByRole('button')).toHaveCount(6)
+  await openMonitor(page)
   await expect(page.getByRole('heading', { name: 'Monitor', exact: true })).toBeVisible()
-  await expect(nav(page).getByRole('button')).toHaveCount(4)
   await expect(page.locator('button[title="Design: Blueprint"]')).toHaveCount(0)
   await expect(page.getByRole('button', { name: '+ App', exact: true })).toHaveCount(0)
   // Server health: open customer feedback across apps, and no alerts in this data.
@@ -45,6 +49,7 @@ test('apps are grouped and feedback expands only when requested', async ({ page 
 
 test('phone health errors are visible and refresh recovers', async ({ page }) => {
   await page.goto('/e2e/fixtures/?scenario=operations')
+  await openMonitor(page)
   await expect(page.getByRole('heading', { name: 'Monitor', exact: true })).toBeVisible()
   await expect(page.getByRole('button', { name: /2\s*Feedback to review/ })).toBeVisible()
   await page.evaluate(() => { window.buildFixture.failures['/v1/monitor'] = 'Health unavailable' })
@@ -59,7 +64,7 @@ test('phone health errors are visible and refresh recovers', async ({ page }) =>
 
 test('tablet retains the full Build workspace', async ({ page }) => {
   await page.setViewportSize({ width: 1024, height: 900 })
-  await page.goto('/e2e/fixtures/?scenario=operations')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=operations')
   await expect(page.locator('button[title="Design: Blueprint"]').filter({ visible: true })).toBeVisible()
   await expect(nav(page)).toHaveCount(0)
 })

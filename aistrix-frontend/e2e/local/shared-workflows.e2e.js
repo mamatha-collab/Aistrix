@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { openWorkflows } from './studio.js'
 
 test('Developer and Business use the same wired workflow record and runtime', async ({ page, isMobile }) => {
   test.skip(isMobile, 'Developer workflow editing is a desktop capability')
@@ -45,7 +46,7 @@ test('Developer and Business use the same wired workflow record and runtime', as
   await editor.getByRole('button', { name: 'Close workflow editor' }).click()
   expect(await page.evaluate(() => window.buildFixture.tables.flows.find(f => f.id === 'shared-flow').name)).toBe('Updated shared workflow')
   await page.getByRole('button', { name: 'Developer', exact: true }).click()
-  await page.getByRole('button', { name: /Workflows.*Connect apps/ }).click()
+  await openWorkflows(page)
   await expect(page.getByRole('textbox', { name: 'Workflow name' })).toHaveValue('Updated shared workflow')
   expect(errors).toEqual([])
 })

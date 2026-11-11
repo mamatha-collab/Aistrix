@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { gotoStudio, openWorkflows } from './studio.js'
 
 async function installWorkflow(page) {
   await page.goto('/e2e/fixtures/?scenario=business')
@@ -49,7 +50,7 @@ test('private workflow settings save before server validation and problems appea
   test.skip(isMobile, 'Workflow editing is a desktop capability.')
   await installWorkflow(page)
   await page.getByRole('button', { name: 'Developer', exact: true }).click()
-  await page.getByRole('button', { name: /Workflows.*Connect apps/ }).click()
+  await openWorkflows(page)
   await page.getByLabel('Execution privacy').selectOption('private_only')
   await expect(page.getByText(/There is no fallback to a public AI provider/)).toBeVisible()
   await page.getByText('Model and tool access by step', { exact: true }).click()
@@ -102,7 +103,7 @@ test('reviewing a run records a note without replaying it and ordinary conflicts
 })
 
 test('spending caps distinguish zero from unlimited and preserve server permission failures', async ({ page }) => {
-  await page.goto('/e2e/fixtures/?scenario=shared-row')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=shared-row')
   await page.evaluate(() => {
     const fixtureFetch = window.fetch
     window.spendWrites = []
@@ -142,7 +143,7 @@ test('spending caps distinguish zero from unlimited and preserve server permissi
 })
 
 test('unverified spending totals never become a zero balance or an editable cap', async ({ page }) => {
-  await page.goto('/e2e/fixtures/?scenario=shared-row')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=shared-row')
   await page.evaluate(() => {
     const fixtureFetch = window.fetch
     window.fetch = (input, init = {}) => new URL(typeof input === 'string' ? input : input.url, location.href).pathname === '/v1/spend'

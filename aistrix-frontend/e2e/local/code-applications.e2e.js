@@ -1,9 +1,10 @@
 import { expect, test } from '@playwright/test'
+import { gotoStudio } from './studio.js'
 
 test.beforeEach(({ isMobile }) => test.skip(isMobile, 'Code editing is a desktop capability.'))
 
 async function create(page, enabled = true) {
-  await page.goto('/e2e/fixtures/?scenario=inline-creation')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=inline-creation')
   await page.evaluate(enabled => {
     const original = window.fetch
     const manifest = { version: 1, runtime: 'python', mode: 'job', entrypoint: 'main:run', timeout_seconds: 30, memory_mb: 256, network: 'none' }
@@ -41,9 +42,10 @@ async function create(page, enabled = true) {
       return json(data)
     }
   }, enabled)
-  await page.getByRole('button', { name:'+ App', exact:true }).click()
-  await page.locator('[aria-label="App families"]').getByRole('button', { name:'Developer', exact:true }).click()
-  await page.getByRole('button').filter({ has:page.getByText('Code Application', { exact:true }) }).click()
+  // Python jobs are created from Code & Tools.
+  await page.getByRole('button', { name:'Create a resource', exact:true }).click()
+  await page.getByRole('button').filter({ has:page.getByText('Code & Tools', { exact:true }) }).first().click()
+  await page.getByRole('button', { name:/^Create Python resource with AI/ }).click()
   await page.getByRole('textbox', { name:'Application name' }).fill('Inventory optimizer')
   await page.getByRole('button', { name:'Create code application', exact:true }).click()
   await expect(page.getByRole('heading', { name:'Inventory optimizer', exact:true })).toBeVisible()

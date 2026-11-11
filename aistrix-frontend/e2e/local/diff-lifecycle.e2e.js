@@ -1,4 +1,5 @@
 import { test, expect } from '@playwright/test'
+import { gotoStudio } from './studio.js'
 
 test('Operate & Grow releases diff editors safely across repeated Strict Mode navigation', async ({ page, isMobile }) => {
   test.skip(isMobile, 'The comparison editor is a desktop capability.')
@@ -55,7 +56,7 @@ test('Operate & Grow releases diff editors safely across repeated Strict Mode na
       },
     }
   })
-  await page.goto('/e2e/fixtures/?scenario=operations&strict=1')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=operations&strict=1')
   for (let i = 0; i < 5; i++) {
     await page.locator('button[title="Improve: Iterate"]').filter({ visible: true }).click()
     await expect(page.getByRole('region', { name: 'Prompt comparison' })).toBeVisible()

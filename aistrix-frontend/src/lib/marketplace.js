@@ -22,6 +22,8 @@ export function marketListing(app) {
   }
 }
 
+/** @param {import('@supabase/supabase-js').SupabaseClient} client
+ * @param {{ select?: string, developerId?: string }} [options] */
 export async function loadMarketApps(client, { select = MARKET_APP_SELECT, developerId } = {}) {
   const apps = []
   // PostgREST caps responses. Read every page so search/category filters

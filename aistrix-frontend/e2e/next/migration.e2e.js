@@ -23,48 +23,124 @@ test.beforeEach(async ({ page }) => {
   })
 })
 
-test('developer workspace starts with thirteen capability choices', async ({ page, context }, testInfo) => {
+test('developer workspace shows eight working areas and separates the roadmap', async ({ page, context }, testInfo) => {
   await signInFixture(context, page)
   await page.route('**/v1/platform/nodes', route => route.fulfill({ json: { nodes: [{ use: 'llm.structured', summary: 'Extract typed model output', accepts: ['text'], output: 'object', config: {}, hosted: true }] } }))
   await page.goto('/developer')
   await expect(page.getByRole('heading', { name: 'What do you want to build?' })).toBeVisible()
   const choices = page.getByRole('region', { name: 'AI development capabilities' })
-  await expect(choices.getByRole('button')).toHaveCount(13)
-  for (const label of ['AI Apps', 'Models', 'Agents', 'Nodes', 'Tools', 'MCP', 'Workflows', 'Knowledge', 'Data', 'Prompts', 'Evaluations', 'Interfaces', 'Operations']) {
+  await expect(choices.getByRole('button')).toHaveCount(8)
+  for (const label of ['AI Apps', 'Agents', 'Workflows', 'Code & Tools', 'Models & Providers', 'Knowledge & Data', 'Evaluations', 'Operations']) {
     await expect(choices.getByRole('button', { name: new RegExp(label) })).toBeVisible()
   }
   await page.screenshot({ path: `test-results/developer-workspace-${testInfo.project.name}.png`, fullPage: true })
-  await choices.getByRole('button', { name: /^Nodes/ }).click()
+  await choices.getByRole('button', { name: /^Code & Tools/ }).click()
   await expect(page.getByText('llm.structured', { exact: false })).toBeVisible()
-  await choices.getByRole('button', { name: /MCP/ }).click()
-  await expect(page.getByText('Managed MCP server authoring', { exact: false })).toBeVisible()
-  await expect(page.getByRole('link', { name: 'Open integrations' })).toHaveAttribute('href', '/integrations')
+  await page.getByRole('button', { name: 'Developer Workspace', exact: true }).click()
+  await expect(page.getByRole('region', { name: 'Planned platform capabilities' })).toContainText('MCP hosting')
+  await expect(choices.getByRole('button', { name: /^MCP/ })).toHaveCount(0)
   await choices.getByRole('button', { name: /^Workflows/ }).click()
   await page.getByRole('button', { name: 'Open workflow designer', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'What do you want to build?' })).toHaveCount(0)
-  await page.getByRole('button', { name: 'Back to types', exact: true }).click()
+  await page.getByRole('button', { name: 'Back to workspace', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'What do you want to build?' })).toBeVisible()
+})
+
+test('every capability has a visible workspace return even after scrolling app types', async ({ page, context }) => {
+  await signInFixture(context, page)
+  await page.goto('/developer')
+  for (const label of ['AI Apps', 'Agents', 'Workflows', 'Code & Tools', 'Models & Providers', 'Knowledge & Data', 'Evaluations', 'Operations']) {
+    await page.getByRole('region', { name: 'AI development capabilities' }).getByRole('button', { name: new RegExp('^' + label) }).click()
+    const home = page.getByRole('navigation', { name: 'Developer workspace breadcrumb' }).getByRole('button', { name: 'Developer Workspace', exact: true })
+    await expect(home).toBeInViewport()
+    if (label === 'AI Apps') {
+      await page.getByRole('region', { name: 'AI app types' }).getByRole('button').last().scrollIntoViewIfNeeded()
+      await expect(home).toBeInViewport()
+    }
+    await home.click()
+    const heading = page.getByRole('heading', { name: 'What do you want to build?' })
+    await expect(heading).toBeInViewport()
+    const headingBox = await heading.boundingBox()
+    const ribbonBox = await page.getByRole('navigation', { name: 'Developer workspace breadcrumb' }).boundingBox()
+    expect(headingBox.y).toBeGreaterThan(ribbonBox.y)
+    expect(headingBox.y - ribbonBox.y - ribbonBox.height).toBeLessThan(120)
+  }
 })
 
 test('AI Apps contains the existing types and Design has a visible return action', async ({ page, context }) => {
   await signInFixture(context, page)
+  await page.route('**/v1/providers', route => route.fulfill({ json: { providers: [{ id: 'claude', label: 'Claude', connected: true, models: [], default_model: 'fixture' }] } }))
   await page.goto('/developer')
   const choices = page.getByRole('region', { name: 'AI development capabilities' })
   await choices.getByRole('button', { name: /^AI Apps/ }).click()
   await expect(page.getByRole('heading', { name: 'Application types', exact: true })).toBeVisible()
-  for (const type of ['Form App', 'Prompt App', 'API App', 'Data App', 'Code Application']) {
-    await expect(page.locator('#capability-detail').getByText(type, { exact: true })).toBeVisible()
+  for (const type of ['Form App', 'Prompt App', 'API App', 'Data App']) {
+    await expect(page.getByRole('region', { name: 'AI app types', exact: true }).getByRole('button', { name: new RegExp('^' + type) })).toBeVisible()
   }
-  await page.getByRole('button', { name: 'Choose an app type', exact: true }).click()
-  await expect(page.getByRole('heading', { name: 'Create an AI app', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Create an AI app', exact: true })).toHaveCount(0)
+  const formats = page.getByRole('region', { name: 'AI app types', exact: true })
+  await expect(formats.getByRole('button', { name: /^(Agent|Build with AI|Code Application)/ })).toHaveCount(0)
+  await expect(page.getByRole('region', { name: 'App creation methods' }).getByRole('button', { name: /^Describe an app with AI/ })).toBeVisible()
   await page.screenshot({ path: `test-results/ai-app-types-${test.info().project.name}.png`, fullPage: true })
-  await page.getByRole('button', { name: 'Back to types', exact: true }).click()
-  await expect(page.getByRole('heading', { name: 'What do you want to build?' })).toBeVisible()
-  await choices.getByRole('button', { name: /^AI Apps/ }).click()
+  await page.getByRole('region', { name: 'AI app types', exact: true }).getByRole('button', { name: /^Prompt App/ }).click()
+  await expect(page.getByRole('button', { name: 'Start building →', exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Create an AI app', exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: '← Back', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Application types', exact: true })).toBeVisible()
+  if (test.info().project.name === 'desktop') {
+    await page.getByRole('button', { name: 'Create a resource', exact: true }).click()
+    await expect(page.getByRole('heading', { name: 'What do you want to build?' })).toBeVisible()
+    await choices.getByRole('button', { name: /^AI Apps/ }).click()
+  }
   await page.getByRole('button', { name: 'Manage AI apps', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'What do you want to build?' })).toHaveCount(0)
-  await page.getByRole('button', { name: 'Back to types', exact: true }).click()
+  await page.getByRole('button', { name: 'Back to workspace', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'What do you want to build?' })).toBeVisible()
+})
+
+test('Models stays in its workspace and shares provider connections without account settings', async ({ page, context }, testInfo) => {
+  await signInFixture(context, page)
+  let connected = false
+  let saved = false
+  await page.route('**/v1/providers', route => route.fulfill({ json: { providers: [{ id: 'claude', label: 'Claude', connected, models: [{ id: 'fixture-model', label: 'Fixture model' }] }] } }))
+  await page.route('**/v1/provider-keys/claude', route => {
+    expect(route.request().method()).toBe('PUT')
+    expect(route.request().postDataJSON()).toEqual({ key: 'synthetic-test-key' })
+    connected = saved = true
+    return route.fulfill({ json: { saved: true } })
+  })
+  await page.goto('/developer')
+  await page.getByRole('region', { name: 'AI development capabilities' }).getByRole('button', { name: /^Models & Providers/ }).click()
+  await expect(page.getByRole('heading', { name: 'Models & Providers', exact: true })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Available models' })).toContainText('Fixture model')
+  await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toHaveCount(0)
+  const connections = page.getByRole('region', { name: 'Provider connections', exact: true })
+  await connections.getByLabel('Claude API key', { exact: true }).fill('synthetic-test-key')
+  await connections.getByRole('button', { name: 'Save', exact: true }).click()
+  await expect(connections).toContainText('Connected')
+  expect(saved).toBe(true)
+  await expect(page.getByRole('heading', { name: 'Models & Providers', exact: true })).toBeVisible()
+  await page.screenshot({ path: `test-results/models-workspace-${testInfo.project.name}.png`, fullPage: true })
+  await page.getByRole('button', { name: 'Developer Workspace', exact: true }).click()
+  await page.getByRole('region', { name: 'AI development capabilities' }).getByRole('button', { name: /^Agents/ }).click()
+  await expect(page.getByRole('heading', { name: 'Your agents' })).toBeVisible()
+  await page.getByRole('button', { name: 'Create an agent', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Start building →', exact: true })).toBeVisible()
+  await page.getByRole('button', { name: '← Back', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Agents', exact: true })).toBeVisible()
+})
+
+test('model catalog failures show retry without falling back to made-up availability', async ({ page, context }) => {
+  await signInFixture(context, page)
+  let fail = true
+  await page.route('**/v1/providers', route => route.fulfill(fail ? { status: 503, json: { detail: 'Catalog unavailable' } } : { json: { providers: [] } }))
+  await page.goto('/developer')
+  await page.getByRole('region', { name: 'AI development capabilities' }).getByRole('button', { name: /^Models & Providers/ }).click()
+  await expect(page.getByRole('button', { name: 'Retry model catalog' })).toBeVisible()
+  await expect(page.getByRole('region', { name: 'Provider connections', exact: true })).toHaveCount(0)
+  fail = false
+  await page.getByRole('button', { name: 'Retry model catalog' }).click()
+  await expect(page.getByText('No providers are configured by this server.')).toBeVisible()
 })
 
 test('platform resources expose release and run inspection without legacy apps', async ({ page, context }) => {

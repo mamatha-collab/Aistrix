@@ -1,9 +1,10 @@
 import { test, expect } from '@playwright/test'
+import { gotoStudio, openWorkflows } from './studio.js'
 
 test.beforeEach(({ isMobile }) => test.skip(isMobile, 'Build editing is a desktop capability.'))
 
 async function openDesign(page) {
-  await page.goto('/e2e/fixtures/?scenario=shared-row')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=shared-row')
   await page.evaluate(() => {
     const fixtureFetch = window.fetch
     window.previewCalls = []
@@ -78,7 +79,7 @@ test('an owner can delete an offline app from Developer only after typing its na
 })
 
 test('a first-time builder can install a starter, run its sample and inspect captured deliveries', async ({ page }) => {
-  await page.goto('/e2e/fixtures/?scenario=empty')
+  await gotoStudio(page, '/e2e/fixtures/?scenario=empty&shell=1')
   await page.evaluate(() => {
     const fixtureFetch = window.fetch
     window.fetch = async (input, init = {}) => {
@@ -99,7 +100,7 @@ test('a first-time builder can install a starter, run its sample and inspect cap
       return fixtureFetch(input, init)
     }
   })
-  await page.getByRole('button', { name: /Workflows.*Connect apps/ }).click()
+  await openWorkflows(page)
   await page.getByRole('button', { name: 'Open library', exact: true }).click()
   await page.getByRole('button', { name: 'Install draft workflow', exact: true }).click()
   await expect(page.getByRole('textbox', { name: 'Workflow name' })).toHaveValue('Invoice starter')

@@ -1,12 +1,12 @@
 import { test, expect } from '@playwright/test'
+import { openCreate } from './studio.js'
 
 test.beforeEach(({ isMobile }) => { test.skip(!!isMobile, 'Creation is a desktop/tablet workflow.') })
 
 async function start(page) {
   await page.goto('/e2e/fixtures/?scenario=inline-creation')
-  await page.evaluate(async () => { const { applyTheme } = await import('/src/utils/theme.js'); applyTheme('light') })
-  await page.getByRole('button', { name: '+ App', exact: true }).click()
-  await expect(page.getByRole('region', { name: 'What do you want to automate?' })).toBeVisible()
+  await page.evaluate(async () => { const { applyTheme } = await import('/src/utils/theme.ts'); applyTheme('light') })
+  await openCreate(page)
   await expect(page.getByRole('dialog')).toHaveCount(0)
 }
 
@@ -33,16 +33,16 @@ test('stage navigation can retain unfinished app setup or discard it explicitly'
   const name = page.getByPlaceholder('e.g. Market Research Assistant', { exact: true })
   await name.fill('Keep my unfinished app')
   page.once('dialog', dialog => dialog.dismiss())
-  await page.locator('button[title="Test: Validate"]').click()
+  await page.getByRole('button', { name: 'Back to workspace' }).click()
   await expect(name).toHaveValue('Keep my unfinished app')
   page.once('dialog', dialog => dialog.accept())
-  await page.locator('button[title="Test: Validate"]').click()
+  await page.getByRole('button', { name: 'Back to workspace' }).click()
   await expect(page.getByTestId('developer-creation')).toHaveCount(0)
 })
 
 test('Build with AI also runs inline', async ({ page }) => {
   await start(page)
-  await page.getByRole('button').filter({ has: page.getByText('Build with AI', { exact: true }) }).click()
+  await page.getByRole('button').filter({ has: page.getByText('Describe an app with AI', { exact: true }) }).click()
   const builder = page.getByRole('region', { name: 'Build with AI', exact: true })
   await expect(builder).toBeVisible()
   await expect(page.getByRole('dialog')).toHaveCount(0)

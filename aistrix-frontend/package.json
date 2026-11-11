@@ -23,7 +23,8 @@
     "preview": "next start",
     "test:e2e": "playwright test",
     "verify:hosted": "node scripts/verify-hosted.mjs",
-    "test:e2e:local": "playwright test --config playwright.local.config.js"
+    "test:e2e:local": "playwright test --config playwright.local.config.js",
+    "typecheck": "node scripts/check-typescript-boundaries.mjs && next typegen && tsc --noEmit"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
@@ -48,10 +49,12 @@
     "@electric-sql/pglite": "^0.5.8",
     "@playwright/test": "^1.56.1",
     "@tailwindcss/vite": "^4.3.1",
+    "@types/node": "24.19.2",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.2",
     "oxlint": "^1.69.0",
+    "typescript": "5.9.3",
     "vite": "^8.1.0",
     "vitest": "^5.0.3"
   },

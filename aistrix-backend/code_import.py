@@ -33,6 +33,10 @@ class Source:
     repo: str
     ref: Optional[str] = None
     path: str = ""
+    # A /tree/<rest> link can't say where the branch ends (feat/x/folder):
+    # each (ref, path) split to try, shortest branch first.
+    candidates: list = field(default_factory=list)
+    commit: Optional[str] = None           # the exact commit, once resolved
 
 
 @dataclass
@@ -52,22 +56,38 @@ def parse_source(text: str, ref: Optional[str] = None, path: Optional[str] = Non
     if len(parts) < 2 or not (_REPO.fullmatch(parts[0]) and _REPO.fullmatch(parts[1])):
         raise ValueError("Give a GitHub repository as owner/repo or its https://github.com link")
     owner, repo, rest = parts[0], parts[1], parts[2:]
+    candidates = []
     if rest:
         if rest[0] != "tree" or len(rest) < 2:
             raise ValueError("Link to the repository, or to a folder with /tree/<branch>/<folder>")
-        ref = ref or rest[1]
-        path = path if path is not None else "/".join(rest[2:])
-    path = (path or "").strip("/")
-    if ref is not None and (not _REF.fullmatch(ref) or ".." in ref):
-        raise ValueError("Not a valid branch, tag or commit")
-    if not _PATH.fullmatch(path) or ".." in path.split("/"):
-        raise ValueError("Not a valid folder path")
-    return Source(owner, repo, ref, path)
+        tail = rest[1:]
+        if ref:
+            candidates = [(ref, path if path is not None else "/".join(tail[len(ref.split("/")):]))]
+        else:
+            candidates = [("/".join(tail[:i]), path if path is not None else "/".join(tail[i:]))
+                          for i in range(1, min(len(tail), 6) + 1)]
+    else:
+        candidates = [(ref, path or "")]
+    checked = []
+    for cand_ref, cand_path in candidates:
+        cand_path = (cand_path or "").strip("/")
+        if cand_ref is not None and (not _REF.fullmatch(cand_ref) or ".." in cand_ref):
+            raise ValueError("Not a valid branch, tag or commit")
+        if not _PATH.fullmatch(cand_path) or ".." in cand_path.split("/"):
+            raise ValueError("Not a valid folder path")
+        checked.append((cand_ref, cand_path))
+    first_ref, first_path = checked[0]
+    return Source(owner, repo, first_ref, first_path, candidates=checked)
 
 
 def archive_url(src: Source) -> str:
-    ref = f"/{quote(src.ref, safe='')}" if src.ref else ""
+    ref = src.commit or src.ref
+    ref = f"/{quote(ref, safe='')}" if ref else ""
     return f"https://api.github.com/repos/{src.owner}/{src.repo}/zipball{ref}"
+
+
+def commit_url(src: Source, ref: Optional[str]) -> str:
+    return f"https://api.github.com/repos/{src.owner}/{src.repo}/commits/{quote(ref or 'HEAD', safe='')}"
 
 
 def select(data: bytes, path: str = "") -> Selection:
@@ -141,8 +161,36 @@ def commit_of(root: str) -> Optional[str]:
     return tail if re.fullmatch(r"[0-9a-f]{7,40}", tail) else None
 
 
+def _refused(status: int, token: Optional[str]) -> Exception:
+    if status in (401, 403):
+        return PermissionError("GitHub refused access to this repository" + (". Reconnect GitHub in Settings" if token else ""))
+    return ConnectionError(f"GitHub answered {status}")
+
+
+async def resolve(fetch, src: Source, token: Optional[str]) -> Source:
+    """Pin the import to one commit, trying each branch/folder split of the
+    link. GitHub's commit lookup with the sha media type answers with the
+    40-character SHA only."""
+    headers = {"Accept": "application/vnd.github.sha", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "aistrix-import"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    for ref, path in src.candidates or [(src.ref, src.path)]:
+        resp = await fetch("GET", commit_url(src, ref), timeout=20, max_redirects=0, allowed_hosts=GITHUB_HOSTS, headers=headers)
+        if resp.status_code in (404, 422):
+            continue                      # not a branch, tag or commit: try a longer branch name
+        if resp.status_code != 200:
+            raise _refused(resp.status_code, token)
+        sha = resp.content.decode("ascii", "replace").strip()
+        if not re.fullmatch(r"[0-9a-f]{40}", sha):
+            raise ConnectionError("GitHub didn't return a commit")
+        src.ref, src.path, src.commit = ref, path, sha
+        return src
+    raise LookupError("Repository, branch or commit not found" + ("" if token else
+                      ". For a private repository, connect GitHub in Settings first"))
+
+
 async def fetch_github(fetch, src: Source, token: Optional[str]) -> bytes:
-    """Download the repository archive. fetch is outbound.fetch_safely."""
+    """Download the repository archive at its resolved commit. fetch is outbound.fetch_safely."""
     headers = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "aistrix-import"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
@@ -150,8 +198,6 @@ async def fetch_github(fetch, src: Source, token: Optional[str]) -> bytes:
     if resp.status_code == 404:
         raise LookupError("Repository, branch or commit not found" + ("" if token else
                           ". For a private repository, connect GitHub in Settings first"))
-    if resp.status_code in (401, 403):
-        raise PermissionError("GitHub refused access to this repository" + (". Reconnect GitHub in Settings" if token else ""))
     if resp.status_code != 200:
-        raise ConnectionError(f"GitHub answered {resp.status_code}")
+        raise _refused(resp.status_code, token)
     return resp.content

@@ -344,6 +344,7 @@ def register_routes(app, host):
         except Exception:
             token = None             # an unreadable token: try anonymously, GitHub will say if it's private
         try:
+            src = await code_import.resolve(host.outbound.fetch_safely, src, token)
             data = await code_import.fetch_github(host.outbound.fetch_safely, src, token)
         except LookupError as error:
             raise HTTPException(404, str(error)) from error
@@ -360,7 +361,7 @@ def register_routes(app, host):
             raise HTTPException(422, str(error)[:500]) from error
         saved = await source_save(app_id, caller.user_id, bundle)
         return {'source': saved, 'import': {
-            'repo': f'{src.owner}/{src.repo}', 'ref': src.ref, 'path': src.path, 'commit': code_import.commit_of(selection.root),
+            'repo': f'{src.owner}/{src.repo}', 'ref': src.ref, 'path': src.path, 'commit': src.commit,
             'private_access': bool(token), 'files': sorted(bundle[0]), 'skipped': selection.skipped,
             'manifest': bundle[1], 'requirements': [line for line in bundle[0].get('requirements.txt', '').splitlines()
                                                     if line.strip() and not line.strip().startswith('#')]}}

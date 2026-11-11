@@ -62,7 +62,9 @@ What gets imported:
 - The code must fit the runtime contract: 32 files and 512 KiB. Larger repositories are asked to import the folder that holds the job.
 - The result is a new source version. Nothing builds or runs until the developer builds it.
 
-The response includes the commit (from GitHub's archive folder name), the imported files, the skipped files, the manifest and the requirements.
+The response includes the commit, the imported files, the skipped files, the manifest and the requirements.
+
+**Pinned to a commit.** A `/tree/` link can't say where a branch name ends: `feat/platform-v1/examples/job` could be branch `feat` plus a folder, or branch `feat/platform-v1`. Each split is tried against GitHub's commit lookup, shortest branch first. The archive is then downloaded at the exact 40-character commit SHA, which is what the response records.
 
 ZIP upload (`PUT …/code/source` with `application/zip`) already existed and is unchanged.
 
@@ -104,9 +106,23 @@ All of the following use fakes; no real provider, GitHub or E2B calls were made.
 - **`tests/test_code_import.py`, 24 tests.** Link parsing, file selection, skipped-file reasons, limits, the manifest and entrypoint hint, the public and private access paths, GitHub errors, ownership, and that nothing is queued on import.
 - **`tests/test_e2b_capabilities.py`, 16 tests.** Capability gates; dependency templates built once and reused, with no network during builds; failures reported without provider output; allow-lists confirmed; the gateway environment and token; https only.
 - **Source hashes** were checked to be identical to the previous contract for existing manifests.
+- **Path not exercised on staging:** importing a private repository through a GitHub connection. It's covered by the offline tests only, because this staging account has no GitHub connection.
+
+### On staging (November 11, 2026)
+
+- **Migration.** `20261111010000_gateway_calls.sql` was applied to the linked staging project after confirming it isn't the `.env` (production) project. It was the only pending migration.
+- **Script.** `scripts/verify_gateway_staging.py` runs the backend in-process on `.env.staging` and calls it with the real `openai` and `anthropic` SDKs. It signs in as the owner's staging account with a local test token and uses the owner's saved Claude key. **14/14 passed:**
+  - **OpenAI SDK, routed to Claude Haiku (`policy:fast`):** a text answer; streaming in 4 pieces with usage; a tool call with the right arguments, then the tool result sent back and used in the answer.
+  - **Anthropic SDK:** a message, and a streamed message.
+  - **Refusal:** an unknown model is refused before any provider call, with no log row and no spend.
+  - **Call log:** staging recorded exactly the 6 provider calls, costing $0.000178 in total, with no prompt, answer or tool text.
+  - **Spend:** each call reserved spend and settled it with the actual cost at or below the estimate.
+  - **Import:** `mamatha-collab/Aistrix/tree/feat/platform-v1/examples/python-inventory-job` was imported anonymously, since the repository is public and staging has no GitHub connection for this account. It resolved branch `feat/platform-v1` and pinned commit `fd93f430…`. It saved `main.py`, `requirements.txt` and `sample-input.json` with entrypoint `main:run`, stored on staging with the same hash, and queued no build or run.
+  - **Cleanup:** the temporary code app was deleted.
+- **Bug found and fixed.** The first import attempt failed because the link parser took `feat` as the branch. It now resolves the branch as described above, and there are tests for it.
 
 **Not yet verified for real:**
 - A real E2B dependency-template build and an egress-limited run. These cost E2B build time on your account.
 - Model calls from a sandbox. The gateway must be reachable from E2B over HTTPS, and the backend isn't hosted yet, so this needs a deployed API or a tunnel.
 
-Production configuration and databases were not changed. Migration `20261111010000_gateway_calls.sql` is not applied to staging yet.
+Production configuration and databases were not changed.

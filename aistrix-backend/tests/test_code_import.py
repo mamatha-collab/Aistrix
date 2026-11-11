@@ -123,12 +123,22 @@ class Response:
         self.status_code, self.content = status, content
 
 
-def importing_host(answer, *, github_row=None):
+SHA = "0123456789abcdef0123456789abcdef01234567"
+
+
+def importing_host(answer, *, github_row=None, branches=("main", "HEAD", "feat/platform-v1")):
+    """GitHub fake: commit lookups answer for known branches; the archive
+    URL (at the resolved SHA) answers with `answer`."""
     host = Host()
     host.fetched = []
 
     async def fetch(method, url, **kw):
         host.fetched.append({"url": url, **kw})
+        if "/commits/" in url:
+            if answer.status_code != 200:
+                return answer
+            ref = url.rsplit("/commits/", 1)[1].replace("%2F", "/")
+            return Response(200, SHA.encode()) if ref in branches else Response(404)
         return answer
 
     async def row(user_id):
@@ -147,11 +157,13 @@ def test_importing_a_public_repository_saves_a_source_version():
     assert r.status_code == 200, r.text
     body = r.json()
     assert sorted(body["source"]["files"]) == ["main.py", "requirements.txt", "rules.py"]
-    assert body["import"]["repo"] == "acme/pricing" and body["import"]["ref"] == "main" and body["import"]["commit"] == "1a2b3c4"
+    assert body["import"]["repo"] == "acme/pricing" and body["import"]["ref"] == "main" and body["import"]["commit"] == SHA
     assert body["import"]["skipped"] == [{"path": "logo.png", "reason": "not a source file the code runtime accepts (.py .txt .json .toml .md)"}]
     assert body["import"]["private_access"] is False
-    fetched = host.fetched[0]
-    assert fetched["url"] == "https://api.github.com/repos/acme/pricing/zipball/main"
+    lookup, fetched = host.fetched
+    assert lookup["url"] == "https://api.github.com/repos/acme/pricing/commits/main"
+    assert lookup["headers"]["Accept"] == "application/vnd.github.sha"
+    assert fetched["url"] == f"https://api.github.com/repos/acme/pricing/zipball/{SHA}"      # pinned to the commit
     assert fetched["allowed_hosts"] == ("api.github.com", "codeload.github.com") and "Authorization" not in fetched["headers"]
     assert any(q.rpc == "save_code_source" for q in host.calls)
     assert not any(q.rpc in ("enqueue_code_task", "enqueue_e2b_task") for q in host.calls)     # nothing runs on import
@@ -161,7 +173,7 @@ def test_a_connected_github_account_reads_private_repositories():
     host = importing_host(Response(200, repo_zip({"main.py": STARTER})), github_row={"token_encrypted": "secret"})
     r = call(host, "POST", f"/v1/apps/{APP}/code/import", headers=HEADERS, json={"repo": "acme/private-job"})
     assert r.status_code == 200 and r.json()["import"]["private_access"] is True
-    assert host.fetched[0]["headers"]["Authorization"] == "Bearer gho_secret"
+    assert len(host.fetched) == 2 and all(f["headers"]["Authorization"] == "Bearer gho_secret" for f in host.fetched)
     assert "gho_secret" not in r.text
 
 
@@ -182,3 +194,21 @@ def test_import_needs_the_app_owner_and_a_valid_link():
     host.row["created_by"] = "someone-else"
     assert call(host, "POST", f"/v1/apps/{APP}/code/import", headers=HEADERS, json={"repo": "acme/pricing"}).status_code == 403
     assert host.fetched == []
+
+
+def test_a_branch_name_with_slashes_is_found_from_a_folder_link():
+    files = {f"examples/job/{k}": v for k, v in {"main.py": STARTER, "aistrix.json": "{}"}.items()}
+    host = importing_host(Response(200, repo_zip(files)))
+    r = call(host, "POST", f"/v1/apps/{APP}/code/import", headers=HEADERS,
+             json={"repo": "https://github.com/acme/pricing/tree/feat/platform-v1/examples/job"})
+    assert r.status_code == 200, r.text
+    imp = r.json()["import"]
+    assert imp["ref"] == "feat/platform-v1" and imp["path"] == "examples/job" and imp["files"] == ["main.py", "requirements.txt"]
+    assert [f["url"].rsplit("/", 1)[1] for f in host.fetched] == ["feat", "feat%2Fplatform-v1", SHA]
+
+
+def test_a_link_with_an_unknown_branch_is_not_found():
+    host = importing_host(Response(200, repo_zip(WORKING)))
+    r = call(host, "POST", f"/v1/apps/{APP}/code/import", headers=HEADERS,
+             json={"repo": "https://github.com/acme/pricing/tree/nope/jobs"})
+    assert r.status_code == 404 and "not found" in r.text

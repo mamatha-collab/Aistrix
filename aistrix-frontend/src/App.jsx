@@ -420,7 +420,7 @@ export default function App({ routeContent }) {
     onRunEvent: event => { setSelectedApp({ id: event.app_id, name: event.app_name, emoji: event.app_emoji }); navigateToView('apps') },
     developerProps: {
       creationContent: creationFlow, navigationGuardRef: buildNavigationGuardRef, homeNavigationRef: developerHomeRef, onCloseCreation: closeBuildFlow,
-      onOpenCreate: () => setShowTypeSelector(true), onShowSettings: () => setShowSettings(true),
+      onOpenCreate: type => { setShowTypeSelector(true); if (type === 'code_job') openBuilder(type) }, onShowSettings: () => setShowSettings(true),
       onShowProfile: () => setShowProfile(true), noKeys, onNavChange: changeView,
       search, onSearch: setSearch, searchRef: searchInputRef, createdApp,
       onCreatedAppConsumed: () => setCreatedApp(null),

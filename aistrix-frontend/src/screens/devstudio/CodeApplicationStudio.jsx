@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { manageRequest } from '../../lib/manageApi'
 import ConfirmDialog from '../../components/ConfirmDialog'
 import AppLifecycleActions from './AppLifecycleActions'
+import PromptCodeStudio from './PromptCodeStudio'
 
 const button = 'rounded-lg border border-white/15 px-3 py-2 text-xs font-semibold text-white hover:bg-white/5 disabled:opacity-40'
 const panel = 'space-y-3 rounded-2xl border border-white/10 bg-[#171B33] p-5'
@@ -9,7 +10,7 @@ const field = 'w-full rounded-lg border border-white/10 bg-[#0E1424] p-3 text-xs
 const stable = value => JSON.stringify(value, Object.keys(value || {}).sort())
 const snapshot = (files, manifest) => `${stable(files)}:${manifest}`
 
-export default function CodeApplicationStudio({ app, user, onDeleted, navigationGuardRef }) {
+function LegacyCodeApplicationStudio({ app, user, onDeleted, navigationGuardRef }) {
   const [data, setData] = useState(null)
   const [files, setFiles] = useState({})
   const [manifest, setManifest] = useState('')
@@ -132,4 +133,8 @@ export default function CodeApplicationStudio({ app, user, onDeleted, navigation
     </>}
     {confirmation && <ConfirmDialog title={confirmation.title} confirmLabel={confirmation.label} onCancel={() => setConfirmation(null)} onConfirm={async () => { const pending = confirmation; setConfirmation(null); await pending.action() }}>{confirmation.title === 'Unsaved code changes' ? 'Your unsaved source changes will be discarded.' : confirmation.title === 'Import source version?' ? 'The archive will be saved as a new source version and replace the editor contents. Unsaved edits will be discarded.' : 'New jobs will use this build. Confirm that its tests and dependencies are appropriate.'}</ConfirmDialog>}
   </div>
+}
+
+export default function CodeApplicationStudio(props) {
+  return <PromptCodeStudio {...props} legacy={<LegacyCodeApplicationStudio {...props} />} />
 }

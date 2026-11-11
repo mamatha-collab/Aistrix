@@ -23,6 +23,77 @@ test.beforeEach(async ({ page }) => {
   })
 })
 
+test('developer workspace starts with thirteen capability choices', async ({ page, context }, testInfo) => {
+  await signInFixture(context, page)
+  await page.route('**/v1/platform/nodes', route => route.fulfill({ json: { nodes: [{ use: 'llm.structured', summary: 'Extract typed model output', accepts: ['text'], output: 'object', config: {}, hosted: true }] } }))
+  await page.goto('/developer')
+  await expect(page.getByRole('heading', { name: 'What do you want to build?' })).toBeVisible()
+  const choices = page.getByRole('region', { name: 'AI development capabilities' })
+  await expect(choices.getByRole('button')).toHaveCount(13)
+  for (const label of ['AI Apps', 'Models', 'Agents', 'Nodes', 'Tools', 'MCP', 'Workflows', 'Knowledge', 'Data', 'Prompts', 'Evaluations', 'Interfaces', 'Operations']) {
+    await expect(choices.getByRole('button', { name: new RegExp(label) })).toBeVisible()
+  }
+  await page.screenshot({ path: `test-results/developer-workspace-${testInfo.project.name}.png`, fullPage: true })
+  await choices.getByRole('button', { name: /^Nodes/ }).click()
+  await expect(page.getByText('llm.structured', { exact: false })).toBeVisible()
+  await choices.getByRole('button', { name: /MCP/ }).click()
+  await expect(page.getByText('Managed MCP server authoring', { exact: false })).toBeVisible()
+  await expect(page.getByRole('link', { name: 'Open integrations' })).toHaveAttribute('href', '/integrations')
+  await choices.getByRole('button', { name: /^Workflows/ }).click()
+  await page.getByRole('button', { name: 'Open workflow designer', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'What do you want to build?' })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Back to types', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'What do you want to build?' })).toBeVisible()
+})
+
+test('AI Apps contains the existing types and Design has a visible return action', async ({ page, context }) => {
+  await signInFixture(context, page)
+  await page.goto('/developer')
+  const choices = page.getByRole('region', { name: 'AI development capabilities' })
+  await choices.getByRole('button', { name: /^AI Apps/ }).click()
+  await expect(page.getByRole('heading', { name: 'Application types', exact: true })).toBeVisible()
+  for (const type of ['Form App', 'Prompt App', 'API App', 'Data App', 'Code Application']) {
+    await expect(page.locator('#capability-detail').getByText(type, { exact: true })).toBeVisible()
+  }
+  await page.getByRole('button', { name: 'Choose an app type', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Create an AI app', exact: true })).toBeVisible()
+  await page.screenshot({ path: `test-results/ai-app-types-${test.info().project.name}.png`, fullPage: true })
+  await page.getByRole('button', { name: 'Back to types', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'What do you want to build?' })).toBeVisible()
+  await choices.getByRole('button', { name: /^AI Apps/ }).click()
+  await page.getByRole('button', { name: 'Manage AI apps', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'What do you want to build?' })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Back to types', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'What do you want to build?' })).toBeVisible()
+})
+
+test('platform resources expose release and run inspection without legacy apps', async ({ page, context }) => {
+  await signInFixture(context, page)
+  await page.route('**/v1/platform/**', route => {
+    const path = new URL(route.request().url()).pathname
+    const resource = { key: 'Application/team/invoice', kind: 'Application', namespace: 'team', name: 'invoice' }
+    const release = { id: 'release-1', ref: 'Application/team/invoice@1.0.0', version: '1.0.0', content_hash: 'sha256-verified-fixture' }
+    const run = { id: 'run-1', status: 'succeeded', release_id: 'release-1', environment: 'staging', cost_usd: 0.02, budget_usd: 1, steps: { parse: { status: 'succeeded' } } }
+    const body = path.endsWith('/resources') ? { resources: [resource] }
+      : path.endsWith('/resources/Application/team/invoice') ? { resource, releases: [release], environments: { staging: { version: '1.0.0' } } }
+        : path.endsWith('/runs') ? { runs: [run] }
+          : path.endsWith('/events') ? { events: [{ seq: 1, type: 'run.succeeded' }] }
+            : path.endsWith('/evals') ? { results: [] } : { run }
+    return route.fulfill({ json: body })
+  })
+  await page.goto('/developer')
+  await page.getByRole('button', { name: /^Resources/ }).click()
+  await expect(page.getByRole('heading', { name: 'Platform resources' })).toBeVisible()
+  await page.getByRole('navigation', { name: 'Platform resources' }).getByRole('button').click()
+  await expect(page.getByText('sha256-verified-fixture', { exact: false })).toBeVisible()
+  await page.getByRole('button', { name: 'View evaluations' }).click()
+  await expect(page.getByText('No evaluation results recorded for this release.')).toBeVisible()
+  await page.getByRole('button', { name: /^run-1/ }).click()
+  await expect(page.getByText('$0.020000', { exact: true })).toBeVisible()
+  await expect(page.getByText('run.succeeded', { exact: false })).toBeVisible()
+  await page.screenshot({ path: `test-results/platform-resources-${test.info().project.name}.png`, fullPage: true })
+})
+
 test('existing deep links load the authentication gate without browser errors', async ({ page }) => {
   const errors = []
   page.on('pageerror', error => errors.push(error.message))
@@ -204,7 +275,7 @@ test('Aistrix logo returns to the current workspace home', async ({ page, contex
   await page.getByRole('button', { name: 'Aistrix Developer home', exact: true }).click()
   await expect(page).toHaveURL(/\/developer$/)
   await expect(page.getByRole('heading', { name: 'Settings', exact: true })).toHaveCount(0)
-  if (testInfo.project.name === 'mobile') await expect(page.getByRole('heading', { name: 'Monitor', exact: true })).toBeVisible()
+  if (testInfo.project.name === 'mobile') await expect(page.getByRole('heading', { name: 'What do you want to build?', exact: true })).toBeVisible()
   else await expect(page.getByTestId('developer-settings')).toHaveCount(0)
 })
 

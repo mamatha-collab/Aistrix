@@ -9,6 +9,8 @@ import { getAppFeedback, statusLabel } from '../../lib/feedback'
 import { timeAgo } from '../../utils'
 
 import { BRAND } from '../../lib/brand'
+const DeveloperWorkspace = lazy(() => import('./DeveloperWorkspace'))
+const ResourcesTab = lazy(() => import('./ResourcesTab'))
 const MonitorPanel = lazy(() => import('./MonitorPanel'))
 const MobileManage = lazy(() => import('./MobileManage'))
 const SettingsPage = lazy(() => import('../SettingsPage'))
@@ -33,8 +35,8 @@ function FeedbackCard({ item }) {
   </details>
 }
 
-export default function MobileDeveloper({ user, apps, phaseByAppId, loading, error, onRefresh, onAppUpdated, onSignOut, onToggleTheme }) {
-  const [view, setView] = useState('monitor')
+export default function MobileDeveloper({ user, apps, phaseByAppId, loading, error, onRefresh, onAppUpdated, onSignOut, onToggleTheme, onOpenStudio }) {
+  const [view, setView] = useState('home')
   const [selectedId, setSelectedId] = useState(null)
   const [filter, setFilter] = useState('')
   const [search, setSearch] = useState('')
@@ -99,7 +101,7 @@ export default function MobileDeveloper({ user, apps, phaseByAppId, loading, err
 
   return <div className="developer-content flex-1 min-w-0 min-h-0 flex flex-col bg-[#09101F]" data-testid="mobile-developer">
     <header className="shrink-0 h-16 px-4 flex items-center justify-between gap-3 border-b border-white/8 bg-[#111827]">
-      <button type="button" aria-label="Aistrix Developer home" onClick={() => { setAccountOpen(false); setSearch(''); setFilter(''); navigate('monitor') }} className="flex items-center gap-1.5 min-w-0 hover:opacity-80"><img src="/aistrix-logo.svg" alt="" className="h-7 w-7" /><span className="font-bold text-white text-lg"><AistrixWordmark /></span></button>
+      <button type="button" aria-label="Aistrix Developer home" onClick={() => { setAccountOpen(false); setSearch(''); setFilter(''); navigate('home') }} className="flex items-center gap-1.5 min-w-0 hover:opacity-80"><img src="/aistrix-logo.svg" alt="" className="h-7 w-7" /><span className="font-bold text-white text-lg"><AistrixWordmark /></span></button>
       <div className="relative">
         <button className="h-11 w-11 rounded-xl bg-white/5 border border-white/8 text-white font-semibold text-sm" aria-label="Account menu" aria-expanded={accountOpen} aria-haspopup="menu" onClick={() => setAccountOpen(v => !v)}>
           {(user.user_metadata?.display_name || user.email || '?')[0].toUpperCase()}
@@ -117,11 +119,11 @@ export default function MobileDeveloper({ user, apps, phaseByAppId, loading, err
 
     <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain px-4 py-5 space-y-5" key={`${view}:${selectedId || ''}`}>
       <div className="flex items-center justify-between gap-3">
-        <h1 className="text-xl text-white font-semibold">{selected && view === 'apps' ? 'App details' : view === 'monitor' ? 'Monitor' : view === 'apps' ? 'Apps' : view === 'manage' ? 'Manage' : view === 'settings' ? 'Settings' : 'Feedback'}</h1>
-        {view !== 'manage' && <button className={`${action} !p-2.5 border border-white/8`} aria-label="Refresh app activity" disabled={loading || (view !== 'monitor' && overview.loading)} onClick={refreshAll}><RefreshCw size={18} className={loading || (view !== 'monitor' && overview.loading) ? 'animate-spin' : ''} /></button>}
+        <h1 className="text-xl text-white font-semibold">{selected && view === 'apps' ? 'App details' : view === 'monitor' ? 'Monitor' : view === 'apps' ? 'Apps' : view === 'manage' ? 'Manage' : view === 'settings' ? 'Settings' : view === 'resources' ? 'Resources' : view === 'home' ? 'Developer workspace' : 'Feedback'}</h1>
+        {!['home', 'resources', 'manage'].includes(view) && <button className={`${action} !p-2.5 border border-white/8`} aria-label="Refresh app activity" disabled={loading || (view !== 'monitor' && overview.loading)} onClick={refreshAll}><RefreshCw size={18} className={loading || (view !== 'monitor' && overview.loading) ? 'animate-spin' : ''} /></button>}
       </div>
-      {error && view !== 'manage' && <div role="alert" className="rounded-xl border border-amber-400/20 bg-amber-400/5 p-3 text-sm text-amber-200">{error}<button className="block underline min-h-11" onClick={refreshAll}>Try again</button></div>}
-      {view === 'settings' ? <ErrorBoundary compact title="Settings could not load"><Suspense fallback={<p role="status" className="text-sm text-slate-400">Loading Settings…</p>}><SettingsPage user={user} developer embedded /></Suspense></ErrorBoundary> : view === 'manage' ? <ErrorBoundary compact title="Manage could not load"><Suspense fallback={<p role="status" className="text-sm text-slate-400">Loading Manage…</p>}><MobileManage apps={apps} user={user} onAppUpdated={onAppUpdated} /></Suspense></ErrorBoundary> : loading && !hasLoaded ? <div role="status" className="space-y-3"><p className="text-sm text-slate-400">Loading app activity…</p>{[0, 1, 2].map(i => <div key={i} className="h-20 rounded-2xl bg-white/5 animate-pulse" />)}</div> : !apps.length && !error ? <div className={`${card} space-y-2`}><h2 className="text-white font-semibold">No apps yet</h2><p className="text-sm text-slate-400 leading-relaxed">Create your first app on a computer or tablet. Check its activity and feedback here.</p></div> : <>
+      {error && !['home', 'resources', 'manage'].includes(view) && <div role="alert" className="rounded-xl border border-amber-400/20 bg-amber-400/5 p-3 text-sm text-amber-200">{error}<button className="block underline min-h-11" onClick={refreshAll}>Try again</button></div>}
+      {view === 'home' ? <ErrorBoundary compact title='Workspace could not load'><Suspense fallback={<p role='status'>Loading workspace…</p>}><DeveloperWorkspace onOpen={target => ['resources', 'monitor', 'keys'].includes(target) ? navigate(target === 'keys' ? 'settings' : target) : onOpenStudio?.(target)} /></Suspense></ErrorBoundary> : view === 'resources' ? <ErrorBoundary compact title='Resources could not load'><Suspense fallback={<p role='status'>Loading resources…</p>}><ResourcesTab key={user.id} /></Suspense></ErrorBoundary> : view === 'settings' ? <ErrorBoundary compact title="Settings could not load"><Suspense fallback={<p role="status" className="text-sm text-slate-400">Loading Settings…</p>}><SettingsPage user={user} developer embedded /></Suspense></ErrorBoundary> : view === 'manage' ? <ErrorBoundary compact title="Manage could not load"><Suspense fallback={<p role="status" className="text-sm text-slate-400">Loading Manage…</p>}><MobileManage apps={apps} user={user} onAppUpdated={onAppUpdated} /></Suspense></ErrorBoundary> : loading && !hasLoaded ? <div role="status" className="space-y-3"><p className="text-sm text-slate-400">Loading app activity…</p>{[0, 1, 2].map(i => <div key={i} className="h-20 rounded-2xl bg-white/5 animate-pulse" />)}</div> : !apps.length && !error ? <div className={`${card} space-y-2`}><h2 className="text-white font-semibold">No apps yet</h2><p className="text-sm text-slate-400 leading-relaxed">Create your first app on a computer or tablet. Check its activity and feedback here.</p></div> : <>
         {view === 'monitor' && <ErrorBoundary compact title="Monitor could not load"><Suspense fallback={<p role="status" className="text-sm text-slate-400">Loading Monitor…</p>}>
           <MonitorPanel apps={apps} compact refreshKey={overviewKey} onNavigate={(stage, id) => {
             if (stage === 'evaluate') { setFilter(id); navigate('feedback') }
@@ -165,7 +167,7 @@ export default function MobileDeveloper({ user, apps, phaseByAppId, loading, err
       </>}
     </div>
     <nav aria-label="Developer mobile navigation" className="shrink-0 flex border-t border-white/8 bg-[#111827] pb-[env(safe-area-inset-bottom)]">
-      {[[Activity, 'monitor', 'Monitor'], [ENTITIES.apps.Icon, 'apps', ENTITIES.apps.label], [MessageSquare, 'feedback', 'Feedback'], [Settings2, 'manage', 'Manage']].map(([Icon, id, label]) => <button key={id} onClick={() => { if (id === 'feedback') setFilter(''); navigate(id) }} aria-current={view === id ? 'page' : undefined} className={`flex-1 min-h-16 flex flex-col items-center justify-center gap-1 text-xs ${view === id ? 'text-[#A29BFE]' : 'text-slate-400'}`}><Icon size={20} /><span>{label}</span></button>)}
+      {[[ENTITIES.overview.Icon, 'home', 'Workspace'], [ENTITIES.apps.Icon, 'resources', 'Resources'], [Activity, 'monitor', 'Monitor'], [ENTITIES.apps.Icon, 'apps', ENTITIES.apps.label], [MessageSquare, 'feedback', 'Feedback'], [Settings2, 'manage', 'Manage']].map(([Icon, id, label]) => <button key={id} onClick={() => { if (id === 'feedback') setFilter(''); navigate(id) }} aria-current={view === id ? 'page' : undefined} className={`flex-1 min-h-16 flex flex-col items-center justify-center gap-1 text-xs ${view === id ? 'text-[#A29BFE]' : 'text-slate-400'}`}><Icon size={20} /><span>{label}</span></button>)}
     </nav>
     {confirmSignOut && <ConfirmDialog title={`Sign out of ${BRAND}?`} subtitle={user.email} confirmLabel="Sign out" busyLabel="Signing out…" danger onCancel={() => setConfirmSignOut(false)} onConfirm={async () => { await onSignOut(); setConfirmSignOut(false) }}>You can sign in again to check your apps.</ConfirmDialog>}
   </div>

@@ -35,12 +35,17 @@ const SellTab = lazy(() => import('./devstudio/OperateTabs').then(m => ({ defaul
 const WorkflowsTab = lazy(() => import('./devstudio/WorkflowsTab').then(m => ({ default: m.WorkflowsTab })))
 const VersionTab = lazy(() => import('./devstudio/OperateTabs').then(m => ({ default: m.VersionTab })))
 const TestTab = lazy(() => import('./devstudio/TestTab').then(m => ({ default: m.TestTab })))
+const DeveloperWorkspace = lazy(() => import('./devstudio/DeveloperWorkspace'))
+const ResourcesTab = lazy(() => import('./devstudio/ResourcesTab'))
+const EvaluationsStudio = lazy(() => import('./devstudio/EvaluationsStudio'))
 const CodeApplicationStudio = lazy(() => import('./devstudio/CodeApplicationStudio'))
 
 
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 const LIFECYCLE_TABS = [
+  { id: 'evaluations', label: 'Evaluations', short: 'Evals', Icon: ClipboardCheck, desc: 'Release tests', group: 'grow' },
+  { id: 'resources', label: 'Resources', Icon: Database, desc: 'Registry', group: 'manage' },
   { id: 'design',   label: 'Design',      Icon: PenLine,           desc: 'Blueprint', group: 'build' },
   { id: 'test',     label: 'Test',        Icon: CirclePlay,        desc: 'Validate',  group: 'build' },
   { id: 'deploy',   label: 'Deploy',      Icon: Send,              desc: 'Publish',   group: 'build' },
@@ -93,10 +98,11 @@ export default function DevStudioPage({
   onCloseCreation,
 }) {
   const isPhone = useMediaQuery('(max-width: 767px)')
+  const [phoneStudio, setPhoneStudio] = useState(false)
   const localNavigationGuardRef = useRef(null)
   const navigationGuardRef = sharedNavigationGuardRef || localNavigationGuardRef
-  // The open step and app survive a reload of this browser tab.
-  const [tab, setTabState] = useState(() => savedView().tab)
+  // Start at the capability chooser; keep the last app available in Studio.
+  const [tab, setTabState] = useState('home')
   const [monitorAppId, setMonitorAppId] = useState(null)
   // Runs a navigation now, or — when the Design editor has unsaved edits —
   // after the developer chooses to discard or save them (its dialog).
@@ -110,7 +116,7 @@ export default function DevStudioPage({
   function openSettings(focus = 'top') { guarded(() => setSettingsOpen(focus)) }
   // "Add key" buttons in Test and Deploy: the shell's key dialog when it has one, else the Keys page.
   const openKeys = onShowSettings || (() => openSettings('keys'))
-  function onOpenCreate() { guarded(() => { setSettingsOpen(false); setTabState('design'); requestCreate?.() }) }
+  function onOpenCreate(type) { guarded(() => { setPhoneStudio(true); setSettingsOpen(false); setTabState('design'); requestCreate?.(typeof type === 'string' ? type : undefined) }) }
   function setTab(next) {
     if (next === tab && !pageContent) return true
     return guarded(() => { setSettingsOpen(false); setTabState(next) })
@@ -201,18 +207,22 @@ export default function DevStudioPage({
   const [workflows, setWorkflows] = useState(null)
   const [workflowsError, setWorkflowsError] = useState('')
   const [activeWorkflowId, setActiveWorkflowId] = useState(null)
-  useEffect(() => {
-    if (!homeNavigationRef) return
-    const home = () => guarded(() => {
+  function returnToTypes() {
+    return guarded(() => {
       onCloseCreation?.()
       setSettingsOpen(false)
       setAccountOpen(false)
       setShowHelp(false)
-      setTabState('design')
+      setTabState('home')
+      setPhoneStudio(false)
       setActiveAppIdState(null)
       setActiveWorkflowId(null)
       onSearch?.('')
     })
+  }
+  useEffect(() => {
+    if (!homeNavigationRef) return
+    const home = returnToTypes
     homeNavigationRef.current = home
     return () => { if (homeNavigationRef.current === home) homeNavigationRef.current = null }
   })
@@ -450,12 +460,14 @@ export default function DevStudioPage({
     </ErrorBoundary>
   ) : null)
 
-  if (isPhone) return <MobileDeveloper user={user} apps={apps} phaseByAppId={phaseByAppId} loading={loading}
+  if (isPhone && !phoneStudio) return <MobileDeveloper user={user} apps={apps} phaseByAppId={phaseByAppId} loading={loading}
+    onOpenStudio={target => target === 'create-code' ? onOpenCreate('code_job') : target === 'create' ? onOpenCreate() : guarded(() => { setPhoneStudio(true); setTabState(target) })}
     error={loadError || feedbackError} onRefresh={load} onAppUpdated={updateAppInState}
     onSignOut={signOut} onToggleTheme={toggleTheme} />
 
   return (
     <div className="developer-content flex-1 min-w-0 flex flex-col overflow-hidden">
+      {(tab !== 'home' || pageContent) && <button className="shrink-0 flex items-center gap-2 min-h-12 px-4 sm:px-6 text-left text-sm text-violet-300 hover:bg-violet-500/10 border-b border-white/10" onClick={returnToTypes}><ArrowLeft size={16} aria-hidden="true" />Back to types</button>}
       {moveBack && <MoveBackModal app={moveBack.app} phase={moveBack.phase} initialNote={moveBack.initialNote} onCancel={() => setMoveBack(null)} onConfirm={confirmMoveBack} />}
       {confirmSignOut && (
         <ConfirmDialog title={`Sign out of ${BRAND}?`} subtitle={user?.email}
@@ -470,6 +482,7 @@ export default function DevStudioPage({
             <DeveloperRowSection side="header">
             <div className="pointer-events-auto hidden md:flex h-[71px] items-center justify-end gap-4">
               <div className="flex items-center gap-2 min-w-0">
+                <button className="min-h-11 px-3 text-sm text-slate-200 hover:text-white" onClick={returnToTypes}>Workspace</button>
                 <div className="relative hidden lg:block w-56 xl:w-72"
                   onFocus={() => setSearchOpen(true)}
                   onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) setSearchOpen(false) }}>
@@ -588,12 +601,13 @@ export default function DevStudioPage({
             </div>
             </DeveloperRowSection>
         <DeveloperRowSection side="content">
+            {tab === 'home' ? <div className="pointer-events-auto h-full flex items-center px-6"><div><p className="text-white font-semibold">Developer workspace</p><p className="text-sm text-slate-400 mt-1">Build · Connect · Test · Deploy · Operate</p></div></div> : <>
             <div className="pointer-events-auto bg-[#1A2038] grid grid-cols-1 md:overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               <div className="hidden md:flex min-w-0 px-4 py-3 items-center gap-3 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                 {/* Phones: one group fills the width and the next one peeks in;
                     swipe to the next group (snaps). md+: all three side by side. */}
                 <div ref={ribbonRef}
-                  className="w-full min-w-[860px] flex md:grid md:grid-cols-[4fr_4fr_3fr] gap-4 h-full overflow-x-auto md:overflow-visible snap-x snap-mandatory md:snap-none [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                  className="w-full min-w-[1120px] flex md:grid md:grid-cols-[4fr_5fr_4fr] gap-4 h-full overflow-x-auto md:overflow-visible snap-x snap-mandatory md:snap-none [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                   {LIFECYCLE_GROUPS.map(group => (
                     <div key={group.id} data-group={group.id}
                       className={`developer-lifecycle-group ${LIFECYCLE_TABS.filter(t => t.group === group.id).length > 3 ? 'w-[94%]' : 'w-[85%]'} shrink-0 snap-start md:w-auto md:shrink min-w-0`}>
@@ -626,6 +640,7 @@ export default function DevStudioPage({
                 </div>
               </div>
             </div>
+            </>}
         </DeveloperRowSection>
         <DeveloperRowSection side="stats">
               <section aria-label="Workspace statistics" className="developer-workspace-summary hidden xl:block px-3 py-3">
@@ -653,13 +668,13 @@ export default function DevStudioPage({
       {pageContent && <div className="flex-1 min-h-0 overflow-y-auto p-4 lg:p-6" data-testid={creationContent ? 'developer-creation' : 'developer-settings'}>{pageContent}</div>}
       {/* ── Body: content + right panes ── */}
       {/* First-time welcome screen (scrolls on its own; the top bar above doesn't) */}
-      {!pageContent && !loading && !loadError && apps.length === 0 && tab !== 'workflows' && (
+      {!pageContent && !loading && !loadError && apps.length === 0 && !['home', 'workflows', 'resources', 'evaluations'].includes(tab) && (
         <div className="flex-1 min-h-0 overflow-y-auto px-4 sm:px-6 pt-4 sm:pt-6">
           <WelcomeScreen onCreateApp={onOpenCreate} />
         </div>
       )}
 
-      {(loading || apps.length > 0 || pageContent || tab === 'workflows') && (
+      {(loading || apps.length > 0 || pageContent || ['home', 'workflows', 'resources', 'evaluations'].includes(tab)) && (
         <div className={pageContent ? 'contents' : 'flex flex-1 min-h-0 overflow-hidden'}>
 
           {/* Main content */}
@@ -787,6 +802,9 @@ export default function DevStudioPage({
             {tab === 'workflows' && <WorkflowsTab apps={apps} user={user} workflows={workflows} setWorkflows={setWorkflows}
               loadError={workflowsError} activeId={activeWorkflowId} onActiveChange={setActiveWorkflowId} createSignal={createWorkflowSignal} onAppsChanged={load}
               navigationGuardRef={navigationGuardRef} />}
+            {tab === 'home' && <DeveloperWorkspace onOpen={target => target === 'create-code' ? onOpenCreate('code_job') : target === 'create' ? onOpenCreate() : target === 'keys' ? openKeys() : openTab(target)} />}
+            {tab === 'resources' && <ResourcesTab key={user.id} />}
+            {tab === 'evaluations' && <EvaluationsStudio key={user.id} navigationGuardRef={navigationGuardRef} />}
             {tab === 'sell'     && <SellTab     apps={apps} user={user} onAppUpdated={updateAppInState} />}
             {tab === 'monitor'  && <MonitorPanel apps={apps} selectedAppId={monitorAppId} onSelectApp={id => { setActiveAppId(id); setMonitorAppId(id) }} onNavigate={navigateOperations} />}
             {tab === 'improve'  && <ImproveTab onSaveCandidate={saveImprovementCandidate} navigationGuardRef={navigationGuardRef} selectedRunId={selectedRunId} apps={apps} user={user} selectedAppId={activeAppId || apps[0]?.id} onSelectApp={setActiveAppId} />}
@@ -808,7 +826,7 @@ export default function DevStudioPage({
                 </div>
               )}
               <ErrorBoundary variant="card" title="The app list couldn't load" resetKey={tab}>
-              <AppNavigator
+              {tab === 'home' ? <nav aria-label="Developer workspace shortcuts" className="p-3 space-y-2">{[['Workspace', 'home'], ['AI Apps', 'design'], ['Resources', 'resources'], ['Evaluations', 'evaluations'], ['Workflows', 'workflows'], ['Operations', 'monitor']].map(([label, target]) => <button key={target} onClick={() => openTab(target)} aria-current={tab === target ? 'page' : undefined} className="w-full min-h-11 text-left px-3 rounded-lg text-sm text-slate-300 hover:bg-white/5">{label}</button>)}</nav> : <AppNavigator
                 apps={visibleApps}
                 phaseByAppId={phaseByAppId}
                 listedIds={listedIds}
@@ -826,7 +844,7 @@ export default function DevStudioPage({
                 collapsed={sidebarCollapsed}
                 onToggleCollapsed={() => setSidebarCollapsed(!sidebarCollapsed)}
                 onOpenApp={(id, phase) => guarded(() => { setActiveAppIdState(id); setTabState(phase) })}
-              />
+              />}
               </ErrorBoundary>
             </div>
           </DeveloperAppList>

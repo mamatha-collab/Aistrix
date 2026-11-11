@@ -1,6 +1,7 @@
 """Cross-platform queue coordinator. Submitted Python executes remotely in E2B."""
 import argparse
 import json
+import re
 import threading
 import time
 import uuid
@@ -13,13 +14,36 @@ from supabase.lib.client_options import SyncClientOptions
 from e2b_runtime import ManagedError, Runtime
 
 
+_TOKENISH = re.compile(r'[A-Za-z0-9_\-.=+/]{32,}')
+
+
+def describe(failure):
+    """What went wrong, safe to log: the error type and a short message with
+    anything token-like (keys, JWTs, long ids) redacted."""
+    text = _TOKENISH.sub('[redacted]', ' '.join(str(failure).split()))[:200]
+    return f'{type(failure).__name__}: {text}' if text else type(failure).__name__
+
+
+def log(message):
+    print(f'{datetime.now(timezone.utc).isoformat(timespec="seconds")} {message}', flush=True)
+
+
 class Coordinator:
-    def __init__(self, client, runtime):
+    # Leases last 90 seconds (claim_code_task / heartbeat_code_task). A job is
+    # given up only when the server refuses the heartbeat, or after heartbeats
+    # have failed for LOST_AFTER seconds, still inside the lease, so a short
+    # network blip doesn't cancel work the server would have kept.
+    BEAT_SECONDS = 10
+    LOST_AFTER = 60
+
+    def __init__(self, client, runtime, *, beat_seconds=None, lost_after=None):
         self.client, self.runtime = client, runtime
         identity = str(uuid.uuid4())
         self.ids = {kind: f'e2b-{kind}-{identity}' for kind in ('build', 'run')}
         self.task = None
         self.cancelled, self.stopping = threading.Event(), threading.Event()
+        self.beat_seconds = beat_seconds or self.BEAT_SECONDS
+        self.lost_after = lost_after or self.LOST_AFTER
 
     def rpc(self, name, params):
         return self.client.rpc(name, params).execute().data
@@ -29,15 +53,25 @@ class Coordinator:
             self.client.table('code_workers').upsert({'id': identity, 'kind': kind, 'executor': 'e2b', 'seen_at': datetime.now(timezone.utc).isoformat()}).execute()
 
     def keep_alive(self):
-        while not self.stopping.wait(10):
+        failing_since = None
+        while not self.stopping.wait(self.beat_seconds):
+            task = self.task
             try:
                 self.announce()
-                task = self.task
                 if task and self.rpc('heartbeat_code_task', {'p_id': task['id'], 'p_token': task['lease_token']}) is not True:
                     if task is self.task:
+                        log('The server refused the job heartbeat; stopping the job.')
                         self.cancelled.set(); self.runtime.cancel()
-            except Exception:
-                self.cancelled.set(); self.runtime.cancel()
+                if failing_since is not None:
+                    log(f'Heartbeat restored after {time.monotonic() - failing_since:.0f}s.')
+                failing_since = None
+            except Exception as failure:
+                if failing_since is None:
+                    failing_since = time.monotonic()
+                log(f'Heartbeat failed ({describe(failure)}).')
+                if task and task is self.task and time.monotonic() - failing_since >= self.lost_after:
+                    log(f'Heartbeats failing for {self.lost_after}s; stopping the job before its lease runs out.')
+                    self.cancelled.set(); self.runtime.cancel()
 
     def once(self):
         for kind in ('build', 'run'):
@@ -71,14 +105,14 @@ class Coordinator:
         self.announce()
         keeper = threading.Thread(target=self.keep_alive, daemon=True)
         keeper.start()
-        print('E2B coordinator ready. Guest code runs only in managed sandboxes.', flush=True)
+        log('E2B coordinator ready. Guest code runs only in managed sandboxes.')
         try:
             while not self.stopping.is_set():
                 try:
                     if not self.once():
                         self.stopping.wait(2)
-                except Exception:
-                    print('Queue storage unavailable; waiting before the next poll.', flush=True)
+                except Exception as failure:
+                    log(f'Queue storage unavailable ({describe(failure)}); waiting before the next poll.')
                     self.stopping.wait(10)
         finally:
             self.stopping.set(); self.cancelled.set(); self.runtime.cancel()

@@ -30,6 +30,26 @@ venv/Scripts/python e2b_worker.py --env-file .env.staging
 
 The rollout started it as a hidden background process. It is not installed as an automatic Windows service. Restart it after a reboot. The local staging API uses `scripts/run_local.py --env-file .env.staging --port 8001`.
 
+### Restart on November 10, 2026
+
+The coordinator had been down since November 2:
+- Its last stored heartbeat was 14:17 UTC, about 90 minutes after the last of 14 "Queue storage unavailable" lines in `.data/e2b-staging.stdout.log`.
+- stderr was empty, and the worker never removed its registration.
+
+That points to the process being stopped from outside (sleep, shutdown or reboot), not a Python crash. The storage errors themselves can't be diagnosed: the coordinator logged no cause.
+
+Changes made with the restart (`e2b_worker.py`, tests in `tests/test_e2b_worker.py`):
+- **Logged causes.** Log lines carry a UTC timestamp, and storage and heartbeat failures state the error type and a short message with token-like text redacted.
+- **Brief outages tolerated.** A failed heartbeat write no longer cancels a running job at once. The job is stopped only when the server refuses its heartbeat, or after 60 seconds of failures, inside the 90-second lease. Previously any single network error cancelled the job.
+
+Restarted from `aistrix-backend` with output appended to the same log files:
+
+```bash
+PYTHONUNBUFFERED=1 venv/Scripts/python e2b_worker.py --env-file .env.staging >> .data/e2b-staging.stdout.log 2>> .data/e2b-staging.stderr.log
+```
+
+The preflight passed (template resolves, no sandbox created). Staging then showed both E2B worker types with a heartbeat 10 seconds old, and no queued or running jobs. The process still stops when this machine sleeps or restarts; starting it automatically at sign-in (Task Scheduler) is not set up.
+
 ## Execution contract and limits
 
 This first managed runtime supports Python standard-library projects only; nonempty dependency requirements are rejected before queuing a build. A build checks Python syntax in the sandbox, then records the pinned runtime plus canonical source hash. It does not produce an OCI image. Managed artifacts use `e2b://<template>:<build-uuid>@sha256:<source-hash>`. Each invocation creates a fresh sandbox with those exact source files and runtime. Preview does not deploy; private deployment still requires an explicit action and uses existing comparison checks.

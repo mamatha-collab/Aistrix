@@ -55,11 +55,14 @@ class FakeChat:
         raise AssertionError("agents use chat, not stream")
         yield ""
 
-    async def chat(self, *, provider, model, api_key, system, messages, tools, max_tokens, temperature, usage):
+    async def chat(self, *, provider, model, api_key, system, messages, tools, max_tokens, temperature, usage,
+                   on_text=None):
         self.turns.append({"system": system, "messages": copy.deepcopy(messages), "tools": tools, "model": model})
         reply = self.replies.pop(0)
         if isinstance(reply, BaseException):
             raise reply
+        if on_text and reply.get("text"):
+            await on_text(reply["text"])
         usage.update(input_tokens=1000, output_tokens=100)
         return reply
 

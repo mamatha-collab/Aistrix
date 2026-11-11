@@ -10,6 +10,7 @@ from fastapi import HTTPException, Request
 from pydantic import BaseModel, Field, ConfigDict, ValidationError
 
 from code_job_spec import MAX_SOURCE, SPEC, STARTER, validate_bundle, read_archive, validate_input
+import code_import
 import code_studio
 from e2b_runtime import ManagedError, check_source
 
@@ -42,6 +43,13 @@ class StudioSave(BaseModel):
     revision: int = Field(ge=0)
     files: dict[str, str]
     manifest: dict
+
+
+class ImportCode(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    repo: str = Field(min_length=3, max_length=500)       # owner/repo or a github.com link
+    ref: str | None = Field(default=None, max_length=200)  # branch, tag or commit; default branch if omitted
+    path: str | None = Field(default=None, max_length=300)  # a folder inside the repository
 
 
 class StudioPreview(BaseModel):
@@ -131,7 +139,9 @@ def register_routes(app, host):
                 if not sources:
                     raise HTTPException(409, 'Source version not found.')
                 try:
-                    check_source(sources[0])
+                    check_source(sources[0], dependencies=os.getenv('E2B_DEPENDENCY_TEMPLATES') == '1',
+                                 egress=os.getenv('E2B_EGRESS') == '1',
+                                 models=bool(os.getenv('GATEWAY_PUBLIC_URL') and os.getenv('SECRET_ENCRYPTION_KEY')))
                 except ManagedError as error:
                     raise HTTPException(422, str(error)) from error
             return await query(store().rpc('enqueue_e2b_task', {'p_app': app_id, 'p_user': user_id, 'p_kind': kind,
@@ -313,6 +323,47 @@ def register_routes(app, host):
         except (ValueError, TypeError, RecursionError) as error:
             raise HTTPException(422, str(error)[:300]) from error
         return {'source': await source_save(app_id, caller.user_id, bundle)}
+
+    @app.post('/v1/apps/{app_id}/code/import')
+    async def import_code(app_id: str, body: ImportCode, request: Request):
+        """Import working code from GitHub as a new source version. Public
+        repositories need nothing; private ones use the owner's GitHub
+        connection. Nothing runs until the source is built."""
+        caller, _ = await owner(app_id, request)
+        try:
+            src = code_import.parse_source(body.repo, body.ref, body.path)
+        except ValueError as error:
+            raise HTTPException(422, str(error)) from error
+        token = None
+        try:
+            row = await host._github_row(caller.user_id)
+            if row and row.get('token_encrypted'):
+                token = host._decrypt(row['token_encrypted'])
+        except HTTPException:
+            pass                     # no GitHub storage here: public repositories still import
+        except Exception:
+            token = None             # an unreadable token: try anonymously, GitHub will say if it's private
+        try:
+            data = await code_import.fetch_github(host.outbound.fetch_safely, src, token)
+        except LookupError as error:
+            raise HTTPException(404, str(error)) from error
+        except PermissionError as error:
+            raise HTTPException(403, str(error)) from error
+        except ValueError as error:
+            raise HTTPException(422, f'GitHub could not be reached: {str(error)[:200]}') from error
+        except Exception as error:
+            raise HTTPException(502, 'GitHub could not be reached. Try again shortly.') from error
+        try:
+            selection = code_import.select(data, src.path)
+            bundle = code_import.bundle(selection)
+        except ValueError as error:
+            raise HTTPException(422, str(error)[:500]) from error
+        saved = await source_save(app_id, caller.user_id, bundle)
+        return {'source': saved, 'import': {
+            'repo': f'{src.owner}/{src.repo}', 'ref': src.ref, 'path': src.path, 'commit': code_import.commit_of(selection.root),
+            'private_access': bool(token), 'files': sorted(bundle[0]), 'skipped': selection.skipped,
+            'manifest': bundle[1], 'requirements': [line for line in bundle[0].get('requirements.txt', '').splitlines()
+                                                    if line.strip() and not line.strip().startswith('#')]}}
 
     @app.post('/v1/apps/{app_id}/code/builds', status_code=202)
     async def build_code_app(app_id: str, body: BuildCodeApp, request: Request):

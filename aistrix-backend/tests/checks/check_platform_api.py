@@ -336,6 +336,23 @@ class FakeAnthropic:
         CLAUDE_CALLS.append({**kw, "api_key": self.api_key})
         return CLAUDE_REPLIES.pop(0)
 
+    def stream(self, **kw):          # agents stream their text (node.token events)
+        CLAUDE_CALLS.append({**kw, "api_key": self.api_key})
+        reply = CLAUDE_REPLIES.pop(0)
+
+        class Stream:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+
+            @property
+            async def text_stream(self):
+                for b in reply.content:
+                    if b.type == "text":
+                        yield b.text
+
+            async def get_final_message(self): return reply
+        return Stream()
+
 
 main.anthropic.AsyncAnthropic = FakeAnthropic
 

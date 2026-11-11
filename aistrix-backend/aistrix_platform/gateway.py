@@ -109,15 +109,24 @@ def parse_arguments(text: Optional[str]) -> dict:
 
 
 async def sdk_chat(client, *, provider: str, model: str, system: str, messages: list, tools: list,
-                   max_tokens: int, temperature: float, usage: dict) -> dict:
+                   max_tokens: int, temperature: float, usage: dict,
+                   on_text: Optional[Callable[[str], Awaitable[None]]] = None) -> dict:
     """One tool-calling turn on an official SDK client: anthropic.AsyncAnthropic
     for claude, openai.AsyncOpenAI (or Gemini's compatible endpoint) otherwise.
-    Shared by the hosted and local adapters."""
+    Shared by the hosted and local adapters. on_text: streams the answer's
+    text as it arrives (tool calls still come whole at the end)."""
     if provider == "claude":
         extra = {"tools": [{"name": t["name"], "description": t["description"], "input_schema": t["parameters"]}
                            for t in tools]} if tools else {}
-        resp = await client.messages.create(model=model, max_tokens=max_tokens, temperature=temperature, system=system,
-                                            messages=claude_messages(messages), **extra)
+        kwargs = dict(model=model, max_tokens=max_tokens, temperature=temperature, system=system,
+                      messages=claude_messages(messages), **extra)
+        if on_text:
+            async with client.messages.stream(**kwargs) as stream:
+                async for text in stream.text_stream:
+                    await on_text(text)
+                resp = await stream.get_final_message()
+        else:
+            resp = await client.messages.create(**kwargs)
         usage.update(input_tokens=resp.usage.input_tokens, output_tokens=resp.usage.output_tokens)
         return {"text": "".join(b.text for b in resp.content if b.type == "text"),
                 "tool_calls": [{"id": b.id, "name": b.name, "arguments": b.input if isinstance(b.input, dict) else {}}
@@ -125,8 +134,11 @@ async def sdk_chat(client, *, provider: str, model: str, system: str, messages: 
                 "stop": resp.stop_reason}
     extra = {"tools": [{"type": "function", "function": {"name": t["name"], "description": t["description"],
                                                          "parameters": t["parameters"]}} for t in tools]} if tools else {}
-    resp = await client.chat.completions.create(model=model, max_tokens=max_tokens, temperature=temperature,
-                                                messages=openai_messages(system, messages), **extra)
+    kwargs = dict(model=model, max_tokens=max_tokens, temperature=temperature,
+                  messages=openai_messages(system, messages), **extra)
+    if on_text:
+        return await _openai_streamed(client, kwargs, usage, on_text)
+    resp = await client.chat.completions.create(**kwargs)
     if resp.usage:
         usage.update(input_tokens=resp.usage.prompt_tokens, output_tokens=resp.usage.completion_tokens)
     choice = resp.choices[0]
@@ -134,6 +146,36 @@ async def sdk_chat(client, *, provider: str, model: str, system: str, messages: 
             "tool_calls": [{"id": c.id, "name": c.function.name, "arguments": parse_arguments(c.function.arguments)}
                            for c in choice.message.tool_calls or []],
             "stop": choice.finish_reason}
+
+
+async def _openai_streamed(client, kwargs: dict, usage: dict, on_text) -> dict:
+    """Chat Completions with stream=True: text deltas go to on_text; tool call
+    fragments are joined by index."""
+    stream = await client.chat.completions.create(stream=True, stream_options={"include_usage": True}, **kwargs)
+    text, calls, stop = [], {}, None
+    async for chunk in stream:
+        if getattr(chunk, "usage", None):
+            usage.update(input_tokens=chunk.usage.prompt_tokens, output_tokens=chunk.usage.completion_tokens)
+        for choice in chunk.choices or []:
+            stop = choice.finish_reason or stop
+            delta = choice.delta
+            if delta is None:
+                continue
+            if delta.content:
+                text.append(delta.content)
+                await on_text(delta.content)
+            for part in delta.tool_calls or []:
+                call = calls.setdefault(part.index, {"id": None, "name": "", "arguments": ""})
+                if part.id:
+                    call["id"] = part.id
+                if part.function and part.function.name:
+                    call["name"] += part.function.name
+                if part.function and part.function.arguments:
+                    call["arguments"] += part.function.arguments
+    return {"text": "".join(text),
+            "tool_calls": [{"id": c["id"], "name": c["name"], "arguments": parse_arguments(c["arguments"])}
+                           for _, c in sorted(calls.items())],
+            "stop": stop}
 
 
 @dataclass
@@ -221,9 +263,11 @@ class ModelGateway:
         return api_key, rid
 
     async def converse(self, ctx: CallContext, *, model_ref: str, providers: Optional[list], system: str,
-                       messages: list, tools: list, max_tokens: int = 1024, temperature: float = 0.0) -> ToolTurn:
-        """One model turn that may ask for tool calls (agents). Same budget,
-        key and spend rules as invoke."""
+                       messages: list, tools: list, max_tokens: int = 1024, temperature: float = 0.0,
+                       stream: bool = False) -> ToolTurn:
+        """One model turn that may ask for tool calls (agents, the compatible
+        API). Same budget, key and spend rules as invoke. stream: text goes to
+        ctx.on_token as it arrives."""
         provider, model = self.resolve(model_ref, providers)
         if not hasattr(self.adapter, "chat"):
             raise NodeError("This server can't run agents: its model adapter has no tool calling", code="agent_unavailable")
@@ -233,9 +277,10 @@ class ModelGateway:
         usage: dict = {}
         finished, failure = False, None
         try:
+            extra = {"on_text": ctx.on_token} if stream and ctx.on_token else {}
             reply = await self.adapter.chat(provider=provider, model=model, api_key=api_key, system=system,
                                             messages=messages, tools=tools, max_tokens=max_tokens,
-                                            temperature=temperature, usage=usage)
+                                            temperature=temperature, usage=usage, **extra)
             finished = True
         except Exception as e:
             failure = _failure_kind(e)

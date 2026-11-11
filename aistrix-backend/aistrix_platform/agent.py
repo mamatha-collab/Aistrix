@@ -135,7 +135,7 @@ class _Agent:
                                                providers=self.ctx.run["plan"]["policies"]["providers"],
                                                system=system, messages=self.state["messages"], tools=tools,
                                                max_tokens=self.cfg.get("maxTokens") or 1024,
-                                               temperature=self.cfg.get("temperature", 0.0))
+                                               temperature=self.cfg.get("temperature", 0.0), stream=True)
         cost = turn.cost_usd or 0.0
         if self.ctx.call.budget_remaining is not None:
             self.ctx.call.budget_remaining -= cost

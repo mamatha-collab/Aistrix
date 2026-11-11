@@ -44,7 +44,8 @@ GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 class EnvProviders:
     """Provider adapter on the official SDKs, keyed from the environment."""
 
-    async def chat(self, *, provider, model, api_key, system, messages, tools, max_tokens, temperature, usage):
+    async def chat(self, *, provider, model, api_key, system, messages, tools, max_tokens, temperature, usage,
+                   on_text=None):
         if provider == "claude":
             import anthropic
             client = anthropic.AsyncAnthropic(api_key=api_key)
@@ -52,7 +53,7 @@ class EnvProviders:
             import openai
             client = openai.AsyncOpenAI(api_key=api_key, base_url=GEMINI_BASE_URL if provider == "gemini" else None)
         return await sdk_chat(client, provider=provider, model=model, system=system, messages=messages, tools=tools,
-                              max_tokens=max_tokens, temperature=temperature, usage=usage)
+                              max_tokens=max_tokens, temperature=temperature, usage=usage, on_text=on_text)
 
     async def stream(self, *, provider, model, api_key, system, prompt, max_tokens, temperature, usage):
         if provider == "claude":

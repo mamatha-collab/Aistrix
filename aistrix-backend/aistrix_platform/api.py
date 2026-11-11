@@ -22,7 +22,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 import outbound
 import spend_guard
 
-from . import compiler, evals, node_types, spec
+from . import compat, compiler, evals, node_types, spec
 from .errors import Conflict, InputError, LeaseHeld, NodeError
 from .gateway import CallContext, ModelGateway, sdk_chat
 from .nodes import HttpResponse, Services
@@ -49,12 +49,13 @@ class MainProviders:
         async for token in fn(system, prompt, model, api_key, max_tokens, temperature, usage):
             yield token
 
-    async def chat(self, *, provider, model, api_key, system, messages, tools, max_tokens, temperature, usage):
-        """One tool-calling turn for agents."""
+    async def chat(self, *, provider, model, api_key, system, messages, tools, max_tokens, temperature, usage,
+                   on_text=None):
+        """One tool-calling turn (agents, the compatible API)."""
         client = (self.host.anthropic.AsyncAnthropic(api_key=api_key) if provider == "claude"
                   else self.host._openai_client(provider, api_key))
         return await sdk_chat(client, provider=provider, model=model, system=system, messages=messages, tools=tools,
-                              max_tokens=max_tokens, temperature=temperature, usage=usage)
+                              max_tokens=max_tokens, temperature=temperature, usage=usage, on_text=on_text)
 
 
 def _public_run(run: dict) -> dict:
@@ -177,6 +178,9 @@ def register_routes(app, host):
         if "engine" not in state:
             state["engine"], state["registry"] = build(host)
         return state["engine"], state["registry"]
+
+    # The OpenAI/Anthropic-compatible API shares the runs' model gateway.
+    compat.register_routes(app, host, lambda: parts()[0].gateway)
 
     def background(coro):
         task = asyncio.create_task(coro)

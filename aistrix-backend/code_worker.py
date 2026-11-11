@@ -19,7 +19,7 @@ from pathlib import Path
 from supabase import create_client
 from supabase.lib.client_options import SyncClientOptions
 import httpx
-from code_job_spec import RUNNER, dockerfile, json_bytes, validate_bundle, validate_input
+from code_job_spec import RUNNER, dockerfile, json_bytes, validate_bundle, validate_input, needs_egress
 
 LIMIT = 65536
 
@@ -216,6 +216,8 @@ class Worker:
         _, manifest, digest = validate_bundle(source['files'], source['manifest'])
         if digest != source['source_hash']:
             raise WorkerError('Source integrity verification failed.')
+        if needs_egress(manifest):
+            raise WorkerError('Network access and model calls are available on the managed (E2B) runtime only.')
         image = task.get('image', '')
         if not re.fullmatch(re.escape(f'{self.prefix}/{task["app_id"]}@') + r'sha256:[a-f0-9]{64}', image):
             raise WorkerError('The deployment image is outside this app\'s approved registry path.')

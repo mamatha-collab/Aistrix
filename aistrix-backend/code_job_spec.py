@@ -13,6 +13,13 @@ MAX_FILES = 32
 MAX_INPUT = 64 * 1024
 SPEC = {"version": 1, "runtime": "python", "mode": "job", "entrypoint": "main:run",
         "timeout_seconds": 30, "memory_mb": 256, "network": "none"}
+# Optional settings, present in a manifest only when the developer sets them
+# (so sources saved before they existed keep their exact hash):
+#   "network": {"allow": ["api.example.com", "*.example.org"]}  outbound HTTPS to these hosts only
+#   "models": true   model calls through the Aistrix gateway (OPENAI_BASE_URL / ANTHROPIC_BASE_URL set for the job)
+OPTIONAL = ("models",)
+MAX_HOSTS = 20
+_HOST = re.compile(r"^(\*\.)?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$")
 STARTER = '''def run(payload):
     """Receive a JSON object and return a JSON-serializable result."""
     rows = payload.get("items", [])
@@ -43,12 +50,21 @@ def validate_bundle(files, manifest):
         clean[name] = content.replace('\r\n', '\n')
     if len(json_bytes(clean)) > MAX_SOURCE:
         raise ValueError("Source bundle exceeds 512 KiB.")
-    if not isinstance(manifest, dict) or set(manifest) - set(SPEC):
+    if not isinstance(manifest, dict) or set(manifest) - set(SPEC) - set(OPTIONAL):
         raise ValueError("The manifest contains unsupported settings.")
     config = {**SPEC, **manifest}
-    for key, expected in (("version", 1), ("runtime", "python"), ("mode", "job"), ("network", "none")):
+    for key, expected in (("version", 1), ("runtime", "python"), ("mode", "job")):
         if type(config[key]) is not type(expected) or config[key] != expected:
-            raise ValueError("This release supports version 1 Python jobs with networking disabled.")
+            raise ValueError("This release supports version 1 Python jobs.")
+    network = config["network"]
+    if network != "none":
+        hosts = network.get("allow") if isinstance(network, dict) and set(network) == {"allow"} else None
+        if (not isinstance(hosts, list) or not 1 <= len(hosts) <= MAX_HOSTS or len(set(hosts)) != len(hosts)
+                or not all(isinstance(h, str) and _HOST.fullmatch(h) and not h.rsplit(".", 1)[-1].isdigit() for h in hosts)):
+            raise ValueError('network is "none" or {"allow": [hostnames]} with 1 to 20 lowercase hostnames (no IP addresses).')
+    if "models" in config:
+        if config["models"] is not True:
+            raise ValueError('Set "models": true to call models through the Aistrix gateway, or leave it out.')
     if type(config['timeout_seconds']) is not int or not 1 <= config['timeout_seconds'] <= 120:
         raise ValueError("Timeout must be an integer between 1 and 120 seconds.")
     if type(config['memory_mb']) is not int or config['memory_mb'] not in (128, 256, 512, 1024):
@@ -68,6 +84,21 @@ def validate_bundle(files, manifest):
     clean.setdefault('requirements.txt', '')
     digest = hashlib.sha256(json_bytes({"files": clean, "manifest": config})).hexdigest()
     return clean, config, digest
+
+
+def outbound_hosts(manifest):
+    """Hosts a job may reach directly ([] when networking is off)."""
+    network = manifest.get("network")
+    return list(network["allow"]) if isinstance(network, dict) else []
+
+
+def needs_egress(manifest):
+    return bool(outbound_hosts(manifest)) or manifest.get("models") is True
+
+
+def requirement_lines(files):
+    return [line.strip() for line in files.get("requirements.txt", "").splitlines()
+            if line.strip() and not line.strip().startswith("#")]
 
 
 def read_archive(data):

@@ -132,7 +132,13 @@ def main():
     config = dotenv_values(root / args.env_file)
     if not all(config.get(key) for key in ('SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'E2B_API_KEY')):
         raise ManagedError('The selected environment needs Supabase settings and E2B_API_KEY. No fallback environment is used.')
-    runtime = Runtime(config['E2B_API_KEY'], config.get('E2B_TEMPLATE') or 'base')
+    fernet = None
+    if config.get('SECRET_ENCRYPTION_KEY') and config.get('GATEWAY_PUBLIC_URL'):
+        from cryptography.fernet import Fernet
+        fernet = Fernet(config['SECRET_ENCRYPTION_KEY'].encode())
+    runtime = Runtime(config['E2B_API_KEY'], config.get('E2B_TEMPLATE') or 'base',
+                      dependencies=config.get('E2B_DEPENDENCY_TEMPLATES') == '1', egress=config.get('E2B_EGRESS') == '1',
+                      gateway_url=config.get('GATEWAY_PUBLIC_URL'), fernet=fernet)
     if args.check:
         print(json.dumps({'provider': 'e2b', 'template': runtime.preflight(), 'sandbox_created': False}))
         return

@@ -48,7 +48,34 @@ Restarted from `aistrix-backend` with output appended to the same log files:
 PYTHONUNBUFFERED=1 venv/Scripts/python e2b_worker.py --env-file .env.staging >> .data/e2b-staging.stdout.log 2>> .data/e2b-staging.stderr.log
 ```
 
-The preflight passed (template resolves, no sandbox created). Staging then showed both E2B worker types with a heartbeat 10 seconds old, and no queued or running jobs. The process still stops when this machine sleeps or restarts; starting it automatically at sign-in (Task Scheduler) is not set up.
+The preflight passed (template resolves, no sandbox created). Staging then showed both E2B worker types with a heartbeat 10 seconds old, and no queued or running jobs. ### Automatic start (Task Scheduler)
+
+A Task Scheduler task, **Aistrix E2B coordinator (staging)**, starts `aistrix-backend\scripts\e2b_supervisor.ps1` when this Windows user signs in:
+- It runs for this user only, without admin rights, hidden.
+- It has no time limit and keeps running on battery.
+- If the task itself fails, Task Scheduler retries it 5 times, a minute apart.
+
+The supervisor:
+- **One at a time.** It holds a named mutex, so only one supervisor runs.
+- **Restarts the coordinator.** When none is running, it starts one, appending live output to `.data/e2b-staging.stdout.log` and `.stderr.log`. When it exits, the supervisor starts it again after 30 seconds. Repeated quick failures double the pause, up to 10 minutes. A run longer than 5 minutes resets it.
+- **No duplicates.** A coordinator started by hand, or left over from an earlier supervisor, is watched instead of being duplicated.
+- **Its own log.** Decisions go to `.data/e2b-supervisor.log`.
+
+Checked on November 10:
+- Starting the task launched a coordinator, ready in 4 seconds.
+- Stopping and restarting the task adopted the running coordinator instead of starting a second.
+- Killing the coordinator outright got a new one started exactly 30 seconds later, with staging showing its heartbeat.
+- A real sign-in after a reboot hasn't been tried. Sleep pauses the process and it continues on wake.
+
+Manage it:
+
+```powershell
+Get-ScheduledTask -TaskName "Aistrix E2B coordinator (staging)"        # state
+Start-ScheduledTask -TaskName "Aistrix E2B coordinator (staging)"      # start now
+Unregister-ScheduledTask -TaskName "Aistrix E2B coordinator (staging)" -Confirm:$false   # remove
+```
+
+Stopping the task stops the supervisor but leaves a running coordinator alone. Stop that process too to take the runner down completely.
 
 ## Execution contract and limits
 

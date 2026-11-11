@@ -24,7 +24,7 @@ import spend_guard
 
 from . import compiler, evals, node_types, spec
 from .errors import Conflict, InputError, LeaseHeld, NodeError
-from .gateway import CallContext, ModelGateway
+from .gateway import CallContext, ModelGateway, sdk_chat
 from .nodes import HttpResponse, Services
 from .orchestrator import TERMINAL, Engine
 from .registry import GateRefused, Registry, public_release
@@ -48,6 +48,13 @@ class MainProviders:
         fn = self.host.stream_fn_for(provider)
         async for token in fn(system, prompt, model, api_key, max_tokens, temperature, usage):
             yield token
+
+    async def chat(self, *, provider, model, api_key, system, messages, tools, max_tokens, temperature, usage):
+        """One tool-calling turn for agents."""
+        client = (self.host.anthropic.AsyncAnthropic(api_key=api_key) if provider == "claude"
+                  else self.host._openai_client(provider, api_key))
+        return await sdk_chat(client, provider=provider, model=model, system=system, messages=messages, tools=tools,
+                              max_tokens=max_tokens, temperature=temperature, usage=usage)
 
 
 def _public_run(run: dict) -> dict:
@@ -434,9 +441,10 @@ def register_routes(app, host):
         if not release or release["owner_id"] != caller.user_id:
             raise HTTPException(404, "Release not found")
         return {"release": public_release(release), "spec": release["spec"],
-                "evaluation": {"workloads": [{"name": name, "external_steps": [nid for nid, node in plan["nodes"].items() if node["sideEffect"]]}
+                "evaluation": {"workloads": [{"name": name, "external_steps": [nid for nid, node in plan["nodes"].items() if node["sideEffect"]]
+                                              + list(plan.get("writeTools") or [])}
                                                for name, plan in (release.get("plans") or {}).items()]},
-                "gate": await registry.gate_report(release) if release["kind"] == "Application" else None}
+                "gate": await registry.gate_report(release) if release["kind"] in ("Application", "Agent") else None}
 
     # ── Runs ──────────────────────────────────────────────────────────────────
 
@@ -446,10 +454,21 @@ def register_routes(app, host):
         """Run an Application release. Picks the environment's release (default
         production) or an exact version. wait=true returns the finished run;
         Accept: text/event-stream streams its events."""
+        return await invoke("Application", namespace, name, request)
+
+    @app.post(PREFIX + "/agents/{namespace}/{name}/runs")
+    @errors
+    async def platform_invoke_agent(namespace: str, name: str, request: Request):
+        """Run an Agent release, like an Application. The run's agent step keeps
+        the conversation; its events trace every model turn and tool call.
+        Calls that need approval pause the run (POST .../approvals/agent)."""
+        return await invoke("Agent", namespace, name, request)
+
+    async def invoke(kind: str, namespace: str, name: str, request: Request):
         caller = await caller_of(request)
         engine, registry = parts()
         body = await body_of(request)
-        key = key_of("Application", namespace, name)
+        key = key_of(kind, namespace, name)
         stage = body.get("environment") or "production"
         if body.get("version"):
             release = await registry.store.find_release(key, str(body["version"]), caller.user_id)

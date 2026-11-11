@@ -63,9 +63,11 @@ async def run_suite(engine: Engine, registry: Registry, suite_release: dict, *, 
     workload = suite["spec"]["target"]["workload"]
     plan = (app.get("plans") or {}).get(workload)
     if not plan:
-        raise EvalRefused(f"{target} has no pipeline workload named {workload!r}")
+        raise EvalRefused(f"{target} has no workload named {workload!r}")
     mocks = suite["spec"].get("mocks") or {}
     unmocked = [nid for nid, n in plan["nodes"].items() if n["sideEffect"] and nid not in mocks]
+    # An agent's write tools are mocked by tool name.
+    unmocked += [name for name in plan.get("writeTools") or [] if name not in mocks]
     if unmocked:
         raise EvalRefused("Eval runs can't reach outside services. Add mocks for: " + ", ".join(unmocked))
     cases = list(suite["spec"].get("cases") or [])

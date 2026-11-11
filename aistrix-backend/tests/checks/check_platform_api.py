@@ -316,6 +316,102 @@ ok("the write is captured for the owner, not sent out", r.json()["run"]["status"
    and json.loads(deliveries[0]["body"])["invoice_id"] == "inv-td", r.text)
 ok("captured deliveries don't keep the secret header", "erp-live-secret" not in json.dumps(deliveries))
 
+# ── agents ───────────────────────────────────────────────────────────────────
+# The real Claude adapter path (MainProviders.chat → anthropic SDK) with the
+# SDK client faked: checks the Messages API shapes the agent sends.
+class _Blk:
+    def __init__(self, **kw):
+        self.__dict__.update(kw)
+
+
+CLAUDE_CALLS, CLAUDE_REPLIES = [], []
+
+
+class FakeAnthropic:
+    def __init__(self, api_key=None):
+        self.api_key = api_key
+        self.messages = self
+
+    async def create(self, **kw):
+        CLAUDE_CALLS.append({**kw, "api_key": self.api_key})
+        return CLAUDE_REPLIES.pop(0)
+
+
+main.anthropic.AsyncAnthropic = FakeAnthropic
+
+
+def claude_reply(*blocks, stop="end_turn"):
+    return _Blk(content=list(blocks), usage=_Blk(input_tokens=500, output_tokens=100), stop_reason=stop)
+
+
+AGENT_YAML = """apiVersion: aistrix.ai/v1alpha1
+kind: Agent
+metadata: {namespace: acme, name: support, version: 1.0.0}
+spec:
+  model: claude/claude-sonnet-5-5
+  instructions: You help customers with orders.
+  tools:
+    - name: refund
+      description: Refund an order.
+      parameters:
+        type: object
+        required: [id, amount]
+        properties: {id: {type: string}, amount: {type: number}}
+      http:
+        method: POST
+        url: https://api.example-erp.com/v1/refunds
+        headers: {Authorization: "Bearer {{secrets.ERP_API_KEY}}"}
+policies:
+  secrets: [ERP_API_KEY]
+  outboundHosts: [api.example-erp.com]
+"""
+r = c.post("/v1/platform/specs/plan", json={"spec": AGENT_YAML}, headers=H)
+ok("an agent plans to one agent step", r.json()["plans"]["agent"]["order"] == ["agent"]
+   and r.json()["plans"]["agent"]["writeTools"] == ["refund"], r.text)
+r = c.post("/v1/platform/specs/plan", json={"spec": AGENT_YAML.replace("[api.example-erp.com]", "[other.example.com]")}, headers=H)
+ok("agent tools are held to outboundHosts", r.json()["plans"] == {} and "outboundHosts" in r.json()["problems"][0]["message"], r.text)
+r = c.post("/v1/platform/releases", json={"spec": AGENT_YAML, "promote": "staging"}, headers=H)
+ok("an agent is released and promoted", r.status_code == 201 and r.json()["release"]["kind"] == "Agent"
+   and r.json()["release"]["workloads"] == ["agent"] and r.json()["environment"]["version"] == "1.0.0", r.text)
+agent_release = r.json()["release"]
+r = c.get(f"/v1/platform/releases/{agent_release['id']}", headers=H)
+ok("release detail lists the agent's write tools and its gate", r.json()["evaluation"]["workloads"][0]["external_steps"] == ["refund"]
+   and r.json()["gate"]["eligible"] is True, r.text)
+c.put("/v1/platform/resources/Agent/acme/support/secrets/ERP_API_KEY", json={"value": "agent-erp-secret-4321"}, headers=H)
+
+ERP.clear()
+CLAUDE_REPLIES[:] = [claude_reply(_Blk(type="text", text="Refunding now."),
+                                  _Blk(type="tool_use", id="toolu_1", name="refund", input={"id": "A-1", "amount": 20}),
+                                  stop="tool_use"),
+                     claude_reply(_Blk(type="text", text="Refunded 20 for A-1."))]
+r = c.post("/v1/platform/agents/acme/support/runs", json={"input": {"message": "Refund A-1"}, "environment": "staging", "wait": True}, headers=H)
+arun = r.json().get("run") or {}
+ok("an agent's write waits for approval", r.status_code == 200 and arun.get("status") == "waiting_approval"
+   and arun["steps"]["agent"]["pending"]["tool"] == "refund" and ERP == [], r.text)
+ok("the agent calls Claude with the owner's key, its tools and instructions",
+   CLAUDE_CALLS[0]["api_key"] == "sk-ant-developer-own" and CLAUDE_CALLS[0]["tools"][0]["name"] == "refund"
+   and CLAUDE_CALLS[0]["system"] == "You help customers with orders." and CLAUDE_CALLS[0]["model"] == "claude-sonnet-5-5")
+ok("other people can't approve an agent's call",
+   c.post(f"/v1/platform/runs/{arun['id']}/approvals/agent", json={"approved": True}, headers=H2).status_code == 404)
+r = c.post(f"/v1/platform/runs/{arun['id']}/approvals/agent", json={"approved": True, "wait": True}, headers=H)
+done = r.json()["run"]
+ok("approving runs the write once and the agent finishes", done["status"] == "succeeded" and done["output"] == "Refunded 20 for A-1."
+   and len(ERP) == 1 and ERP[0]["json"] == {"id": "A-1", "amount": 20}, r.text)
+ok("the write carries the secret and an idempotency key", ERP[0]["headers"]["Authorization"] == "Bearer agent-erp-secret-4321"
+   and len(ERP[0]["headers"]["Idempotency-Key"]) == 40)
+second = CLAUDE_CALLS[1]["messages"]
+ok("tool results go back to Claude as tool_result blocks", second[1]["content"][1]["type"] == "tool_use"
+   and second[2]["content"][0]["type"] == "tool_result" and second[2]["content"][0]["tool_use_id"] == "toolu_1", second)
+ok("agent runs record cost per turn", done["cost_usd"] == round(2 * (500 * 2.0 + 100 * 10.0) / 1e6, 6), done["cost_usd"])
+ok("agent run records keep neither the secret nor the idempotency key", "agent-erp-secret" not in r.text and "Idempotency" not in r.text)
+types = [e["type"] for e in c.get(f"/v1/platform/runs/{done['id']}/events", headers=H).json()["events"]]
+ok("the trace shows each turn, the wait, the approval and the tool call",
+   {"agent.turn", "agent.waiting", "agent.approval", "agent.tool"} <= set(types) and types[-1] == "run.finished", types)
+ok("agents are only reachable at /agents", c.post("/v1/platform/apps/acme/support/runs", json={"input": {"message": "x"},
+   "environment": "staging", "wait": True}, headers=H).status_code == 404)
+ok("other people can't run the agent", c.post("/v1/platform/agents/acme/support/runs", json={"input": {"message": "x"},
+   "environment": "staging"}, headers=H2).status_code == 404)
+
 # ── the SDK and CLI use the same API ────────────────────────────────────────
 from typer.testing import CliRunner
 
@@ -366,5 +462,14 @@ res = runner.invoke(aistrix_cli.app, ["runs", "approve", waiting_id, "review"])
 ok("aistrix runs approve finishes it", res.exit_code == 0 and "succeeded" in res.output, res.output)
 res = runner.invoke(aistrix_cli.app, ["rollback", "Application/acme/invoice-extractor", "--env", "staging"])
 ok("aistrix rollback", res.exit_code == 0 and "staging → 1.0.0" in res.output, res.output)
+
+CLAUDE_REPLIES[:] = [claude_reply(_Blk(type="text", text="Orders ship in 2 days."))]
+answer = sdk.ask("acme/support", "How long does shipping take?", environment="staging")
+ok("the SDK asks an agent", answer["status"] == "succeeded" and answer["output"] == "Orders ship in 2 days."
+   and answer["trigger"] == "sdk" and answer["steps"]["agent"]["state"]["messages"][0]["content"] == "How long does shipping take?", answer)
+CLAUDE_REPLIES[:] = [claude_reply(_Blk(type="tool_use", id="toolu_9", name="refund", input={"id": "B-2", "amount": 5}), stop="tool_use")]
+res = runner.invoke(aistrix_cli.app, ["ask", "acme/support", "Refund B-2", "--env", "staging"])
+ok("aistrix ask shows the call waiting for approval", res.exit_code == 0 and "waiting_approval" in res.output
+   and "refund" in res.output and "aistrix runs approve" in res.output, res.output)
 
 finish()

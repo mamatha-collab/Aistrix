@@ -78,7 +78,7 @@ def test_envelope_problems_name_their_path():
 
 def test_kinds_not_built_yet_are_refused_with_a_reason():
     doc = example()
-    doc["kind"] = "Agent"
+    doc["kind"] = "Model"
     problems = spec.validate(doc)
     assert problems and "not available on this platform yet" in problems[0].message
 

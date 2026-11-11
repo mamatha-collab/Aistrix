@@ -84,6 +84,12 @@ class NodeContext:
     call: CallContext
     idempotency_key: Optional[str] = None
     timeout: int = 120
+    # Long-running steps (agents) keep their progress on the step:
+    state: Optional[dict] = None                                   # saved progress, {} at the first attempt
+    checkpoint: Optional[Callable[[dict, float], Awaitable[None]]] = None   # (state, cost since last save)
+    trace: Optional[Callable[[str, dict], Awaitable[None]]] = None          # (event type, data)
+    decision: Optional[dict] = None          # a person's answer to this step's last wait: {approved, by, note}
+    secrets: Optional[dict] = None           # declared secrets, for steps that fill templates themselves
 
 
 @dataclass

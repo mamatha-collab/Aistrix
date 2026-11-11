@@ -76,7 +76,7 @@ class Registry:
                 missing.append(Problem(f"dependencies[{i}]", f"{dep} isn't released yet; release it first"))
         plans = {}
         surfaces = {}
-        if doc["kind"] == "Application":
+        if doc["kind"] in ("Application", "Agent"):
             plans, found = compiler.compile_all(doc)
             problems += found
             if plans:
@@ -84,8 +84,8 @@ class Registry:
                 surfaces = first["surfaces"]
         if doc["kind"] == "EvalSuite":
             target = spec.parse_ref(doc["spec"]["target"]["ref"])
-            if target.kind != "Application":
-                problems.append(Problem("spec.target.ref", "Eval suites target Application releases"))
+            if target.kind not in ("Application", "Agent"):
+                problems.append(Problem("spec.target.ref", "Eval suites target Application or Agent releases"))
         if problems or missing:
             raise SpecError(problems + missing)
         await self.save_draft(doc, owner_id=owner_id, workspace_id=workspace_id)

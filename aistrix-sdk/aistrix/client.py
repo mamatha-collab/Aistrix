@@ -370,19 +370,50 @@ class AistrixClient:
     def invoke(self, app: str, input: Any, *, workload: Optional[str] = None, environment: Optional[str] = None,
                version: Optional[str] = None, wait: bool = True) -> dict:
         """Run an Application (namespace/name). Returns the run record."""
-        body = {"input": input, "wait": wait, **({"workload": workload} if workload else {}),
-                **({"environment": environment} if environment else {}), **({"version": version} if version else {})}
-        resp = self._request("POST", f"/v1/platform/apps/{app}/runs", json=body,
-                             headers={"X-Aistrix-Client": "sdk"})
-        return resp.json()["run"]
+        return self._start("apps", app, input, workload=workload, environment=environment, version=version, wait=wait)
 
     def invoke_stream(self, app: str, input: Any, *, workload: Optional[str] = None,
                       environment: Optional[str] = None, version: Optional[str] = None) -> Iterator[dict]:
         """Run an Application and yield its events as they happen (node.token, node.finished, run.state, ...)."""
-        body = {"input": input, **({"workload": workload} if workload else {}),
+        return self._stream("apps", app, input, workload=workload, environment=environment, version=version)
+
+    def ask(self, agent: str, message: Optional[str] = None, *, input: Any = None, environment: Optional[str] = None,
+            version: Optional[str] = None, wait: bool = True) -> dict:
+        """Run an Agent (namespace/name) on a message, or on input for agents
+        with their own input schema. Returns the run record: output is the
+        answer; steps.agent.state has the conversation. A tool call that needs
+        approval leaves the run waiting_approval: approve(run_id, "agent")."""
+        return self._start("agents", agent, self._agent_input(message, input), environment=environment,
+                           version=version, wait=wait)
+
+    def ask_stream(self, agent: str, message: Optional[str] = None, *, input: Any = None,
+                   environment: Optional[str] = None, version: Optional[str] = None) -> Iterator[dict]:
+        """Run an Agent and yield its events: agent.turn, agent.tool, agent.waiting, ..., run.state."""
+        return self._stream("agents", agent, self._agent_input(message, input), environment=environment, version=version)
+
+    @staticmethod
+    def _agent_input(message: Optional[str], input: Any) -> Any:
+        if (message is None) == (input is None):
+            raise ValueError("Give a message or an input, not both")
+        return {"message": message} if message is not None else input
+
+    @staticmethod
+    def _run_body(input: Any, workload: Optional[str], environment: Optional[str], version: Optional[str]) -> dict:
+        return {"input": input, **({"workload": workload} if workload else {}),
                 **({"environment": environment} if environment else {}), **({"version": version} if version else {})}
+
+    def _start(self, collection: str, name: str, input: Any, *, workload: Optional[str] = None,
+               environment: Optional[str] = None, version: Optional[str] = None, wait: bool = True) -> dict:
+        body = {**self._run_body(input, workload, environment, version), "wait": wait}
+        resp = self._request("POST", f"/v1/platform/{collection}/{name}/runs", json=body,
+                             headers={"X-Aistrix-Client": "sdk"})
+        return resp.json()["run"]
+
+    def _stream(self, collection: str, name: str, input: Any, *, workload: Optional[str] = None,
+                environment: Optional[str] = None, version: Optional[str] = None) -> Iterator[dict]:
+        body = self._run_body(input, workload, environment, version)
         try:
-            with self._http.stream("POST", f"/v1/platform/apps/{app}/runs", json=body,
+            with self._http.stream("POST", f"/v1/platform/{collection}/{name}/runs", json=body,
                                    headers={"Accept": "text/event-stream", "X-Aistrix-Client": "sdk"}) as resp:
                 if resp.status_code >= 400:
                     resp.read()

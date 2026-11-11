@@ -1,5 +1,6 @@
 """Spec compiler (control plane): turns a validated Application's pipeline
-workload into a plan the AEX orchestrator runs, or explains why it can't.
+workload, or an Agent, into a plan the AEX orchestrator runs, or explains
+why it can't. An Agent compiles to one agent.loop step.
 
 Checks: node types and their config, edge endpoints, cycles, typed edges,
 templates (only earlier values, secrets only where declared and allowed),
@@ -12,6 +13,7 @@ from urllib.parse import urlsplit
 
 from jsonschema import Draft202012Validator
 
+from . import agent as agent_runtime
 from . import node_types, spec, templates
 from .node_types import ANY, BOOLEAN, FILE, LIST, NUMBER, OBJECT, TEXT
 from .spec import Problem
@@ -74,8 +76,12 @@ def compile_workload(doc: dict, workload: Optional[str] = None, *, target: str =
     problems = spec.validate(doc)
     if problems:
         return None, problems
+    if doc["kind"] == "Agent":
+        if workload not in (None, AGENT_WORKLOAD):
+            return None, [Problem("workload", f"An Agent has one workload, {AGENT_WORKLOAD!r}")]
+        return compile_agent(doc, target=target)
     if doc["kind"] != "Application":
-        return None, [Problem("kind", "Only Application resources compile to a runnable plan")]
+        return None, [Problem("kind", "Only Application and Agent resources compile to a runnable plan")]
     workloads = doc["spec"]["workloads"]
     index = next((i for i, w in enumerate(workloads) if workload in (None, w["name"])), None)
     if index is None:
@@ -286,11 +292,97 @@ def compile_workload(doc: dict, workload: Optional[str] = None, *, target: str =
     return plan, []
 
 
+AGENT_WORKLOAD = "agent"
+
+
+def _check_agent_tool(tool: dict, at: str, declared_secrets: set, hosts: list, target: str) -> list[Problem]:
+    problems = []
+    if "code" in tool:
+        if target == "local":
+            problems.append(Problem(f"{at}.code", "Deployed code apps run on the hosted platform, not the local runner"))
+        return problems
+    h = tool["http"]
+    args = set((tool["parameters"].get("properties") or {}).keys())
+    url = h["url"]
+    if not url.startswith(node_types.TEST_DESTINATION):
+        authority = url.split("//", 1)[1].split("/", 1)[0].split("?", 1)[0]
+        if "{{" in authority:
+            problems.append(Problem(f"{at}.http.url", "The host part of the URL must be written out, not filled in at run time"))
+        else:
+            host = urlsplit(url).hostname or ""
+            if not host_matches(host, hosts):
+                problems.append(Problem(f"{at}.http.url", f"{host} isn't in policies.outboundHosts"))
+    for field, ref in templates.references({k: h[k] for k in ("url", "headers", "body") if k in h}):
+        head, _, rest = ref.partition(".")
+        if head == "args":
+            if rest.split(".", 1)[0] not in args:
+                problems.append(Problem(f"{at}.http.{field}", "{{" + ref + "}} isn't one of the tool's parameters"))
+        elif head == "secrets":
+            if field.split(".", 1)[0].split("[", 1)[0] not in ("url", "headers"):
+                problems.append(Problem(f"{at}.http.{field}", "Secrets go only in the URL or headers"))
+            elif rest not in declared_secrets:
+                problems.append(Problem(f"{at}.http.{field}", f"Secret {rest!r} isn't declared in policies.secrets"))
+        else:
+            problems.append(Problem(f"{at}.http.{field}", "{{" + ref + "}}: tools read only args.<parameter> and secrets.<NAME>"))
+    return problems
+
+
+def compile_agent(doc: dict, *, target: str = "hosted") -> tuple[Optional[dict], list[Problem]]:
+    """(plan, problems) for an Agent: one agent.loop step from input to output."""
+    a = doc["spec"]
+    policies = doc.get("policies") or {}
+    declared_secrets = set(policies.get("secrets") or [])
+    hosts = policies.get("outboundHosts") or []
+    providers = policies.get("providers")
+    problems: list[Problem] = []
+    model = a["model"]
+    if providers and not model.startswith("policy:") and model.split("/", 1)[0] not in providers:
+        problems.append(Problem("spec.model", f"Provider {model.split('/', 1)[0]} isn't allowed by policies.providers"))
+    tools = a.get("tools") or []
+    for i, tool in enumerate(tools):
+        problems += _check_agent_tool(tool, f"spec.tools[{i}]", declared_secrets, hosts, target)
+    if problems:
+        return None, problems
+    limits = a.get("limits") or {}
+    granted, refused = surfaces_for(doc)
+    config = {k: a[k] for k in ("model", "instructions", "temperature", "maxTokens", "output") if k in a}
+    config.update(tools=tools, limits=limits)
+    plan = {
+        "planVersion": PLAN_VERSION,
+        "target": target,
+        "kind": "Agent",
+        "resource": str(spec.ref_of(doc)),
+        "contentHash": spec.content_hash(doc),
+        "workload": AGENT_WORKLOAD,
+        "input": a.get("input") or spec.DEFAULT_AGENT_INPUT,
+        "output": a.get("output") or {"type": "string"},
+        "order": ["agent"],
+        "nodes": {"agent": {"use": agent_runtime.USE, "config": config, "when": None,
+                            # Safe to repeat: the step resumes from its saved progress.
+                            "retry": 3, "timeoutSeconds": limits.get("timeoutSeconds") or agent_runtime.DEFAULT_TIMEOUT,
+                            "sources": [{"from": "input", "node": None, "path": []}],
+                            "sideEffect": False, "ancestors": []}},
+        "outputSource": {"from": "agent", "node": "agent", "path": []},
+        "tools": [t["name"] for t in tools],
+        "writeTools": [t["name"] for t in tools if agent_runtime.tool_writes(t)],
+        "policies": {"secrets": sorted(declared_secrets), "outboundHosts": list(hosts),
+                     "providers": providers,
+                     "budgetUsd": ((policies.get("budget") or {}).get("perRunUsd")) or DEFAULT_RUN_BUDGET_USD},
+        "surfaces": {"granted": granted, "refused": refused},
+    }
+    plan["planId"] = hashlib.sha256(spec.canonical_json(plan).encode("utf-8")).hexdigest()
+    return plan, []
+
+
 def compile_all(doc: dict, *, target: str = "hosted") -> tuple[dict, list[Problem]]:
-    """Plans for every pipeline workload of an Application, keyed by name."""
+    """Plans for every pipeline workload of an Application (or an Agent's
+    one workload), keyed by name."""
     problems = spec.validate(doc)
     if problems:
         return {}, problems
+    if doc["kind"] == "Agent":
+        plan, problems = compile_agent(doc, target=target)
+        return ({AGENT_WORKLOAD: plan} if plan else {}), problems
     plans: dict[str, dict] = {}
     for w in doc["spec"]["workloads"]:
         plan, found = compile_workload(doc, w["name"], target=target)

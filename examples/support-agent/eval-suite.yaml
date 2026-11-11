@@ -1,0 +1,27 @@
+# Regression tests for the support agent. Eval runs call the real model;
+# every write tool must be mocked (by tool name), so refunds never happen.
+# get_order is a read, so it runs against the API unless mocked too.
+apiVersion: aistrix.ai/v1alpha1
+kind: EvalSuite
+metadata:
+  name: support-regression
+  namespace: acme
+  version: 1.0.0
+spec:
+  target:
+    ref: Agent/acme/support@1.0.0
+    workload: agent
+  requiredPassRate: 1.0
+  approvals: approve
+  mocks:
+    get_order: {status: 200, body: {id: A-1001, status: delivered, total: 40.0}}
+    refund_order: {status: 201, body: {refund: rf-1, amount: 40.0}}
+  cases:
+    - name: order status
+      input: {message: "Where is order A-1001?"}
+      expect:
+        - {type: contains, value: delivered}
+    - name: refund
+      input: {message: "Order A-1001 arrived broken, please refund it."}
+      expect:
+        - {type: contains, value: refund}

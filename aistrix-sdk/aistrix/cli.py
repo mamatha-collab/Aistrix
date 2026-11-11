@@ -238,6 +238,9 @@ def _show_run(run: dict) -> None:
         console.print(f"[red]{run['error']}[/red]")
     waiting = [n for n, s in run.get("steps", {}).items() if s["status"] == "waiting_approval"]
     for nid in waiting:
+        pending = run["steps"][nid].get("pending") or {}
+        if isinstance(pending, dict) and pending.get("tool"):
+            console.print(f"The agent wants to call [bold]{pending['tool']}[/bold] with {json.dumps(pending.get('arguments'))}")
         console.print(f"Approve with: aistrix runs approve {run['id']} {nid}   (or --reject)")
     if run.get("output") is not None:
         _print_json(run["output"])
@@ -363,6 +366,40 @@ def invoke(application: str = typer.Argument(..., help="namespace/name of an App
                     _show_run(event["data"])
             return
         run_record = client.invoke(application, payload, workload=workload, environment=_stage(env), version=version)
+    except AistrixError as e:
+        _fail(e)
+    _show_run(run_record)
+    if run_record["status"] not in ("succeeded", "waiting_approval"):
+        raise typer.Exit(1)
+
+
+@app.command()
+def ask(agent: str = typer.Argument(..., help="namespace/name of an Agent"),
+        message: Optional[str] = typer.Argument(None, help="What to ask the agent"),
+        input_value: Optional[str] = typer.Option(None, "--input", "-i", help="For agents with their own input schema: .json file, - or inline JSON"),
+        env: str = typer.Option("production", "--env", "-e"),
+        version: Optional[str] = typer.Option(None, "--version", help="Run this release instead of the environment's"),
+        stream: bool = typer.Option(False, "--stream", help="Show each model turn and tool call as it happens")):
+    """Run an Agent release and print its answer."""
+    if (message is None) == (input_value is None):
+        raise typer.BadParameter("Give a message or --input")
+    payload = _read_input(input_value) if input_value is not None else None
+    client = _client()
+    try:
+        if stream:
+            for event in client.ask_stream(agent, message, input=payload, environment=_stage(env), version=version):
+                kind, data = event.get("type"), event.get("data") or {}
+                if kind == "agent.turn":
+                    calls = ", ".join(c["name"] for c in data.get("toolCalls") or [])
+                    console.print(f"[dim]turn {data.get('turn')}{' → ' + calls if calls else ''}  ${data.get('costUsd', 0):.4f}[/dim]")
+                elif kind == "agent.tool":
+                    console.print(f"[dim]  {data.get('tool')}: {data.get('status')}[/dim]")
+                elif kind == "agent.waiting":
+                    console.print(f"[yellow]  {data.get('tool')} needs approval[/yellow]")
+                elif kind == "run.state":
+                    _show_run(data)
+            return
+        run_record = client.ask(agent, message, input=payload, environment=_stage(env), version=version)
     except AistrixError as e:
         _fail(e)
     _show_run(run_record)

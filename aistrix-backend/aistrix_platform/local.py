@@ -26,7 +26,7 @@ import outbound
 
 from . import compiler, spec
 from .errors import NodeError
-from .gateway import CallContext, ModelGateway
+from .gateway import CallContext, ModelGateway, sdk_chat
 from .node_types import TEST_DESTINATION
 from .nodes import HttpResponse, Services
 from .orchestrator import Engine
@@ -43,6 +43,16 @@ GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
 class EnvProviders:
     """Provider adapter on the official SDKs, keyed from the environment."""
+
+    async def chat(self, *, provider, model, api_key, system, messages, tools, max_tokens, temperature, usage):
+        if provider == "claude":
+            import anthropic
+            client = anthropic.AsyncAnthropic(api_key=api_key)
+        else:
+            import openai
+            client = openai.AsyncOpenAI(api_key=api_key, base_url=GEMINI_BASE_URL if provider == "gemini" else None)
+        return await sdk_chat(client, provider=provider, model=model, system=system, messages=messages, tools=tools,
+                              max_tokens=max_tokens, temperature=temperature, usage=usage)
 
     async def stream(self, *, provider, model, api_key, system, prompt, max_tokens, temperature, usage):
         if provider == "claude":
@@ -135,7 +145,7 @@ async def run_local(doc: dict, input_value: Any, *, spec_dir: Path, workload: Op
     engine = Engine(MemoryStore(), local_gateway(adapter), services or local_services(spec_dir), worker_id="local")
     run = await engine.start(plan, input_value, owner_id=None, trigger="local", mocks=mocks, auto_approval=approvals)
     run = await engine.execute(run["id"], on_event=on_event)
-    while run["status"] == "waiting_approval" and ask:
+    while run["status"] == "waiting_approval" and ask:      # approvals already decided them, when given
         nid = next(n for n, s in run["steps"].items() if s["status"] == "waiting_approval")
         await engine.approve(run["id"], nid, approved=ask(nid, run["steps"][nid].get("pending")), by="local")
         run = await engine.execute(run["id"], on_event=on_event)
@@ -177,6 +187,11 @@ def main(argv=None) -> int:
             return
         if event["type"] == "node.token":
             print(event["data"]["text"], end="", flush=True, file=sys.stderr)
+        elif event["type"].startswith("agent."):
+            data = event.get("data") or {}
+            summary = {k: data[k] for k in ("turn", "text", "toolCalls", "tool", "arguments", "status", "result", "approved",
+                                            "costUsd") if k in data}
+            print(f"\n[{event['type']}] {json.dumps(summary, ensure_ascii=False)[:600]}", file=sys.stderr)
         else:
             print(f"\n[{event['type']}] {event.get('node') or ''}", file=sys.stderr)
 

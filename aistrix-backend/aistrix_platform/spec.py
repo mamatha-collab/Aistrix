@@ -26,7 +26,7 @@ SUPPORTING_KINDS = ("SecretRef", "Connector", "Environment")
 KINDS = USER_KINDS + SUPPORTING_KINDS
 # What this release of the platform can validate, release and run. The other
 # kinds parse as envelopes and are refused with a clear reason.
-IMPLEMENTED_KINDS = ("Application", "EvalSuite", "Dataset", "SecretRef", "Environment")
+IMPLEMENTED_KINDS = ("Application", "Agent", "EvalSuite", "Dataset", "SecretRef", "Environment")
 
 WORKLOAD_TYPES = ("pipeline", "web", "api", "worker", "job")
 IMPLEMENTED_WORKLOADS = ("pipeline",)
@@ -118,6 +118,47 @@ _NODE = {
 
 _IO_SCHEMA = {"type": "object"}
 
+# A model reference: a policy tier, or an exact provider/model.
+MODEL_REF = r"^(policy:(fast|balanced|best)|(claude|openai|gemini)/[A-Za-z0-9][A-Za-z0-9._:-]{0,99})$"
+TOOL_NAME = r"^[a-z][a-z0-9_]{0,40}$"
+UUID = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+# An agent with no input schema takes one message.
+DEFAULT_AGENT_INPUT = {"type": "object", "required": ["message"], "additionalProperties": False,
+                       "properties": {"message": {"type": "string", "minLength": 1, "maxLength": 100000}}}
+
+_AGENT_TOOL = {
+    "type": "object",
+    "required": ["name", "description", "parameters"],
+    "additionalProperties": False,
+    "properties": {
+        "name": {"type": "string", "pattern": TOOL_NAME},
+        "description": {"type": "string", "minLength": 1, "maxLength": 1000},
+        # JSON Schema for the arguments the model passes.
+        "parameters": {"type": "object"},
+        # auto: calls that write wait for a person; always: every call waits;
+        # never: the author accepts unattended writes.
+        "approval": {"enum": ["auto", "always", "never"]},
+        "http": {
+            "type": "object", "required": ["method", "url"], "additionalProperties": False,
+            "properties": {
+                "method": {"enum": ["GET", "POST", "PUT", "PATCH", "DELETE"]},
+                # {{args.x}} fills in an argument, {{secrets.X}} a declared secret.
+                "url": {"type": "string", "maxLength": 2000,
+                        "pattern": r"^(https://|aistrix-test://destinations/[a-z0-9][a-z0-9-]{0,39}$)"},
+                "headers": {"type": "object", "maxProperties": 20,
+                            "additionalProperties": {"type": "string", "maxLength": 2000}},
+                # Defaults to the arguments themselves (for writes).
+                "body": {},
+            },
+        },
+        "code": {
+            "type": "object", "required": ["app"], "additionalProperties": False,
+            "properties": {"app": {"type": "string", "pattern": UUID}},
+        },
+    },
+    "oneOf": [{"required": ["http"]}, {"required": ["code"]}],
+}
+
 _PIPELINE = {
     "type": "object",
     "required": ["name", "type", "input", "output", "nodes", "edges"],
@@ -163,6 +204,27 @@ _CHECK = {
 }
 
 KIND_SCHEMAS = {
+    "Agent": {
+        "type": "object",
+        "required": ["model", "instructions"],
+        "additionalProperties": False,
+        "properties": {
+            "model": {"type": "string", "pattern": MODEL_REF},
+            "instructions": {"type": "string", "minLength": 1, "maxLength": 20000},
+            "input": _IO_SCHEMA,
+            # Given: the final answer is JSON matching it. Absent: the answer is text.
+            "output": _IO_SCHEMA,
+            "temperature": {"type": "number", "minimum": 0, "maximum": 1},
+            "maxTokens": {"type": "integer", "minimum": 16, "maximum": 8192},
+            "tools": {"type": "array", "maxItems": 20, "items": _AGENT_TOOL},
+            "limits": {
+                "type": "object", "additionalProperties": False,
+                "properties": {"maxSteps": {"type": "integer", "minimum": 1, "maximum": 50},
+                               "maxToolCalls": {"type": "integer", "minimum": 1, "maximum": 100},
+                               "timeoutSeconds": {"type": "integer", "minimum": 10, "maximum": 900}},
+            },
+        },
+    },
     "Application": {
         "type": "object",
         "required": ["workloads"],
@@ -413,6 +475,19 @@ def validate(doc: Any) -> list[Problem]:
                 problems += _problems(row_check, row, ["spec", "rows", i])
                 if len(problems) >= 20:
                     break
+    elif kind == "Agent":
+        a = doc["spec"]
+        if "input" in a:
+            problems += schema_problems(a["input"], "spec.input")
+        if "output" in a:
+            problems += schema_problems(a["output"], "spec.output")
+        names = [t["name"] for t in a.get("tools") or []]
+        for i, t in enumerate(a.get("tools") or []):
+            if names.count(t["name"]) > 1:
+                problems.append(Problem(f"spec.tools[{i}].name", f"Tool name {t['name']!r} is used twice"))
+            problems += schema_problems(t["parameters"], f"spec.tools[{i}].parameters")
+            if t["parameters"].get("type") != "object":
+                problems.append(Problem(f"spec.tools[{i}].parameters", "Tool parameters must be an object schema"))
     elif kind == "EvalSuite":
         for i, case in enumerate(doc["spec"].get("cases") or []):
             if not case.get("expect") and not doc["spec"].get("checks"):

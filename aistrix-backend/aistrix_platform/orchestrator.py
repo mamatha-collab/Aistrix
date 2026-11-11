@@ -20,9 +20,13 @@ from typing import Any, Awaitable, Callable, Optional
 
 from . import spec, templates
 from .errors import BudgetExceeded, Conflict, InputError, LeaseHeld, LeaseLost, NodeError
+from .agent import USE as AGENT_USE, agent_loop
 from .gateway import CallContext, ModelGateway
 from .nodes import RUNTIMES, NodeContext, Services
 from .store import Store
+
+# Steps that fill their own templates per call (an agent's tool configs).
+SELF_RENDERED = ("agent.loop",)
 
 TERMINAL = ("succeeded", "failed", "cancelled", "rejected", "needs_review")
 STEP_DONE = ("succeeded", "skipped")
@@ -60,7 +64,7 @@ class Engine:
         self.lease_seconds = lease_seconds
         self.clock = clock
         self.backoff = backoff
-        self.runtimes = {**RUNTIMES, **(runtimes or {})}
+        self.runtimes = {**RUNTIMES, AGENT_USE: agent_loop, **(runtimes or {})}
         self._sleep = self.services.sleep or asyncio.sleep
 
     # ── Starting and controlling runs ─────────────────────────────────────────
@@ -74,7 +78,7 @@ class Engine:
         problems = spec.validate_value(plan["input"], input_value, "input")
         if problems:
             raise InputError(problems)
-        unknown = sorted(set(mocks or {}) - set(plan["order"]))
+        unknown = sorted(set(mocks or {}) - set(plan["order"]) - set(plan.get("tools") or []))
         if unknown:
             raise ValueError(f"Mocks name steps that don't exist: {', '.join(unknown)}")
         now = self.clock()
@@ -117,6 +121,8 @@ class Engine:
             step.update(status="rejected", decidedBy=None, note="The approval expired")
         else:
             step.update(status="approved" if approved else "rejected", decidedBy=by, note=note[:500], decidedAt=_iso(self.clock()))
+        # Steps that wait from inside (agents) read the answer when they continue.
+        step["decision"] = {"approved": step["status"] == "approved", "by": step.get("decidedBy"), "note": step.get("note") or ""}
         run["status"] = "queued"
         await self._save(run)
         await self._event(run, "node.decided", node_id, {"approved": step["status"] == "approved"})
@@ -255,8 +261,9 @@ class Engine:
         step = run["steps"][nid]
         attempts_allowed = node["retry"]
         resolver = self._resolver(run, secrets)
+        decision = step.get("decision")
         try:
-            config = templates.render(node["config"], resolver)
+            config = node["config"] if node["use"] in SELF_RENDERED else templates.render(node["config"], resolver)
         except templates.MissingValue as e:
             step.update(status="failed", error=f"No value for {{{{{e.args[0]}}}}}")
             return await self._finish(run, "failed", f"Step {nid}: no value for {{{{{e.args[0]}}}}}", on_event)
@@ -285,8 +292,24 @@ class Engine:
 
             call = CallContext(owner_id=run["owner_id"], workspace_id=run["workspace_id"], resource=run["resource"],
                                budget_remaining=remaining, on_token=token, on_status=status)
+
+            async def checkpoint(state: dict, cost: float = 0.0, _step=step):
+                if lost.is_set():
+                    raise LeaseLost("Lost the run's lease; another worker may take over")
+                _step["state"] = state
+                _step.pop("decision", None)          # consumed: the state now reflects it
+                if cost:
+                    run["cost_usd"] = round(run["cost_usd"] + cost, 6)
+                    _step["cost_usd"] = round((_step.get("cost_usd") or 0.0) + cost, 6)
+                await self._save(run)
+
+            async def trace(kind: str, data: dict, _nid=nid):
+                await self._event(run, kind, _nid, data, sink=on_event)
+
             ctx = NodeContext(run=run, node_id=nid, node=node, config=config, value=value, gateway=self.gateway,
-                              services=self.services, call=call, idempotency_key=key, timeout=node["timeoutSeconds"])
+                              services=self.services, call=call, idempotency_key=key, timeout=node["timeoutSeconds"],
+                              state=step.get("state") or {}, checkpoint=checkpoint, trace=trace, decision=decision,
+                              secrets=secrets)
             try:
                 outcome = await asyncio.wait_for(self.runtimes[node["use"]](ctx), timeout=node["timeoutSeconds"])
             except asyncio.TimeoutError:
@@ -303,13 +326,15 @@ class Engine:
                     await self._event(run, "node.skipped", nid, sink=on_event)
                     return None
                 if outcome.wait:
-                    step.update(status="waiting_approval", pending=_clip(outcome.output), detail=outcome.detail)
+                    step.update(status="waiting_approval", pending=_clip(outcome.output), detail=outcome.detail,
+                                expiresAt=_iso(self.clock() + APPROVAL_HOURS * 3600))
                     run["status"] = "waiting_approval"
                     await self._save(run)
                     await self._event(run, "run.waiting", nid, sink=on_event)
                     return run
                 step.update(status="succeeded", output=_clip(outcome.output), detail=outcome.detail,
-                            cost_usd=outcome.cost_usd, finishedAt=_iso(self.clock()))
+                            cost_usd=round((step.get("cost_usd") or 0.0) + (outcome.cost_usd or 0.0), 6),
+                            finishedAt=_iso(self.clock()))
                 await self._save(run)
                 await self._event(run, "node.finished", nid, {"cost_usd": outcome.cost_usd}, sink=on_event)
                 return None

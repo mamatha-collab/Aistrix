@@ -1,0 +1,54 @@
+# A customer-support agent: looks orders up and refunds them. Refunds are
+# writes, so each one waits for a person to approve it (approval: auto).
+# Run it locally (keys and secrets from your environment):
+#   python -m aistrix_platform.local ../examples/support-agent/aistrix.yaml -i '{"message": "Where is order A-1001?"}'
+apiVersion: aistrix.ai/v1alpha1
+kind: Agent
+metadata:
+  name: support
+  namespace: acme
+  version: 1.0.0
+  description: Answers order questions and refunds orders after approval.
+spec:
+  model: policy:balanced
+  instructions: |
+    You are the support agent for an online shop. Look the order up before
+    answering anything about it. Refund only when the customer asks and the
+    order is delivered or lost; never refund more than the order total.
+    Answer in two or three sentences.
+  tools:
+    - name: get_order
+      description: Look up an order by its id (for example A-1001).
+      parameters:
+        type: object
+        required: [id]
+        additionalProperties: false
+        properties:
+          id: {type: string, pattern: "^[A-Z]-[0-9]{1,8}$"}
+      http:
+        method: GET
+        url: https://api.example-shop.com/v1/orders/{{args.id}}
+        headers: {Authorization: "Bearer {{secrets.SHOP_API_KEY}}"}
+    - name: refund_order
+      description: Refund an order, fully or in part.
+      parameters:
+        type: object
+        required: [id, amount, reason]
+        additionalProperties: false
+        properties:
+          id: {type: string, pattern: "^[A-Z]-[0-9]{1,8}$"}
+          amount: {type: number, exclusiveMinimum: 0}
+          reason: {type: string, maxLength: 200}
+      http:
+        method: POST
+        url: https://api.example-shop.com/v1/refunds
+        headers: {Authorization: "Bearer {{secrets.SHOP_API_KEY}}"}
+  limits:
+    maxSteps: 8
+    maxToolCalls: 10
+policies:
+  secrets: [SHOP_API_KEY]
+  outboundHosts: [api.example-shop.com]
+  budget: {perRunUsd: 0.25}
+surfaces: [rest, sdk]
+tests: [EvalSuite/acme/support-regression@1.0.0]

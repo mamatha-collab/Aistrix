@@ -133,8 +133,14 @@ def build(host):
         async def run_code_app(app_id, owner_id, payload, timeout):
             sb = host._service_client()
             try:
-                rows = (await host.db(sb.rpc("enqueue_code_task", {"p_app": app_id, "p_user": owner_id, "p_kind": "run",
-                                                                   "p_source": None, "p_input": payload}))).data
+                params = {"p_app": app_id, "p_user": owner_id, "p_kind": "run", "p_source": None, "p_input": payload}
+                managed = os.getenv("CODE_EXECUTION_PROVIDER", "dedicated") == "e2b"
+                if managed:
+                    allowance = int(os.getenv("E2B_DAILY_RUNTIME_SECONDS", "3600"))
+                    if not 1 <= allowance <= 86400:
+                        raise ValueError("Invalid managed runtime allowance")
+                    params["p_daily_seconds"] = allowance
+                rows = (await host.db(sb.rpc("enqueue_e2b_task" if managed else "enqueue_code_task", params))).data
             except Exception as e:
                 raise NodeError(f"The code job couldn't be queued: {str(e)[:200]}")
             task_id = rows[0]["id"]

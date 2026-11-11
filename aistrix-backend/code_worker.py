@@ -229,6 +229,12 @@ class Worker:
             result = json.loads(raw)
             if len(json_bytes(result)) > LIMIT:
                 raise WorkerError('Structured output exceeds 64 KiB.')
+            if source.get('studio_contract'):
+                import code_studio
+                try:
+                    code_studio.validate_data(source['files'], manifest, result, 'output')
+                except Exception as problem:
+                    raise WorkerError('Output did not satisfy the project schema or preview contract.', logs) from problem
             return {'output': result, 'limits': {'memory_mb': manifest['memory_mb'], 'cpu': 1,
                                                 'timeout_seconds': manifest['timeout_seconds']}}, logs.decode('utf-8', 'ignore')
         finally:

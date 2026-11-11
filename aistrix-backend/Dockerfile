@@ -14,7 +14,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY main.py telemetry.py tool_contracts.py flow_plan.py spend_guard.py outbound.py reference_workflows.py code_apps.py code_job_spec.py ./
+COPY main.py telemetry.py tool_contracts.py flow_plan.py spend_guard.py outbound.py reference_workflows.py code_apps.py code_studio.py code_job_spec.py e2b_runtime.py e2b_worker.py ./
 COPY aistrix_platform ./aistrix_platform
 
 # Runs as a non-root user. /data holds the run-telemetry outbox: mount a
